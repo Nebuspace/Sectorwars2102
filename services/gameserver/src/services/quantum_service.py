@@ -69,15 +69,24 @@ logger = logging.getLogger(__name__)
 
 
 class QuantumError(Exception):
-    """Raised for player-facing quantum drive failures; .args[0] is the
-    human-readable detail string the route layer surfaces as a 400."""
+    """Raised for player-facing quantum drive failures.
+
+    ``str(exc)`` / ``.args[0]`` remains the human-readable detail the route
+    layer surfaces. Optional ``error_code`` carries the machine-readable
+    ``ERR_QJ_*`` contract from FEATURES/galaxy/sectors.md (WO-FIX-QUANTUM-
+    JUMP-ERROR-CODES-MISSING).
+    """
+
+    def __init__(self, message: str, *, error_code: str | None = None):
+        super().__init__(message)
+        self.error_code = error_code
 
 
 # --- Canonical constants (ADR-0030) ---
 
 SCAN_TURN_COST = 5
 JUMP_TURN_COST = 50
-SCAN_COOLDOWN_HOURS = 4.0      # canonical, scaled via scaled_deadline
+SCAN_COOLDOWN_HOURS = 4.0      # REAL hours — deliberately unscaled (sectors.md)
 JUMP_COOLDOWN_HOURS = 24.0     # canonical, scaled via scaled_deadline
 SCAN_RESULT_TTL_MINUTES = 10   # REAL minutes — canon says real-minutes, never scaled
 
@@ -102,8 +111,10 @@ HARVEST_COOLDOWN_HOURS = 2.0
 
 # Turn cost charged per harvest attempt — mirrors mining_service.harvest's
 # regenerate_turns -> afford-check -> spend_turns model so a harvest is never
-# a free action. The canon magnitude is doc-split (15 vs 8); 8 is the
-# conservative value pending the orchestrator's doc reconcile [NO-CANON 8-vs-15].
+# a free action. § Harvest mechanics: "A harvest attempt costs 8 turns"
+# (quantum-resources.md:198, also :55/:280/:342) — canon is consistent at 8
+# throughout the doc; re-verified 2026-08-04, no 15-turn reference exists
+# anywhere in it. The prior "doc-split 15 vs 8" framing was stale.
 HARVEST_NEBULA_TURN_COST = 8
 
 # § Harvest mechanics resolution step 4: "Roll crit ~ uniform(0, 1) < 0.02."
@@ -173,8 +184,8 @@ RANGE_BANDS: Dict[str, Tuple[float, float]] = {
     "extended": (12.0, 15.0),
 }
 
-# Fuzzy vocab orderings used for misread shifts (ADR-0031: a misread shifts
-# the resonance band one level and swaps the texture for a near-relative).
+# Fuzzy vocab orderings. Misread shifts resonance ±1 band only (sectors.md) —
+# texture/echo stay exact regardless of Sensor level (never fuzzed).
 RESONANCE_ORDER = ["silent", "faint", "steady", "bright"]
 TEXTURE_ORDER = ["hollow", "mineral", "chromatic", "heavy", "hot", "turbulent"]
 
@@ -400,29 +411,38 @@ def scan(
     # Mirror jump()'s state guards BEFORE the cooldown check so a rejected
     # scan never consumes the cooldown (ADR-0040).
     if player.is_docked:
-        raise QuantumError("You cannot run a quantum scan while docked — launch first")
+        raise QuantumError(
+            "You cannot run a quantum scan while docked — launch first",
+            error_code="ERR_QJ_DOCKED",
+        )
     if player.is_landed:
-        raise QuantumError("You cannot run a quantum scan on a planet surface — lift off first")
+        raise QuantumError(
+            "You cannot run a quantum scan on a planet surface — lift off first",
+            error_code="ERR_QJ_DOCKED",
+        )
     if ship.status == ShipStatus.HARMONIZING:
         raise QuantumError("This Warp Jumper is anchored to a beacon and harmonizing — it cannot scan")
 
     if _cooldown_active(ship.quantum_scan_cooldown_until):
         raise QuantumError(
             f"Quantum sensors are recharging until "
-            f"{_iso_or_none(ship.quantum_scan_cooldown_until)}"
+            f"{_iso_or_none(ship.quantum_scan_cooldown_until)}",
+            error_code="ERR_QJ_SCAN_COOLDOWN",
         )
 
     sensor_level = _sensor_level(ship)
     if range_band == "extended" and sensor_level < EXTENDED_BAND_SENSOR_LEVEL:
         raise QuantumError(
-            f"The extended range band requires a Sensor L{EXTENDED_BAND_SENSOR_LEVEL} upgrade"
+            f"The extended range band requires a Sensor L{EXTENDED_BAND_SENSOR_LEVEL} upgrade",
+            error_code="ERR_QJ_SENSOR_L3_REQUIRED",
         )
 
     shard_cost = FAR_BAND_SHARD_COST if range_band == "far" else 0
     if shard_cost and player.quantum_shards < shard_cost:
         raise QuantumError(
             f"Scanning the far band costs {shard_cost} Quantum Shard; you have "
-            f"{player.quantum_shards}"
+            f"{player.quantum_shards}",
+            error_code="ERR_QJ_SHARD_REQUIRED",
         )
     if player.turns < SCAN_TURN_COST:
         raise QuantumError(
@@ -433,7 +453,8 @@ def scan(
     origin = _origin_point(points, player.current_sector_id)
     if origin.type == SectorType.NEBULA:
         raise QuantumError(
-            "Quantum field interference: the drive cannot lock a bearing inside a nebula"
+            "Quantum field interference: the drive cannot lock a bearing inside a nebula",
+            error_code="ERR_QJ_FROM_NEBULA",
         )
     spacing = _inter_sector_spacing(points)
     direction = _bearing_unit_vector(yaw_deg, pitch_deg)
@@ -491,7 +512,7 @@ def scan(
             echo = "faint motion"
 
     # Misread roll (ADR-0030: 15% minus 5 points per sensor level, floor 0;
-    # a misread shifts resonance one band AND swaps texture for a neighbour)
+    # sectors.md: resonance band ±1 only — texture/echo stay exact).
     misread_pct = max(
         0, MISREAD_BASE_PCT - MISREAD_REDUCTION_PER_SENSOR_LEVEL * sensor_level
     )
@@ -499,15 +520,13 @@ def scan(
         r_idx = RESONANCE_ORDER.index(resonance)
         shift = random.choice([-1, 1])
         resonance = RESONANCE_ORDER[min(len(RESONANCE_ORDER) - 1, max(0, r_idx + shift))]
-        t_idx = TEXTURE_ORDER.index(texture)
-        shift = random.choice([-1, 1])
-        texture = TEXTURE_ORDER[min(len(TEXTURE_ORDER) - 1, max(0, t_idx + shift))]
 
     # Charge the scan — single commit
     spend_turns(player, SCAN_TURN_COST)
     if shard_cost:
         player.quantum_shards -= shard_cost
-    ship.quantum_scan_cooldown_until = scaled_deadline(SCAN_COOLDOWN_HOURS)
+    # 4 REAL hours — deliberately unscaled (sectors.md), unlike jump cooldown.
+    ship.quantum_scan_cooldown_until = _now() + timedelta(hours=SCAN_COOLDOWN_HOURS)
     db.commit()
 
     # Expiry is 10 REAL minutes (canon: real-minutes; deliberately unscaled)
@@ -530,68 +549,17 @@ def scan(
 
 # --- Phases 2+3: commit and resolve ---
 
-def jump(
-    db: Session,
-    player_id: uuid.UUID,
-    yaw_deg: float,
-    pitch_deg: float,
-    range_band: str,
-) -> Dict[str, Any]:
-    """Commit-and-resolve (ADR-0030 Phases 2-3). Consumes 1 Quantum Charge
-    + 50 turns and starts the 24h canonical jump cooldown REGARDLESS of
-    outcome; resolves to a candidate sector or misfires onto the bearing
-    line with 5% max-hull damage. Bypasses the warp graph entirely (no
-    adjacency requirement); may cross region boundaries."""
-    player = _lock_player(db, player_id)
-    ship = _require_warp_jumper(db, player)
-    band_min, band_max = _validate_band(range_band)
+def _compute_jump_cost(db: Session, ship: Ship) -> Tuple[int, int, int]:
+    """The actual jump turn cost for THIS ship: (base, tow_surcharge, total).
+    base is the flat JUMP_TURN_COST; tow_surcharge folds in the +5 flat QJ
+    tow surcharge (WO-AF; ships.md:358; ADR-0067) when the ship is legally
+    towing a small/medium hull through its own Quantum Jump, 0 otherwise.
 
-    # ADR-0040: no quantum jumps from a hangar — and none from a planet
-    if player.is_docked:
-        raise QuantumError("You cannot engage the quantum drive while docked — launch first")
-    if player.is_landed:
-        raise QuantumError("You cannot engage the quantum drive on a planet surface — lift off first")
-    if ship.status == ShipStatus.HARMONIZING:
-        raise QuantumError("This Warp Jumper is anchored to a beacon and harmonizing — it cannot jump")
-    if _cooldown_active(ship.quantum_jump_cooldown_until):
-        raise QuantumError(
-            f"Quantum drive is in cooldown until "
-            f"{_iso_or_none(ship.quantum_jump_cooldown_until)}"
-        )
-    # Player-wide 24h jump cooldown: the canon cooldown is per-pilot, not
-    # per-hull. Swapping to another owned Warp Jumper must not reset it, so
-    # reject if ANY owned ship still carries an active jump cooldown.
-    fleet_jump_cd = db.query(func.max(Ship.quantum_jump_cooldown_until)).filter(
-        Ship.owner_id == player.id,
-        Ship.is_destroyed == False,  # noqa: E712 — SQLAlchemy boolean comparison
-    ).scalar()
-    if _cooldown_active(fleet_jump_cd):
-        raise QuantumError(
-            f"Quantum drive is in cooldown until {_iso_or_none(fleet_jump_cd)}"
-        )
-    # Same gate as the scan: committing blind to a band you cannot even
-    # scan would sidestep the Sensor L3 requirement
-    if range_band == "extended" and _sensor_level(ship) < EXTENDED_BAND_SENSOR_LEVEL:
-        raise QuantumError(
-            f"The extended range band requires a Sensor L{EXTENDED_BAND_SENSOR_LEVEL} upgrade"
-        )
-    if ship.quantum_charges < 1:
-        raise QuantumError(
-            "No Quantum Charge loaded. Refine one (1 Quantum Shard) at any "
-            "Class-3+ station or SpaceDock"
-        )
-
-    # Tractor tow through Quantum Jump (WO-AF; ships.md:358; ADR-0067). A tow
-    # transits a QJ ONLY when the hauler is a Warp Jumper using its OWN Tractor
-    # Beam — which is exactly this jump path (the ship was already asserted to be
-    # a WARP_JUMPER by _require_warp_jumper). Constraints: towed size_units <= 4
-    # (tiny/small/medium eligible; large/capital excluded), ONE towed ship per
-    # jump (a single tow_state can only hold one tow, so this is structural),
-    # +5 turns FLAT surcharge (NO size scaling for QJ). A WJ that is ITSELF being
-    # towed cannot jump (it would drag itself off its hauler). All gates run
-    # BEFORE the irreversible Phase-2 commit so a rejected jump leaves the tow
-    # intact at the source sector (the "abort pre-commit" case is satisfied by
-    # never reaching the commit).
+    Extracted verbatim from jump()'s Phase-2 pre-commit cost computation —
+    byte-identical logic, including the same illegal-tow-state raises. A
+    caller that must never raise (e.g. a read-only status check) should
+    catch QuantumError and treat it as "cannot jump" rather than propagate.
+    """
     qj_tow_surcharge = 0
     try:
         from src.services.tow_service import (
@@ -617,12 +585,14 @@ def jump(
             if towed_size is None or towed_size == ShipSize.CAPITAL:
                 raise QuantumError(
                     "The towed ship cannot transit a quantum jump (capital-size "
-                    "or unspecified hulls are excluded)"
+                    "or unspecified hulls are excluded)",
+                    error_code="ERR_QJ_TOWED_SIZE_EXCEEDS_MEDIUM",
                 )
             if size_units_for(towed_size) > QJ_MAX_TOWED_SIZE_UNITS:
                 raise QuantumError(
                     "The towed ship is too large to transit a quantum jump "
-                    "(medium-size maximum: tiny / small / medium only)"
+                    "(medium-size maximum: tiny / small / medium only)",
+                    error_code="ERR_QJ_TOWED_SIZE_EXCEEDS_MEDIUM",
                 )
             qj_tow_surcharge = QJ_TOW_SURCHARGE_FLAT
     except QuantumError:
@@ -634,7 +604,91 @@ def jump(
         logger.error("QJ tow validation read failed: %s", e)
         qj_tow_surcharge = 0
 
-    total_jump_cost = JUMP_TURN_COST + qj_tow_surcharge
+    return JUMP_TURN_COST, qj_tow_surcharge, JUMP_TURN_COST + qj_tow_surcharge
+
+
+def jump(
+    db: Session,
+    player_id: uuid.UUID,
+    yaw_deg: float,
+    pitch_deg: float,
+    range_band: str,
+) -> Dict[str, Any]:
+    """Commit-and-resolve (ADR-0030 Phases 2-3). Consumes 1 Quantum Charge
+    + 50 turns and starts the 24h canonical jump cooldown REGARDLESS of
+    outcome; resolves to a candidate sector or misfires onto the bearing
+    line with 5% max-hull damage. Bypasses the warp graph entirely (no
+    adjacency requirement); may cross region boundaries."""
+    player = _lock_player(db, player_id)
+    ship = _require_warp_jumper(db, player)
+    band_min, band_max = _validate_band(range_band)
+
+    # ADR-0040: no quantum jumps from a hangar — and none from a planet
+    if player.is_docked:
+        raise QuantumError(
+            "You cannot engage the quantum drive while docked — launch first",
+            error_code="ERR_QJ_FROM_HANGAR",
+        )
+    if player.is_landed:
+        raise QuantumError(
+            "You cannot engage the quantum drive on a planet surface — lift off first",
+            error_code="ERR_QJ_DOCKED",
+        )
+    if ship.status == ShipStatus.HARMONIZING:
+        raise QuantumError("This Warp Jumper is anchored to a beacon and harmonizing — it cannot jump")
+    if _cooldown_active(ship.quantum_jump_cooldown_until):
+        raise QuantumError(
+            f"Quantum drive is in cooldown until "
+            f"{_iso_or_none(ship.quantum_jump_cooldown_until)}",
+            error_code="ERR_QJ_COOLDOWN_ACTIVE",
+        )
+    # Player-wide 24h jump cooldown: the canon cooldown is per-pilot, not
+    # per-hull (FEATURES/galaxy/sectors.md, "regardless of which Warp Jumper
+    # they pilot") -- and not per-OWNER either, which reopened the SK11
+    # team-rotation-stacking hole (ADR-0049): an owner_id-only filter never
+    # sees a player who jumped on a teammate's borrowed Warp Jumper, because
+    # they own nothing. current_pilot_id alone is NOT the fix either -- a hull
+    # swap NULLs the old ship's current_pilot_id (ship_service.select_ship),
+    # so a pilot-only filter matches exactly one ship and collapses into the
+    # per-ship gate 15 lines above, restoring hull-swap evasion. Match either
+    # column: a superset of both, covering owned hulls across swaps and the
+    # borrowed hull currently being flown.
+    fleet_jump_cd = db.query(func.max(Ship.quantum_jump_cooldown_until)).filter(
+        or_(Ship.owner_id == player.id, Ship.current_pilot_id == player.id),
+        Ship.is_destroyed == False,  # noqa: E712 — SQLAlchemy boolean comparison
+    ).scalar()
+    if _cooldown_active(fleet_jump_cd):
+        raise QuantumError(
+            f"Quantum drive is in cooldown until {_iso_or_none(fleet_jump_cd)}",
+            error_code="ERR_QJ_PLAYER_COOLDOWN_ACTIVE",
+        )
+    # Same gate as the scan: committing blind to a band you cannot even
+    # scan would sidestep the Sensor L3 requirement
+    if range_band == "extended" and _sensor_level(ship) < EXTENDED_BAND_SENSOR_LEVEL:
+        raise QuantumError(
+            f"The extended range band requires a Sensor L{EXTENDED_BAND_SENSOR_LEVEL} upgrade",
+            error_code="ERR_QJ_SENSOR_L3_REQUIRED",
+        )
+    if ship.quantum_charges < 1:
+        raise QuantumError(
+            "No Quantum Charge loaded. Refine one (1 Quantum Shard) at any "
+            "Class-3+ station or SpaceDock",
+            error_code="ERR_QJ_NO_CHARGE",
+        )
+
+    # Tractor tow through Quantum Jump (WO-AF; ships.md:358; ADR-0067). A tow
+    # transits a QJ ONLY when the hauler is a Warp Jumper using its OWN Tractor
+    # Beam — which is exactly this jump path (the ship was already asserted to be
+    # a WARP_JUMPER by _require_warp_jumper). Constraints: towed size_units <= 4
+    # (tiny/small/medium eligible; large/capital excluded), ONE towed ship per
+    # jump (a single tow_state can only hold one tow, so this is structural),
+    # +5 turns FLAT surcharge (NO size scaling for QJ). A WJ that is ITSELF being
+    # towed cannot jump (it would drag itself off its hauler). All gates run
+    # BEFORE the irreversible Phase-2 commit so a rejected jump leaves the tow
+    # intact at the source sector (the "abort pre-commit" case is satisfied by
+    # never reaching the commit). Cost + tow-validity logic lives in
+    # _compute_jump_cost (shared with get_status()'s can_jump — WO-API-PHASE2).
+    _base_jump_cost, qj_tow_surcharge, total_jump_cost = _compute_jump_cost(db, ship)
     if player.turns < total_jump_cost:
         raise QuantumError(
             f"Not enough turns for a quantum jump. Need {total_jump_cost}, have {player.turns}"
@@ -644,7 +698,8 @@ def jump(
     origin = _origin_point(points, player.current_sector_id)
     if origin.type == SectorType.NEBULA:
         raise QuantumError(
-            "Quantum field interference: the drive cannot lock a bearing inside a nebula"
+            "Quantum field interference: the drive cannot lock a bearing inside a nebula",
+            error_code="ERR_QJ_FROM_NEBULA",
         )
     spacing = _inter_sector_spacing(points)
     direction = _bearing_unit_vector(yaw_deg, pitch_deg)
@@ -770,6 +825,59 @@ def jump(
             player, old_sector_id, destination.sector_id
         )
 
+        # WO-K2b: a quantum jump bypasses the warp graph, not the law. The
+        # detection model keys on crossing INTO tighter security with contraband
+        # aboard, never on HOW you crossed — so exempting the jump would just make
+        # it the smuggler's preferred border run (orchestrator ruling 2026-08-03).
+        # Placed INSIDE the moved-sectors branch (a same-sector outcome is not a
+        # crossing) and BEFORE the commit below, so a bust is atomic with the jump
+        # that caused it. Flush-only + savepoint-scoped: it can never strand the
+        # arrival, and it must NOT commit here — that would publish a
+        # half-finished jump.
+        from src.services.contraband_service import scan_in_transit_best_effort
+        scan_in_transit_best_effort(
+            db,
+            player=player,
+            ship_id=ship.id,
+            origin_sector_id=old_sector_id,
+            destination_sector_id=destination.sector_id,
+        )
+
+        # exploration.void_walker ("10 Quantum-Jumps into uncharted void",
+        # 2026-08-04 orchestrator ruling: wire Sector.discovered_by_id for
+        # real rather than reuse the per-player sectors_visited semantic
+        # already claimed by explorers_badge/pathfinder). Only a QJ that
+        # lands on a sector NOBODY has ever discovered before counts — the
+        # first-wins mark below is the same idempotent pattern as
+        # discovery_service.mark_planet_discovered. Best-effort: a discovery
+        # or medal hiccup must never strand the jump arrival.
+        try:
+            from src.services.discovery_service import mark_sector_discovered
+            destination_sector = db.query(Sector).filter(
+                Sector.id == destination.id
+            ).first()
+            # sectors.md Phase 3 step 5: any successful arrival (including
+            # misfire) marks the destination discovered. is_discovered is a
+            # separate admin-visibility aggregate from discovered_by_id (the
+            # per-medal first-discoverer column) -- bang-imported sectors can
+            # seed it False, so this is not a no-op. Unconditional (no
+            # first-wins gate needed; a plain bool flip).
+            if destination_sector is not None:
+                destination_sector.is_discovered = True
+            if destination_sector is not None and mark_sector_discovered(
+                db, destination_sector, player.id
+            ):
+                settings = dict(player.settings or {})
+                settings["void_jumps"] = int(settings.get("void_jumps", 0) or 0) + 1
+                player.settings = settings
+                flag_modified(player, "settings")
+                from src.services.medal_service import check_and_award_exploration_medals
+                check_and_award_exploration_medals(
+                    db, player, {"void_jumps": settings["void_jumps"]},
+                )
+        except Exception as e:
+            logger.error("Void-walker discovery/medal hook failed during QJ: %s", e)
+
     db.commit()
 
     logger.info(
@@ -799,18 +907,23 @@ def refine_charge(db: Session, player_id: uuid.UUID) -> Dict[str, Any]:
     ship = _require_warp_jumper(db, player)
 
     if not player.is_docked or not player.current_port_id:
-        raise QuantumError("You must be docked at a station to refine a Quantum Charge")
+        raise QuantumError(
+            "You must be docked at a station to refine a Quantum Charge",
+            error_code="ERR_QJ_NOT_AT_REFINING_PORT",
+        )
     station = db.query(Station).filter(Station.id == player.current_port_id).first()
     if not station:
         raise QuantumError("Docked station not found")
     if not (station.is_spacedock or station.station_class.value >= REFINE_MIN_STATION_CLASS):
         raise QuantumError(
             f"Quantum Charge refining requires a Class-{REFINE_MIN_STATION_CLASS}+ "
-            f"station or SpaceDock; {station.name} is Class {station.station_class.value}"
+            f"station or SpaceDock; {station.name} is Class {station.station_class.value}",
+            error_code="ERR_QJ_NOT_AT_REFINING_PORT",
         )
     if player.quantum_shards < 1:
         raise QuantumError(
-            f"Refining a Quantum Charge costs 1 Quantum Shard; you have {player.quantum_shards}"
+            f"Refining a Quantum Charge costs 1 Quantum Shard; you have {player.quantum_shards}",
+            error_code="ERR_QJ_SHARD_REQUIRED",
         )
 
     player.quantum_shards -= 1
@@ -846,7 +959,7 @@ def harvest_nebula(db: Session, player_id: uuid.UUID) -> Dict[str, Any]:
     and arms the 2h cooldown (canonical, scaled via scaled_deadline the same
     way scan/jump compute theirs).
 
-    KERNEL SCOPE: the per-sector soft-cap depletion (Max-gated) is deferred —
+    KERNEL SCOPE: the per-sector soft-cap depletion (human-gated) is deferred —
     not implemented here. FLUSH-ONLY: the route owns db.commit().
 
     Returns the harvest outcome dict; raises QuantumError with a stable reason
@@ -1162,13 +1275,15 @@ def get_status(db: Session, player: Player) -> Dict[str, Any]:
         ship and not ship.is_destroyed and ship.type == ShipType.WARP_JUMPER
     )
 
-    # Jump cooldown is per-pilot, not per-hull: surface the player-wide max
-    # across all owned ships so swapping hulls can't hide an active cooldown
-    # (mirrors jump()'s fleet-wide gate).
+    # Jump cooldown is per-pilot, not per-hull and not per-owner: surface the
+    # player-wide max across every ship this player owns OR is currently
+    # piloting, so swapping hulls (owned or borrowed) can't hide an active
+    # cooldown. Must stay filter-identical to jump()'s fleet-wide gate — see
+    # the comment there for why neither column alone is sufficient.
     jump_cd = (
         db.query(func.max(Ship.quantum_jump_cooldown_until))
         .filter(
-            Ship.owner_id == player.id,
+            or_(Ship.owner_id == player.id, Ship.current_pilot_id == player.id),
             Ship.is_destroyed == False,  # noqa: E712 — SQLAlchemy boolean comparison
         )
         .scalar()
@@ -1179,14 +1294,33 @@ def get_status(db: Session, player: Player) -> Dict[str, Any]:
     charges = ship.quantum_charges if is_warp_jumper else 0
     sensor_level = _sensor_level(ship) if is_warp_jumper else 0
 
+    # BUG-1 fix: can_jump must gate on the SAME total (base + tow surcharge)
+    # jump() actually charges, not the flat base — otherwise a towing pilot
+    # with 50-54 turns reads can_jump=true here but gets rejected by jump()
+    # ("Need 55, have N"). _compute_jump_cost is the single source of truth
+    # for both (WO-API-PHASE2). It can raise QuantumError for the same
+    # illegal-tow states jump() itself rejects on (the WJ being towed, or
+    # towing an oversized/capital hull); a read-only status call must never
+    # raise, so that surfaces as can_jump=false instead.
+    jump_turn_cost = JUMP_TURN_COST
+    jump_tow_surcharge = 0
+    total_jump_cost = JUMP_TURN_COST
+    tow_blocks_jump = False
+    if is_warp_jumper:
+        try:
+            jump_turn_cost, jump_tow_surcharge, total_jump_cost = _compute_jump_cost(db, ship)
+        except QuantumError:
+            tow_blocks_jump = True
+
     can_jump = (
         is_warp_jumper
+        and not tow_blocks_jump
         and not player.is_docked
         and not player.is_landed
         and ship.status != ShipStatus.HARMONIZING
         and not _cooldown_active(jump_cd)
         and charges >= 1
-        and player.turns >= JUMP_TURN_COST
+        and player.turns >= total_jump_cost
     )
 
     return {
@@ -1198,6 +1332,9 @@ def get_status(db: Session, player: Player) -> Dict[str, Any]:
         "can_jump": can_jump,
         "is_warp_jumper": is_warp_jumper,
         "sensor_level": sensor_level,
+        "scan_turn_cost": SCAN_TURN_COST,
+        "jump_turn_cost": jump_turn_cost,
+        "jump_tow_surcharge": jump_tow_surcharge,
         # ADR-0064 R-V3: present only once the viewer has PERSONALLY
         # discovered the Nexus warp — see _resolve_nexus_warp_marker.
         "nexus_warp_marker": _resolve_nexus_warp_marker(db, player),

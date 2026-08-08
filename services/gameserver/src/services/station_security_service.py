@@ -11,13 +11,20 @@ security_level / security_rank). This module owns the four-tier ladder
 JSONB column (additive nullable, migration a1d7c4e92f6b) — no schema change.
 
 LAZY ENGINE (matches port_ownership_service's listing/takeover pattern):
-there is no background worker. upgrade_security_tier / downgrade_security_
-tier / get_security_status all call _settle_pending() first, which flips a
-completed pending op to its target tier and clears the pending keys. This is
-IDEMPOTENT: the flip happens under the station's row lock
-(with_for_update), so two "simultaneous" completion reads are serialized by
-Postgres — the first flips and clears, the second sees already-cleared
-pending keys and no-ops. No commit anywhere here; the calling route owns the
+voluntary upgrade/downgrade still has no per-request background worker —
+upgrade_security_tier / downgrade_security_tier / get_security_status all
+call _settle_pending() first, which flips a completed pending op to its
+target tier and clears the pending keys. That path is IDEMPOTENT: the flip
+happens under the station's row lock (with_for_update), so two
+"simultaneous" completion reads are serialized by Postgres — the first
+flips and clears, the second sees already-cleared pending keys and no-ops.
+
+DEFENSE UNDERFUNDING CASCADE (ADR-0093 §3 / station-protection.md): a
+once-per-canonical-day sweep (`tick_defense_underfunding_cascade`, gated
+via Galaxy.state) monitors player-owned stations whose fee `defense_pct`
+is below 0.35 and applies the day-1 warn / day-3 one-tier / day-7 force-
+none rule. Streak state lives in `station.security` JSONB (no migration).
+No commit anywhere in this module; the calling route or sweep owns the
 transaction (matches every sibling service in this codebase).
 
 Canon durations ("24 real-time hours", "72 real-time hours", "7 real-time
@@ -135,6 +142,18 @@ SECURITY_UPKEEP_PCT = {
     "standard": 0.10,
     "premium": 0.20,
 }
+
+# ADR-0093 §3 / station-protection.md "Defense underfunding cascade".
+# defense_pct < 0.35 defines underfunding; consecutive accounting-tick days
+# while underfunded drive warn → one-tier drop → force none.
+DEFENSE_UNDERFUND_PCT = 0.35
+DEFICIT_WARN_DAY = 1
+DEFICIT_DOWNGRADE_DAY = 3
+DEFICIT_FORCE_NONE_DAY = 7
+DEFICIT_DAYS_KEY = "defense_deficit_days"
+DEFICIT_LAST_DAY_KEY = "defense_deficit_last_day"
+DEFICIT_WARNED_KEY = "defense_deficit_warned"
+DEFICIT_STEP_KEY = "defense_deficit_step_applied"
 
 
 # ---------------------------------------------------------------------------
@@ -382,6 +401,18 @@ def upgrade_security_tier(
     sec["upgrade_to"] = target
     sec["upgrade_completes_at"] = completes_at.isoformat()
     flag_modified(station, "security")
+
+    # Ledger the capital spend -- ADR-0050 relocation-fee formula's "sum of
+    # upgrade capital costs" half (WO-BUILD-STATION-ACQUISITION-COST-CAPITAL-
+    # LEDGER). Lazy import mirrors this module's own existing import-from-
+    # port_ownership_service convention (see apply_acquisition_default /
+    # upkeep_for_gross call sites there) to avoid a circular top-level import.
+    from src.services.port_ownership_service import append_capital_cost
+
+    append_capital_cost(
+        station, source=f"security_upgrade:{target}", amount=cost, now=now
+    )
+    flag_modified(station, "capital_cost_ledger")
     db.flush()
     logger.info(
         "Station %s security upgrade initiated: %s -> %s, cost %s, completes %s",
@@ -508,6 +539,17 @@ SURRENDER_FINE_PCT = 0.15
 # as the same order of misconduct as attacking an innocent player.
 SURRENDER_REPUTATION_PENALTY = -100
 SURRENDER_REPUTATION_REASON = "station_tractor_surrender"
+
+# Arrest/detention on surrender (station-protection.md:99, 1–6h range).
+# [NO-CANON] exact hours within canon range — stolen hull = top of band,
+# wanted pilot = mid. deny_listed is station-owner preference, not a
+# criminal arrest → no detention. Durations are CANONICAL hours through
+# game_time.scaled_deadline (same as security upgrade windows).
+DETENTION_HOURS_BY_REASON = {
+    "stolen_ship": 6,
+    "wanted_pilot": 3,
+}
+SERIOUS_DETENTION_REASONS = frozenset(DETENTION_HOURS_BY_REASON)
 
 
 def _break_attempt_cost_label(strength: str) -> str:
@@ -721,6 +763,60 @@ def _cargo_credit_value(ship: Ship) -> int:
     return total
 
 
+def is_player_detained(
+    player: Player, *, now: Optional[datetime] = None
+) -> bool:
+    """True while ``Player.detained_until`` is in the future.
+
+    Lazy-clears an expired stamp (sets column to None) so callers don't
+    need a separate sweep. Pure aside from that write — FLUSH-ONLY.
+    """
+    until = getattr(player, "detained_until", None)
+    if until is None:
+        return False
+    now = now or datetime.now(UTC)
+    if until.tzinfo is None:
+        until = until.replace(tzinfo=UTC)
+    if until <= now:
+        player.detained_until = None
+        return False
+    return True
+
+
+def require_ship_access(
+    player: Player, new_ship: Optional[Ship], *, now: Optional[datetime] = None
+) -> None:
+    """Gate non-escape-pod boarding while detained (station-protection.md:99).
+
+    Escape-pod reseat (surrender / eject) is always allowed — the detainee
+    stays on their pod. Switching onto any other hull raises 403.
+    """
+    if new_ship is None:
+        return
+    if not is_player_detained(player, now=now):
+        return
+    if getattr(new_ship, "type", None) == ShipType.ESCAPE_POD:
+        return
+    raise StationSecurityError(
+        403,
+        "ERR_DETAINED: ship access locked until detention expires",
+    )
+
+
+def apply_surrender_detention(
+    player: Player, reason: str, *, now: Optional[datetime] = None
+) -> Optional[datetime]:
+    """Stamp ``detained_until`` for serious surrender reasons. Returns the
+    expiry (or None when reason is not detention-eligible)."""
+    hours = DETENTION_HOURS_BY_REASON.get(reason)
+    if hours is None:
+        return None
+    now = now or datetime.now(UTC)
+    until = game_time.scaled_deadline(hours, start=now)
+    player.detained_until = until
+    return until
+
+
 def _notify_registered_owner(ship: Ship, ship_name: str, station: Station, surrendering_player_id) -> None:
     """Best-effort WebSocket notice to the ship's registered/legal owner
     (mirrors docking_service._notify_bumped's try/except pattern -- a
@@ -764,10 +860,10 @@ def surrender_tractor_locked_ship(
     the pilot into an Escape Pod at the SAME sector (they stay docked --
     they never left), and best-effort notifies the ship's registered owner.
 
-    Deliberately does NOT build canon's "serious violations result in
-    arrest and detention... (Design-only)" clause -- that clause is itself
-    marked design-only in canon and there is no detention/turn-freeze
-    mechanic anywhere in this codebase to hook it to."""
+    Serious lock reasons (stolen_ship / wanted_pilot) also stamp
+    ``Player.detained_until`` (1–6h canon band via DETENTION_HOURS_BY_REASON)
+    — freezes turn regen + gates non-pod ship boarding until expiry
+    (WO-BUILD-STATION-PROTECTION-ARREST-DETENTION)."""
     now = now or datetime.now(UTC)
     station = _lock_station(db, station.id)
     player = _lock_owner(db, player.id)
@@ -783,6 +879,7 @@ def surrender_tractor_locked_ship(
     lock = locks.get(str(ship.id))
     if not isinstance(lock, dict):
         raise StationSecurityError(400, "Your ship is not tractor-locked at this station")
+    lock_reason = str(lock.get("reason") or "")
 
     fine = int(_cargo_credit_value(ship) * SURRENDER_FINE_PCT)
     player.credits = max(0, (player.credits or 0) - fine)
@@ -800,6 +897,8 @@ def surrender_tractor_locked_ship(
     ship.is_abandoned = True
     ship.abandoned_at = now
     ship.current_pilot_id = None
+
+    detained_until = apply_surrender_detention(player, lock_reason, now=now)
 
     try:
         from src.models.ship_registry import RegistryEventType
@@ -820,15 +919,17 @@ def surrender_tractor_locked_ship(
     # QUEUE-REGISTRY-PILOT-WIRING: old ship's current_pilot_id already
     # cleared explicitly above (line ~802, part of the surrender/abandon
     # flow) -- only the new escape pod's pointer needs setting here.
-    sync_current_pilot(player, escape_pod)
+    sync_current_pilot(player, escape_pod, db=db)
 
     db.flush()
 
     _notify_registered_owner(ship, abandoned_ship_name, station, player.id)
 
     logger.info(
-        "Tractor surrender: ship %s abandoned at station %s by player %s (fine=%s cr, rep=%s)",
+        "Tractor surrender: ship %s abandoned at station %s by player %s "
+        "(fine=%s cr, rep=%s, detained_until=%s)",
         abandoned_ship_id, station.id, player.id, fine, SURRENDER_REPUTATION_PENALTY,
+        detained_until.isoformat() if detained_until else None,
     )
     return {
         "success": True,
@@ -839,4 +940,349 @@ def surrender_tractor_locked_ship(
         "reputation_penalty": SURRENDER_REPUTATION_PENALTY,
         "credits": player.credits,
         "new_ship_id": str(escape_pod.id),
+        "detained": detained_until is not None,
+        "detained_until": detained_until.isoformat() if detained_until else None,
     }
+
+
+
+# ---------------------------------------------------------------------------
+# Defense underfunding cascade (ADR-0093 §3)
+# ---------------------------------------------------------------------------
+
+def _clear_pending_security_ops(sec: Dict[str, Any]) -> None:
+    """Drop any voluntary pending upgrade/downgrade — auto cascade wins."""
+    sec["upgrade_to"] = None
+    sec["upgrade_completes_at"] = None
+    sec["downgrade_completes_at"] = None
+
+
+def _apply_immediate_tier(station: Station, new_tier: str) -> None:
+    """Force ``station.security['tier']`` immediately (no 24h pending clock).
+
+    Clears pending voluntary ops so a mid-flight owner upgrade cannot race
+    the cascade. Caller must ``flag_modified`` + flush.
+    """
+    sec = _security(station)
+    sec["tier"] = new_tier
+    _clear_pending_security_ops(sec)
+
+
+def _reset_deficit_streak(sec: Dict[str, Any]) -> bool:
+    """Clear underfunding streak keys. Returns True if anything changed."""
+    mutated = False
+    for key in (
+        DEFICIT_DAYS_KEY,
+        DEFICIT_WARNED_KEY,
+        DEFICIT_STEP_KEY,
+        DEFICIT_LAST_DAY_KEY,
+    ):
+        if key in sec:
+            del sec[key]
+            mutated = True
+    return mutated
+
+
+def _notify_defense_deficit(
+    db: Session,
+    owner: Player,
+    station: Station,
+    *,
+    subject: str,
+    content: str,
+    priority: str,
+) -> None:
+    """Best-effort self-addressed system Message (warp-gate cascade pattern).
+
+    Durable inbox half only — no ConnectionManager on the sync sweep path.
+    Never raises into the cascade.
+    """
+    try:
+        from src.models.message import Message
+
+        db.add(
+            Message(
+                sender_id=owner.id,
+                recipient_id=owner.id,
+                subject=subject,
+                content=content,
+                message_type="system",
+                priority=priority,
+            )
+        )
+    except Exception:
+        logger.warning(
+            "Defense-deficit notification failed for owner %s station %s",
+            owner.id,
+            station.id,
+            exc_info=True,
+        )
+
+
+def _persist_deficit_counters(sec: Dict[str, Any], days: int, this_day: int) -> None:
+    sec[DEFICIT_DAYS_KEY] = days
+    sec[DEFICIT_LAST_DAY_KEY] = this_day
+
+
+def _maybe_warn_deficit(
+    db: Session,
+    owner: Optional[Player],
+    station: Station,
+    sec: Dict[str, Any],
+    *,
+    days: int,
+    defense_pct: float,
+    summary: Dict[str, Any],
+) -> None:
+    if days < DEFICIT_WARN_DAY or sec.get(DEFICIT_WARNED_KEY):
+        return
+    sec[DEFICIT_WARNED_KEY] = True
+    summary["warned"] = True
+    if owner is None:
+        return
+    _notify_defense_deficit(
+        db,
+        owner,
+        station,
+        subject="Station defense underfunded",
+        content=(
+            f"Defense funding at {station.name} has dropped below "
+            f"{DEFENSE_UNDERFUND_PCT:.0%} of revenue "
+            f"(currently {defense_pct:.0%}). After "
+            f"{DEFICIT_DOWNGRADE_DAY} consecutive deficit days "
+            f"security will auto-downgrade one tier; after "
+            f"{DEFICIT_FORCE_NONE_DAY} days it will drop to none."
+        ),
+        priority="high",
+    )
+
+
+def _maybe_step_downgrade(
+    station: Station,
+    sec: Dict[str, Any],
+    *,
+    days: int,
+    this_day: int,
+    tier: str,
+    summary: Dict[str, Any],
+) -> str:
+    """Day-3 one-tier drop. Returns (possibly updated) tier."""
+    if days < DEFICIT_DOWNGRADE_DAY or sec.get(DEFICIT_STEP_KEY) or tier == "none":
+        return tier
+    target = next_tier_down(tier) or "none"
+    _apply_immediate_tier(station, target)
+    sec = _security(station)
+    sec[DEFICIT_STEP_KEY] = True
+    _persist_deficit_counters(sec, days, this_day)
+    if summary.get("warned") or sec.get(DEFICIT_WARNED_KEY):
+        sec[DEFICIT_WARNED_KEY] = True
+    summary["tier_dropped"] = True
+    return target
+
+
+def _maybe_force_none(
+    db: Session,
+    owner: Optional[Player],
+    station: Station,
+    sec: Dict[str, Any],
+    *,
+    days: int,
+    this_day: int,
+    tier: str,
+    summary: Dict[str, Any],
+) -> None:
+    if days < DEFICIT_FORCE_NONE_DAY or tier == "none":
+        return
+    _apply_immediate_tier(station, "none")
+    sec = _security(station)
+    _persist_deficit_counters(sec, days, this_day)
+    sec[DEFICIT_STEP_KEY] = True
+    sec[DEFICIT_WARNED_KEY] = True
+    summary["forced_none"] = True
+    if owner is None:
+        return
+    _notify_defense_deficit(
+        db,
+        owner,
+        station,
+        subject="Your station is undefended",
+        content=(
+            f"{station.name} has been underfunded for "
+            f"{DEFICIT_FORCE_NONE_DAY} consecutive days. Security "
+            f"has been forced to none — the station is undefended."
+        ),
+        priority="urgent",
+    )
+
+
+def process_station_defense_deficit(
+    db: Session,
+    station: Station,
+    this_day: int,
+    owner: Optional[Player] = None,
+) -> Dict[str, Any]:
+    """Advance one station's underfunding streak for ``this_day``.
+
+    Underfunded iff effective fee ``defense_pct < DEFENSE_UNDERFUND_PCT``.
+    Flush-only. Returns a small action summary for the sweep aggregator.
+    """
+    from src.services.port_ownership_service import _effective_fee_split_pcts
+
+    summary: Dict[str, Any] = {
+        "station_id": str(station.id),
+        "underfunded": False,
+        "days": 0,
+        "warned": False,
+        "tier_dropped": False,
+        "forced_none": False,
+        "skipped": False,
+    }
+
+    if station.owner_id is None:
+        summary["skipped"] = True
+        return summary
+
+    defense_pct, _, _ = _effective_fee_split_pcts(station)
+    sec = _security(station)
+    tier = (sec.get("tier") or station.security_level or "none").lower()
+
+    if defense_pct >= DEFENSE_UNDERFUND_PCT:
+        if _reset_deficit_streak(sec):
+            flag_modified(station, "security")
+            db.flush()
+        return summary
+
+    summary["underfunded"] = True
+
+    last_day = sec.get(DEFICIT_LAST_DAY_KEY)
+    try:
+        last_day_i = int(last_day) if last_day is not None else None
+    except (TypeError, ValueError):
+        last_day_i = None
+
+    if last_day_i is not None and last_day_i >= this_day:
+        summary["skipped"] = True
+        summary["days"] = int(sec.get(DEFICIT_DAYS_KEY) or 0)
+        return summary
+
+    days = int(sec.get(DEFICIT_DAYS_KEY) or 0) + 1
+    _persist_deficit_counters(sec, days, this_day)
+    summary["days"] = days
+
+    if owner is None:
+        owner = db.query(Player).filter(Player.id == station.owner_id).first()
+
+    _maybe_warn_deficit(
+        db, owner, station, sec, days=days, defense_pct=defense_pct, summary=summary
+    )
+    tier = _maybe_step_downgrade(
+        station, sec, days=days, this_day=this_day, tier=tier, summary=summary
+    )
+    # Re-read after possible step mutation
+    sec = _security(station)
+    _maybe_force_none(
+        db, owner, station, sec, days=days, this_day=this_day, tier=tier, summary=summary
+    )
+
+    flag_modified(station, "security")
+    db.flush()
+    return summary
+
+
+def tick_defense_underfunding_cascade(db: Session) -> Dict[str, Any]:
+    """Process every player-owned station once for the current canon day.
+
+    Flush-only — caller owns commit. Idempotent per station via
+    ``defense_deficit_last_day``.
+    """
+    from src.services.scheduler._common import canonical_day_number
+
+    this_day = canonical_day_number()
+    stations = (
+        db.query(Station)
+        .filter(Station.owner_id.isnot(None))
+        .all()
+    )
+    result: Dict[str, Any] = {
+        "stations_checked": 0,
+        "underfunded": 0,
+        "warned": 0,
+        "tier_dropped": 0,
+        "forced_none": 0,
+        "actions": [],
+    }
+    for station in stations:
+        # Re-lock individually so concurrent owner writes serialize.
+        locked = (
+            db.query(Station)
+            .filter(Station.id == station.id)
+            .with_for_update()
+            .first()
+        )
+        if locked is None or locked.owner_id is None:
+            continue
+        result["stations_checked"] += 1
+        owner = db.query(Player).filter(Player.id == locked.owner_id).first()
+        action = process_station_defense_deficit(
+            db, locked, this_day, owner=owner
+        )
+        result["actions"].append(action)
+        if action.get("underfunded") and not action.get("skipped"):
+            result["underfunded"] += 1
+        if action.get("warned"):
+            result["warned"] += 1
+        if action.get("tier_dropped"):
+            result["tier_dropped"] += 1
+        if action.get("forced_none"):
+            result["forced_none"] += 1
+    return result
+
+
+def run_defense_underfunding_cascade_gated(db: Session) -> Dict[str, Any]:
+    """Once-per-canonical-day gate around ``tick_defense_underfunding_cascade``.
+
+    Mirrors ``anchor_repair_service.run_daily_scan_gated`` Galaxy.state
+    day-anchor discipline. Intended to ride governance Phase 9 under the
+    shared governance advisory lock (caller owns commit).
+    """
+    from src.models.galaxy import Galaxy
+    from src.services.scheduler._common import (
+        _DEFENSE_UNDERFUND_STATE_KEY,
+        canonical_day_number,
+    )
+
+    result: Dict[str, Any] = {
+        "defense_underfund_skipped": False,
+        "stations_checked": 0,
+        "underfunded": 0,
+        "warned": 0,
+        "tier_dropped": 0,
+        "forced_none": 0,
+    }
+
+    this_day = canonical_day_number()
+    galaxy = db.query(Galaxy).order_by(Galaxy.created_at.asc()).first()
+    gstate = dict(galaxy.state or {}) if galaxy is not None else {}
+    last_day = gstate.get(_DEFENSE_UNDERFUND_STATE_KEY)
+    already_today = (
+        galaxy is not None
+        and last_day is not None
+        and int(last_day) >= this_day
+    )
+    if already_today:
+        result["defense_underfund_skipped"] = True
+        return result
+
+    tick = tick_defense_underfunding_cascade(db)
+    result["stations_checked"] = tick["stations_checked"]
+    result["underfunded"] = tick["underfunded"]
+    result["warned"] = tick["warned"]
+    result["tier_dropped"] = tick["tier_dropped"]
+    result["forced_none"] = tick["forced_none"]
+
+    if galaxy is not None:
+        gstate = dict(galaxy.state or {})
+        gstate[_DEFENSE_UNDERFUND_STATE_KEY] = this_day
+        galaxy.state = gstate
+        flag_modified(galaxy, "state")
+    return result

@@ -11,7 +11,7 @@ from typing import List, Optional
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from sqlalchemy import func, text, select
+from sqlalchemy import func, text, select, update, or_
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm.attributes import flag_modified
 from pydantic import BaseModel, Field
@@ -25,6 +25,7 @@ from src.services.planetary_service import (
     PlanetaryService,
     max_colonists_for,
     max_population_for,
+    defense_unit_price,
 )
 
 router = APIRouter(prefix="/planets", tags=["planets"])
@@ -65,14 +66,22 @@ class BuildingUpgradeRequest(BaseModel):
 
 
 class DefenseUpdateRequest(BaseModel):
-    """Defense update request."""
+    """Defense update request.
+
+    `shields` is accepted-but-ignored (WO-FIX-DEFENSE-SHIELDS-CITADEL-PREREQ-
+    BYPASS): kept only so older clients don't 422; PlanetaryService.update_defenses
+    no longer prices or writes it. Shield-generator level is exclusively upgraded
+    via POST /planets/{id}/shields/upgrade.
+    """
     turrets: Optional[int] = Field(None, ge=0)
     shields: Optional[int] = Field(None, ge=0)
     fighters: Optional[int] = Field(None, ge=0)
 
 
 class GenesisDeployRequest(BaseModel):
-    """Genesis device deployment request (legacy - use /genesis/deploy instead)."""
+    """Genesis device deployment request, used by both /planets/genesis/deploy
+    (the route the player-client actually calls) and the parallel /genesis/deploy
+    route in genesis.py."""
     sectorId: str
     planetName: str = Field(..., min_length=3, max_length=50)
     # basic = 1 device, enhanced = 3 devices, advanced = 1 device + the Colony
@@ -348,7 +357,7 @@ async def claim_planet(
             detail="Planet is not accessible from your current location"
         )
 
-    # Server-gated proximity (Max, 2026-07-17: "a claim that lands is a
+    # Server-gated proximity (human, 2026-07-17: "a claim that lands is a
     # landing" -- claim auto-lands the player on success, so it gets the
     # SAME gate /planets/land and /trading/dock already enforce, not a
     # separate copy. See intrasystem_movement_service.assert_dock_land_
@@ -442,9 +451,136 @@ async def claim_planet(
             )
         )
 
+    # --- ADR-0091 §8 settle validity + atomic CAS resolution ---------------
+    # Retroactive scope (M28 CANON): the CAS resolver replaces first-come
+    # /claim uniformly, including existing unclaimed worlds. A legacy
+    # pre-ADR-0091 planet has contest_state IS NULL — treated here as the
+    # OPEN branch (any eligible player may settle) since it predates the
+    # contest state machine and was never deployer-gated or reserved.
+    from src.models.planet import PlanetContestState
+    from src.models.expedition import Expedition, ExpeditionStatus
+    from src.services.multi_account_service import eligible_for_contest
+
+    # (M24 CANON / Amendment A) real-player anti-sybil eligibility gate.
+    if not eligible_for_contest(db, player.id, planet.id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Your account does not currently clear the anti-sybil "
+                "eligibility check required to contest a planet settle."
+            ),
+        )
+
+    # (M36) >=1 SUCCESS-status ground expedition this player holds on this
+    # planet — the expedition record itself is the proof, no stored "epoch
+    # report". Demo expeditions (M39) can never be the settling expedition.
+    winning_expedition = (
+        db.query(Expedition)
+        .filter(
+            Expedition.planet_id == planet.id,
+            Expedition.player_id == player.id,
+            Expedition.status == ExpeditionStatus.SUCCESS,
+            Expedition.demo.is_(False),
+        )
+        .order_by(Expedition.launched_at.desc())
+        .first()
+    )
+    if winning_expedition is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "You need at least one successful ground expedition on "
+                "this planet before you can settle it."
+            ),
+        )
+
+    # Ship-in-orbit + same-sector proximity are already enforced above
+    # (sector match + assert_dock_land_proximity) — claim auto-lands, so it
+    # shares that gate rather than duplicating it.
+
+    # (M23 REVISED / M40) deployer priority window + onboarding-reserved
+    # branch. Evaluated in Python since the row is already held FOR UPDATE
+    # (locked above), so this cannot race the CAS UPDATE below.
+    contest_state = planet.contest_state
+    if contest_state == PlanetContestState.PRIORITY and planet.deployer_id != player.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This planet is still in its deployer's priority settle window.",
+        )
+    if contest_state == PlanetContestState.SUPPRESSED and planet.reserved_for_player_id != player.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This planet is reserved for another player and cannot be settled.",
+        )
+    if contest_state not in (
+        None,
+        PlanetContestState.PRIORITY,
+        PlanetContestState.OPEN,
+        PlanetContestState.SUPPRESSED,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "This planet is not currently settleable "
+                f"(state: {contest_state.value if contest_state else 'none'})."
+            ),
+        )
+
+    # Atomic CAS resolution (ADR-0091 §8, M29 CANON — verbatim resolution
+    # logic). The route already holds the planet row FOR UPDATE (see the
+    # lock above), so nothing can race between the Python pre-checks above
+    # and this UPDATE inside this transaction — the CAS is the canonical
+    # resolution query / defense-in-depth, not a substitute for the lock.
+    cas_stmt = (
+        update(Planet)
+        .where(
+            Planet.id == planet.id,
+            Planet.owner_id.is_(None),
+            or_(
+                Planet.contest_state.in_([
+                    PlanetContestState.PRIORITY,
+                    PlanetContestState.OPEN,
+                    PlanetContestState.SUPPRESSED,
+                ]),
+                Planet.contest_state.is_(None),
+            ),
+        )
+        .values(
+            owner_id=player.id,
+            status=PlanetStatus.COLONIZED,
+            contest_state=PlanetContestState.CLAIMED,
+            settled_at=func.now(),
+        )
+    )
+    cas_result = db.execute(cas_stmt)
+    if cas_result.rowcount == 0:
+        # Raced away between the row lock above and here — should not
+        # happen given with_for_update(), but never silently 200 on a loss.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Someone else settled this planet first.",
+        )
+
+    # Mirror the CAS's writes onto the in-memory ORM object so the rest of
+    # this route (medals/response, and the redundant-but-harmless
+    # owner_id/status assignment below) sees consistent state.
+    planet.owner_id = player.id
+    planet.status = PlanetStatus.COLONIZED
+    planet.contest_state = PlanetContestState.CLAIMED
+    planet.settled_at = datetime.now(UTC)
+
+    # At-settle citadel-grid materialization (ADR-0091 §8): strictly AFTER
+    # the CAS win, same transaction, using the winning SUCCESS expedition's
+    # SiteIntel. Distinct from structures.py's pre-existing settle() spine —
+    # see materialize_citadel_grid's own docstring.
+    from src.services.structures import materialize_citadel_grid
+    materialize_citadel_grid(planet, winning_expedition, db=db)
+
     # --- All requirements met: execute the claim ---
 
-    # Deduct the founding-grant fee
+    # Deduct the founding-grant fee (ADR-0091 §8: the settle cost, debited
+    # in the same transaction as the CAS above — this route commits once,
+    # at the end).
     player.credits -= CLAIM_CREDIT_COST
 
     # Settle ALL aboard colonists, capped at the L1 Outpost workforce
@@ -458,7 +594,7 @@ async def claim_planet(
     # planetary_lander throughput bonus (WO-AL).
     # Canon (FEATURES/gameplay/ship-systems.md:136) marks landing_bonus as
     # 📐 Design-only: "multiplier on planet-side production / colonist
-    # throughput". Orchestrator ANCHOR (Max's proxy, DECISIONS Pending):
+    # throughput". Orchestrator ANCHOR (human's proxy, DECISIONS Pending):
     # interpret it as a LANDING-action throughput efficiency — a
     # planetary_lander-equipped ship lands ~25% MORE colonists per unit of
     # cargo at the deposit. It stays OUT of the continuous production tick.
@@ -473,7 +609,7 @@ async def claim_planet(
     landing_factor = 1.0
     try:
         from src.services.ship_upgrade_service import ShipUpgradeService
-        raw_factor = ShipUpgradeService.get_equipment_effects(ship).get("landing_bonus")
+        raw_factor = ShipUpgradeService.get_combined_effects(ship).get("landing_bonus")
         if isinstance(raw_factor, (int, float)) and raw_factor > 0:
             landing_factor = float(raw_factor)
     except Exception:
@@ -530,9 +666,9 @@ async def claim_planet(
         planet.citadel_drone_capacity = level_1["drone_capacity"]
         planet.citadel_max_population = level_1["max_population"]
 
-    # Claim the planet - set owner_id and add to player_planets association
-    planet.owner_id = player.id
-    planet.status = PlanetStatus.COLONIZED
+    # owner_id/status/contest_state/settled_at were already set by the CAS
+    # resolution + its ORM mirror above; just add the player_planets
+    # association row and stamp colonized_at.
     planet.colonized_at = db.query(func.now()).scalar()
 
     # Add to player_planets association table
@@ -613,7 +749,7 @@ async def claim_planet(
     # Per-sector faction influence (WO-G10 / ADR-0021): founding a colony
     # extends the influence of the player's DOMINANT-reputation faction over
     # this sector by +3%. The WRITE half only — the read-side taxonomy /
-    # patrol-spawn effects are Max-gated and intentionally not invoked here.
+    # patrol-spawn effects are human-gated and intentionally not invoked here.
     # The dominant faction is the player's highest *positive* personal
     # reputation (there is no dedicated dominant-faction column). The influence
     # table keys on the sector UUID (sectors.id); planet.sector_uuid is that FK
@@ -1045,7 +1181,7 @@ async def transfer_colonists(
         landing_factor = 1.0
         try:
             from src.services.ship_upgrade_service import ShipUpgradeService
-            raw_factor = ShipUpgradeService.get_equipment_effects(ship).get("landing_bonus")
+            raw_factor = ShipUpgradeService.get_combined_effects(ship).get("landing_bonus")
             if isinstance(raw_factor, (int, float)) and raw_factor > 0:
                 landing_factor = float(raw_factor)
         except Exception:
@@ -1548,6 +1684,56 @@ async def get_planet_defenses(
         raise HTTPException(status_code=404, detail=str(e))
 
 
+@router.get("/{planet_id}/defenses/pricing")
+async def get_defense_pricing(
+    planet_id: str,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db)
+):
+    """Server-authoritative per-unit prices to ADD planetary defense units
+    (WO-API-PHASE1 B3; ADR-0076 scaled pricing). Read-only preview, priced via
+    the EXACT defense_unit_price(unit_type, citadel_level, planet_type) fn the
+    PUT .../defenses commit path (update_defenses) charges, so the client's
+    affordability preview can never drift from what a Save will actually cost
+    -- advisory only, the commit route re-validates and remains the true charge.
+
+    Owner-gated: mirrors update_defenses' own player_planets ownership check
+    (not a public planet-info read) -- a preview of what THIS player would pay
+    to garrison THIS planet, not another player's business. Not-found and
+    not-owned are both denied identically (403) so existence isn't leaked
+    through the status code, matching the ownership check's own semantics.
+    The response exposes ONLY unit_type -> price, nothing else.
+
+    "shields" is intentionally NOT included here (WO-FIX-DEFENSE-SHIELDS-
+    CITADEL-PREREQ-BYPASS): update_defenses no longer accepts a cheap per-unit
+    shield purchase -- planet.defense_shields is the shield-generator LEVEL,
+    priced exclusively via POST /planets/{id}/shields/upgrade.
+    """
+    from src.models.planet import player_planets
+    try:
+        pid = UUID(planet_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid planet ID format")
+
+    planet = db.query(Planet).join(
+        player_planets,
+        Planet.id == player_planets.c.planet_id
+    ).filter(
+        Planet.id == pid,
+        player_planets.c.player_id == player.id
+    ).first()
+    if not planet:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the planet's owner can view its defense pricing",
+        )
+
+    return {
+        "turrets": defense_unit_price("turrets", planet.citadel_level, planet.type),
+        "fighters": defense_unit_price("fighters", planet.citadel_level, planet.type),
+    }
+
+
 class ConstructBuildingRequest(BaseModel):
     """Defense building construction request."""
     buildingType: str = Field(..., pattern="^(orbital_platform|turret_network|scanner_array|rail_gun|planetary_defense_grid|planet_minefield)$")
@@ -1579,7 +1765,21 @@ async def construct_defense_building(
     player: Player = Depends(get_current_player),
     db: Session = Depends(get_db)
 ):
-    """Construct a defense building on a planet."""
+    """Construct a defense building on a planet.
+
+    DEPRECATED (ADR-0094 endpoint-canonicalization) — overlaps
+    POST /planets/{planet_id}/grid/place, which is the canonical route: it
+    sources defense kinds (TURRET_NETWORK/ORBITAL_PLATFORM/SCANNER_ARRAY) from
+    the same unified building_catalog this route's CitadelService call does not
+    consult. CitadelService.build_defense_building enforces its OWN research
+    gate (CRT WO-K0-3) and, as of SEC-DEFBUILD-MATERIALS, its own per-planet
+    material charge — parity restored via two independent implementations
+    rather than a shared call, since the two catalogs' cost/level/tier shapes
+    differ enough that delegating would change this route's response
+    contract (player-client GameContext.tsx is still a live caller). Still not
+    safe to remove; migrate that caller to grid/place before deleting this
+    route.
+    """
     from src.services.citadel_service import CitadelService
     try:
         pid = UUID(planet_id)
@@ -1704,10 +1904,13 @@ async def deploy_genesis_device_legacy(
     db: Session = Depends(get_db)
 ):
     """
-    Deploy a genesis device to create a new planet (legacy endpoint).
+    Deploy a genesis device to create a new planet.
 
-    This endpoint is kept for backward compatibility.
-    Use POST /genesis/deploy with the new tiered system instead.
+    Despite the historical "_legacy" function name, this is the live route
+    the player-client actually calls (POST /planets/genesis/deploy — see
+    services/player-client/src/services/api.ts). The orphaned parallel
+    POST /genesis/deploy route (src/api/routes/genesis.py) had zero callers
+    and was removed (2026-08-04) — this is now the sole genesis-deploy route.
     """
     from src.services.genesis_service import GenesisService
 

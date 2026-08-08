@@ -43,7 +43,7 @@ _load_player(for_update=True) -- reused, not reimplemented) -> Ship
 lock cannot participate in an AB-BA deadlock against this module's own
 Locker-then-Player ordering.
 
-RENT (WO-STORE-FEE-ACCRUAL, D16/D17/D18 -- Max's ruling, delegated):
+RENT (WO-STORE-FEE-ACCRUAL, D16/D17/D18 -- human's ruling, delegated):
 settle_fee() charges flat rent (locker.rent_rate cr/unit/day, wall-clock)
 via a continuous-accrue-and-round-once ledger (D18, see settle_fee's own
 docstring) so no salami-slicing and no per-trip minimum-tax. deposit_
@@ -100,7 +100,9 @@ from sqlalchemy.orm.attributes import flag_modified
 from src.models.contract import Contract, ContractStatus
 from src.models.player import Player
 from src.models.ship import Ship
-from src.models.storage_locker import ContractCargoDeposit, StorageLocker, StorageLockerStatus
+from src.models.storage_locker import (
+    ContractCargoDeposit, StorageLocker, StorageLockerStatus, StorageLockerTier,
+)
 from src.services import contract_service
 
 logger = logging.getLogger(__name__)
@@ -177,6 +179,33 @@ class StorageNotFoundError(StorageError):
     """404-class."""
 
 
+# Tier rent multipliers (WO-BUILD-STORAGE-LOCKER-TIER-LADDER, heist-brief.html
+# "04 / THE ECONOMY" tier table -- canon-given: Basic 1x / Reinforced ~2.5x /
+# Vault ~5x). BASE_RENT_RATE is D16's flat 1cr/unit/day; a tier's rent_rate is
+# BASE_RENT_RATE * the multiplier below, stored PER-LOCKER at creation (same
+# discipline the model docstring already establishes: a future multiplier
+# tuning can never retroactively reprice an already-rented locker).
+#
+# This wires the TIER->rent-rate mechanism only. The RISK-STATE ladder
+# (Secure->Watched->Targeted->Breached, driven by dwell-time + station-
+# security) is the full heist S2 mechanic (WO-HEIST-RISK-STATE / -BREAKIN /
+# -CONSEQUENCES, heist-brief.html "02 / THE SPINE") -- separately staged, with
+# its own OPEN design numbers (break-in success formula, spoilage %) the brief
+# explicitly lists as unresolved. Out of scope here; every locker this
+# function creates still writes risk_state=SECURE (model default), unchanged.
+BASE_RENT_RATE = Decimal("1")
+STORAGE_TIER_RENT_MULTIPLIERS = {
+    StorageLockerTier.BASIC: Decimal("1"),
+    StorageLockerTier.REINFORCED: Decimal("2.5"),
+    StorageLockerTier.VAULT: Decimal("5"),
+}
+
+
+def rent_rate_for_tier(tier: StorageLockerTier) -> Decimal:
+    """BASE_RENT_RATE * the tier's canon multiplier (pure helper)."""
+    return BASE_RENT_RATE * STORAGE_TIER_RENT_MULTIPLIERS.get(tier, Decimal("1"))
+
+
 def _load_contract(db: Session, contract_id: uuid.UUID) -> Contract:
     contract = db.query(Contract).filter(Contract.id == contract_id).first()
     if contract is None:
@@ -186,10 +215,13 @@ def _load_contract(db: Session, contract_id: uuid.UUID) -> Contract:
 
 def get_or_create_locker(
     db: Session, player_id: uuid.UUID, contract_id: uuid.UUID,
+    tier: StorageLockerTier = StorageLockerTier.BASIC,
 ) -> StorageLocker:
     """One StorageLocker per (player, contract) -- idempotent get-or-
     create. A second call for the same pair returns the EXISTING locker
-    rather than minting a duplicate.
+    rather than minting a duplicate (``tier`` is ignored on that path --
+    an existing locker's tier/rent_rate is fixed at creation, matching
+    the model docstring's "never retroactively reprice" contract).
 
     Locks the Player row BEFORE the existence-check-then-insert so two
     concurrent calls for the SAME player+contract pair serialize on it
@@ -197,7 +229,11 @@ def get_or_create_locker(
     Player lock is the only resource available to guard the race). A
     unique (owner_player_id, contract_id) index (migration <followup>)
     is the belt-and-suspenders DB-level guarantee for any future call
-    path that might bypass this lock."""
+    path that might bypass this lock.
+
+    ``tier`` defaults to BASIC (unchanged prior behavior -- every current
+    caller is the contract-storage-trap auto-create path, which has no
+    tier-selection UI yet; see rent_rate_for_tier's docstring)."""
     contract = _load_contract(db, contract_id)
     if contract.status != ContractStatus.ACCEPTED:
         raise StorageError(
@@ -222,6 +258,8 @@ def get_or_create_locker(
         station_id=contract.destination_station_id,
         contract_id=contract_id,
         status=StorageLockerStatus.ACTIVE,
+        tier=tier,
+        rent_rate=rent_rate_for_tier(tier),
     )
     db.add(locker)
     db.flush()
@@ -482,7 +520,7 @@ def settle_fee(
     `stored_units_override`: normally this reads the locker's CURRENT
     live stored-units count (as of this call). deposit_cargo's
     COMPLETING branch passes the PRE-final-deposit count explicitly here
-    instead (D17, Max's ruling) -- see deposit_cargo's own docstring for
+    instead (D17, human's ruling) -- see deposit_cargo's own docstring for
     why: by the time that branch settles, the final deposit row already
     exists, so the live count would over-count units that weren't
     actually sitting in the locker for the elapsed period being billed.
@@ -496,7 +534,7 @@ def settle_fee(
     economy construct, so contract_service.py -- not warp_gate_service.py
     -- is the directly relevant precedent to match.
 
-    D18 (Max's ruling) -- CONTINUOUS-ACCRUE-AND-ROUND-ONCE, closing the
+    D18 (human's ruling) -- CONTINUOUS-ACCRUE-AND-ROUND-ONCE, closing the
     salami-slicing gap (many micro-settlements each individually
     rounding to 0cr) WITHOUT per-trip-taxing a legitimate multi-trip
     fulfillment (charging >=1cr on every trip regardless of how little
@@ -747,7 +785,7 @@ def deposit_cargo(
     the moment the locker's accumulated deposits reach the contract's
     required quantity. FLUSH-ONLY; the route owns the commit.
 
-    D17 (Max's ruling, PAYOUT-then-settle) -- when THIS deposit is the
+    D17 (human's ruling, PAYOUT-then-settle) -- when THIS deposit is the
     one that completes the contract, rent is settled AFTER contract_
     service.complete()'s payout credits the player, not before. Settling
     first would floor the final bill to near-zero at the player's
@@ -874,7 +912,7 @@ def deposit_cargo(
         locker.status = StorageLockerStatus.RELEASED
         completed = True
 
-        # D17 (Max's ruling): settle the FINAL rent period AFTER the
+        # D17 (human's ruling): settle the FINAL rent period AFTER the
         # completion payout above has already credited the player, not
         # before -- see this function's own docstring. stored_units_
         # override=old_stored_units: the units THIS deposit just added
@@ -973,7 +1011,7 @@ def retrieve_claimable_cargo(
     """WO-STORE-EXPIRY-CLAIMABLE: retrieves cargo from a CLAIMABLE locker
     (see sweep_expired_lockers) back onto the player's current ship.
 
-    CAPACITY (Max's brief flagged this as the open design call --
+    CAPACITY (human's brief flagged this as the open design call --
     PARTIAL RETRIEVE, not reject-if-over): `quantity` is OPTIONAL. Omit
     it to take as much as fits in one trip, up to everything stored; a
     ship too small to take it all in a single trip retrieves the rest on

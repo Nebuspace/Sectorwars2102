@@ -5,7 +5,6 @@ Audit Service for persisting audit logs to database
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 from uuid import UUID
-import json
 import logging
 from enum import Enum
 
@@ -29,6 +28,7 @@ class AuditAction(str, Enum):
     IMPORT = "import"
     INTERVENTION = "intervention"
     EMERGENCY = "emergency"
+    FORFEIT = "forfeit"
 
 
 class AuditService:

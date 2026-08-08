@@ -17,7 +17,7 @@ Moved verbatim from the old ``npc_scheduler_service.py``.
 
 import logging
 import uuid
-from datetime import datetime, timedelta, UTC
+from datetime import UTC, datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import text
@@ -25,17 +25,16 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from src.models.player import Player
-
 from src.services.scheduler._common import (
     _ACTIVE_PLAYERS_RECOMPUTE_STATE_KEY,
     _ACTIVE_PLAYERS_WINDOW_DAYS,
-    _TREASURY_RECON_STATE_KEY,
-    _REGION_LIFECYCLE_STATE_KEY,
-    _GENESIS_COMPLETION_LOCK_KEY,
-    _PLANETARY_ADVANCE_LOCK_KEY,
-    _GOVERNANCE_SWEEP_LOCK_KEY,
     _CONSTRUCTION_ADVANCE_LOCK_KEY,
     _ECONOMIC_METRICS_LOCK_KEY,
+    _GENESIS_COMPLETION_LOCK_KEY,
+    _GOVERNANCE_SWEEP_LOCK_KEY,
+    _PLANETARY_ADVANCE_LOCK_KEY,
+    _REGION_LIFECYCLE_STATE_KEY,
+    _TREASURY_RECON_STATE_KEY,
     canonical_day_number,
 )
 
@@ -145,9 +144,10 @@ def _run_planetary_advance_sync() -> Dict[str, int]:
     Returns {terraforming, siege, production} — the count of planets that
     actually moved in each phase.
     """
+    from sqlalchemy import and_, or_
+
     from src.core.database import SessionLocal
     from src.models.planet import Planet
-    from sqlalchemy import or_, and_
     from src.services.structures import settle
 
     result = {"terraforming": 0, "siege": 0, "production": 0}
@@ -255,8 +255,9 @@ def reconcile_region_treasuries(db: Session) -> Dict[str, int]:
 
     Returns {"checked": <active regions examined>, "mismatched": <count>}.
     """
-    from src.models.region import Region, RegionStatus, RegionalTreasuryEntry
     from sqlalchemy import func as sa_func
+
+    from src.models.region import Region, RegionalTreasuryEntry, RegionStatus
 
     ledger_sums = dict(
         db.query(
@@ -347,14 +348,19 @@ def _run_region_lifecycle_advance_gated(db: Session) -> Dict[str, Any]:
     terminated``'s own docstring.
 
     Returns {"region_lifecycle_skipped", "advanced_to_grace",
-    "advanced_to_terminated", "cleanup_eligible"}.
-    """
+    "advanced_to_terminated", "cleanup_eligible", "_outbox"}. ``_outbox``
+    (ADR-0054 X-V1, may be an empty/no-op RealtimeOutbox on the skipped or
+    zero-eligible paths) must only be flushed by the caller AFTER its own
+    db.commit() for this phase succeeds -- see dispatch_terminated_
+    cleanup's own docstring for why the flush can't happen this deep."""
     from src.models.galaxy import Galaxy
     from src.services import region_lifecycle_service
+    from src.services.realtime_outbox import RealtimeOutbox
 
     result: Dict[str, Any] = {
         "region_lifecycle_skipped": False,
         "advanced_to_grace": 0, "advanced_to_terminated": 0, "cleanup_eligible": 0,
+        "_outbox": RealtimeOutbox(),
     }
 
     this_day = canonical_day_number()
@@ -376,6 +382,7 @@ def _run_region_lifecycle_advance_gated(db: Session) -> Dict[str, Any]:
     result["advanced_to_grace"] = grace_stats["advanced_to_grace"]
     result["advanced_to_terminated"] = terminated_stats["advanced_to_terminated"]
     result["cleanup_eligible"] = cleanup_stats["cleanup_eligible"]
+    result["_outbox"] = cleanup_stats["_outbox"]
 
     if galaxy is not None:
         gstate = dict(galaxy.state or {})
@@ -389,7 +396,7 @@ def _run_region_lifecycle_advance_gated(db: Session) -> Dict[str, Any]:
 # Regional governance sweep — open/close elections + finalize policies
 # ---------------------------------------------------------------------------
 
-def _run_governance_sweep_sync() -> Dict[str, int]:
+def _run_governance_sweep_sync() -> Dict[str, Any]:
     """Drive the regional democratic loop forward on the canonical clock.
 
     Idempotent phases mirroring the planetary advance sweep's discipline (own
@@ -459,40 +466,70 @@ def _run_governance_sweep_sync() -> Dict[str, int]:
     lifecycle.md's daily-cron triggers), plus a read-only terminated-
     cleanup-eligibility discovery pass (``dispatch_terminated_cleanup`` —
     the dispatch point gate-cascade wires the real cascade onto later).
-    Self-gated to once per canonical day via ``_run_region_lifecycle_
+    Self-gated to     once per canonical day via ``_run_region_lifecycle_
     advance_gated`` (mirrors Phase 6's day-anchor discipline exactly).
+
+    Phase 8 runs the anchor-repair detect-only daily scan
+    (WO-ANCHOR-REPAIR-SERVICE / SYSTEMS/anchor-repair-service.md): existence
+    checks for the four Phase-11 anchors per active non-nexus region, emitting
+    ``region_anchor_missing`` events. Re-injection is deferred. Self-gated
+    once per canonical day via ``anchor_repair_service.run_daily_scan_gated``.
+
+    Phase 9 runs the station defense-underfunding cascade (ADR-0093 §3 /
+    WO-FIX-STATION-DEFENSE-AUTO-DOWNGRADE-CASCADE): once per canonical day,
+    player-owned stations with fee ``defense_pct < 0.35`` accumulate a streak
+    (day 1 warn / day 3 one-tier drop / day 7 force none) via
+    ``station_security_service.run_defense_underfunding_cascade_gated``.
 
     Returns {auto_created, opened, tallied, enacted, rejected,
     regions_recomputed, treaties_expired, treasury_checked,
     treasury_mismatched, advanced_to_grace, advanced_to_terminated,
-    cleanup_eligible}.
+    cleanup_eligible, anchors_scanned, anchors_missing,
+    defense_underfund_checked, defense_underfund_dropped, events}.
     """
-    from src.core.database import SessionLocal
-    from src.models.region import (
-        Region, RegionStatus, RegionalElection, RegionalPolicy, RegionalVote,
-        RegionalPolicyVote, RegionalTreasuryEntry, RegionalTreaty,
-        RegionalMembership, ElectionStatus, PolicyStatus,
-    )
-    from src.models.planet import Planet, player_planets
-    from src.models.sector import Sector
-    from src.models.galaxy import Galaxy
-    from src.models.player_analytics import PlayerActivity
-    from src.services.regional_governance_service import (
-        compute_quorum, quorum_pct_for_region, threshold_for_policy,
-        determine_election_winner, enact_changes_onto_region,
-        compute_treasury_adjustment,
-        ELECTION_TALLYING, POLICY_VOTERS_KEY,
-        RECURRING_ELECTION_POSITION, ELECTION_VOTING_WINDOW_DAYS,
-        ELECTION_SCHEDULED_LEAD_DAYS,
-    )
-    from sqlalchemy import func as sa_func, update
+    from sqlalchemy import func as sa_func
+    from sqlalchemy import update
     from sqlalchemy.orm.attributes import flag_modified
+
+    from src.core.database import SessionLocal
+    from src.models.galaxy import Galaxy
+    from src.models.planet import Planet, player_planets
+    from src.models.player_analytics import PlayerActivity
+    from src.models.region import (
+        ElectionStatus,
+        PolicyStatus,
+        Region,
+        RegionalElection,
+        RegionalMembership,
+        RegionalPolicy,
+        RegionalPolicyVote,
+        RegionalTreasuryEntry,
+        RegionalTreaty,
+        RegionalVote,
+        RegionStatus,
+    )
+    from src.models.sector import Sector
+    from src.services.regional_governance_service import (
+        ELECTION_SCHEDULED_LEAD_DAYS,
+        ELECTION_TALLYING,
+        ELECTION_VOTING_WINDOW_DAYS,
+        POLICY_VOTERS_KEY,
+        RECURRING_ELECTION_POSITION,
+        compute_quorum,
+        compute_treasury_adjustment,
+        determine_election_winner,
+        enact_changes_onto_region,
+        quorum_pct_for_region,
+        threshold_for_policy,
+    )
 
     result = {"auto_created": 0, "opened": 0, "tallied": 0, "enacted": 0,
               "rejected": 0, "regions_recomputed": 0, "treaties_expired": 0,
               "treasury_checked": 0, "treasury_mismatched": 0,
               "advanced_to_grace": 0, "advanced_to_terminated": 0,
-              "cleanup_eligible": 0}
+              "cleanup_eligible": 0, "anchors_scanned": 0, "anchors_missing": 0,
+              "defense_underfund_checked": 0, "defense_underfund_dropped": 0,
+              "events": []}
     now = datetime.utcnow()
 
     db = SessionLocal()
@@ -973,9 +1010,10 @@ def _run_governance_sweep_sync() -> Dict[str, int]:
         # region-lifecycle.md's daily-cron triggers: SUSPENDED -> GRACE at 7
         # days since Region.suspended_at, GRACE -> TERMINATED at 30 days since
         # the SAME original suspended_at (region_lifecycle_service.advance_
-        # to_grace / advance_to_terminated), plus a read-only cleanup-
-        # eligibility discovery pass (dispatch_terminated_cleanup — gate-
-        # cascade wires the real cascade on later, not built here). Self-gated
+        # to_grace / advance_to_terminated), plus the cleanup cascade dispatch
+        # (dispatch_terminated_cleanup — per-planet process_planet_termination,
+        # per-region dispatch_station_termination, and cascade_region_gate_
+        # teardown, gated on Region.cleanup_completed_at). Self-gated
         # to once per canonical day (see _run_region_lifecycle_advance_gated),
         # mirroring Phase 6's day-anchor discipline exactly. A failure here
         # must NEVER break the governance sweep proper.
@@ -987,6 +1025,54 @@ def _run_governance_sweep_sync() -> Dict[str, int]:
             db.commit()
         except Exception:
             logger.exception("Governance sweep: region lifecycle advance phase failed")
+            db.rollback()
+        else:
+            # ADR-0054 X-V1: flush the cascade's queued realtime events only
+            # now that this phase's commit has actually succeeded -- on the
+            # except/rollback branch above, lifecycle["_outbox"] is simply
+            # never flushed and its queued events are discarded with it. A
+            # flush failure (best-effort delivery) must never be reported
+            # as a phase failure -- the data already committed.
+            try:
+                lifecycle["_outbox"].flush()
+            except Exception:
+                logger.warning(
+                    "Governance sweep: region lifecycle outbox flush failed "
+                    "(post-commit, non-fatal)", exc_info=True,
+                )
+
+        # --- Phase 8: anchor-repair detect-only scan (WO-ANCHOR-REPAIR-SERVICE)
+        # SYSTEMS/anchor-repair-service.md daily existence checks. Self-gated
+        # once per canonical day. Emits region_anchor_missing; no re-inject.
+        # A failure here must NEVER break the governance sweep proper.
+        try:
+            from src.services import anchor_repair_service
+
+            anchors = anchor_repair_service.run_daily_scan_gated(db)
+            result["anchors_scanned"] = anchors["anchors_scanned"]
+            result["anchors_missing"] = anchors["anchors_missing"]
+            result["events"] = list(anchors.get("events") or [])
+            db.commit()
+        except Exception:
+            logger.exception("Governance sweep: anchor-repair scan phase failed")
+            db.rollback()
+
+        # --- Phase 9: station defense underfunding cascade (ADR-0093 §3)
+        # Self-gated once per canonical day. A failure here must NEVER break
+        # the governance sweep proper.
+        try:
+            from src.services import station_security_service as sts
+
+            under = sts.run_defense_underfunding_cascade_gated(db)
+            result["defense_underfund_checked"] = under.get("stations_checked", 0)
+            result["defense_underfund_dropped"] = (
+                int(under.get("tier_dropped", 0)) + int(under.get("forced_none", 0))
+            )
+            db.commit()
+        except Exception:
+            logger.exception(
+                "Governance sweep: defense-underfunding cascade phase failed"
+            )
             db.rollback()
 
         # Final commit closes out any open (no-op) transaction so the advisory
@@ -1189,6 +1275,7 @@ def _compute_daily_economic_enrichment(
     trajectory over time.
     """
     from sqlalchemy import func as sa_func
+
     from src.core.commodity_economy import COMMODITY_BASE_PRICES
     from src.models.market_transaction import MarketPrice, MarketTransaction
     from src.services.economy_analytics_service import EconomyAnalyticsService
@@ -1392,13 +1479,14 @@ def _run_economic_metrics_snapshot_sync() -> Dict[str, Any]:
     "trade_volume": int, "active_traders": int}; written=False on the
     already-snapshotted / lock-held / no-galaxy no-op paths.
     """
+    from sqlalchemy import func as sa_func
+
     from src.core.database import SessionLocal
     from src.models.market_transaction import EconomicMetrics, MarketTransaction
     from src.models.npc_character import NPCCharacter
     from src.models.player import Player
     from src.models.region import Region
     from src.models.station import Station
-    from sqlalchemy import func as sa_func
 
     not_written = {
         "written": False, "date": None,

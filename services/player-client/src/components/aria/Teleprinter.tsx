@@ -13,7 +13,7 @@
  *      ARIA free-chat (sendARIAMessage) unchanged — this is deterministic
  *      client-side dispatch, NOT a new AI-safety surface; the WS
  *      free-chat path is untouched.
- *   2. TWO INDEPENDENT DISPLAY TOGGLES (WO-UI-MAX-BATCH-1 REVISE, Max
+ *   2. TWO INDEPENDENT DISPLAY TOGGLES (WO-UI-MAX-BATCH-1 REVISE, human
  *      #22-24 — see below), controlled by the parent (GameLayout owns
  *      `bodyPanel`/`transcriptOpen`, mirrors its existing windshield-min
  *      pattern) because `bodyPanel` also drives the MFD-B→MFD-A fold, a
@@ -24,7 +24,7 @@
  *      stays on disk, unregistered (same retirement pattern as
  *      ThreatPage/SalvagePage, WO-UI2-DECK-RECONCILE).
  *
- * TICKER FORM (visual-form steer, mid-build, relayed from Max via the
+ * TICKER FORM (visual-form steer, mid-build, relayed from human via the
  * orchestrator): the compact input area is ONE amber-on-dark row —
  * `▸ ARIA ✎ <latest event>` + an inline command input + [XMIT] + the two
  * toggle buttons — not the old click-anywhere-to-expand strip. XMIT
@@ -36,7 +36,7 @@
  * longer an "exception" scoped to just the ticker row (see teleprinter.
  * css's own header).
  *
- * DISPLAY-MODE CONTROL (WO-UI-MAX-BATCH-1 REVISE, Max #22-24 — Max
+ * DISPLAY-MODE CONTROL (WO-UI-MAX-BATCH-1 REVISE, human #22-24 — human
  * live-playtested the shipped single 3-state cycle toggle and RETRACTED
  * it, back to the artifact's own TWO INDEPENDENT BINARY TOGGLES model,
  * cockpit-redesign-v10-RATIFIED.html L91-104/L455-465):

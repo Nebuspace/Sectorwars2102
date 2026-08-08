@@ -66,8 +66,8 @@ describe('LandingPage — live-mount smoke', () => {
   let container: HTMLElement;
   let root: ReturnType<typeof createRoot>;
   let errorSpy: ReturnType<typeof vi.spyOn>;
-  let onLogin: ReturnType<typeof vi.fn>;
-  let onRegister: ReturnType<typeof vi.fn>;
+  let onLogin: ReturnType<typeof vi.fn<() => void>>;
+  let onRegister: ReturnType<typeof vi.fn<() => void>>;
   let getContextSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {

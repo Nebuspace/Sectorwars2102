@@ -4,7 +4,6 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useGame } from '../../contexts/GameContext';
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import { useAutopilot } from '../../contexts/AutopilotContext';
-// import { useTheme } from '../../themes/ThemeProvider'; // Available for future use
 import StatusBar from './StatusBar';
 import Teleprinter from '../aria/Teleprinter';
 import Annunciator from '../hud/Annunciator';
@@ -14,8 +13,14 @@ import { SIDEBAR_A, SIDEBAR_B, SIDEBAR_A_FOLDED } from '../mfd/sidebarScreens';
 import { ariaFeed } from '../mfd/ariaFeedStore';
 import { subscribeTeleprinterPanelRequest } from '../../services/teleprinterBus';
 import MedalToast from '../ranking/MedalToast';
+import MedalUnviewedSplash from '../ranking/MedalUnviewedSplash';
+import TractorLockPrompt from '../station/TractorLockPrompt';
+import TowConsentPanel from '../station/TowConsentPanel';
+import CarrierHangarPanel from '../station/CarrierHangarPanel';
+import RecoveryConsolePanel from '../station/RecoveryConsolePanel';
 import PriorityHailConsumer from '../comms/PriorityHailConsumer';
 import WelcomeBackToast from '../auth/WelcomeBackToast';
+import GcLapsePanel from '../auth/GcLapsePanel';
 import NpcCombatBanner from '../combat/NpcCombatBanner';
 import FirstSessionObjectives from '../onboarding/FirstSessionObjectives';
 import { useFirstSession } from '../onboarding/useFirstSession';
@@ -213,10 +218,9 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
 
   const { user } = useAuth();
   const { playerState, isLoading, isRefreshing, refreshPlayerState } = useGame();
-  // const { currentTheme } = useTheme(); // Available for future use
 
   // ── Teleprinter display toggles (WO-UI1-CHROME-COMPLETE; WO-UI-MAX-
-  // BATCH-1 REVISE — Max #22-24 retracted the shipped single 3-state cycle
+  // BATCH-1 REVISE — human #22-24 retracted the shipped single 3-state cycle
   // back to the artifact's own TWO INDEPENDENT BINARY TOGGLES) ───────────
   // Owned here (not inside Teleprinter), same rationale as before: PANEL
   // still drives which MFD-A config the sidebar renders (the MFD-B→MFD-A
@@ -392,11 +396,26 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
       {/* Cockpit-wide realtime medal toast: consumes the medal_awarded WS event
           so a freshly-earned decoration pops on any /game route. */}
       <MedalToast />
+      {/* Offline-earned medal splash (WO-WIRE-MEDALS-UNVIEWED-SPLASH): one-shot
+          GET /medals/unviewed on mount; clear-on-view is server-side. */}
+      <MedalUnviewedSplash />
+      {/* Station anti-theft tractor lock (WO-WIRE-TRACTOR-LOCK-SURRENDER-UI):
+          Break free / Surrender when undock returns ERR_STATION_TRACTOR_LOCK. */}
+      <TractorLockPrompt />
+      {/* Tractor tow consent (WO-WIRE-TOW-CONSENT-UI): status poll + Accept/Cancel/Detach. */}
+      <TowConsentPanel />
+      {/* Carrier hangar consent (WO-WIRE-CARRIER-HANGAR-UI): status + Accept/Undock. */}
+      <CarrierHangarPanel />
+      {/* Stranding recovery desk (WO-WIRE-RECOVERY-CONSOLE): distress / slipdrive / escape pod. */}
+      <RecoveryConsolePanel />
       {/* Priority-driven hail surfaces (WO-B6): the in-game notification toast
           stack (normal/high messages + other WS toasts) and the urgent
           action-interrupting modal — per messaging.md "Priority levels". */}
       <PriorityHailConsumer />
       <WelcomeBackToast />
+      {/* GC-lapse emergency relocation (WO-WIRE-GC-LAPSE-SELF-SERVICE): GET status
+          + POST one-time relocate to a foreign holding during the 7-day window. */}
+      <GcLapsePanel />
       {/* NPC-initiated combat alert (WO-CMB-NPC-INITIATED-1 lane D): the
           npc_combat_initiated WS event's defender-side banner. */}
       <NpcCombatBanner />

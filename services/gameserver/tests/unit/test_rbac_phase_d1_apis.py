@@ -28,7 +28,7 @@ def _extract_route_block(source: str, route_marker: str) -> str:
 
 class TestScopeCatalogDescriptions:
     def test_catalog_covers_all_scopes_with_nonempty_descriptions(self):
-        assert len(SCOPE_DESCRIPTIONS) == 27
+        assert len(SCOPE_DESCRIPTIONS) == 28
         assert set(SCOPE_DESCRIPTIONS.keys()) == ALL_SCOPES
         for scope, desc in SCOPE_DESCRIPTIONS.items():
             assert desc.strip(), f"missing description for {scope!r}"
@@ -36,8 +36,8 @@ class TestScopeCatalogDescriptions:
     def test_catalog_route_returns_scope_catalog_items(self):
         assert 'response_model=List[ScopeCatalogItem]' in _ADMIN_SCOPES_SRC
         assert "SCOPE_DESCRIPTIONS" in _ADMIN_SCOPES_SRC
-        assert "27-scope catalog" in _ADMIN_SCOPES_SRC
-        assert "26-scope" not in _ADMIN_SCOPES_SRC
+        assert "28-scope catalog" in _ADMIN_SCOPES_SRC
+        assert "27-scope" not in _ADMIN_SCOPES_SRC
 
 
 class TestScopeHoldersGate:

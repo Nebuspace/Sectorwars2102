@@ -3,7 +3,7 @@ import type { SectorWreck } from '../../services/api';
 import type { SpecialFormationSummary } from '../../contexts/GameContext';
 import type { HitMeta } from './SolarSystemViewscreen';
 import { scanPosition, type HazardArc, type PctPoint, type StarAnchor } from './windshieldTableauLayout';
-import { arcPath, orbitEllipse, type TravelPhase } from './windshieldTableauHelpers';
+import { arcPath, orbitEllipse, type MessageBeaconSummary, type TravelPhase } from './windshieldTableauHelpers';
 
 /**
  * windshieldTableauChrome — WO-AAA-SOLAR-TABLEAU phase 3 module split.
@@ -140,6 +140,55 @@ export function ScanLayer({ scanActive, wrecks, formations, star, onOpenPopup }:
           >
             ◇
           </button>
+        );
+      })}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// BeaconLayer — message beacons (message-beacons.md), ALWAYS visible (not
+// gated behind scanActive — canon: "any player arriving in a sector with
+// active beacons sees them"). Read-only summary popup on click; full
+// read/salvage/recharge/report actions live on the deployer's My Beacons
+// screen (GET /beacons/mine + the existing action routes), mirroring the
+// wreck popup's own read-only-info + separate-action-page convention.
+// ---------------------------------------------------------------------------
+
+export interface BeaconLayerProps {
+  beacons: MessageBeaconSummary[];
+  star: StarAnchor;
+  onOpenPopup: (meta: HitMeta, name: string, pos: PctPoint, objectId?: string | null) => void;
+}
+
+export function BeaconLayer({ beacons, star, onOpenPopup }: BeaconLayerProps): React.ReactNode {
+  if (beacons.length === 0) return null;
+  return (
+    <>
+      {beacons.map((b) => {
+        const pos = scanPosition(b.id);
+        const label = `Message beacon — ${b.deployer_nickname}`;
+        return (
+          <React.Fragment key={`beacon-${b.id}`}>
+            {orbitEllipse(star, pos, `orbit-beacon-${b.id}`)}
+            <button
+              type="button"
+              className="obj"
+              style={{ left: `${pos.xPct}%`, top: `${pos.yPct}%`, transform: 'translate(-50%,-50%)', background: 'none', border: 'none' }}
+              aria-label={label}
+              onClick={() =>
+                onOpenPopup(
+                  { kind: 'beacon', beaconId: b.id, deployerNickname: b.deployer_nickname, preview: b.preview, deployedAt: b.deployed_at, state: b.state },
+                  'MESSAGE BEACON',
+                  pos,
+                  b.id
+                )
+              }
+            >
+              <span className="glyphbox" style={{ color: '#7FD8FF' }}>📡</span>
+              <span className="objtag">BEACON</span>
+            </button>
+          </React.Fragment>
         );
       })}
     </>

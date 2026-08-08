@@ -43,6 +43,32 @@ describe('repBucket', () => {
   });
 });
 
+describe('repBucket — server-provided rep_bucket/hostile preferred (WO-API-PHASE2 Lane B6)', () => {
+  it('prefers a player contact\'s server rep_bucket over a client reputation_tier compute', () => {
+    // Server field wins even where it disagrees with what the client
+    // would derive from reputation_tier -- proves precedence, not just
+    // "same-answer either way".
+    expect(repBucket({ is_npc: false, reputation_tier: 'Villain', rep_bucket: 'blue' })).toBe('blue');
+    expect(repBucket({ is_npc: false, reputation_tier: 'Neutral', rep_bucket: 'red' })).toBe('red');
+  });
+
+  it('falls back to the client reputation_tier compute when rep_bucket is absent', () => {
+    expect(repBucket({ is_npc: false, reputation_tier: 'Outlaw' })).toBe('red');
+    expect(repBucket({ is_npc: false, reputation_tier: 'Suspicious' })).toBe('gray');
+  });
+
+  it('prefers an NPC contact\'s server hostile flag over the client archetype/notoriety compute', () => {
+    expect(repBucket({ is_npc: true, archetype: 'HOSTILE_RAIDER', hostile: false })).toBe('blue');
+    expect(repBucket({ is_npc: true, archetype: 'TRADER', notoriety: 10, hostile: true })).toBe('red');
+  });
+
+  it('falls back to the client archetype/notoriety compute when hostile is absent', () => {
+    expect(repBucket({ is_npc: true, archetype: 'HOSTILE_RAIDER' })).toBe('red');
+    expect(repBucket({ is_npc: true, archetype: 'TRADER', notoriety: 50 })).toBe('red');
+    expect(repBucket({ is_npc: true, archetype: 'TRADER', notoriety: 49 })).toBe('blue');
+  });
+});
+
 describe('isLawArchetype / LAW_ARCHETYPES', () => {
   it('matches exactly the three law archetypes (case-insensitive)', () => {
     expect(LAW_ARCHETYPES.size).toBe(3);

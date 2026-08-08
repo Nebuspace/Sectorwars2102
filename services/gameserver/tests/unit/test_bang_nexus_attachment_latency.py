@@ -115,7 +115,12 @@ class TestApplyAdditionalRegionSourceIsNotLatent:
         source = inspect.getsource(BangImportService.apply_additional_region)
         assert "type=WarpTunnelType.NATURAL" in source
         assert "is_bidirectional=True" in source
-        assert "WarpTunnel(" in source
+        # ADR-0050 SK22: the tunnel insert is now an idempotent
+        # INSERT...ON CONFLICT DO NOTHING (pg_insert(WarpTunnel).values(...))
+        # rather than a plain ORM session.add(WarpTunnel(...)) construction
+        # -- same table, same NATURAL/bidirectional fields (asserted above),
+        # different insert mechanism to support the retry idempotency key.
+        assert "insert(WarpTunnel)" in source
 
 
 class TestInRegionWarpLatencyUntouched:

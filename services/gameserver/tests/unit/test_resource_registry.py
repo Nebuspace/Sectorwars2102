@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy.orm import Session
 
 from src.api.routes.resources import list_resources
-from src.core.commodity_economy import COMMODITY_BASE_PRICES
+from src.core.commodity_economy import COMMODITY_BASE_PRICES, SAFE_STORABLE_COMMODITIES
 from src.core.resource_registry_seeder import (
     CATEGORY_CORE,
     CATEGORY_RARE,
@@ -30,7 +30,7 @@ CANON_NAMES = {
     "ore", "organics", "gourmet_food", "fuel", "equipment",
     "exotic_technology", "luxury_goods",
     "colonists", "combat_drones", "quantum_shards", "quantum_crystals",
-    "prismatic_ore", "lumen_crystals",
+    "prismatic_ore", "lumen_crystals", "precious_metals",
 }
 
 
@@ -40,19 +40,21 @@ def test_registry_covers_every_resource_type():
 
 
 def test_registry_names_match_canon_list():
-    """The 13 seeded names are exactly definitions.md's Resource Types list."""
+    """The 14 seeded names are exactly definitions.md's Resource Types list
+    plus precious_metals (WO-RES-PRECIOUS-METALS-SEED)."""
     names = {entry["name"] for entry in RESOURCE_REGISTRY.values()}
     assert names == CANON_NAMES
-    assert len(RESOURCE_REGISTRY) == 13
+    assert len(RESOURCE_REGISTRY) == 14
 
 
 def test_registry_category_counts_match_canon_sections():
-    """7 core commodities / 4 strategic resources / 2 rare materials."""
+    """7 core commodities / 4 strategic resources / 3 rare materials
+    (prismatic_ore, lumen_crystals, precious_metals)."""
     by_category = {}
     for entry in RESOURCE_REGISTRY.values():
         by_category.setdefault(entry["category"], 0)
         by_category[entry["category"]] += 1
-    assert by_category == {CATEGORY_CORE: 7, CATEGORY_STRATEGIC: 4, CATEGORY_RARE: 2}
+    assert by_category == {CATEGORY_CORE: 7, CATEGORY_STRATEGIC: 4, CATEGORY_RARE: 3}
 
 
 @pytest.mark.parametrize(
@@ -91,6 +93,35 @@ def test_combat_drones_price_spans_both_canon_figures():
     assert entry["price_range_max"] == 1200
 
 
+def test_precious_metals_row_pinned(db: Session):
+    """WO-RES-PRECIOUS-METALS-SEED — priced Secondary mining drop
+    (rare_material), not core_commodity, not safe-storable, not
+    production_rate regen; surfaces via the seeder + list route."""
+    entry = RESOURCE_REGISTRY[ResourceType.PRECIOUS_METALS]
+    expected = COMMODITY_BASE_PRICES["precious_metals"]
+    lo, hi = expected["range"]
+    assert entry["name"] == "precious_metals"
+    assert entry["label"] == "Precious Metals"
+    assert entry["category"] == CATEGORY_RARE
+    assert entry["base_price"] == expected["base"] == 130
+    assert entry["price_range_min"] == lo == 80
+    assert entry["price_range_max"] == hi == 180
+    assert entry["is_storable"] is False
+    assert "precious_metals" not in SAFE_STORABLE_COMMODITIES
+    assert entry["is_producible"] is False
+
+    seed_resource_registry(db)
+    row = db.query(Resource).filter(Resource.name == "precious_metals").first()
+    assert row is not None
+    assert row.type == ResourceType.PRECIOUS_METALS
+    assert row.category == CATEGORY_RARE
+    assert row.base_price == 130
+    assert row.price_range_min == 80
+    assert row.price_range_max == 180
+    assert row.is_storable is False
+    assert row.is_producible is False
+
+
 def test_is_storable_matches_citadel_safe_storable_set():
     """Only ore/organics/equipment are citadel-safe eligible (ADR-0082)."""
     storable = {e["name"] for e in RESOURCE_REGISTRY.values() if e["is_storable"]}
@@ -111,17 +142,17 @@ def test_is_producible_matches_station_production_mechanic():
 # Seeder tests — real DB session
 # ----------------------------------------------------------------------
 
-def test_seed_creates_all_thirteen_resources(db: Session):
+def test_seed_creates_all_fourteen_resources(db: Session):
     processed = seed_resource_registry(db)
-    assert processed == 13
-    assert db.query(Resource).count() == 13
+    assert processed == 14
+    assert db.query(Resource).count() == 14
 
 
 def test_seed_is_idempotent(db: Session):
     seed_resource_registry(db)
     processed_again = seed_resource_registry(db)
-    assert processed_again == 13
-    assert db.query(Resource).count() == 13  # no duplicates
+    assert processed_again == 14
+    assert db.query(Resource).count() == 14  # no duplicates
 
 
 def test_seed_reconciles_a_hand_edited_row(db: Session):
@@ -162,7 +193,7 @@ async def test_list_resources_returns_seeded_catalog(db: Session):
 
     result = await list_resources(player=None, db=db)
 
-    assert len(result) == 13
+    assert len(result) == 14
     names = {r.name for r in result}
     assert names == CANON_NAMES
     # Ordered by (category, name) per the route's order_by.
@@ -186,7 +217,7 @@ async def test_list_resources_excludes_inactive_rows(db: Session):
     result = await list_resources(player=None, db=db)
 
     assert "prismatic_ore" not in {r.name for r in result}
-    assert len(result) == 12
+    assert len(result) == 13
 
 
 @pytest.mark.asyncio
@@ -196,7 +227,7 @@ async def test_route_is_a_pure_table_read_not_a_hardcoded_list(db: Session):
     a marker row and confirm it appears in the route output via marker
     presence + an exact count delta (never an absolute count), so this
     passes whether the table starts empty (throwaway test DB) or already
-    carries the seeder's 13 canonical rows (a pre-seeded / live dev DB).
+    carries the seeder's 14 canonical rows (a pre-seeded / live dev DB).
     Only holds if list_resources queries the table rather than re-deriving
     from RESOURCE_REGISTRY or any other hardcoded list.
 

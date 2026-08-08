@@ -1,5 +1,5 @@
 """NPC-Initiated Combat — the generic "NPC attacks first" entry point
-(WO-CMB-NPC-INITIATED-1, Max ruling 2026-07-10, superseding the two v1
+(WO-CMB-NPC-INITIATED-1, human ruling 2026-07-10, superseding the two v1
 player-initiated-PvE deferral docstrings in npc_engagement_service.py and
 combat_service.py).
 
@@ -172,10 +172,10 @@ def _guard_failure(
         return None, {"success": False, "message": "Defender is landed and cannot be attacked"}
 
     # Terran-Space gate — [NO-CANON] AMENDMENT (Samantha ruling,
-    # 2026-07-10, rides her DECISIONS row for Max's veto): do NOT reuse
+    # 2026-07-10, rides her DECISIONS row for human's veto): do NOT reuse
     # combat_service._is_combat_allowed blindly. It blocks ALL combat in
     # TERRAN_SPACE, which would make police unable to engage a Wanted
-    # player in the Federation's OWN jurisdiction — backwards per Max's
+    # player in the Federation's OWN jurisdiction — backwards per human's
     # "police attack a Wanted player entering patrolled space" ruling.
     # LAW_ENFORCEMENT-archetype attackers bypass the block entirely;
     # every other archetype (pirates, etc.) keeps the identical rule

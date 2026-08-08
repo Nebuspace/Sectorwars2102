@@ -75,8 +75,9 @@ const fmtCountdown = (
 };
 
 // Feature-detect the updated credit balance out of an action response —
-// accept returns remaining_balance, complete/abandon/post/cancel return
-// credits (contracts.py:266-274/:356-362/:413-418/:550-558/:617-622).
+// accept returns remaining_balance (contract_service.py:279-287);
+// complete/abandon/post/cancel return credits (:501-509 / :642-648 /
+// :1969-1977 / :2110-2116). Routes return those service dicts verbatim.
 // Locker deposits that auto-complete nest the same shape under complete_result.
 const creditsFromResponse = (result: unknown): number | null => {
   const body = asRecord(result);
@@ -101,11 +102,17 @@ const heldCommodityOnShip = async (commodity: string): Promise<number> => {
 
 const shortId = (id: string) => `#${id.slice(0, 8)}`;
 
-// PLAYER_POST_MIN_DEADLINE_HOURS (contract_service.py:81) — canon floor,
+/** Board row still accept-able: posted + deadline not yet passed (client clock). */
+const isOpenBoardContract = (contract: ContractDTO, nowMs: number): boolean => {
+  if (contract.status && contract.status !== 'posted') return false;
+  return !fmtCountdown(contract.deadline, nowMs).expired;
+};
+
+// PLAYER_POST_MIN_DEADLINE_HOURS (contract_escrow_core.py:127) — canon floor,
 // mirrored client-side so the form fails fast instead of round-tripping.
 const MIN_DEADLINE_HOURS = 1;
 
-// WO-CONTRACT-1-INSURANCE. INSURANCE_PREMIUM_PCT (contract_service.py) —
+// WO-CONTRACT-1-INSURANCE. INSURANCE_PREMIUM_PCT (contract_insurance.py:72) —
 // mirrored client-side ONLY for the live premium preview before the user
 // commits; the server is authoritative and recomputes this exact math at
 // /insure time regardless of what the client shows.
@@ -183,6 +190,8 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
   const [insuranceTierByContract, setInsuranceTierByContract] = useState<
     Record<string, ContractInsuranceCoverageTier>
   >({});
+  // WO-CONTRACT-INSURANCE-ARBITRATION-SCOPE: dispute reason draft per expired contract.
+  const [disputeReasonByContract, setDisputeReasonByContract] = useState<Record<string, string>>({});
   // Last known locker progress from a successful deposit (no GET progress endpoint yet).
   const [lockerProgress, setLockerProgress] = useState<
     Record<string, { accumulated: number; quantityRequired: number }>
@@ -200,6 +209,9 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
 
   // Shared action-in-flight guard (one action at a time, mirrors PortOfficeVenue)
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  // WO-WIRE-CONTRACTS-GET-BY-ID: live GET /contracts/{id} when a row is opened.
+  const [detailBusyId, setDetailBusyId] = useState<string | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
 
   // Post form state
   const [postContractType, setPostContractType] = useState<PostableContractType>('cargo_delivery');
@@ -259,6 +271,32 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
     }
   }, []);
 
+  /** WO-WIRE-CONTRACTS-GET-BY-ID — refresh one contract from GET /contracts/{id}. */
+  const refreshContractDetail = useCallback(async (contractId: string) => {
+    setDetailBusyId(contractId);
+    setDetailError(null);
+    try {
+      const data = (await contractsAPI.getContract(contractId)) as ContractDTO;
+      if (!data?.id) {
+        setDetailError('Contract detail response was empty.');
+        return;
+      }
+      setBoard((prev) =>
+        prev ? prev.map((c) => (c.id === data.id ? { ...c, ...data } : c)) : prev
+      );
+      setMine((prev) => {
+        if (!prev) return prev;
+        const upsert = (list: ContractDTO[]) =>
+          list.map((c) => (c.id === data.id ? { ...c, ...data } : c));
+        return { posted: upsert(prev.posted), accepted: upsert(prev.accepted) };
+      });
+    } catch (error) {
+      setDetailError(errorMessage(error, 'Could not load contract detail.'));
+    } finally {
+      setDetailBusyId(null);
+    }
+  }, []);
+
   useEffect(() => {
     fetchBoard();
     fetchMine();
@@ -282,6 +320,19 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
     const mineHas = mine ? [...mine.posted, ...mine.accepted].some((c) => c.deadline) : false;
     return boardHas || mineHas;
   }, [board, mine]);
+
+  // Open board = still accept-able. Past-deadline POSTED rows can linger from
+  // the API when the expiry sweep lags — never count or offer Accept on them.
+  const openBoard = useMemo(() => {
+    if (!board) return null;
+    const seen = new Set<string>();
+    return board.filter((c) => {
+      if (!isOpenBoardContract(c, nowMs)) return false;
+      if (seen.has(c.id)) return false;
+      seen.add(c.id);
+      return true;
+    });
+  }, [board, nowMs]);
 
   useEffect(() => {
     if (!hasCountdowns) return;
@@ -471,6 +522,47 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
     [runAction, insuranceTierByContract, onCreditsSet, fetchMine]
   );
 
+  // WO-CONTRACT-INSURANCE-ARBITRATION-SCOPE — File Dispute on an expired
+  // accepted contract (POST /contracts/{id}/dispute). Server rejects
+  // outside the 48h window / non-acceptor / non-expired.
+  const handleDispute = useCallback(
+    async (contract: ContractDTO) => {
+      setMineActionSuccess(null);
+      const reason = (disputeReasonByContract[contract.id] ?? '').trim();
+      if (!reason) {
+        setMineActionError('Enter a short reason before filing a dispute.');
+        return;
+      }
+      const result = await runAction(
+        `dispute-${contract.id}`,
+        () => contractsAPI.dispute(contract.id, { reason }),
+        setMineActionError,
+        'Dispute filing was rejected.'
+      );
+      if (result !== null) {
+        const newCredits = creditsFromResponse(result);
+        if (newCredits !== null) onCreditsSet(newCredits);
+        const body = asRecord(result);
+        const escalated = body?.escalated_to_admin === true;
+        const tier1 = typeof body?.tier1_resolution === 'string' ? body.tier1_resolution : null;
+        setMineActionSuccess(
+          tier1
+            ? `Dispute resolved automatically (${tier1}).`
+            : escalated
+              ? 'Dispute filed — escalated to admin review.'
+              : 'Dispute filed.'
+        );
+        setDisputeReasonByContract((prev) => {
+          const next = { ...prev };
+          delete next[contract.id];
+          return next;
+        });
+        await fetchMine();
+      }
+    },
+    [runAction, disputeReasonByContract, onCreditsSet, fetchMine]
+  );
+
   const handleCancel = useCallback(
     async (contract: ContractDTO) => {
       setMineActionSuccess(null);
@@ -644,15 +736,25 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
     return `${origin} → ${dest}`;
   };
 
-  const renderBoardRow = (contract: ContractDTO) => (
-    <div className="cb-row" key={contract.id}>
-      <div className="cb-row-main">
+  const renderBoardRow = (contract: ContractDTO) => {
+    const expired = fmtCountdown(contract.deadline, nowMs).expired;
+    return (
+    <div className="cb-row" key={contract.id} data-testid={`contract-row-${contract.id}`}>
+      <button
+        type="button"
+        className="cb-row-main cb-row-main-as-button"
+        data-testid={`contract-detail-${contract.id}`}
+        onClick={() => refreshContractDetail(contract.id)}
+        disabled={detailBusyId === contract.id}
+        title="Refresh this contract from the server"
+      >
         <span className="cb-commodity">
           <span aria-hidden="true">{getIcon(contract.commodity_type)}</span> {getLabel(contract.commodity_type)} ×{' '}
           {contract.quantity}
         </span>
         <span className="cb-route">{renderRoute(contract)}</span>
-      </div>
+        {detailBusyId === contract.id && <span className="cb-status-note">Refreshing…</span>}
+      </button>
       <div className="cb-row-terms">
         <span className="cb-payment">{formatCredits(contract.payment ?? 0)}</span>
         {contract.penalty !== null && <span className="cb-penalty">Penalty {formatCredits(contract.penalty)}</span>}
@@ -671,12 +773,19 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
         {renderCountdown(contract.deadline)}
       </div>
       <div className="cb-row-actions">
-        <button className="action-button primary" onClick={() => handleAccept(contract)} disabled={Boolean(busyAction)}>
-          {busyAction === `accept-${contract.id}` ? 'Accepting...' : '✅ Accept'}
-        </button>
+        {expired ? (
+          <span className="cb-status-note" aria-label="Contract expired — accept unavailable">
+            Expired
+          </span>
+        ) : (
+          <button className="action-button primary" onClick={() => handleAccept(contract)} disabled={Boolean(busyAction)}>
+            {busyAction === `accept-${contract.id}` ? 'Accepting...' : '✅ Accept'}
+          </button>
+        )}
       </div>
     </div>
-  );
+    );
+  };
 
   // Fallback for statuses that carry no acceptor/issuer action in this
   // build (P4, WO-CONTRACT-5-CLIENT-SURFACE) — in_progress/partial_
@@ -684,10 +793,10 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
   // module docstring: bulk-procurement's `deliver`/`walk_away_bulk_
   // procurement` exist as functions but no route mounts them yet, see
   // contracts.py's header comment), so no action button is honest here;
-  // this is a read-only status note, not a dead end. `expired` differs by
-  // `kind`: an ACCEPTED contract you were delivering against may have
-  // stranded cargo in a locker (see Claimable Cargo); a POSTED contract
-  // you issued has already had its escrow swept one way or the other.
+  // this is a read-only status note, not a dead end. `expired` (accepted)
+  // now offers File Dispute (WO-CONTRACT-INSURANCE-ARBITRATION-SCOPE);
+  // posted-expired stays a note (escrow already settled, acceptor-only
+  // filing).
   const renderStatusNote = (contract: ContractDTO, kind: MineSubTab): React.ReactNode => {
     switch (contract.status) {
       case 'in_progress':
@@ -695,13 +804,16 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
       case 'partial_fulfilled':
         return <span className="cb-status-note">◐ Partially fulfilled.</span>;
       case 'disputed':
-        return <span className="cb-status-note">⚖️ Disputed — pending resolution.</span>;
-      case 'expired':
-        return kind === 'accepted' ? (
+        return (
           <span className="cb-status-note">
-            ⏳ Expired — any cargo you deposited is under <strong>Claimable Cargo</strong>.
+            ⚖️ Disputed —{' '}
+            {contract.escalated_to_admin
+              ? 'pending admin arbitration.'
+              : 'pending resolution.'}
           </span>
-        ) : (
+        );
+      case 'expired':
+        return kind === 'accepted' ? null : (
           <span className="cb-status-note">⏳ Expired — escrow already settled.</span>
         );
       default:
@@ -709,9 +821,44 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
     }
   };
 
+  const renderDisputeForm = (contract: ContractDTO) => (
+    <div className="cb-dispute-group">
+      <span className="cb-status-note">
+        ⏳ Expired — any cargo you deposited is under <strong>Claimable Cargo</strong>.
+      </span>
+      <input
+        className="cb-dispute-reason"
+        type="text"
+        maxLength={2000}
+        placeholder="Dispute reason (required)"
+        aria-label={`Dispute reason for ${getLabel(contract.commodity_type)} contract`}
+        value={disputeReasonByContract[contract.id] ?? ''}
+        onChange={(e) =>
+          setDisputeReasonByContract((prev) => ({ ...prev, [contract.id]: e.target.value }))
+        }
+        disabled={Boolean(busyAction)}
+      />
+      <button
+        className="action-button"
+        onClick={() => handleDispute(contract)}
+        disabled={Boolean(busyAction)}
+        title="File a dispute within 48h of expiry — Tier-1 may auto-resolve; otherwise escalates to admin."
+      >
+        {busyAction === `dispute-${contract.id}` ? 'Filing...' : '⚖️ File Dispute'}
+      </button>
+    </div>
+  );
+
   const renderMineRow = (contract: ContractDTO, kind: MineSubTab) => (
-    <div className="cb-row" key={contract.id}>
-      <div className="cb-row-main">
+    <div className="cb-row" key={contract.id} data-testid={`contract-row-${contract.id}`}>
+      <button
+        type="button"
+        className="cb-row-main cb-row-main-as-button"
+        data-testid={`contract-detail-${contract.id}`}
+        onClick={() => refreshContractDetail(contract.id)}
+        disabled={detailBusyId === contract.id}
+        title="Refresh this contract from the server"
+      >
         <span className="cb-commodity">
           <span aria-hidden="true">{getIcon(contract.commodity_type)}</span> {getLabel(contract.commodity_type)} ×{' '}
           {contract.quantity}
@@ -720,7 +867,8 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
         <span className={`cb-status cb-status-${contract.status}`}>
           {contract.status.replace(/_/g, ' ').toUpperCase()}
         </span>
-      </div>
+        {detailBusyId === contract.id && <span className="cb-status-note">Refreshing…</span>}
+      </button>
       <div className="cb-row-terms">
         <span className="cb-payment">{formatCredits(contract.payment ?? 0)}</span>
         {renderCountdown(contract.deadline)}
@@ -834,8 +982,10 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
             {busyAction === `cancel-${contract.id}` ? 'Cancelling...' : '✖ Cancel'}
           </button>
         )}
+        {kind === 'accepted' && contract.status === 'expired' && renderDisputeForm(contract)}
         {!(
           (kind === 'accepted' && contract.status === 'accepted') ||
+          (kind === 'accepted' && contract.status === 'expired') ||
           (kind === 'posted' && (contract.status === 'posted' || contract.status === 'accepted'))
         ) && renderStatusNote(contract, kind)}
       </div>
@@ -893,7 +1043,9 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
     <div className="cb-tab-content">
       <div className="cb-toolbar">
         <span className="cb-toolbar-count">
-          {board ? `${board.length} contract${board.length === 1 ? '' : 's'} posted` : ''}
+          {openBoard
+            ? `${openBoard.length} contract${openBoard.length === 1 ? '' : 's'} posted`
+            : ''}
         </span>
         <button className="action-button" onClick={fetchBoard} disabled={boardLoading}>
           🔄 Refresh
@@ -903,6 +1055,12 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
         <div className="genesis-error-message" aria-live="polite" aria-atomic="true">
           <span className="error-icon">❌</span>
           {boardActionError}
+        </div>
+      )}
+      {detailError && (
+        <div className="genesis-error-message" aria-live="polite" data-testid="contract-detail-error">
+          <span className="error-icon">❌</span>
+          {detailError}
         </div>
       )}
       {boardActionSuccess && (
@@ -922,10 +1080,10 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
             </button>
           </div>
         )}
-        {board && board.length === 0 && (
+        {openBoard && openBoard.length === 0 && (
           <p className="section-description">No contracts posted at this station right now. Check back later.</p>
         )}
-        {board && board.map(renderBoardRow)}
+        {openBoard && openBoard.map(renderBoardRow)}
       </div>
     </div>
   );

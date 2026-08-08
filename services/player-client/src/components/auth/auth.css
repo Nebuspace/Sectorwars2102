@@ -352,3 +352,11 @@
     transform: rotate(360deg);
   }
 }
+
+/* LoginPage language switcher (WO-LANGUAGESWITCHER-MOUNT) */
+.login-page-language {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 1001;
+}

@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session
 from src.auth.dependencies import get_current_player
 from src.core.database import get_db
 from src.models.player import Player
+from src.models.storage_locker import StorageLockerTier
 from src.services import storage_service
 from src.services.storage_service import StorageError, StorageNotFoundError
 
@@ -39,6 +40,10 @@ router = APIRouter(prefix="/storage", tags=["storage"])
 
 class RentLockerRequest(BaseModel):
     contract_id: str
+    tier: str = Field(
+        default=StorageLockerTier.BASIC.value,
+        description="Locker tier: basic (1x rent), reinforced (~2.5x), or vault (~5x)",
+    )
 
 
 class DepositCargoRequest(BaseModel):
@@ -108,7 +113,15 @@ async def rent_locker(
     existing locker rather than minting a duplicate."""
     contract_uuid = _parse_uuid(body.contract_id, "contract_id")
     try:
-        locker = storage_service.get_or_create_locker(db, current_player.id, contract_uuid)
+        tier = StorageLockerTier(body.tier)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid tier: {body.tier}. Must be one of: "
+                   f"{[t.value for t in StorageLockerTier]}",
+        )
+    try:
+        locker = storage_service.get_or_create_locker(db, current_player.id, contract_uuid, tier=tier)
     except StorageError as exc:
         db.rollback()
         _raise_for(exc)

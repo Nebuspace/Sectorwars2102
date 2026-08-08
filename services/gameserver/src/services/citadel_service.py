@@ -33,6 +33,8 @@ DEFENSE_BUILDINGS = {
         "cost": 500000,
         "build_hours": 168,
         "effects": {"sector_range": 2, "damage_per_round": 500},
+        # credits-only per defense.md's 2026-08-04 correction (citadels.md's own
+        # "code-wins" callout) — no ``materials`` entry, matches shipped code.
     },
     "turret_network": {
         "name": "Automated Turret Network",
@@ -41,6 +43,8 @@ DEFENSE_BUILDINGS = {
         "cost": 150000,
         "build_hours": 72,
         "effects": {"anti_drone_kills_per_round": 3},
+        # defense.md §"Automated turret network": "150,000 cr + 8,000 equipment".
+        "materials": {"equipment": 8000},
     },
     "scanner_array": {
         "name": "Long-Range Scanner Array",
@@ -49,6 +53,8 @@ DEFENSE_BUILDINGS = {
         "cost": 75000,
         "build_hours": 48,
         "effects": {"detection_range_sectors": 2},
+        # defense.md §"Scanner array": "75,000 cr + 10,000 equipment".
+        "materials": {"equipment": 10000},
     },
     # CRT WO-K0-3: the two formerly Design-only DEFENSE_BUILDINGS, now cashed into
     # reality. Each is RESEARCH-GATED — placeable through THIS existing flow only
@@ -90,6 +96,13 @@ DEFENSE_BUILDINGS = {
             },
         },
         "research_node": "t.defense.railgun.1",
+        # defense.md §"Fixed rail gun batteries": "150,000 cr + 20,000 ore + 10,000
+        # equipment per battery" — SEC-DEFBUILD-MATERIALS: was catalogued (this
+        # comment block) but never actually charged; build_defense_building only
+        # deducted credits. Fixed alongside the same gap on every other defense
+        # building below. ``ore`` maps to the ``Planet.fuel_ore`` stockpile column
+        # (planet-domain name; ``fuel_ore`` -> ``ore`` is the cargo-domain alias).
+        "materials": {"fuel_ore": 20000, "equipment": 10000},
     },
     # planetary_defense_grid (defense.md §"Defense grid"): citadel L3+; 200,000 cr
     # + 15,000 equipment; 96h; a DRONE-DAMAGE MODIFIER (+15% drone damage &
@@ -117,6 +130,13 @@ DEFENSE_BUILDINGS = {
         # unkeyed fallback to spec["cost"] is only correct here because count=1
         # (L1) IS spec["cost"] (200k).  Any count not keyed falls back to 200k.
         "tier_costs": {2: 300000},               # L2 (2nd unit): 300k cr (defense.md)
+        # L1 (count=1): 15,000 equipment (defense.md §"Defense grid": "200,000 cr +
+        # 15,000 equipment"). L2 (count=2, 300k cr): canon states credits only for
+        # the upgrade ("Upgradable to L2 ... for 300k cr") — no equipment listed, so
+        # count=2 is intentionally absent from ``tier_materials`` (falls back to {}
+        # below, not to the L1 ``materials`` — see build_defense_building's lookup).
+        "materials": {"equipment": 15000},       # L1 (count=1) fallback
+        "tier_materials": {2: {}},               # L2 (2nd unit): credits-only
         "build_hours": 96,                       # per-unit build time (L1 and L2)
         "effects": {
             # L1 (count=1): +15% drone damage and accuracy.
@@ -149,11 +169,16 @@ DEFENSE_BUILDINGS = {
         "max_count": {3: 1, 4: 2, 5: 3},
         "cost": 100000,
         "build_hours": 48,
+        # defense.md §"Mine fields": "100,000 cr + 10,000 equipment per minefield" —
+        # SEC-DEFBUILD-MATERIALS: now actually charged by build_defense_building
+        # (mirrors the ``effects.equipment_cost`` metadata below, which stays for
+        # admin_colonization.py's existing reader; this is the enforcement copy).
+        "materials": {"equipment": 10000},
         "effects": {
             "weapon_kind": "proximity_mine",
             "mines_per_field": 20,
-            # Equipment material requirement recorded as catalog metadata
-            # (build_defense_building charges credits only, like rail_gun).
+            # Equipment material requirement recorded as catalog metadata (also
+            # read by admin_colonization.py's genesis seeding path).
             "equipment_cost": 10000,
             # WO-P5-planets-minefield-wiring: canon raw per-mine-impact damage
             # (defense.md §"Mine fields": "deal 500-1,500 hull damage per mine
@@ -405,6 +430,44 @@ def citadel_passive_defense_rating(planet) -> int:
     return base + int(0.5 * delta)
 
 
+# ---------------------------------------------------------------------------
+# SEC-DEFBUILD-MATERIALS helpers — free functions (not CitadelService methods)
+# to keep build_defense_building's own cyclomatic complexity from compounding
+# every time a new gate is added to it (C901). Mirror planet_grid.py's
+# module-level ``_charge_materials`` shape.
+# ---------------------------------------------------------------------------
+def _defense_building_materials(spec: Dict[str, Any], count_to_be: int) -> Dict[str, int]:
+    """The material cost for the unit about to be built. ``tier_materials``
+    (mirroring ``tier_costs``) overrides the flat ``materials`` for a given
+    unit count; a tiered unit with no entry (e.g. planetary_defense_grid's L2,
+    credits-only per canon) charges nothing, NOT the lower tier's amount."""
+    return spec.get("tier_materials", {}).get(count_to_be, spec.get("materials", {})) or {}
+
+
+def _missing_material(planet: "Planet", materials: Dict[str, int]):
+    """None if ``planet`` can afford every material in ``materials``, else the
+    first shortfall as ``(material, required, available)``. Dict iteration
+    order decides which shortfall is reported when several are short."""
+    for material, required in materials.items():
+        need = int(required or 0)
+        if need <= 0:
+            continue
+        have = getattr(planet, material, None)
+        if not isinstance(have, int) or have < need:
+            return material, need, int(have or 0)
+    return None
+
+
+def _charge_defense_materials(planet: "Planet", materials: Dict[str, int]) -> None:
+    """Debit ``planet``'s stockpile columns by ``materials``. Caller has already
+    confirmed affordability via ``_missing_material`` — this never raises for
+    an insufficient balance, it just subtracts."""
+    for material, required in materials.items():
+        need = int(required or 0)
+        if need > 0:
+            setattr(planet, material, int(getattr(planet, material)) - need)
+
+
 class CitadelService:
     def __init__(self, db: Session):
         self.db = db
@@ -502,16 +565,15 @@ class CitadelService:
         next_level = current_level + 1
         next_info = CITADEL_LEVELS[next_level]
 
-        # CRT-1 SIZE-GATE (Max-ruled 2026-06-21): a planet's grid can only physically pack the
+        # CRT-1 SIZE-GATE (human-ruled 2026-06-21): a planet's grid can only physically pack the
         # key-building footprint up to max_citadel_level_for_size(size). Reject an upgrade beyond
         # that ceiling BEFORE charging credits/resources or starting the timer — otherwise the
         # authoritative settle() derive would just refuse to confirm the new level and the player
         # would pay for a level the planet cannot hold.
-        from src.services.structures import max_citadel_level_for_size
+        from src.services.structures import max_citadel_level_for_size, plot_count_for_size
         size_cap = max_citadel_level_for_size(getattr(planet, "size", 5) or 5)
         if next_level > size_cap:
-            plot_count = (4 + 2 * (getattr(planet, "size", 5) or 5))
-            plot_count = max(6, min(30, plot_count))
+            plot_count = plot_count_for_size(getattr(planet, "size", 5) or 5)
             return {
                 "success": False,
                 "message": (
@@ -672,6 +734,142 @@ class CitadelService:
             "citadel_level": current_level,
         }
 
+    def handle_prerequisite_loss(
+        self,
+        planet_id: uuid.UUID,
+        lost_building_key: str,
+        lost_building_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Auto-cancel an in-progress citadel upgrade when a required defensive
+        building/shield tier it depends on goes offline mid-upgrade (ADR-0059
+        N-F3 / N-V5; citadels.md "Mid-upgrade cancellation flow").
+
+        CALLER CONTRACT: the caller (a future combat/destruction/repair-loss
+        producer — none exists yet in this codebase) applies the prerequisite-
+        loss state change (e.g. decrements `active_events['defense_buildings']`,
+        or drops `defense_shields`) on the SAME `Planet` row in the SAME
+        transaction BEFORE calling this method. This method only flushes (never
+        commits) so the caller's eventual commit is the single atomic boundary
+        covering both the loss and the cancellation+refund (canon requirement #1).
+
+        Re-evaluates the in-progress upgrade's prerequisites fresh via
+        `_check_upgrade_prereqs` rather than assuming the named building is
+        automatically disqualifying: an "any" (OR) mode level (L3: Defense Grid
+        OR Turret Network) stays satisfied if the OTHER leg is still up, so
+        losing one specific building must NOT cancel that upgrade.
+
+        Returns `{"success": False, ...}` (not an error — callers don't need to
+        branch on it) when there's no upgrade in progress, the target level has
+        no prerequisites, or the prerequisites are still satisfied post-loss.
+        On an actual cancellation returns `{"success": True, ...}` with the
+        canon `cancelled_upgrade` / `reason` / `lost_building` / `credits_refunded`
+        fields. The citadel's LEVEL itself is untouched — only forward
+        progression stops; passive defense bonuses at the current level persist.
+        """
+        planet = (
+            self.db.query(Planet)
+            .filter(Planet.id == planet_id)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
+        if not planet:
+            return {"success": False, "message": "Planet not found"}
+
+        if not getattr(planet, "citadel_upgrading", False):
+            return {"success": False, "message": "No citadel upgrade is in progress"}
+
+        current_level = getattr(planet, "citadel_level", 0) or 0
+        target_level = current_level + 1
+        spec = CITADEL_UPGRADE_PREREQS.get(target_level)
+        if not spec:
+            return {"success": False, "message": "Upgrade target level has no defensive prerequisites"}
+
+        # Fresh re-evaluation of the CURRENT (post state-change) planet row is
+        # the authoritative signal — not an assumption that losing the named
+        # building always disqualifies an "any"-mode level.
+        prereq_failure = self._check_upgrade_prereqs(planet, target_level)
+        if prereq_failure is None:
+            return {
+                "success": False,
+                "message": "Prerequisites for the in-progress upgrade are still satisfied",
+            }
+
+        target_info = CITADEL_LEVELS.get(target_level, {})
+        target_name = target_info.get("name", f"level {target_level}")
+
+        resolved_name = lost_building_name
+        if not resolved_name:
+            for req in spec["requirements"]:
+                if req.get("key") == lost_building_key:
+                    resolved_name = req.get("name")
+                    break
+        if not resolved_name:
+            resolved_name = DEFENSE_BUILDINGS.get(lost_building_key, {}).get("name", lost_building_key)
+
+        # Full refund (canon: "full refund, not 50% — the loss event was
+        # external, not a player-initiated cancel"). Credits back to the
+        # player's wallet, planet resources back onto the planet — the exact
+        # inverse of the start_upgrade deduction. Uses the same
+        # target_info-derived cost cancel_upgrade already reads (the optional
+        # promotion_levy empire surcharge is 0 today — EMPIRE_SCALE_K=0 — so
+        # this equals what was actually charged; a pre-existing simplification
+        # shared with cancel_upgrade, not new debt introduced here).
+        credits_refund = int(target_info.get("upgrade_cost", 0) or 0)
+        resource_refund = dict(target_info.get("resource_cost", {}) or {})
+
+        player = None
+        if credits_refund > 0:
+            player = (
+                self.db.query(Player)
+                .filter(Player.id == planet.owner_id)
+                .populate_existing()
+                .with_for_update()
+                .first()
+            )
+            if player:
+                player.credits += credits_refund
+
+        for resource, amount in resource_refund.items():
+            current_value = getattr(planet, resource, 0) or 0
+            setattr(planet, resource, current_value + amount)
+
+        planet.citadel_upgrading = False
+        planet.citadel_upgrade_started_at = None
+        planet.citadel_upgrade_complete_at = None
+
+        self.db.flush()
+
+        logger.info(
+            f"Planet {planet_id} citadel upgrade to level {target_level} auto-cancelled: "
+            f"prerequisite {resolved_name!r} went offline; refunded {credits_refund} credits "
+            f"+ {resource_refund}"
+        )
+
+        now = datetime.now(UTC)
+        if player is None:
+            player = self.db.query(Player).filter(Player.id == planet.owner_id).first()
+
+        _dispatch_upgrade_cancelled_event(
+            self.db, planet, target_name, resolved_name, credits_refund, now,
+        )
+        if player is not None:
+            _dispatch_prerequisite_loss_narration(player, target_name, resolved_name)
+
+        return {
+            "success": True,
+            "message": (
+                f"Upgrade to {target_name} was auto-cancelled — {resolved_name} is offline. "
+                f"{credits_refund:,} cr refunded."
+            ),
+            "citadel_level": current_level,
+            "cancelled_upgrade": target_name,
+            "reason": "prerequisite_building_offline",
+            "lost_building": resolved_name,
+            "credits_refunded": credits_refund,
+            "resources_refunded": resource_refund,
+        }
+
     def check_upgrade_completion(self, planet_id: uuid.UUID) -> Dict[str, Any]:
         """Check if an in-progress citadel upgrade has completed, and apply it if so."""
         planet = self.db.query(Planet).filter(Planet.id == planet_id).first()
@@ -700,7 +898,7 @@ class CitadelService:
             current_level = getattr(planet, "citadel_level", 0) or 0
             new_level = current_level + 1
 
-            # CRT-1 PLACE→DERIVE→CACHE (Max-ruled 2026-06-21): instead of writing the scalar
+            # CRT-1 PLACE→DERIVE→CACHE (human-ruled 2026-06-21): instead of writing the scalar
             # citadel_level directly, PLACE the new tier's key buildings on the grid, then DERIVE the
             # level back from the grid and CACHE it on the scalar column. derive_citadel_level is the
             # faithful inverse of the ladder, so on a size-packable planet the cached level == new_level
@@ -1186,11 +1384,15 @@ class CitadelService:
             )
             if reason == "prerequisite_building_offline":
                 msg = (
-                    f"Upgrade to {level_name_str} requires {name} to be operational, "
-                    f"but it is still under construction."
+                    f"ERR_CITADEL_PREREQUISITE_OFFLINE: Upgrade to {level_name_str} requires "
+                    f"{name} to be operational, but it is still under construction."
                 )
-            else:
-                msg = f"Upgrade to {level_name_str} requires {name} — build it first."
+                return {
+                    "success": False, "reason": reason,
+                    "error_code": "ERR_CITADEL_PREREQUISITE_OFFLINE",
+                    "message": msg,
+                }
+            msg = f"Upgrade to {level_name_str} requires {name} — build it first."
             return {"success": False, "reason": reason, "message": msg}
 
         if req["type"] == "shield":
@@ -1206,14 +1408,18 @@ class CitadelService:
             )
             if reason == "prerequisite_building_offline":
                 msg = (
-                    f"Upgrade to {level_name_str} requires {name}, but the shield "
-                    f"generator is still upgrading (current: L{current})."
+                    f"ERR_CITADEL_PREREQUISITE_OFFLINE: Upgrade to {level_name_str} requires "
+                    f"{name}, but the shield generator is still upgrading (current: L{current})."
                 )
-            else:
-                msg = (
-                    f"Upgrade to {level_name_str} requires {name} "
-                    f"(current shield generator: L{current})."
-                )
+                return {
+                    "success": False, "reason": reason,
+                    "error_code": "ERR_CITADEL_PREREQUISITE_OFFLINE",
+                    "message": msg,
+                }
+            msg = (
+                f"Upgrade to {level_name_str} requires {name} "
+                f"(current shield generator: L{current})."
+            )
             return {"success": False, "reason": reason, "message": msg}
 
         # Unknown requirement type: log a warning and return a blocking failure.
@@ -1492,10 +1698,12 @@ class CitadelService:
         player_id: uuid.UUID,
         building_type: str,
     ) -> Dict[str, Any]:
-        """Construct a defense building on a planet, gated by citadel level and credits.
+        """Construct a defense building on a planet, gated by citadel level, research,
+        credits, and per-planet materials (SEC-DEFBUILD-MATERIALS).
 
-        Validates the building type, citadel prerequisites, max count, and player funds
-        before recording the building and deducting credits.
+        Validates the building type, research-node gate, citadel prerequisites, max
+        count, and player funds/planet materials before recording the building and
+        deducting credits + materials.
         """
         # --- Validate building type ---
         if building_type not in DEFENSE_BUILDINGS:
@@ -1553,7 +1761,7 @@ class CitadelService:
                 ),
             }
 
-        # --- Max count check (operational + in-progress reserve the slots) ---
+        # --- human count check (operational + in-progress reserve the slots) ---
         max_at_level = 0
         for lvl in sorted(spec["max_count"]):
             if current_level >= lvl:
@@ -1582,6 +1790,23 @@ class CitadelService:
         count_to_be = current_count + queued_count + 1
         unit_cost = spec.get("tier_costs", {}).get(count_to_be, spec["cost"])
 
+        # --- Material cost (SEC-DEFBUILD-MATERIALS) ---
+        # Mirrors planet_grid.py's place_building: the per-planet MATERIALS canon
+        # requires alongside credits were catalogued in DEFENSE_BUILDINGS but never
+        # charged — a free-material construction gap. Checked against the
+        # already-locked ``planet`` row (locked at function entry) BEFORE the
+        # player-credit lock, so an unaffordable build fails without touching
+        # credits at all. See ``_defense_building_materials``/``_missing_material``.
+        unit_materials = _defense_building_materials(spec, count_to_be)
+
+        shortfall = _missing_material(planet, unit_materials)
+        if shortfall:
+            material, need, have = shortfall
+            return {
+                "success": False,
+                "message": f"Insufficient {material}. Need {need:,}, have {have:,}.",
+            }
+
         # --- Lock player for credit deduction ---
         player = self.db.query(Player).filter(Player.id == player_id).populate_existing().with_for_update().first()
         if not player:
@@ -1595,8 +1820,9 @@ class CitadelService:
                 ),
             }
 
-        # --- Execute construction: deduct credits and enqueue a timed build ---
+        # --- Execute construction: deduct credits + materials, enqueue a timed build ---
         player.credits -= unit_cost
+        _charge_defense_materials(planet, unit_materials)
 
         complete_at = now + timedelta(hours=spec["build_hours"])
         queue.append({
@@ -1632,7 +1858,93 @@ class CitadelService:
             "operational_count": current_count,
             "max_count": max_at_level,
             "credits_deducted": unit_cost,
+            "materials_deducted": dict(unit_materials or {}),
             "player_credits": player.credits,
             "build_hours": spec["build_hours"],
             "effects": spec["effects"],
         }
+
+
+# ---------------------------------------------------------------------------
+# N-F3 auto-cancel realtime + ARIA dispatch (module-level, mirrors
+# medal_service._dispatch_medal_awarded_event / movement_service's P-A5 hook).
+# ---------------------------------------------------------------------------
+
+def _dispatch_upgrade_cancelled_event(
+    db: Session,
+    planet: Planet,
+    cancelled_upgrade_name: str,
+    lost_building_name: str,
+    credits_refunded: int,
+    at: datetime,
+) -> None:
+    """Schedule the async player-scoped ``citadel.upgrade_cancelled`` WS push
+    (ADR-0059 N-F3; citadels.md "Mid-upgrade cancellation flow" #3 — exact
+    payload shape). Mirrors medal_service._dispatch_medal_awarded_event:
+    resolve the owner's User.id, build the canon payload, grab the running
+    loop, schedule with loop.create_task so it never blocks the caller's
+    transaction, and swallow every failure (no loop, no socket) so a quiet
+    connection can never affect the already-flushed cancellation.
+    """
+    try:
+        user_id = (
+            db.query(Player.user_id).filter(Player.id == planet.owner_id).scalar()
+        )
+        if not user_id:
+            return
+
+        payload = {
+            "type": "citadel.upgrade_cancelled",
+            "planet_id": str(planet.id),
+            "cancelled_upgrade": cancelled_upgrade_name,
+            "reason": "prerequisite_building_offline",
+            "lost_building": lost_building_name,
+            "credits_refunded": int(credits_refunded),
+            "at": at.isoformat(),
+        }
+
+        import asyncio
+
+        from src.services.websocket_service import connection_manager
+
+        loop = asyncio.get_running_loop()
+        loop.create_task(connection_manager.send_personal_message(str(user_id), payload))
+    except Exception:
+        logger.debug(
+            "Skipped citadel.upgrade_cancelled WS notice for planet %s (no loop or socket)",
+            planet.id, exc_info=True,
+        )
+
+
+def _dispatch_prerequisite_loss_narration(
+    player: Player, cancelled_upgrade_name: str, lost_building_name: str
+) -> None:
+    """Trigger ARIA's N-F3 narration line for the auto-cancellation (citadels.md
+    #4: "Your <target_level> upgrade was cancelled — <lost_building> is offline.
+    Rebuild it to resume the upgrade."). Mirrors movement_service's P-A5 hook:
+    record_event through the shared narration kernel (dedupe/ceiling apply),
+    dispatch the line over WS only when accepted+immediate. Best-effort —
+    swallowed on any failure so a narration hiccup can never affect the
+    already-flushed cancellation.
+    """
+    try:
+        from src.services.aria_narration_service import (
+            dispatch_narration_push,
+            get_aria_narration_service,
+        )
+        # dedupe_key is unique per occurrence (a fresh cancellation is always a
+        # distinct, always-deliverable notice — never suppressed as a repeat).
+        dedupe_key = f"{cancelled_upgrade_name}:{lost_building_name}:{datetime.now(UTC).timestamp()}"
+        narration_line = get_aria_narration_service().record_event(
+            "P-F9",
+            player.id,
+            dedupe_key=dedupe_key,
+            context={
+                "cancelled_upgrade": cancelled_upgrade_name,
+                "lost_building": lost_building_name,
+            },
+        )
+        if narration_line is not None and narration_line.delivered_immediately:
+            dispatch_narration_push(player, narration_line)
+    except Exception:
+        logger.debug("ARIA narration hook failed (P-F9)", exc_info=True)

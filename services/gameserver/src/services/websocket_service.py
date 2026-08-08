@@ -1,10 +1,9 @@
 import json
 import asyncio
 from typing import Dict, List, Set, Optional, Any
-from fastapi import WebSocket, WebSocketDisconnect
+from fastapi import WebSocket
 from datetime import datetime, UTC
 import logging
-from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
@@ -970,10 +969,18 @@ class ConnectionManager:
         if sector_id not in self.sector_connections:
             return []
 
+        # Local import (WO-API-PHASE2 Lane B6): a small pure module, kept
+        # function-scoped rather than a top-level import so this heavily-
+        # imported service module doesn't pull in npc_spawn_service's much
+        # heavier model/DB import surface just for one classification call
+        # (presence_classification imports LAWFUL_TARGET_THRESHOLD from it).
+        from src.services.presence_classification import player_rep_bucket
+
         players = []
         for user_id in self.sector_connections[sector_id]:
             metadata = self.connection_metadata.get(user_id, {})
             user_data = metadata.get("user_data", {})
+            reputation_tier = user_data.get("reputation_tier", "Neutral")
             players.append({
                 "user_id": user_id,
                 "username": user_data.get("username"),
@@ -981,7 +988,11 @@ class ConnectionManager:
                 "last_heartbeat": metadata.get("last_heartbeat", datetime.now(UTC)).isoformat(),
                 # Reputation and Ranking for Comms display
                 "personal_reputation": user_data.get("personal_reputation", 0),
-                "reputation_tier": user_data.get("reputation_tier", "Neutral"),
+                "reputation_tier": reputation_tier,
+                # Same red/gray/blue bucket REST players_present now carries
+                # (intrasystem_movement_service.enrich_presence_with_live_pose)
+                # so both presence paths agree.
+                "rep_bucket": player_rep_bucket(reputation_tier),
                 "name_color": user_data.get("name_color", "#FFFFFF"),
                 "military_rank": user_data.get("military_rank", "Recruit")
             })
@@ -1221,9 +1232,8 @@ async def handle_websocket_message(user_id: str, message_data: Dict[str, Any]):
             # push per FINDINGS.md 2026-06-12). This is live-only chat: if
             # the recipient isn't connected right now, nothing is stored —
             # the sender is pointed at the persistent mailbox instead.
-            # Payload key / echo semantics are NO-CANON (no wire-format spec
-            # exists for this room yet); kept minimal, flagged to the
-            # Orchestrator.
+            # Wire frame (`target_user_id` + echo-to-sender) is now canon in
+            # OPERATIONS/realtime.md § Private DM wire frame (2026-08-06).
             target_user_id = str(message_data.get("target_user_id") or "").strip()
             if not target_user_id or target_user_id == user_id:
                 await connection_manager.send_personal_message(user_id, {
@@ -1460,8 +1470,7 @@ async def handle_aria_chat(user_id: str, message_data: Dict[str, Any]):
 
     try:
         from src.core.database import AsyncSessionLocal
-        from src.services.enhanced_ai_service import EnhancedAIService, ConversationContext
-        from src.models.enhanced_ai_models import SecurityLevel
+        from src.services.enhanced_ai_service import EnhancedAIService
 
         async with AsyncSessionLocal() as adb:
             ai_service = EnhancedAIService(adb)
@@ -1496,7 +1505,7 @@ async def handle_aria_chat(user_id: str, message_data: Dict[str, Any]):
                 # WO-ARIA-CHAT-LLM: absent from result (== None here)
                 # whenever ARIA_LLM_CHAT_ENABLED is off -- the flag-off pin.
                 "mode": result.get("mode"),
-                # Max's GO amendment: a Resonance-ledger accounting SEAM --
+                # human's GO amendment: a Resonance-ledger accounting SEAM --
                 # hook point only, always None until a future post-ADR-0092
                 # WO builds the ledger itself.
                 "ledger_entry": result.get("ledger_entry"),

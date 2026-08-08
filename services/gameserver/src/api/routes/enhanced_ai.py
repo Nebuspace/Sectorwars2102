@@ -14,7 +14,7 @@ Security Features:
 
 import logging
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import List, Dict, Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Body, status
@@ -24,17 +24,13 @@ from sqlalchemy.exc import SQLAlchemyError
 from pydantic import BaseModel, Field, validator
 
 from src.core.database import get_async_session
-from src.auth.dependencies import get_current_player, get_current_user
+from src.auth.dependencies import get_current_player
 from src.models.player import Player
 from src.services.enhanced_ai_service import (
-    EnhancedAIService, AISystemType, CrossSystemRecommendation,
-    ConversationContext, RecommendationPriority, RiskAssessment
+    EnhancedAIService, AISystemType
 )
 from src.services.ai_security_service import AISecurityService, get_security_service
 from src.services.aria_data_index_service import ARIADataIndexService
-from src.models.enhanced_ai_models import AIComprehensiveAssistant, SecurityLevel
-from src.utils.validation import validate_uuid
-from src.middleware.rate_limit import RateLimitMiddleware
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/ai", tags=["Enhanced AI"])
@@ -99,6 +95,26 @@ class ConversationRequest(BaseModel):
         if v not in valid_types:
             raise ValueError(f"Invalid conversation type: {v}")
         return v
+
+
+class TradeCascadeRequest(BaseModel):
+    """Request model for ARIA multi-hop trade cascade planning."""
+    start_sector_id: str = Field(
+        ...,
+        min_length=1,
+        description="Sector UUID to start the cascade from (must be explored)",
+    )
+    target_profit: float = Field(
+        ...,
+        gt=0,
+        description="Minimum total profit the cascade should aim for",
+    )
+    max_jumps: int = Field(
+        default=5,
+        ge=1,
+        le=20,
+        description="Maximum hops through explored sectors",
+    )
 
 
 class AssistantConfigRequest(BaseModel):
@@ -181,7 +197,7 @@ class ConversationResponse(BaseModel):
     # is off (the pinned flag-off contract) or on any error-path response
     # built before EnhancedAIService ever ran.
     mode: Optional[str] = None
-    # Max's GO amendment on WO-ARIA-CHAT-LLM: a Resonance-ledger accounting
+    # human's GO amendment on WO-ARIA-CHAT-LLM: a Resonance-ledger accounting
     # SEAM -- a documented hook point only. The ledger itself is a future
     # post-ADR-0092 WO; this field is deliberately always None today.
     ledger_entry: Optional[Any] = None
@@ -781,10 +797,13 @@ async def cleanup_ai_data(
     """
     try:
         ai_service = EnhancedAIService(db)
-        
-        # Only allow for admin users (implement admin check here)
-        # For now, any authenticated user can trigger cleanup for their own data
-        
+
+        # SECURITY / honesty: section banner + OpenAPI say "Admin only", but
+        # auth is plain `validate_ai_access` (any AI-eligible player). The call
+        # below is GLOBAL DELETE (ai_conversation_logs / ai_cross_system_knowledge /
+        # ai_security_audit_log) — not scoped to the caller. Do NOT "fix" the
+        # gate here without human OK — Pending DECISION
+        # `enhanced-ai-cleanup-admin-gate` (HIGH / safety-list). Diagnose-only.
         deleted_count = await ai_service.cleanup_expired_data()
         
         await db.commit()
@@ -800,6 +819,59 @@ async def cleanup_ai_data(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Data cleanup failed"
+        )
+
+
+# =============================================================================
+# TRADE CASCADE (WO-PULL-ARIA-CASCADE-ENTRYPOINT)
+# =============================================================================
+
+@router.post(
+    "/trade-cascade",
+    summary="Plan an explored-sector trade cascade",
+    description=(
+        "ARIA multi-hop trade cascade through ONLY sectors this player has "
+        "explored (aria-companion.md Route optimization). Returns a cascade "
+        "plan or an explored-space refusal payload — never invents unknown "
+        "space routes."
+    ),
+)
+async def plan_trade_cascade(
+    request: TradeCascadeRequest = Body(...),
+    player_id: str = Depends(validate_ai_access),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Owner-only by construction: player_id comes from validate_ai_access
+    (JWT), never from the request body. Frontier refusal is service-owned —
+    insufficient exploration / no profitable route return structured error
+    dicts (HTTP 200 with error key) rather than inventing routes."""
+    try:
+        from src.services.aria_personal_intelligence_service import (
+            get_aria_intelligence_service,
+        )
+
+        aria_service = get_aria_intelligence_service()
+        result = await aria_service.plan_trade_cascade(
+            player_id,
+            request.start_sector_id,
+            request.target_profit,
+            request.max_jumps,
+            db,
+        )
+        await db.commit()
+        if result is None:
+            return {
+                "error": "no_exploration_map",
+                "message": (
+                    "Explore more sectors to plan trade routes"
+                ),
+            }
+        return result
+    except Exception as e:
+        logger.error(f"Error planning trade cascade: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="ARIA trade cascade temporarily unavailable",
         )
 
 

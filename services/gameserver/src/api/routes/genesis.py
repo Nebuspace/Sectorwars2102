@@ -9,7 +9,7 @@ from typing import Optional
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from src.core.database import get_db
 from src.auth.dependencies import get_current_player
@@ -22,37 +22,6 @@ router = APIRouter(prefix="/genesis", tags=["genesis"])
 # ------------------------------------------------------------------ #
 #  Request / Response Models
 # ------------------------------------------------------------------ #
-
-class GenesisDeployRequest(BaseModel):
-    """Request to deploy a genesis device."""
-    sector_id: int = Field(..., description="Target sector number")
-    tier: str = Field(
-        ...,
-        pattern="^(basic|enhanced|advanced)$",
-        description="Genesis device tier: basic, enhanced, or advanced",
-    )
-
-
-class GenesisDeployResponse(BaseModel):
-    """Response from deploying a genesis device."""
-    success: bool
-    planet_id: str
-    planet_name: str
-    planet_type: str
-    genesis_tier: str
-    habitability_score: int
-    resource_richness: float
-    size: int
-    formation_status: str
-    formation_started_at: str
-    formation_complete_at: str
-    formation_hours_remaining: float
-    credits_spent: int
-    credits_remaining: int
-    genesis_purchases_this_week: int
-    genesis_purchases_remaining: int
-    ship_sacrificed: Optional[dict] = None
-
 
 class FormationStatusResponse(BaseModel):
     """Response for formation status check."""
@@ -90,6 +59,10 @@ class AvailablePurchasesResponse(BaseModel):
     formation_hours: int
     tiers: dict
     reputation_gate: ReputationGate
+    # Flat one-time acquisition price for one Genesis Device (distinct from
+    # tiers.*.cost, the deploy sequence cost) — DRY-sourced from the same
+    # GENESIS_DEVICE_PRICE constant POST /player/genesis/purchase charges.
+    device_acquisition_cost: int
 
 
 class GenesisQuoteResponse(BaseModel):
@@ -110,42 +83,6 @@ class GenesisQuoteResponse(BaseModel):
 # ------------------------------------------------------------------ #
 #  Endpoints
 # ------------------------------------------------------------------ #
-
-@router.post("/deploy", response_model=GenesisDeployResponse)
-async def deploy_genesis_device(
-    request: GenesisDeployRequest,
-    player: Player = Depends(get_current_player),
-    db: Session = Depends(get_db),
-):
-    """
-    Deploy a genesis device to create a new planet in the specified sector.
-
-    The player must:
-    - Be in the target sector
-    - Have sufficient credits for the chosen tier
-    - Not have exceeded the weekly purchase limit (3 per week)
-    - Not be docked at a station or landed on a planet
-
-    For the **advanced** tier, the player's current colony ship is sacrificed.
-
-    The newly created planet enters a "forming" state and becomes usable
-    after the formation period (default 48 hours).
-    """
-    service = GenesisService(db)
-
-    try:
-        result = service.deploy_genesis_device(
-            player_id=player.id,
-            sector_id=request.sector_id,
-            tier=request.tier,
-        )
-        return result
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        )
-
 
 @router.get("/status/{planet_id}", response_model=FormationStatusResponse)
 async def get_formation_status(

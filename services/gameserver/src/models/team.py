@@ -1,19 +1,14 @@
 import uuid
 import enum
-from datetime import datetime
-from typing import List, Optional, Dict, Any, TYPE_CHECKING
-from sqlalchemy import Boolean, Column, DateTime, String, Integer, Float, ForeignKey, Text, func
+from typing import TYPE_CHECKING
+from sqlalchemy import Boolean, Column, DateTime, String, Integer, Float, Text, func
 from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY
 from sqlalchemy.orm import relationship
 
 from src.core.database import Base
 
 if TYPE_CHECKING:
-    from src.models.player import Player
-    from src.models.reputation import TeamReputation
-    from src.models.sector import Sector
-    from src.models.combat_log import CombatLog
-    from src.models.team_member import TeamMember
+    pass
 
 
 class TeamReputationHandling(enum.Enum):
@@ -37,7 +32,15 @@ class Team(Base):
     leader_id = Column(UUID(as_uuid=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
-    reputation_calculation_method = Column(String(20), nullable=False, default="AVERAGE")
+    reputation_calculation_method = Column(
+        String(20),
+        nullable=False,
+        default="AVERAGE",
+        # DEPRECATED (DECISIONS.md team-reputation-calculation-method-canonical,
+        # 2026-08-04): TeamReputation.calculation_method is the sole SSOT.
+        # This Team-level duplicate is retained for additive-schema safety
+        # (no DROP without human GO) and must not be read or written by services.
+    )
 
     # Team properties
     tag = Column(String(10), nullable=True)  # Short team tag for display

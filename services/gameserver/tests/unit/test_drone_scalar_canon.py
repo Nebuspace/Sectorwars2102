@@ -185,7 +185,7 @@ def test_attacker_side_defense_drones_reads_are_fully_flipped():
     # debits — each debit line reads attacker.attack_drones twice, once as
     # the assignment target and once inside max(); :614, :1133, :1468,
     # :1606, :1756 CombatLog snapshots).
-    assert _attribute_read_count(tree, "attacker", "attack_drones") == 20
+    assert _attribute_read_count(tree, "attacker", "attack_drones") == 21
 
 
 def test_defender_side_defense_drones_reads_are_untouched():
@@ -202,7 +202,7 @@ def test_combat_log_attacker_drones_snapshot_reads_attack_drones():
     planet, port, plus attack_npc_ship) snapshot attacker_drones= from
     attacker.attack_drones -- a real Player row.
 
-    The 6th site, npc_attack_player (WO-CMB-NPC-INITIATED-1, Max ruling
+    The 6th site, npc_attack_player (WO-CMB-NPC-INITIATED-1, human ruling
     2026-07-10 -- the symmetric NPC-initiated-attack mirror of
     attack_npc_ship), is the deliberate exception: there IS no `attacker`
     Player variable in that function at all (attacker=None is passed to
@@ -288,6 +288,7 @@ def _armory_player(*, attack_drones=0):
         is_docked=True,
         current_port_id=uuid.uuid4(),
         current_ship_id=uuid.uuid4(),
+        settings={},
     )
 
 

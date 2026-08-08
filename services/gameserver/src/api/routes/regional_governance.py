@@ -3,7 +3,7 @@ Regional Governance API Routes
 Provides endpoints for regional owners to manage their territories, governance, and policies
 """
 
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 from sqlalchemy import select, update, func, and_, or_
@@ -13,14 +13,13 @@ from datetime import datetime, timedelta
 import uuid
 
 from src.core.database import get_async_session, get_db
-from src.auth.dependencies import get_current_user, require_auth
+from src.auth.dependencies import require_auth
 from src.models.user import User
 from src.models.region import (
     Region, RegionalMembership, RegionalPolicy, RegionalElection, 
-    RegionalVote, RegionalTreaty, GovernanceType, PolicyStatus, ElectionStatus
+    RegionalTreaty, PolicyStatus, ElectionStatus
 )
 from src.models.player import Player
-from src.models.sector import Sector
 from src.models.planet import Planet
 from src.models.station import Station
 from src.models.ship import Ship
@@ -1374,7 +1373,7 @@ async def create_policy_proposal_for_member(
 # Brief: audit/design-briefs/invite-link-onramp.md §4.2.
 #
 # AUTH-FREE infrastructure: these endpoints manage invite CODES; they do NOT
-# create accounts (that is WO-IL6, Max-gated). Every endpoint is owner-scoped:
+# create accounts (that is WO-IL6, human-gated). Every endpoint is owner-scoped:
 # ownership of THIS region_id is re-checked SERVER-SIDE on every call via the
 # NEW region_id-keyed RegionInviteService.owns_region (NOT the single-region
 # verify_region_owner above). The client-supplied region_id is never trusted —

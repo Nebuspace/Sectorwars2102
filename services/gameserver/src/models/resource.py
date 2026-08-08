@@ -1,10 +1,7 @@
 import uuid
 import enum
-from datetime import datetime
-from typing import List, Dict, Optional, Any
-from sqlalchemy import Boolean, Column, DateTime, String, Integer, Float, ForeignKey, Enum, func
-from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY
-from sqlalchemy.orm import relationship
+from sqlalchemy import Boolean, Column, DateTime, String, Integer, Float, Enum, func
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 
 from src.core.database import Base
 
@@ -34,10 +31,10 @@ class ResourceType(enum.Enum):
 
     See /DOCS/STATUS/COMMODITY_NAMING_ANALYSIS.md for detailed analysis.
 
-    Categories:
-    - Core Commodities (7): Basic trading resources
+    Categories (registry category strings — see resource_registry_seeder):
+    - Core Commodities (7): Basic station-traded resources
     - Strategic Resources (4): Advanced gameplay materials
-    - Rare Materials (2): Endgame high-value materials
+    - Rare Materials (3): Endgame finds + precious_metals (Secondary mining drop)
     """
 
     # Core Commodities (7)
@@ -58,7 +55,9 @@ class ResourceType(enum.Enum):
     QUANTUM_CRYSTALS = "QUANTUM_CRYSTALS"
     COMBAT_DRONES = "COMBAT_DRONES"
 
-    # Rare Materials (2)
+    # Rare Materials (3) — PRECIOUS_METALS is CATEGORY_RARE in the seeder
+    # (priced Secondary mining drop); prismatic_ore / lumen_crystals unpriced.
+    PRECIOUS_METALS = "PRECIOUS_METALS"
     PRISMATIC_ORE = "PRISMATIC_ORE"
     PHOTONIC_CRYSTALS = "PHOTONIC_CRYSTALS"
 
@@ -136,39 +135,9 @@ class Resource(Base):
         return f"<Resource {self.name} ({self.type.name}) - {self.quality.name} quality>"
 
 
-# Market model to track resource transactions and prices
-class Market(Base):
-    __tablename__ = "markets"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    last_updated = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
-    
-    # Market location
-    station_id = Column(UUID(as_uuid=True), ForeignKey("stations.id", ondelete="CASCADE"), nullable=False)
-    
-    # Market attributes
-    specialization = Column(String, nullable=True)  # What this market specializes in
-    size = Column(Integer, nullable=False, default=5)  # 1-10 scale
-    tax_rate = Column(Float, nullable=False, default=0.05)  # 5% default
-    economic_status = Column(String, nullable=False, default="stable")  # boom, bust, stable, etc.
-    
-    # Inventory and pricing
-    resource_availability = Column(JSONB, nullable=False, default={})  # Resource types to quantity
-    resource_prices = Column(JSONB, nullable=False, default={})  # Resource types to price
-    price_modifiers = Column(JSONB, nullable=False, default={})  # Factors affecting prices
-    
-    # Transaction history
-    daily_volume = Column(JSONB, nullable=False, default={})  # Daily transaction volume
-    price_history = Column(JSONB, nullable=False, default=[])  # Historical price records
-    
-    # Special features
-    black_market = Column(Boolean, nullable=False, default=False)
-    special_offers = Column(JSONB, nullable=False, default=[])
-    trade_restrictions = Column(JSONB, nullable=False, default=[])
-    
-    # Relationships
-    station = relationship("Station", back_populates="market")
-
-    def __repr__(self):
-        return f"<Market at {self.station.name} - Size: {self.size}>"
+# NOTE: the `Market` model (WO-RETIRE-RESOURCE-BLACK-MARKET-MODEL) was removed
+# here — dead ORM class, zero readers/writers anywhere in src/ beyond its own
+# models/__init__.py import and Station.market's relationship. The live
+# market/pricing surface is MarketPrice (market_transaction.py). This is a
+# code-level retirement only: the `markets` table itself was NOT dropped
+# (schema drops are a separate, explicitly-gated migration decision).

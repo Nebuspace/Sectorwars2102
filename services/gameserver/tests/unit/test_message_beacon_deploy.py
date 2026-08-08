@@ -679,6 +679,42 @@ class TestPersonalRepGate:
         assert len(db.beacons) == 1
 
 
+# --- Trust-score auto-flag (message-beacons.md:118) ------------------------ #
+
+@pytest.mark.unit
+class TestTrustScoreAutoflag:
+    def test_low_trust_deploy_autoflags_and_hides_from_denorm(self, safe_security) -> None:
+        region = _region()
+        sector = _sector(region)
+        player = _player(aria_trust_score=0.1)  # below TRUST_AUTOFLAG_THRESHOLD
+        db = _FakeSession(players=[player], sectors=[sector], regions=[region])
+        result = svc.deploy(db, player.id, sector.sector_id, "suspicious")
+        assert result["trust_autoflagged"] is True
+        assert result["flagged"] is True
+        assert db.beacons[0].flagged is True
+        # Flagged cells excluded from ambient sector denorm (canon hide path).
+        assert sector.message_beacons == []
+
+    def test_trusted_deploy_not_autoflagged(self, safe_security) -> None:
+        region = _region()
+        sector = _sector(region)
+        player = _player(aria_trust_score=0.9)
+        db = _FakeSession(players=[player], sectors=[sector], regions=[region])
+        result = svc.deploy(db, player.id, sector.sector_id, "hello")
+        assert result["trust_autoflagged"] is False
+        assert result["flagged"] is False
+        assert len(sector.message_beacons) == 1
+
+    def test_threshold_boundary_not_autoflagged(self, safe_security) -> None:
+        """trust == threshold is NOT auto-flagged (strict <)."""
+        region = _region()
+        sector = _sector(region)
+        player = _player(aria_trust_score=svc.TRUST_AUTOFLAG_THRESHOLD)
+        db = _FakeSession(players=[player], sectors=[sector], regions=[region])
+        result = svc.deploy(db, player.id, sector.sector_id, "edge")
+        assert result["trust_autoflagged"] is False
+
+
 # --- DoD 8: message length + content-policy filter ------------------------ #
 
 @pytest.mark.unit

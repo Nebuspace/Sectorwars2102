@@ -35,7 +35,6 @@ export const MarketPredictionInterface: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
 
   const handlePredictionUpdate = useCallback((data: any) => {
-    console.log('Prediction update received:', data);
     setPredictions(prev => {
       const updated = [...prev];
       const index = updated.findIndex(p => p.id === data.id);
@@ -50,7 +49,6 @@ export const MarketPredictionInterface: React.FC = () => {
   }, []);
 
   const handleAccuracyUpdate = useCallback((data: any) => {
-    console.log('Accuracy update received:', data);
     setAccuracyStats(data);
   }, []);
 

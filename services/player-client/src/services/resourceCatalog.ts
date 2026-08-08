@@ -18,6 +18,15 @@
  * resource (including a brand-new registry row) that isn't in those tables.
  * When the backend grows a real icon/colour field, repoint resourceIcon()/
  * resourceColor() at it without touching call sites.
+ *
+ * `precious_metals` is seeded (WO-RES-PRECIOUS-METALS-SEED / #179–#180) as
+ * `rare_material` — priced Secondary mining drop, not a core station
+ * commodity. It is also a real MarketPrice / station-stock key via
+ * `Station.commodities`'s anonymous JSONB `default={...}`
+ * (`models/station.py` ~133, precious_metals ~174–178), bang_import
+ * `_COMMODITY_DEFAULTS`, and trading_service. GET /api/v1/resources returns
+ * it with the rest of the active catalog; local glyph lives in
+ * DEFAULT_ICONS below (registry `icon` column stays placeholder).
  */
 import { resourceAPI } from './api';
 
@@ -53,11 +62,8 @@ const DEFAULT_ICONS: Record<string, string> = {
   quantum_crystals: '🔷',
   prismatic_ore: '🪨',
   lumen_crystals: '✨',
-  // 9th market commodity (models/station.py DEFAULT_COMMODITIES, bang_import
-  // _COMMODITY_DEFAULTS, trading_service — a real MarketPrice.commodity value,
-  // absent only from the registry seed per admin resourceCatalog.ts's own
-  // documented gap note). Was silently falling to the generic 📦 (WO-ARCH-
-  // RES-3B B4 key-domain audit).
+  // Local glyph for precious_metals (seeded rare_material — see module
+  // docstring). Kept so the key never falls back to generic 📦.
   precious_metals: '🪙',
 };
 

@@ -4,7 +4,8 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useGame } from '../../contexts/GameContext';
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import { useSettings } from '../../contexts/SettingsContext';
-import { formatCredits } from '../../utils/formatters';
+import LanguageSwitcher from '../common/LanguageSwitcher';
+import { formatCredits, formatShipType } from '../../utils/formatters';
 import { TurnsIcon } from '../icons/TurnsIcon';
 import { MineIcon } from '../icons/MineIcon';
 import ReputationPage from '../mfd/pages/ReputationPage';
@@ -13,6 +14,8 @@ import { EmbeddedContext } from '../cockpit/EmbeddedContext';
 import ServiceRecordTab from './ServiceRecordTab';
 import ColoniesRosterTab from './ColoniesRosterTab';
 import TeamSummaryTab from './TeamSummaryTab';
+import GovSummaryTab from './GovSummaryTab';
+import MyBeaconsTab from './MyBeaconsTab';
 import LocationDropdown from './LocationDropdown';
 import RegionOwnerControls from '../governance/RegionOwnerControls';
 import './statusbar.css';
@@ -40,6 +43,19 @@ import './statusbar.css';
  *   [👤 name ▾ dossier] · [◉ location ▾] · grow · vitals + REP badge ·
  *   [⚙] · [⏻]
  *
+ * WO-HUD-SHIPTYPE (human, live-playtest): the dynamic ship TYPE (via
+ * formatShipType()) now renders as a static [🚀] chip beside the name --
+ * IDENTITY (who + what they're flying). Row order is otherwise unchanged.
+ * (An earlier pass of this WO also regrouped LocationDropdown's collapsed
+ * trigger to show sector+region together -- REVERTED: "Terran Space" is
+ * the always-visible windshield `.locrow` chip's clean `formatRegionType()`
+ * label (GameDashboard.tsx), not LocationDropdown's `region_name`, which
+ * carries the raw dev-seeded name including its galaxy-id prefix; grouping
+ * sector into THAT label would have surfaced the ugly string in the top
+ * bar. The sector->locrow move human actually wants is a separate follow-up,
+ * pending confirmation -- LocationDropdown.tsx is untouched by this WO.)
+ * Ship NAMING is out of scope (a separate design brief) -- type only.
+ *
  * Evolved from PlayerVitalsHud.tsx: reuses its data primitives (formatCredits,
  * TurnsIcon, MineIcon, useGame().playerState, useWebSocket().linkStatus)
  * and the same low-turns/bounty/LINK field logic. [⏻] logout is now a
@@ -49,7 +65,7 @@ import './statusbar.css';
  * is built for UserProfile.tsx's sidebar context, not a chip-sized icon
  * button; LogoutButton.tsx itself is untouched and still owns that use.
  */
-type DossierTab = 'identity' | 'reputation' | 'service' | 'fleet' | 'colonies' | 'crew' | 'settings';
+type DossierTab = 'identity' | 'reputation' | 'service' | 'fleet' | 'colonies' | 'crew' | 'governance' | 'beacons' | 'settings';
 
 // REP badge color-grading (canon §05 L614: "reputation visible at all
 // times, color-graded (blue/gray/red grammar)") — the artifact's OWN
@@ -84,6 +100,8 @@ const DOSSIER_TABS: Array<{ id: DossierTab; label: string }> = [
   { id: 'fleet', label: 'FLEET' },
   { id: 'colonies', label: 'COLONIES' },
   { id: 'crew', label: 'CREW' },
+  { id: 'governance', label: 'GOVERNANCE' },
+  { id: 'beacons', label: 'BEACONS' },
   { id: 'settings', label: 'SETTINGS' },
 ];
 
@@ -192,6 +210,11 @@ const SettingsTab: React.FC<{ idPrefix?: string }> = ({ idPrefix = '' }) => {
         </div>
       </div>
 
+      <div className="sb-settings-row">
+        <span className="sb-identity-k">LANGUAGE</span>
+        <LanguageSwitcher variant="compact" showProgress={false} />
+      </div>
+
       <div className="sb-settings-row sb-settings-subscription">
         <span className="sb-identity-k">SUBSCRIPTION</span>
         <span className="sb-settings-subscription-stub" aria-label="Subscription — coming soon">
@@ -208,7 +231,7 @@ const SettingsTab: React.FC<{ idPrefix?: string }> = ({ idPrefix = '' }) => {
 
 const StatusBar: React.FC = () => {
   const { user, logout } = useAuth();
-  const { playerState } = useGame();
+  const { playerState, currentShip } = useGame();
   const { linkStatus } = useWebSocket();
   const navigate = useNavigate();
 
@@ -394,6 +417,15 @@ const StatusBar: React.FC = () => {
   const repSign = personalRep >= 0 ? '+' : '';
   const repColor = repTierColor(repTier);
 
+  // WO-HUD-SHIPTYPE: dynamic ship-type readout beside the name -- whatever
+  // hull the player is currently flying, formatted via the shared
+  // formatShipType() (PlayerInfo/VesselPage/CombatInterface's own enum-to-
+  // label convention, e.g. "LIGHT_FREIGHTER" -> "Light Freighter"). Graceful
+  // degrade to the same '—' placeholder IdentityTab already uses for other
+  // missing fields, rather than crashing on formatShipType(undefined) or
+  // leaking the raw enum.
+  const shipTypeLabel = currentShip?.type ? formatShipType(currentShip.type) : '—';
+
   return (
     <div className="sbar status-bar">
       {/* [👤 name ▾] — dossier dropdown. `.chip.who` (cockpit-shell.css)
@@ -465,11 +497,23 @@ const StatusBar: React.FC = () => {
               )}
               {activeTab === 'colonies' && <ColoniesRosterTab />}
               {activeTab === 'crew' && <TeamSummaryTab />}
+              {activeTab === 'governance' && <GovSummaryTab />}
+              {activeTab === 'beacons' && <MyBeaconsTab />}
               {activeTab === 'settings' && <SettingsTab />}
             </div>
           </div>
         )}
       </div>
+
+      {/* [🚀 ship type] — WO-HUD-SHIPTYPE: static (non-interactive) readout,
+          the dynamic ship TYPE beside the player name. Wears the shared
+          shell `.chip` pill alone (not `.sb-chip`, whose hover glow + hand
+          cursor are trigger-only affordances this non-clickable badge
+          shouldn't imply). Ship-NAMING is out of scope -- type only. */}
+      <span className="chip sb-shiptype-chip" title="Ship type" aria-label={`Ship type: ${shipTypeLabel}`}>
+        <span className="sb-chip-icon" aria-hidden="true">🚀</span>
+        <span className="sb-shiptype-text">{shipTypeLabel}</span>
+      </span>
 
       {/* [◉ location ▾] — RegionOwnerControls (sub-part b) wired in at
           integration. LocationDropdown owns its own trigger/panel markup

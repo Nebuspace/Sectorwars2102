@@ -15,6 +15,8 @@ import './message-moderation.css';
  *   GET  /api/v1/admin/messages/flagged?page=N   -> FlaggedMessagesResponse
  *   GET  /api/v1/admin/messages/stats            -> MessageStats
  *   POST /api/v1/admin/messages/{id}/moderate    -> { success: boolean }
+ *   GET  /api/v1/admin/beacons/flagged?page=N    -> FlaggedBeaconsResponse
+ *   POST /api/v1/admin/beacons/{id}/clear-flag   -> { success, flagged, ... }
  */
 
 interface FlaggedMessage {
@@ -33,6 +35,26 @@ interface FlaggedMessage {
   flagged: boolean;
   is_read: boolean;
   sender_name?: string;
+}
+
+interface FlaggedBeacon {
+  id: string;
+  region_id: string;
+  sector_id: number;
+  deployer_player_id: string | null;
+  deployer_nickname: string | null;
+  message: string;
+  preview: string;
+  deployed_at: string | null;
+  flagged: boolean;
+}
+
+interface FlaggedBeaconsResponse {
+  beacons: FlaggedBeacon[];
+  total: number;
+  page: number;
+  limit: number;
+  pages: number;
 }
 
 interface FlaggedMessagesResponse {
@@ -86,26 +108,35 @@ const MessageModeration: React.FC = () => {
   const confirm = useConfirm();
 
   const [messages, setMessages] = useState<FlaggedMessage[]>([]);
+  const [beacons, setBeacons] = useState<FlaggedBeacon[]>([]);
   const [stats, setStats] = useState<MessageStats | null>(null);
   const [statsError, setStatsError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [beaconError, setBeaconError] = useState<string | null>(null);
   const [actingId, setActingId] = useState<string | null>(null);
 
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [totalFlagged, setTotalFlagged] = useState(0);
+  const [beaconPage, setBeaconPage] = useState(1);
+  const [beaconTotalPages, setBeaconTotalPages] = useState(1);
+  const [totalFlaggedBeacons, setTotalFlaggedBeacons] = useState(0);
 
   const loadData = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setBeaconError(null);
     setStatsError(null);
 
-    const [flaggedResult, statsResult] = await Promise.allSettled([
+    const [flaggedResult, statsResult, beaconResult] = await Promise.allSettled([
       api.get<FlaggedMessagesResponse>(
         `/api/v1/admin/messages/flagged?page=${page}`,
       ),
       api.get<MessageStats>('/api/v1/admin/messages/stats'),
+      api.get<FlaggedBeaconsResponse>(
+        `/api/v1/admin/beacons/flagged?page=${beaconPage}`,
+      ),
     ]);
 
     if (flaggedResult.status === 'fulfilled') {
@@ -129,8 +160,21 @@ const MessageModeration: React.FC = () => {
       setStatsError('Statistics are currently unavailable.');
     }
 
+    if (beaconResult.status === 'fulfilled') {
+      const data = beaconResult.value.data;
+      setBeacons(data.beacons ?? []);
+      setTotalFlaggedBeacons(data.total ?? 0);
+      setBeaconTotalPages(data.pages && data.pages > 0 ? data.pages : 1);
+    } else {
+      console.error('Failed to load flagged beacons:', beaconResult.reason);
+      setBeacons([]);
+      setTotalFlaggedBeacons(0);
+      setBeaconTotalPages(1);
+      setBeaconError('Failed to load the flagged-beacon review queue.');
+    }
+
     setLoading(false);
-  }, [page]);
+  }, [page, beaconPage]);
 
   useEffect(() => {
     void loadData();
@@ -175,12 +219,41 @@ const MessageModeration: React.FC = () => {
     [confirm, toast, loadData],
   );
 
+  const clearBeaconFlag = useCallback(
+    async (beacon: FlaggedBeacon) => {
+      const confirmed = await confirm({
+        title: 'Clear Beacon Flag',
+        message:
+          'Clear the report flag so this sector beacon reappears for players?',
+        confirmLabel: 'Clear Flag',
+        danger: false,
+      });
+      if (!confirmed) return;
+
+      setActingId(beacon.id);
+      try {
+        await api.post<{ success: boolean }>(
+          `/api/v1/admin/beacons/${beacon.id}/clear-flag`,
+        );
+        toast.success('Beacon flag cleared.');
+        setBeacons((current) => current.filter((b) => b.id !== beacon.id));
+        await loadData();
+      } catch (err) {
+        console.error('Failed to clear beacon flag:', err);
+        toast.error('Failed to clear the beacon flag.');
+      } finally {
+        setActingId(null);
+      }
+    },
+    [confirm, toast, loadData],
+  );
+
   return (
     <div className="message-moderation">
       <header className="msgmod-header">
         <h1>Message Moderation</h1>
         <p className="msgmod-subtitle">
-          Review flagged player communications and act on reports across the galaxy.
+          Review flagged player communications and sector message beacons.
         </p>
       </header>
 
@@ -313,6 +386,119 @@ const MessageModeration: React.FC = () => {
               className="msgmod-btn msgmod-btn-secondary"
               onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
               disabled={page >= totalPages || loading}
+            >
+              Next
+            </button>
+          </div>
+        )}
+      </section>
+
+      {/* Flagged sector beacons (WO-BEACON-ADMIN-CLEAR-FLAG) */}
+      <section className="msgmod-section">
+        <div className="msgmod-section-head">
+          <h2>Flagged Sector Beacons</h2>
+          <div className="msgmod-section-actions">
+            <span className="msgmod-count">
+              {totalFlaggedBeacons.toLocaleString()} flagged
+            </span>
+            <button
+              type="button"
+              className="msgmod-btn msgmod-btn-secondary"
+              onClick={() => void loadData()}
+              disabled={loading}
+            >
+              Refresh
+            </button>
+          </div>
+        </div>
+
+        {beaconError && (
+          <div className="msgmod-error">
+            <span>{beaconError}</span>
+            <button
+              type="button"
+              className="msgmod-btn msgmod-btn-secondary"
+              onClick={() => void loadData()}
+            >
+              Retry
+            </button>
+          </div>
+        )}
+
+        {!loading && !beaconError && beacons.length === 0 ? (
+          <div className="msgmod-empty">No flagged sector beacons.</div>
+        ) : null}
+
+        {beacons.length > 0 && (
+          <div className="msgmod-table-wrap">
+            <table className="msgmod-table">
+              <thead>
+                <tr>
+                  <th>Deployer</th>
+                  <th>Sector</th>
+                  <th>Message</th>
+                  <th>Deployed</th>
+                  <th className="msgmod-actions-col">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {beacons.map((beacon) => (
+                  <tr key={beacon.id}>
+                    <td className="msgmod-sender">
+                      {beacon.deployer_nickname
+                        ?? beacon.deployer_player_id
+                        ?? '—'}
+                    </td>
+                    <td className="msgmod-recipient">
+                      {beacon.sector_id}
+                    </td>
+                    <td className="msgmod-content">
+                      <span className="msgmod-msg-body">
+                        {truncate(beacon.message || beacon.preview || '')}
+                      </span>
+                    </td>
+                    <td className="msgmod-sent">
+                      {formatTimestamp(beacon.deployed_at)}
+                    </td>
+                    <td className="msgmod-actions-col">
+                      <div className="msgmod-row-actions">
+                        <button
+                          type="button"
+                          className="msgmod-btn msgmod-btn-secondary"
+                          disabled={actingId === beacon.id}
+                          onClick={() => void clearBeaconFlag(beacon)}
+                        >
+                          Clear Flag
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {beaconTotalPages > 1 && (
+          <div className="msgmod-pagination">
+            <button
+              type="button"
+              className="msgmod-btn msgmod-btn-secondary"
+              onClick={() => setBeaconPage((p) => Math.max(1, p - 1))}
+              disabled={beaconPage <= 1 || loading}
+            >
+              Previous
+            </button>
+            <span className="msgmod-page-indicator">
+              Page {beaconPage} of {beaconTotalPages}
+            </span>
+            <button
+              type="button"
+              className="msgmod-btn msgmod-btn-secondary"
+              onClick={() =>
+                setBeaconPage((p) => Math.min(beaconTotalPages, p + 1))
+              }
+              disabled={beaconPage >= beaconTotalPages || loading}
             >
               Next
             </button>

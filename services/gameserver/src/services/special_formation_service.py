@@ -66,18 +66,12 @@ class FormationAlreadyInvestigatedError(Exception):
 
 
 # --- Investigation reward calibration ----------------------------------------
-# [NO-CANON] The investigate reward magnitude is NOT specified in sw2102-docs
-# (DATA_MODELS/special-formations.md describes the catalog/topology; no
-# investigation reward is documented). The values below are a CONSERVATIVE
-# proposed scale, FLAGGED for Max's canon ruling — they are intentionally modest
-# (a few percent of a player's 10,000-credit start) and scale by formation
-# rarity (rarer topologies pay more). Tune or replace once canon lands.
-INVESTIGATE_REWARD_NO_CANON = True
+# Ratified: DECISIONS.md anomaly-investigate-reward (human 2026-06-22) —
+# one-time credits by rarity: 250 (common) / 500 (uncommon) / 1,000 (rare);
+# default for any unmapped formation type is 250.
+INVESTIGATE_REWARD_NO_CANON = False
 
-# Rarity tiers (proposed): single-sector terminals are common; multi-sector
-# bubbles and the ADR-0070 island formations are rarer; the operator-placed
-# GOLD_BUBBLE and the ARCHIPELAGO are the rarest. Each tier maps to a credit
-# reward. (Default for any unmapped/new type = the common tier.)
+# Rarity tiers per the ruling. (Default for any unmapped/new type = common.)
 _FORMATION_INVESTIGATE_CREDITS: Dict[SpecialFormationType, int] = {
     # Common — single-sector or simple terminal topologies.
     SpecialFormationType.DEAD_END: 250,
@@ -99,8 +93,7 @@ _FORMATION_INVESTIGATE_CREDITS_DEFAULT = 250
 
 
 def _investigate_reward_credits(formation: SpecialFormation) -> int:
-    """[NO-CANON] Conservative, rarity-scaled credit reward for investigating a
-    formation. Unmapped/new types fall back to the common tier."""
+    """Rarity-scaled investigate credit reward (DECISIONS.md anomaly-investigate-reward)."""
     return _FORMATION_INVESTIGATE_CREDITS.get(
         formation.type, _FORMATION_INVESTIGATE_CREDITS_DEFAULT
     )
@@ -247,10 +240,10 @@ def investigate_formation(
         the reward is not repeatable.
 
     On success: marks the formation investigated (records who/when/reward in the
-    ``properties`` JSONB — additive, no schema change), grants the [NO-CANON]
-    rarity-scaled credit reward to the player, and returns a payload of the
-    formation details + the investigation reward. Commits (mirrors the discovery
-    serializer's commit-on-write).
+    ``properties`` JSONB — additive, no schema change), grants the rarity-scaled
+    credit reward (DECISIONS.md anomaly-investigate-reward) to the player, and
+    returns a payload of the formation details + the investigation reward.
+    Commits (mirrors the discovery serializer's commit-on-write).
 
     Returns a dict payload:
       {
@@ -258,7 +251,7 @@ def investigate_formation(
                       anchor_sector_id},
         "reward": {"credits": int},
         "credits_remaining": int,
-        "reward_is_no_canon": True,   # FLAG: reward magnitude is unspecified canon
+        "reward_is_no_canon": False,  # magnitudes ratified
       }
     """
     # Lock the row for the check-then-set (WO-AI review HIGH: TOCTOU) — concurrent
@@ -286,7 +279,7 @@ def investigate_formation(
             "Formation has already been investigated."
         )
 
-    # Grant the [NO-CANON] rarity-scaled credit reward.
+    # Grant the rarity-scaled credit reward (DECISIONS.md anomaly-investigate-reward).
     reward_credits = _investigate_reward_credits(formation)
     player.credits = (player.credits or 0) + reward_credits
 
@@ -326,7 +319,6 @@ def investigate_formation(
         },
         "reward": {"credits": reward_credits},
         "credits_remaining": int(player.credits),
-        # FLAG: this reward magnitude is [NO-CANON] — proposed conservative value,
-        # pending Max's canon ruling. See INVESTIGATE_REWARD_NO_CANON above.
+        # False — magnitudes ratified in DECISIONS.md anomaly-investigate-reward.
         "reward_is_no_canon": INVESTIGATE_REWARD_NO_CANON,
     }

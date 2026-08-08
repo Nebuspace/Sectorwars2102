@@ -85,7 +85,7 @@ INSURANCE_CANCELLATION_FEE = Decimal("0.10")
 
 # --- WO-CONTRACT-1b-CLAIM-SAFETY: claim-offset deductible ladder -----------
 
-# Max's ruled model, verbatim: "Deductible ladder = Basic 5% / Standard
+# human's ruled model, verbatim: "Deductible ladder = Basic 5% / Standard
 # 10% / Hazard 15% (ADR-0061 parallel, blessed)." Verified: ADR-0061 is
 # "Group C -- combat correctness and rank wiring", not an insurance ADR by
 # name -- the actual parallel is `ship-insurance.md`'s own Tiers table
@@ -193,7 +193,7 @@ def _refresh_contract_insurance_snapshot(db: Session, contract: Contract) -> Non
 
 def _compute_claim_offset(contract: Any, penalty: Decimal) -> Dict[str, Decimal]:
     """PURE (no mutation, no DB access) -- the core of the rebuilt claim
-    mechanism. Max's ruled model, verbatim: "CLAIM = PENALTY-OFFSET, never
+    mechanism. human's ruled model, verbatim: "CLAIM = PENALTY-OFFSET, never
     a positive payout... the acceptor eats penalty x deductible; the
     covered penalty x (1 - deductible) is settled by the insurer... The
     acceptor never RECEIVES credits -- they simply OWE LESS."
@@ -234,7 +234,7 @@ def _compute_claim_offset(contract: Any, penalty: Decimal) -> Dict[str, Decimal]
     the old unconditional `penalty`); `pool_draw` is how much the caller
     must subtract from `contract.insurance_pool_reserve`.
 
-    WO-CONTRACT-2b-HOLD-ESCROW (Max R3, MONEY-PATH): under WO-1b, `pool_
+    WO-CONTRACT-2b-HOLD-ESCROW (human R3, MONEY-PATH): under WO-1b, `pool_
     draw`'s DISPOSITION (the issuer's escrow refund) happened in the SAME
     transaction, so `acceptor_debit` and `refund` were both derived from
     the SAME cent-precision `pool_draw` and independently `_to_credits_
@@ -312,7 +312,7 @@ def apply_claim_offset(contract: Any, penalty: Decimal) -> Dict[str, Decimal]:
     insurance_pool_reserve` down in place by exactly `pool_draw` (never
     below 0, guaranteed by the pure function's own clamping) and returns
     the SAME `{"acceptor_debit", "pool_draw"}` dict for the caller to act
-    on. `pool_draw` is WHOLE-CREDIT (Max R3, WO-CONTRACT-2b-HOLD-ESCROW --
+    on. `pool_draw` is WHOLE-CREDIT (human R3, WO-CONTRACT-2b-HOLD-ESCROW --
     see `_compute_claim_offset`'s own docstring) -- `insurance_pool_
     reserve` stays exactly whole after this subtraction (whole minus whole
     is exactly whole), which is what lets the caller ALSO subtract it

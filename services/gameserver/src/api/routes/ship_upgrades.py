@@ -18,7 +18,7 @@ from src.models.player import Player
 from src.models.ship import Ship, ShipSpecification, ShipStatus, ShipType, UpgradeType
 from src.models.station import Station, StationType
 from src.models.faction import Faction
-from src.models.reputation import Reputation, ReputationLevel
+from src.models.reputation import ReputationLevel
 from src.services.ship_service import ShipService
 from src.services.ship_upgrade_service import (
     ShipUpgradeService,
@@ -26,6 +26,11 @@ from src.services.ship_upgrade_service import (
 )
 from src.services import maintenance_service
 from src.services.emergent_reputation_service import apply_emergent_action, FACTION_CODE_TO_TYPE
+from src.services.port_friendliness_service import (
+    _REPUTATION_RANK,
+    _player_reputation_level_for_faction,
+    check_friendly_port,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,26 +44,11 @@ router = APIRouter(prefix="/ships", tags=["ship-upgrades"])
 # FACTION_CODE_TO_TYPE map (the same map emergent_reputation uses), then to the
 # Faction row, then to the player's Reputation row with that faction.
 #
-# ReputationLevel is declared low->high (PUBLIC_ENEMY .. EXALTED), so a member's
-# index in the enum's declaration order IS its monotonic rank — "TRUSTED required"
-# is satisfied by TRUSTED and every level above it.
-_REPUTATION_RANK = {level: rank for rank, level in enumerate(ReputationLevel)}
-
-
-def _player_reputation_level_for_faction(db: Session, player_id, faction: Optional[Faction]) -> ReputationLevel:
-    """The player's current ReputationLevel with `faction` (or NEUTRAL if
-    `faction` is None, or the player has no Reputation row for it — the
-    seeded default)."""
-    if faction is None:
-        return ReputationLevel.NEUTRAL
-    rep = (
-        db.query(Reputation)
-        .filter(Reputation.player_id == player_id, Reputation.faction_id == faction.id)
-        .first()
-    )
-    if rep is None or rep.current_level is None:
-        return ReputationLevel.NEUTRAL
-    return rep.current_level
+# _REPUTATION_RANK, _player_reputation_level_for_faction, _station_controlling_
+# faction and check_friendly_port now live in src.services.port_friendliness_
+# service (WO-FLEET-RESUPPLY-FRIENDLY-STATION) — imported above, re-used here
+# unchanged so fleet_service.py (a services-layer module that cannot import
+# from this routes module) can share the exact same gate.
 
 
 def _player_reputation_level(db: Session, player_id, faction_type) -> ReputationLevel:
@@ -71,48 +61,6 @@ def _player_reputation_level(db: Session, player_id, faction_type) -> Reputation
     """
     faction = db.query(Faction).filter(Faction.faction_type == faction_type).first()
     return _player_reputation_level_for_faction(db, player_id, faction)
-
-
-def _station_controlling_faction(db: Session, station: Station) -> Optional[Faction]:
-    """Resolve a station's controlling Faction row.
-
-    Station.faction_affiliation carries the faction DISPLAY NAME, matched
-    against Faction.name — the established resolution pattern shared by
-    docking_service._player_faction_rep_for_station, construction_service, and
-    emergent_reputation_service.trade_volume_action_for_faction_name (all key
-    off Faction.name, NOT the FACTION_CODE_TO_TYPE slug map used by
-    check_faction_eligibility above for ship-purchase faction_requirements —
-    that is a different registry with a different key space). None for an
-    unaffiliated station or a name that doesn't resolve to a seeded Faction row.
-    """
-    faction_name = getattr(station, "faction_affiliation", None)
-    if not faction_name:
-        return None
-    return db.query(Faction).filter(Faction.name == faction_name).first()
-
-
-def check_friendly_port(db: Session, player_id, station: Station):
-    """Return (ok: bool, reason: Optional[str]) for the insurance "friendly
-    port" gate (ship-insurance.md:48 "Buying insurance ... requires at least
-    NEUTRAL reputation with the controlling faction").
-
-    NO-CANON: a station with no controlling faction (no faction_affiliation,
-    or a name that doesn't resolve to a seeded Faction row) has no faction to
-    be unfriendly with, so it always passes. Canon's "friendly port" language
-    presumes an affiliated station and is silent on unaffiliated ones —
-    flagged to DECISIONS.
-    """
-    faction = _station_controlling_faction(db, station)
-    if faction is None:
-        return True, None
-
-    player_level = _player_reputation_level_for_faction(db, player_id, faction)
-    if _REPUTATION_RANK[player_level] < _REPUTATION_RANK[ReputationLevel.NEUTRAL]:
-        return False, (
-            f"ERR_UNFRIENDLY_PORT: insurance requires at least NEUTRAL standing "
-            f"with {faction.name} (you are {player_level.value})"
-        )
-    return True, None
 
 
 def check_faction_eligibility(db: Session, player_id, spec: ShipSpecification):
@@ -503,7 +451,7 @@ async def purchase_ship(
         player.current_ship_id = ship.id
         ship.is_flagship = True
         from src.services.ship_service import sync_current_pilot
-        sync_current_pilot(player, ship)  # QUEUE-REGISTRY-PILOT-WIRING: no old ship (player had none)
+        sync_current_pilot(player, ship, db=db)  # QUEUE-REGISTRY-PILOT-WIRING: no old ship (player had none)
     else:
         ship.is_flagship = False
 
@@ -580,7 +528,7 @@ async def set_active_ship(
     # endpoint"). old_ship is the hull the player was piloting immediately
     # before this switch -- its pilot pointer clears; ship's pilot pointer
     # is set to this player.
-    sync_current_pilot(locked_player, ship, old_ship=old_ship)
+    sync_current_pilot(locked_player, ship, old_ship=old_ship, db=db)
     db.commit()
     return {
         "message": f"{ship.name} is now your active ship",
@@ -819,7 +767,11 @@ async def uninstall_ship_equipment(
     player: Player = Depends(get_current_player),
     db: Session = Depends(get_db),
 ):
-    """Uninstall equipment from a ship's equipment slot. No refund."""
+    """Uninstall equipment from a ship's equipment slot.
+
+    Refunds int(catalog cost × SALVAGE_FRACTION) credits (25% salvage,
+    matching module remove). Zero refund if the catalog has no cost entry.
+    """
     service = ShipUpgradeService(db)
     result = service.uninstall_equipment(ship_id, player.id, request.equipment_key)
     if not result.get("success"):
@@ -988,11 +940,13 @@ def _maintenance_status(ship: Ship, condition: float, station: Station = None) -
             "failure_pct": round(band["failure"] * 100),
             "failure_tier": band["failure_tier"],
         },
-        # Honesty: the combat-effectiveness band is consumed in combat, and the
-        # speed band is now consumed in the move-cost path (WO-MAINTBANDS). The
-        # fuel modifier has no consuming surface — movement costs turns, not fuel
-        # — so it stays unconsumed by design, not oversight.
-        "applied_effects": ["combat", "speed"],
+        # Honesty: the combat-effectiveness band is consumed in combat, the
+        # speed band in the move-cost path (WO-MAINTBANDS), and the per-jump
+        # failure%/failure_tier roll on successful jumps
+        # (WO-BUILD-HULL-FAILURE-TIER-DICE-ROLL). The fuel modifier has no
+        # consuming surface — movement costs turns, not fuel — so it stays
+        # unconsumed by design, not oversight.
+        "applied_effects": ["combat", "speed", "hull_failure_roll"],
         "repair_options": options,
     }
 
@@ -1093,6 +1047,7 @@ async def repair_ship_maintenance(
     m["last_maintenance"] = datetime.now(timezone.utc).isoformat()
     m["repair_needed"] = False
     m["failure_status"] = "NONE"
+    m.pop("sensors_offline", None)
     ship.maintenance = m
     flag_modified(ship, "maintenance")
     db.commit()

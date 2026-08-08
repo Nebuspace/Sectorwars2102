@@ -16,34 +16,34 @@ import hashlib
 import hmac
 import os
 import time
-from typing import Dict, List, Set, Optional, Any, Union
-from datetime import datetime, timedelta, UTC
-from dataclasses import dataclass, asdict
+from typing import Dict, List, Set, Any
+from datetime import datetime, UTC
+from dataclasses import dataclass
 from collections import defaultdict
 from uuid import uuid4, UUID
 import logging
 
-from fastapi import WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import WebSocket
 import jwt as jose_jwt
 from jwt import PyJWTError as JWTError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, or_, func
+from sqlalchemy import select, func
+from sqlalchemy.orm.attributes import flag_modified
 import redis.asyncio as redis
+from src.models.ship import effective_cargo_capacity
 
 # Import existing services
-from src.services.websocket_service import ConnectionManager, connection_manager
+from src.services.websocket_service import connection_manager
 from src.services.ai_trading_service import AITradingService
 from src.services.trading_service import TradingService
 from src.services.enhanced_ai_service import EnhancedAIService
-from src.services.realtime_market_service import RealTimeMarketService, get_market_service
-from src.services.redis_pubsub_service import RedisPubSubService, get_pubsub_service
+from src.services.realtime_market_service import get_market_service
+from src.services.redis_pubsub_service import get_pubsub_service
 from src.models.player import Player
 from src.models.user import User
 from src.models.market_transaction import MarketTransaction
-from src.models.ai_trading import AIMarketPrediction
 from src.core.config import settings
 from src.core.database import AsyncSessionLocal
-from src.core.security import verify_password
 
 logger = logging.getLogger(__name__)
 
@@ -534,6 +534,21 @@ class EnhancedWebSocketService:
             if not market_price:
                 return {"success": False, "error": "Commodity not available at this port"}
             
+            # Canonical Ship.cargo shape (matches REST trading.py):
+            # {'used': X, 'capacity': Y, 'contents': {commodity: qty}, ...}
+            # Flat commodity-key dicts corrupt the nested contract — WO-FIX-
+            # ENHANCED-WEBSOCKET-CARGO-SHAPE-MISMATCH.
+            cargo = current_ship.cargo if isinstance(current_ship.cargo, dict) else {}
+            if "contents" not in cargo:
+                cargo = {
+                    "used": int(cargo.get("used", 0) or 0),
+                    "capacity": int(cargo.get("capacity", 50) or 50),
+                    "contents": {},
+                }
+            contents = dict(cargo.get("contents") or {})
+            cargo_capacity = effective_cargo_capacity(current_ship)
+            used = int(cargo.get("used", 0) or 0)
+
             if action == "buy":
                 # Check if port has enough quantity
                 if market_price.quantity_available < quantity:
@@ -552,18 +567,17 @@ class EnhancedWebSocketService:
                         "error": f"Insufficient credits. Need {total_cost}, have {player.credits}"
                     }
                 
-                # Check ship cargo capacity
-                current_cargo = sum(current_ship.cargo.values()) if current_ship.cargo else 0
-                if current_cargo + quantity > current_ship.cargo_capacity:
+                if used + quantity > cargo_capacity:
                     return {"success": False, "error": "Insufficient cargo space"}
                 
                 # Execute buy trade
                 player.credits -= total_cost
                 
-                # Update ship cargo
-                if not current_ship.cargo:
-                    current_ship.cargo = {}
-                current_ship.cargo[commodity] = current_ship.cargo.get(commodity, 0) + quantity
+                contents[commodity] = int(contents.get(commodity, 0) or 0) + quantity
+                cargo["contents"] = contents
+                cargo["used"] = used + quantity
+                current_ship.cargo = cargo
+                flag_modified(current_ship, "cargo")
                 
                 # Update market quantity
                 market_price.quantity_available -= quantity
@@ -572,8 +586,8 @@ class EnhancedWebSocketService:
                 price_used = market_price.buy_price
                 
             else:  # sell
-                # Check if player has the commodity
-                if not current_ship.cargo or current_ship.cargo.get(commodity, 0) < quantity:
+                held = int(contents.get(commodity, 0) or 0)
+                if held < quantity:
                     return {"success": False, "error": "Insufficient cargo to sell"}
                 
                 # Calculate total revenue
@@ -582,10 +596,15 @@ class EnhancedWebSocketService:
                 # Execute sell trade
                 player.credits += total_revenue
                 
-                # Update ship cargo
-                current_ship.cargo[commodity] -= quantity
-                if current_ship.cargo[commodity] == 0:
-                    del current_ship.cargo[commodity]
+                new_held = held - quantity
+                if new_held <= 0:
+                    contents.pop(commodity, None)
+                else:
+                    contents[commodity] = new_held
+                cargo["contents"] = contents
+                cargo["used"] = max(0, used - quantity)
+                current_ship.cargo = cargo
+                flag_modified(current_ship, "cargo")
                 
                 # Update market quantity
                 market_price.quantity_available += quantity
@@ -593,7 +612,8 @@ class EnhancedWebSocketService:
                 
                 price_used = market_price.sell_price
             
-            # Create transaction record
+            # Create transaction record (station already loaded above)
+            region_snap = getattr(station, "region_id", None)
             transaction = MarketTransaction(
                 player_id=player.id,
                 station_id=station_id,
@@ -602,12 +622,14 @@ class EnhancedWebSocketService:
                 quantity=quantity,
                 unit_price=price_used,
                 total_value=total_cost if action == "buy" else total_revenue,
+                region_id_snapshot=region_snap,
                 timestamp=datetime.now(UTC)
             )
             db.add(transaction)
             
             await db.commit()
-            
+
+            remaining = max(0, cargo_capacity - int(cargo.get("used", 0) or 0))
             return {
                 "success": True,
                 "trade": {
@@ -621,7 +643,7 @@ class EnhancedWebSocketService:
                 },
                 "new_balance": float(player.credits),
                 "cargo_update": dict(current_ship.cargo) if current_ship.cargo else {},
-                "remaining_cargo_space": current_ship.cargo_capacity - sum(current_ship.cargo.values() if current_ship.cargo else [])
+                "remaining_cargo_space": remaining,
             }
             
         except Exception as e:
@@ -1112,7 +1134,7 @@ class EnhancedWebSocketService:
         
         # Add ARIA personal intelligence summary
         from src.services.aria_personal_intelligence_service import get_aria_intelligence_service
-        aria_intel = get_aria_intelligence_service()
+        get_aria_intelligence_service()
         
         # Get exploration summary
         from src.models.aria_personal_intelligence import ARIAExplorationMap
@@ -1172,10 +1194,10 @@ class EnhancedWebSocketService:
         try:
             # Store in ARIA personal memory for learning
             from src.services.aria_personal_intelligence_service import get_aria_intelligence_service
-            aria_intel = get_aria_intelligence_service()
+            get_aria_intelligence_service()
             
             # Create memory of this interaction
-            memory_content = {
+            {
                 "type": "conversation",
                 "input": user_input,
                 "response_summary": response.get("response", "")[:200],  # First 200 chars

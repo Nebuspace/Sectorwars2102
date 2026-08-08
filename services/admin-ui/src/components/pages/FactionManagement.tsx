@@ -29,7 +29,7 @@ const FACTION_TYPES = [
   'Military', 'Mining', 'Outlaws', 'Syndicate', 'Concord',
 ];
 
-// models/faction.py:95 documents the 3-value scale (hostile, neutral, friendly);
+// models/faction.py:106 documents the 3-value scale (hostile, neutral, friendly);
 // diplomacy_stance itself is an unconstrained string column server-side.
 const DIPLOMACY_STANCES = ['hostile', 'neutral', 'friendly'];
 

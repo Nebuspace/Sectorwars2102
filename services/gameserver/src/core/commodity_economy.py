@@ -17,11 +17,11 @@ places:
   ``bang_import_service._COMMODITY_DEFAULTS`` and
   ``nexus_generation_service.base_commodities``.
 
-Max ruled (WO-Y) the two systems should be ONE source. This module is that
+human ruled (WO-Y) the two systems should be ONE source. This module is that
 source. **It is behavior-preserving**: it reproduces today's live trading
 ranges AND today's live citadel credit values EXACTLY. It does NOT move
 balance — the unification of the *numbers themselves* into a single derived
-value is a separate balance call (see ``PROPOSED CANON`` below) for Max/the
+value is a separate balance call (see ``PROPOSED CANON`` below) for human/the
 orchestrator to bless before anything observable changes.
 
 The single table
@@ -67,7 +67,7 @@ boundary via :data:`COMMODITY_ALIASES` so the existing UI/API contract and the
 ``planet.fuel_ore`` Column are untouched, while the *price table* speaks one
 canonical vocabulary. :func:`canonical_commodity` resolves either spelling.
 
-PROPOSED CANON (NOT APPLIED — balance call for Max/orchestrator)
+PROPOSED CANON (NOT APPLIED — balance call for human/orchestrator)
 ----------------------------------------------------------------
 See ``commodity_economy``'s module-level note and the WO-Y report's
 ``proposed_canon`` field. In brief: make the trading clamp range a documented

@@ -29,5 +29,21 @@ export default defineConfig({
     // (test.beforeAll etc.) is incompatible and would fail collection here.
     include: ['src/**/*.{test,spec}.{ts,tsx}'],
     exclude: [...configDefaults.exclude, 'playwright/**', 'e2e_tests/**', '**/*.perfsweep.test.ts'],
+    // WO-TESTCOV-PLAYER-CLIENT-COVERAGE-VISIBILITY-AND-GAPS — baseline via
+    // `npm run test:coverage`. Not a CI gate yet; triage zero-coverage money
+    // paths into follow-up WOs from the report.
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'text-summary', 'json-summary'],
+      reportsDirectory: './coverage',
+      include: ['src/**/*.{ts,tsx}'],
+      exclude: [
+        'src/**/*.{test,spec}.{ts,tsx}',
+        'src/test/**',
+        'src/**/*.d.ts',
+        'src/main.tsx',
+        'src/vite-env.d.ts',
+      ],
+    },
   },
 });

@@ -42,6 +42,14 @@ export interface SectorContact {
   /** NPC-only enrichment (npc_spawn_service._presence_entry / player.py). */
   archetype?: string;
   notoriety?: number;
+  /** Server-computed classification (WO-API-PHASE2 Lane B6) — REST
+   *  players_present (intrasystem_movement_service.enrich_presence_with_live_pose)
+   *  and the WS sector_players broadcast (websocket_service.get_sector_players)
+   *  both now emit these; playerRepBucket/isHostileNpc below prefer them and
+   *  only fall back to a client-side compute for contacts that predate them
+   *  (e.g. an un-enriched raw JSONB entry). */
+  rep_bucket?: RepBucket;
+  hostile?: boolean;
   [key: string]: any;
 }
 
@@ -52,15 +60,28 @@ export type RepBucket = 'red' | 'gray' | 'blue';
 const RED_TIERS = new Set(['Villain', 'Criminal', 'Outlaw']);
 const GRAY_TIERS = new Set(['Suspicious']);
 
-const playerRepBucket = (tier?: string): RepBucket => {
+// WO-API-PHASE2 Lane B6: prefer the server-computed bucket
+// (presence_classification.player_rep_bucket, ported byte-equivalent below)
+// when the contact carries one, falling back to this client compute for
+// contacts that predate the field — graceful-degrade, not a second source
+// of truth once every presence path is enriched.
+const playerRepBucket = (contact: SectorContact): RepBucket => {
+  if (contact.rep_bucket) return contact.rep_bucket;
+  const tier = contact.reputation_tier;
   if (tier && RED_TIERS.has(tier)) return 'red';
   if (tier && GRAY_TIERS.has(tier)) return 'gray';
   return 'blue';
 };
 
 // Mirrors CombatInterface.tsx's npcStanding() "fair game" threshold, same
-// as TacticalTargetPage.tsx's isHostileNpc().
+// as TacticalTargetPage.tsx's isHostileNpc(). Same server-preferred/
+// client-fallback shape as playerRepBucket above — the server's `hostile`
+// (presence_classification.npc_hostile) is archetype-first, same as below
+// (HOSTILE_RAIDER → hostile, LAW_ENFORCEMENT → not, else notoriety >=
+// threshold), so the archetype short-circuits below stay live for legacy
+// un-enriched contacts as a byte-equivalent fallback, not a divergent one.
 const isHostileNpc = (contact: SectorContact): boolean => {
+  if (typeof contact.hostile === 'boolean') return contact.hostile;
   const arch = String(contact.archetype || '').toUpperCase();
   if (arch === 'HOSTILE_RAIDER') return true;
   if (arch === 'LAW_ENFORCEMENT') return false;
@@ -69,7 +90,7 @@ const isHostileNpc = (contact: SectorContact): boolean => {
 
 /** Byte-equivalent port of TacticalTargetPage.tsx's repBucket(). */
 export const repBucket = (contact: SectorContact): RepBucket =>
-  contact.is_npc ? (isHostileNpc(contact) ? 'red' : 'blue') : playerRepBucket(contact.reputation_tier);
+  contact.is_npc ? (isHostileNpc(contact) ? 'red' : 'blue') : playerRepBucket(contact);
 
 /** Archetypes SolarSystemViewscreen's shipFaction() reads as law (blue,
  *  "not fair game") — LAW_ENFORCEMENT / FACTION_PATROL / STATION_SECURITY

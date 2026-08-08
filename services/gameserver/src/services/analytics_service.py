@@ -4,9 +4,9 @@ Handles computation and caching of player analytics data
 """
 
 from datetime import datetime, timedelta
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any
 from sqlalchemy.orm import Session
-from sqlalchemy import func, text, and_, or_
+from sqlalchemy import func
 import logging
 
 from src.models.player import Player
@@ -34,7 +34,7 @@ class AnalyticsService:
             now = datetime.utcnow()
             today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
             week_ago = now - timedelta(days=7)
-            thirty_days_ago = now - timedelta(days=30)
+            now - timedelta(days=30)
             
             # Get all players with their related data
             all_players = self.db.query(Player).all()

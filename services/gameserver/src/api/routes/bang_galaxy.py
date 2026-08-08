@@ -9,8 +9,8 @@ Five endpoints (per Phase 1D of ``DOCS/PLANS/bang-integration.md``):
 * ``DELETE /admin/galaxy/{galaxy_id}``  — hard-delete galaxy (requires header)
 
 All endpoints are admin-only via :func:`require_scope` (BANG_REGENERATE). The legacy
-``POST /admin/galaxy/generate`` (in :mod:`src.api.routes.admin`) is kept
-intact; Phase 4 removes it.
+``POST /admin/galaxy/generate`` (in :mod:`src.api.routes.admin`) was removed
+in Phase 4.
 """
 from __future__ import annotations
 
@@ -124,6 +124,12 @@ async def create_bang_job(
             display_name=f"{galaxy_name} — {region_type.replace('_', ' ').title()}",
             region_type=region_type,
             total_sectors=total_sectors,
+            # ADR-0050:177 / galaxy-generation.md: bang-import regions carry
+            # the job's own seed (required field on BangConfig) as their
+            # generation_seed, matching "generation_seed <- Universe.seed"
+            # (bang-import-pipeline.md:161) -- ops repro + bang-side
+            # reproducibility.
+            generation_seed=payload.config.seed,
         ))
         region_uuids[region_type] = region_id
 
@@ -203,6 +209,8 @@ async def add_player_owned_region(
         display_name=f"{galaxy.name} — Player Owned ({player_owned_sectors})",
         region_type="player_owned",
         total_sectors=player_owned_sectors,
+        # See the sibling generation_seed comment above (same convention).
+        generation_seed=payload.config.seed,
     ))
 
     await session.commit()
@@ -488,7 +496,7 @@ async def hard_delete_galaxy(
         description="Must match the galaxy's exact name to authorise deletion.",
     ),
 ) -> Response:
-    """Hard-delete a galaxy (and everything cascaded). Per Max, no archive.
+    """Hard-delete a galaxy (and everything cascaded). Per human, no archive.
 
     Important: Galaxy ↔ Region is not a FK relationship in this schema —
     Galaxy.bang_snapshot["regions"][rt]["region_id"] is the only link.

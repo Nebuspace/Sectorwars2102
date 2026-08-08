@@ -1,7 +1,7 @@
 """Citadel Research — the empire R&D notification cockpit (CRT-T1.5-9 / CRT-4).
 
 The player-facing capstone of the CRT economy tranche. Player brand: "Citadel
-Research" (Max-ruled). These endpoints SURFACE the now-live governed-flywheel
+Research" (human-ruled). These endpoints SURFACE the now-live governed-flywheel
 economy (the per-empire faucet governor + the perishable contract sink + the
 recurring faucet copay) and the GENERATED, perishable Research-Directive offers.
 

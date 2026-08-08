@@ -4,7 +4,7 @@ Canon: sector presence is who-is-in-sector; this module owns x/y/heading
 *inside* a sector. REST commits legs; WS fans out plans; clients interpolate
 with the same profile timings as WindshieldTableau TRAVEL_* / OTHER_FLIGHT_*.
 
-Burn cost: FREE (0 turns) — Max ratified 2026-07-16.
+Burn cost: FREE (0 turns) — human ratified 2026-07-16.
 Empty-space Travel To: allowed in v1.
 """
 from __future__ import annotations
@@ -46,7 +46,7 @@ PROFILE_MS = {
     "halt_brake_ms": HALT_BRAKE_MS,
 }
 
-# Fixed reference band for %-math authority (Max: Implementer default).
+# Fixed reference band for %-math authority (human: Implementer default).
 REF_BAND_W = 1440.0
 REF_BAND_H = 335.0
 REF_BAND_ASPECT = REF_BAND_H / REF_BAND_W  # ~0.2326
@@ -89,7 +89,7 @@ def _shortest_delta(from_deg: float, to_deg: float) -> float:
 
 def _normalize_heading_deg(deg: float) -> float:
     """Canonical [0,360) heading. EVERY heading_deg write site in this
-    module runs through this (Max's live fly-by: a completed leg's arrival
+    module runs through this (human's live fly-by: a completed leg's arrival
     heading was observed at 531deg -- `face = prograde + 360.0`'s own
     doc-comment used to compute a genuinely correct "keep spinning past
     360 for a continuous CSS rotation" value, but that's a client-side
@@ -140,7 +140,7 @@ def seeded_waypoints(sector_id: int, ship_key: str, n: int = 3) -> List[Tuple[fl
 
 
 # ---------------------------------------------------------------------------
-# Destination catalog — habitable/station vs barren vs warp-out (Max 2026-07-16)
+# Destination catalog — habitable/station vs barren vs warp-out (human 2026-07-16)
 # Ballpark: ~60% trade/habitable, ~20% outbound, ~20% barren — biased by role.
 #
 # Body/station %-positions are computed by intrasystem_layout.SectorLayout —
@@ -471,7 +471,7 @@ def _derive_burn(
     # the value that gets PERSISTED as the ship's long-term REST heading and
     # re-read as the next leg's `parked` baseline (start_burn, below) — must
     # be canonical [0,360) at the point it's stored, not carried forward
-    # unbounded (Max's live fly-by: 531deg observed).
+    # unbounded (human's live fly-by: 531deg observed).
     return {
         "x_pct": tx, "y_pct": ty, "heading_deg": _normalize_heading_deg(face),
         "phase": "idle", "burning": False, "leg": None,
@@ -699,7 +699,7 @@ def build_presence_entry(
     ``ship_name``/``ship_type`` fall back to Python ``None`` (JSON null),
     NOT the literal string ``"None"`` (2026-07-16 in-window correction --
     the ORIGINAL "None"-string fallback was a preserved-convention choice
-    that turned out to be the ACTUAL live bug Max saw: "Pilot: none" on the
+    that turned out to be the ACTUAL live bug human saw: "Pilot: none" on the
     windshield contact popup was the literal string "None" rendering
     verbatim, not a missing field. Client-side grep of the whole tactical/
     contexts tree confirmed ZERO readers compare against the string
@@ -799,6 +799,12 @@ def enrich_presence_with_live_pose(db: Session, present: List[Dict[str, Any]]) -
     work — the write-time mirror was already paid for."""
     if not present:
         return present
+    # Local import: presence_classification.py (WO-API-PHASE2 Lane B6)
+    # imports npc_spawn_service.LAWFUL_TARGET_THRESHOLD at its own top
+    # level; keeping this one function-scoped avoids any chance of a
+    # circular top-level import as this module's own callers accumulate.
+    from src.services.presence_classification import npc_hostile, player_rep_bucket
+
     npc_ids = [
         e.get("player_id") for e in present
         if isinstance(e, dict) and e.get("is_npc") and e.get("player_id")
@@ -831,6 +837,18 @@ def enrich_presence_with_live_pose(db: Session, present: List[Dict[str, Any]]) -
                 e["activity"] = (act.name if hasattr(act, "name") else str(act)) if act else None
                 e["mission"] = (n.daily_schedule or {}).get("mission") or "commerce"
                 e["archetype"] = n.archetype.name if n.archetype else None
+                # WO-API-PHASE2 Lane B6: re-derive from LIVE notoriety +
+                # archetype (the same freshness argument as archetype above)
+                # rather than trust the spawn-time mirror in
+                # npc_spawn_service._presence_entry. Archetype-first: pirates/
+                # police spawn with notoriety=None (it's exclusively the
+                # trader scruples axis), so npc_hostile needs the just-
+                # computed archetype to ever call a HOSTILE_RAIDER fair game.
+                # getattr, not n.notoriety -- matches this function's own
+                # defensive convention for optional NPC-row attributes (see
+                # current_sector_id/ship_id below) since not every caller's
+                # row carries every column.
+                e["hostile"] = npc_hostile(getattr(n, "notoriety", None), e["archetype"])
                 pose_source = n.intrasystem_pose
                 if pose_source is None:
                     # WO-API-A1 mack HIGH (Option A): this branch used to
@@ -860,9 +878,18 @@ def enrich_presence_with_live_pose(db: Session, present: List[Dict[str, Any]]) -
                     e["pose"] = pose_public(pose_source)
         else:
             p = player_by_id.get(str(e.get("player_id")))
-            if p is not None and p.intrasystem_pose is not None:
+            if p is not None:
                 e = dict(e)
-                e["pose"] = pose_public(p.intrasystem_pose)
+                # WO-API-PHASE2 Lane B6: REST players_present previously
+                # carried no reputation info at all for human entries
+                # (build_presence_entry's reference shape has none) — this
+                # brings REST to parity with the WS sector_players broadcast
+                # (get_sector_players already surfaces reputation_tier).
+                # getattr, not p.reputation_tier -- same defensive convention
+                # as the NPC branch above (not every caller's row carries it).
+                e["rep_bucket"] = player_rep_bucket(getattr(p, "reputation_tier", None))
+                if p.intrasystem_pose is not None:
+                    e["pose"] = pose_public(p.intrasystem_pose)
         enriched.append(e)
     return enriched
 
@@ -887,7 +914,7 @@ def ensure_player_pose(player, ship_key: Optional[str] = None) -> Dict[str, Any]
 # server never checked the player's own pose against the target's position.
 #
 # THIS IS A TUNABLE DIAL, NOT A FIXED FACT — DOCK_LAND_PROXIMITY_RANGE_EM is
-# flagged prominently here (and in this WO's own report) for Max to confirm
+# flagged prominently here (and in this WO's own report) for human to confirm
 # or override, not a unilateral pick. Proposed default: 5.0em, matching the
 # client's own DOCK_RANGE_EM verbatim, so server enforcement stays INVISIBLE
 # to a legitimate player already relying on the shipped, playtested UI gate
@@ -1006,7 +1033,7 @@ def assert_dock_land_proximity(
 # each side -- see WO-ISP-DOCKPROX's comment above). The *3 multiple itself
 # was a WO-TACTICAL-APPROACH-ENGAGE-SCROLL Part B PLACEHOLDER on the client
 # side, never playtested/tuned -- flagged prominently here, same as
-# DOCK_LAND_PROXIMITY_RANGE_EM, for Max to confirm or override. Same fixed
+# DOCK_LAND_PROXIMITY_RANGE_EM, for human to confirm or override. Same fixed
 # reference band (LAYOUT_BAND_WIDTH/HEIGHT/REM_PX) as dock/land -- the
 # server has no DOM to measure, so the fixed 1440x334.7 band IS the shared
 # coordinate system every proximity gate on both sides compares in.

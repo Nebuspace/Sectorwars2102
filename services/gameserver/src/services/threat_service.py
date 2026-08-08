@@ -85,7 +85,7 @@ from src.services.pirate_ecosystem_service import compute_population_score
 
 # ---------------------------------------------------------------------------
 # Formula constants — every weight/cap/threshold/band-edge named here, ALL
-# TENTATIVE pending Max's ratification (WO-UI2-TACTICAL-THREAT-ENDPOINT).
+# TENTATIVE pending human's ratification (WO-UI2-TACTICAL-THREAT-ENDPOINT).
 # STATIC-ONLY (REVISE): hostiles_present/inbound_squads terms removed, see
 # the module docstring's "STATIC-ONLY scope" note.
 #
@@ -102,18 +102,18 @@ from src.services.pirate_ecosystem_service import compute_population_score
 # = 67.
 # ---------------------------------------------------------------------------
 
-SEC_W = 4  # TENTATIVE — pending Max ratify
-HAZ_W = 2  # TENTATIVE — pending Max ratify
-RECENT_COMBAT_W = 15  # TENTATIVE — pending Max ratify
-RECENT_COMBAT_WINDOW_H = 24  # TENTATIVE — pending Max ratify
-PIRATE_MAX = 15  # TENTATIVE — pending Max ratify
+SEC_W = 4  # TENTATIVE — pending human ratify
+HAZ_W = 2  # TENTATIVE — pending human ratify
+RECENT_COMBAT_W = 15  # TENTATIVE — pending human ratify
+RECENT_COMBAT_WINDOW_H = 24  # TENTATIVE — pending human ratify
+PIRATE_MAX = 15  # TENTATIVE — pending human ratify
 
-SCORE_MIN = 0  # TENTATIVE — pending Max ratify
-SCORE_MAX = 100  # TENTATIVE — pending Max ratify
+SCORE_MIN = 0  # TENTATIVE — pending human ratify
+SCORE_MAX = 100  # TENTATIVE — pending human ratify
 
-BAND_CLEAR_MAX = 24  # TENTATIVE — pending Max ratify
-BAND_CAUTION_MAX = 49  # TENTATIVE — pending Max ratify
-BAND_HOSTILE_MAX = 74  # TENTATIVE — pending Max ratify
+BAND_CLEAR_MAX = 24  # TENTATIVE — pending human ratify
+BAND_CAUTION_MAX = 49  # TENTATIVE — pending human ratify
+BAND_HOSTILE_MAX = 74  # TENTATIVE — pending human ratify
 # 75..SCORE_MAX -> LETHAL (implicit ceiling at SCORE_MAX)
 
 BAND_CLEAR = "CLEAR"

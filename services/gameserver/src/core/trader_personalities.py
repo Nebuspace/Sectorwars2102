@@ -28,7 +28,7 @@ deterministic, available proxy the canon itself uses for archetype placement.
 from __future__ import annotations
 
 import enum
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 
 # ── Archetype enum (mirrors models.station.TraderPersonalityType values) ──────
@@ -48,9 +48,9 @@ MEMORY_DAYS_MAX = 90
 TRUST_MIN = -1000
 TRUST_MAX = 1000
 
-# Max ruling #7: per-NPC personality persists and the NPC remembers the player
+# human ruling #7: per-NPC personality persists and the NPC remembers the player
 # for 90 real days. The archetype table below sets a per-archetype memory window;
-# Max #7 pins the *system* memory horizon at the canonical maximum (90 days),
+# human #7 pins the *system* memory horizon at the canonical maximum (90 days),
 # which is also the [7, 90] ceiling. ``MEMORY_DURATION_DAYS`` is the value the
 # haggle engine uses for the 90-day memory contract regardless of archetype.
 MEMORY_DURATION_DAYS = 90
@@ -59,7 +59,7 @@ MEMORY_DURATION_DAYS = 90
 # ── Archetype defaults ────────────────────────────────────────────────────────
 #
 # haggling_difficulty + preferred_appeal_types: DATA_MODELS/jsonb-schema.md.
-# memory_duration_days: FEATURES/economy/haggling.md (Max DECISION #4, 2026-06-22 —
+# memory_duration_days: FEATURES/economy/haggling.md (human DECISION #4, 2026-06-22 —
 #   the haggling.md per-archetype memory windows win over the jsonb-schema.md
 #   defaults). All values stay within the canonical [7, 90] bound.
 #
@@ -151,7 +151,7 @@ def default_personality(archetype: TraderArchetype) -> Dict[str, Any]:
 
     ``player_memory`` is the per-player haggle-history sub-document (keyed by
     player UUID string) the haggle engine maintains for the 90-day memory +
-    per-player trust contract (Max #7 / WO-BO step D). It is additive to the
+    per-player trust contract (human #7 / WO-BO step D). It is additive to the
     documented schema and ignored by everything except the haggle engine.
     """
     spec = _ARCHETYPE_DEFAULTS[archetype]

@@ -14,7 +14,6 @@ id, not a relational row. Player references ARE relational FKs.
 
 import enum
 from uuid import uuid4
-from datetime import datetime
 
 from sqlalchemy import (
     Column,
@@ -72,6 +71,8 @@ class BountyClaim(Base):
 
     claimed_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     resolved_at = Column(DateTime(timezone=True), nullable=True)
+    # ADR-0050 SK24 — region at claim time (no FK); survives region terminate.
+    region_id_snapshot = Column(UUID(as_uuid=True), nullable=True)
 
     # Relationships
     claimant = relationship("Player", foreign_keys=[claimant_id])

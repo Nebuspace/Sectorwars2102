@@ -10,7 +10,7 @@ dispatch point — ``apply_emergent_action(player, action, context)`` — that:
   1. looks the action up in the canon trigger table,
   2. fans out to the canon per-faction faction-rep deltas in ONE transaction,
   3. emits the rivalry-cascade fractional negative on positive deltas, and
-  4. (future) applies the per-(player, faction) daily throttle.
+  4. applies the per-(player, faction) daily throttle (live, per ADR-0056 N-V1).
 
 This module is the dispatcher. It does NOT reinvent the rep mutation: it reuses
 ``faction_service.apply_faction_rep_delta`` (the proven sync, flush-only,
@@ -352,7 +352,7 @@ class EmergentAction:
 # an existing rep change are present. NO-CANON / 📐-dependent actions are
 # OMITTED (and reported), not guessed.
 #
-# Currently wired-to-a-site:  KILL_PIRATE_NPC.
+# Currently wired-to-a-site:  KILL_PIRATE_NPC, KILL_CABAL_NPC.
 # Present-but-unwired (defined so the dispatcher is the single tuning point the
 # moment their trigger sites land WITHOUT an existing rep hook):
 #   BUY_INSURANCE_BASIC / STANDARD / PREMIUM (MG) — one-time per hull.
@@ -370,6 +370,15 @@ EMERGENT_ACTIONS: Dict[str, EmergentAction] = {
     # unconditional base +5 and does NOT guess the conditional uplift.
     "KILL_PIRATE_NPC": EmergentAction(
         name="KILL_PIRATE_NPC",
+        deltas=[FactionDelta(FactionType.FEDERATION, 5)],
+        doc_source="factions-and-teams.md TF: Kill a Pirate or Cabal NPC (+5)",
+    ),
+    # Same TF table row as KILL_PIRATE_NPC — Cabal is the parallel hostile-only
+    # antagonist. Separate action name so the trigger table stays auditable;
+    # magnitude identical. Wired at combat_service kill resolver when
+    # dead_npc.faction_code == "cabal" (Cabal spawn itself is still Design-only).
+    "KILL_CABAL_NPC": EmergentAction(
+        name="KILL_CABAL_NPC",
         deltas=[FactionDelta(FactionType.FEDERATION, 5)],
         doc_source="factions-and-teams.md TF: Kill a Pirate or Cabal NPC (+5)",
     ),
@@ -476,9 +485,8 @@ EMERGENT_ACTIONS: Dict[str, EmergentAction] = {
     # EmergentAction.deltas list already supports a multi-faction event, and the
     # dispatcher fans out each delta (with its own throttle/cap/cascade) in one
     # transaction. Wired at gate-activation (advance_gate) ONLY for a public
-    # tunnel (WarpTunnel.is_public). The private/whitelist row (line 214) is
-    # PARKED — the private-gate build path does not exist (is_public is always
-    # True at creation), so no caller can reach it.
+    # tunnel (WarpTunnel.is_public). Private/whitelist builds fire
+    # BUILD_PRIVATE_WARP_GATE below (WO-WIRE-PRIVATE-WARP-GATE-BUILD).
     "BUILD_PUBLIC_WARP_GATE": EmergentAction(
         name="BUILD_PUBLIC_WARP_GATE",
         deltas=[
@@ -489,6 +497,23 @@ EMERGENT_ACTIONS: Dict[str, EmergentAction] = {
         doc_source=(
             "factions-and-teams.md anti-symmetric matrix: Build a public toll "
             "warp gate (MG +30, FC +5, NS +5; TF/AM/FA/SS/PI 0)"
+        ),
+    ),
+    # WO-WIRE-PRIVATE-WARP-GATE-BUILD — matrix row "Build a private/whitelist
+    # warp gate | TF −5 | MG 0 | FC +5 | AM 0 | NS 0 | FA +5 | SS +10 | PI 0".
+    # Fired at the same advance_gate activation point when the tunnel is NOT
+    # public (PRIVATE / WHITELIST / TEAM_ONLY / ALLIANCE).
+    "BUILD_PRIVATE_WARP_GATE": EmergentAction(
+        name="BUILD_PRIVATE_WARP_GATE",
+        deltas=[
+            FactionDelta(FactionType.FEDERATION, -5),
+            FactionDelta(FactionType.INDEPENDENTS, 5),
+            FactionDelta(FactionType.OUTLAWS, 5),
+            FactionDelta(FactionType.SYNDICATE, 10),
+        ],
+        doc_source=(
+            "factions-and-teams.md anti-symmetric matrix: Build a private/"
+            "whitelist warp gate (TF −5, FC +5, FA +5, SS +10; MG/AM/NS/PI 0)"
         ),
     ),
 }
@@ -917,7 +942,7 @@ def apply_emergent_action(
 
 
 # ---------------------------------------------------------------------------
-# Planet-capture faction penalty (DECISIONS planet-assault-reward-model, Max
+# Planet-capture faction penalty (DECISIONS planet-assault-reward-model, human
 # 2026-06-20 conditional (c)).
 #
 # Capturing a FACTION-OWNED planet earns the captor NEGATIVE reputation with
@@ -932,7 +957,7 @@ def apply_emergent_action(
 # MAGNITUDE IS NO-CANON: −50 is PROPOSED, mirroring the canon
 # ``attacked_chartered_planet`` personal-rep penalty (−50). The factions canon
 # (factions-and-teams.md reputation-triggers / ADR-0032) does NOT list a
-# capture-a-faction-planet trigger, so this number is flagged for Max and is
+# capture-a-faction-planet trigger, so this number is flagged for human and is
 # the smallest sensible intervention until canon lands.
 #
 # WIRING REALITY: the Planet model has no faction-owner field (planets are owned

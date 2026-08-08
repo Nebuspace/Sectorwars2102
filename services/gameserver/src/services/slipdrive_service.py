@@ -63,19 +63,19 @@ class SlipdriveError(Exception):
 # --- Canonical constants ---
 # NO-CANON magnitudes (canon names the mechanism, not these numbers --
 # FEATURES/galaxy/sectors.md only says "multi-turn charge, fuel cost scaled
-# by graph distance"): flagged for Max's sign-off. SLIPDRIVE_CHARGE_HOURS
+# by graph distance"): flagged for human's sign-off. SLIPDRIVE_CHARGE_HOURS
 # mirrors the closest existing canon analog for a module spin-up window
 # (ADR-0036 gate-construction HARMONIZING is 1h canonical) at half that,
 # since this is emergency self-rescue, not a construction ritual.
 #
 # WO-GWQ-STRANDING-2 [NO-CANON] DENOMINATION CHANGE: SLIPDRIVE_FUEL_BASE /
 # SLIPDRIVE_FUEL_PER_HOP now denominate the ship.cargo["contents"]["fuel"]
-# COMMODITY (units), not player.credits (currency) -- Max's design
+# COMMODITY (units), not player.credits (currency) -- human's design
 # direction: the Slipdrive burns real fuel cargo; only the escape pod is
 # free. The MAGNITUDES (50 base + 10/hop) are UNCHANGED from the prior
 # WO-GWQ-STRANDING credits framing -- only what they measure changed, per
 # the dispatch's explicit "[NO-CANON] flag the denomination + the numbers"
-# instruction. Re-flagged for Max's sign-off under the new unit.
+# instruction. Re-flagged for human's sign-off under the new unit.
 SLIPDRIVE_CHARGE_TURN_COST = 3
 SLIPDRIVE_CHARGE_HOURS = 0.5  # canonical, scaled via scaled_deadline
 SLIPDRIVE_FUEL_BASE = 50
@@ -386,6 +386,22 @@ def complete_charge(
 
         from src.services.movement_service import MovementService
         MovementService(db)._update_player_presence(player, old_sector_id, destination.sector_id)
+
+        # WO-K2b: a Slipdrive ESCAPE is still a border crossing. Ruled
+        # deliberately (orchestrator, 2026-08-03): the detection model keys on
+        # crossing into tighter security with contraband aboard, never on the
+        # mechanism or the motive, and an "it was an emergency" exemption would
+        # simply become the smuggler's preferred crossing. Inside the
+        # moved-sectors branch, and flush-only — the ROUTE owns the commit here
+        # (see the flush below), so committing would break that contract.
+        from src.services.contraband_service import scan_in_transit_best_effort
+        scan_in_transit_best_effort(
+            db,
+            player=player,
+            ship_id=ship.id,
+            origin_sector_id=old_sector_id,
+            destination_sector_id=destination.sector_id,
+        )
 
     _set_slot(ship, None)
 

@@ -10,7 +10,7 @@ Shadow-Syndicate fence venues, hidden-sector / abandoned-outpost discovery,
 stealth-route multipliers + Stealth Systems equipment, counterfeit goods, bounty
 placement. There is intentionally no syndicate fence.
 
-The three entry points (all server-authoritative, all single-transaction):
+The four entry points (all server-authoritative):
 
 * ``get_catalog(player, station)`` — the contraband catalog + computed prices for
   a qualifying venue. Returns ``None`` when the access gate is unmet (the route
@@ -24,6 +24,14 @@ The three entry points (all server-authoritative, all single-transaction):
   down). On a FAILED roll: confiscate the illegal cargo, levy a severity-scaled
   fine, apply the Federation rep delta, and flip ``is_suspect`` (LIGHT/MODERATE)
   or ``is_wanted`` (SEVERE).
+* ``scan_in_transit(player_id, ship_id, origin, destination)`` — WO-K2, the
+  SECOND detection site the brief always specified ("sell into, or TRANSIT OUT
+  OF, a higher-security sector", black-market.md:18; "invocable on sector egress
+  from movement_service.py", :47). Called from the movement path's three success
+  branches. Same bust, same fine table, same heat flip — only the sector term's
+  polarity differs, and the whole hold (not one traded line) sets the severity.
+  Unlike buy/sell this one is NOT single-transaction-with-its-caller: the move
+  has already committed by the time it runs, so its caller commits it separately.
 
 ACCESS GATE (brief §1.1, [OPEN-1]): the venue qualifies iff
 ``Station.type == StationType.BLACK_MARKET`` AND the player's Fringe-Alliance
@@ -42,6 +50,14 @@ DETECTION (brief §1.4, [OPEN-5]): on SELL, roll
      + sector·(1 − security_level/10) + rep·(1 − personal_reputation/1000)``
 clamped to ``[0.0, 0.95]``. The dropped terms (ship_visibility, transit_history,
 evasion_skill) have no inputs today and are deferred.
+
+On TRANSIT the identical model runs with ONE term flipped —
+``sector·(destination_security/10)`` instead of ``sector·(1 − security/10)`` —
+because a border scan gets DENSER as the destination gets more lawful, where a
+venue sale gets noticed in laxer space. Same base, same weights, same clamps: one
+detection model to balance, not two. The roll only fires when
+``dest_security > origin_security`` and is rate-limited per destination sector by
+``TRANSIT_SCAN_COOLDOWN_SECONDS`` ([OPEN-9]).
 
 CONSEQUENCES (brief §1.4, [OPEN-6]/[OPEN-7]): fine = cargo value ×
 {LIGHT 2, MODERATE 3, SEVERE 4}; heat = ``is_suspect`` for LIGHT/MODERATE,
@@ -89,7 +105,7 @@ from src.models.reputation import Reputation, ReputationLevel
 from src.models.sector import Sector
 from src.models.ship import Ship
 from src.models.station import Station, StationType
-from src.services import suspect_service
+from src.services import suspect_service, wanted_service
 from src.services.faction_service import apply_faction_rep_delta
 
 logger = logging.getLogger(__name__)
@@ -141,6 +157,82 @@ WANTED_SEVERITIES = frozenset({IllegalSeverity.SEVERE})
 # negative — outlaw cred — which in turn RAISES future detection probability (the
 # rep term above). Heat is self-reinforcing (brief §1.5).
 NOTORIETY_NUDGE_PER_SALE = -2
+
+# Severity ranking, low → high. Needed only on the TRANSIT path: a sell names one
+# commodity, but a transit scan sweeps the WHOLE hold, so the consequence has to
+# be keyed on the worst thing aboard rather than on "the commodity being traded".
+SEVERITY_ORDER: Dict[IllegalSeverity, int] = {
+    IllegalSeverity.LIGHT: 1,
+    IllegalSeverity.MODERATE: 2,
+    IllegalSeverity.SEVERE: 3,
+}
+
+# ── Transit scan (WO-K2; brief §1.4 egress hook) ──────────────────────────────
+# The brief puts detection on "sell into, OR TRANSIT OUT OF, a higher-security
+# sector" (black-market.md:18) and names movement_service.py as the second
+# invocation site (:47). Only the SECTOR term's polarity differs from the sell
+# model — see _transit_detection_probability. Every weight above is reused
+# VERBATIM, so this hook introduces no new balance numbers.
+#
+# [OPEN-9] — THE ONE UNCONFIRMED NUMBER HERE. The brief's default is "one scan
+# per sector per traversal (no re-roll on immediate re-entry)" and then says
+# "Confirm window." A per-(sector, timestamp) anchor is how that is expressed;
+# this is the window's provisional length. It only has to outlast a there-and-
+# back bounce, so it is deliberately short. Escalated to canon, not silently
+# adopted: change here, one place, when [OPEN-9] is ruled.
+TRANSIT_SCAN_COOLDOWN_SECONDS = 900  # 15 min — PROVISIONAL, awaiting [OPEN-9]
+
+
+def scan_in_transit_best_effort(
+    db: Session,
+    player: Player,
+    ship_id: Optional[uuid.UUID],
+    origin_sector_id: Optional[int],
+    destination_sector_id: Optional[int],
+) -> Optional[Dict[str, Any]]:
+    """Run a transit scan from INSIDE a transaction this caller does not own.
+
+    WO-K2b. The four relocation paths that bypass ``move_player_to_sector`` —
+    quantum jump, slipdrive, carrier hangar ride-along, tractor tow ride-along —
+    all reach their arrival point with the host transaction still OPEN
+    (``carry_hangared_ships``/``carry_towed_ship`` say so in their own docstrings:
+    "Does NOT commit"; ``slipdrive.complete_charge`` and the quantum ``jump``
+    path likewise flush and let their owner commit).
+
+    That is the exact inverse of the movement hook, where ``_execute_movement``
+    has already committed and the hook must own its transaction. Here a
+    ``commit()`` would publish a HALF-FINISHED relocation and a ``rollback()``
+    would discard the relocation outright, so this wrapper does neither:
+
+    * **SAVEPOINT-scoped.** ``begin_nested()`` means a failure inside the scan
+      unwinds only the scan's own writes. Without it, a raise partway through a
+      bust would leave a half-applied confiscation sitting in the caller's
+      session, to be committed later by an owner that has no idea it is there.
+    * **Never raises.** A contraband roll must not be able to strand a jump or
+      strand a passenger mid-carry. Degrades to a log line, exactly like the
+      other best-effort hooks on these paths.
+    * **Never commits or rolls back the outer transaction.** The scan's own
+      writes ride the caller's commit, which is what makes the bust atomic with
+      the relocation that triggered it.
+
+    Returns the scan outcome, or ``None`` when it was skipped or failed.
+    """
+    try:
+        with db.begin_nested():
+            return ContrabandService(db).scan_in_transit(
+                player=player,
+                ship_id=ship_id,
+                origin_sector_id=origin_sector_id,
+                destination_sector_id=destination_sector_id,
+            )
+    except Exception:
+        logger.warning(
+            "contraband transit scan failed for player %s (%s -> %s) — relocation "
+            "continues unaffected",
+            getattr(player, "id", None), origin_sector_id, destination_sector_id,
+            exc_info=True,
+        )
+        return None
 
 
 class ContrabandService:
@@ -301,6 +393,47 @@ class ContrabandService:
 
         return station, player, ship, None
 
+    def _lock_player_ship(
+        self,
+        player_id: uuid.UUID,
+        ship_id: Optional[uuid.UUID],
+    ) -> Tuple[Optional[Player], Optional[Ship], Optional[str]]:
+        """The station-less half of the lock order above, for the TRANSIT scan.
+
+        Same relative order (PLAYER then SHIP), just without the station leg —
+        there is no venue in deep space. This cannot form an AB-BA cycle with
+        ``_lock_station_player_ship``: that path takes station→player→ship and
+        this one never acquires a station lock at all, so no transaction here can
+        ever be the "holds player, waits for station" side of a cycle.
+
+        ``populate_existing()`` on both: the movement path has ALREADY loaded this
+        player (and committed the move) in this session, so a bare
+        ``with_for_update()`` would take the lock and then hand back the stale
+        identity-map instance — the row would be locked but the credits read from
+        it would predate the lock.
+        """
+        player = (
+            self.db.query(Player)
+            .filter(Player.id == player_id)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
+        if player is None:
+            return None, None, "player_not_found"
+
+        ship = (
+            self.db.query(Ship)
+            .filter(Ship.id == ship_id, Ship.owner_id == player_id)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
+        if ship is None:
+            return None, None, "ship_not_found"
+
+        return player, ship, None
+
     @staticmethod
     def _cargo(ship: Ship) -> Dict[str, Any]:
         """The ship's cargo JSONB as a dict, defaulting to the empty 50-capacity
@@ -450,6 +583,7 @@ class ContrabandService:
             unit_price=unit_price,
             total_value=total_cost,
             sector_id=player.current_sector_id,
+            region_id_snapshot=getattr(station, "region_id", None),
             is_illegal=True,
             illegal_commodity=resolved.value,
             timestamp=datetime.now(UTC),
@@ -594,6 +728,7 @@ class ContrabandService:
             unit_price=unit_price,
             total_value=sale_value,
             sector_id=player.current_sector_id,
+            region_id_snapshot=getattr(station, "region_id", None),
             is_illegal=True,
             illegal_commodity=resolved.value,
             timestamp=datetime.now(UTC),
@@ -613,6 +748,183 @@ class ContrabandService:
             "remaining_credits": player.credits,
             "rep_deltas": rep_deltas,
         }
+
+    # ------------------------------------------------------------------
+    # Transit scan (WO-K2 — the movement-path detection hook)
+    # ------------------------------------------------------------------
+    def scan_in_transit(
+        self,
+        player: Player,
+        ship_id: Optional[uuid.UUID],
+        origin_sector_id: Optional[int],
+        destination_sector_id: Optional[int],
+    ) -> Dict[str, Any]:
+        """Customs scan on arrival, when a jump carries contraband INTO a
+        higher-security sector (brief §1.4 / black-market.md:18, :47).
+
+        The whole hold is swept, so unlike ``sell`` there is no "commodity being
+        traded" to key consequences on — the WORST severity aboard drives the fine
+        multiplier, the heat flip, and the rep deltas (``_worst_held_meta``).
+
+        Gate order, cheapest first. **EVERY gate is evaluated BEFORE any lock is
+        taken**, so the common case — a clean hold, which is nearly every jump in
+        the game — costs one cargo read, takes no lock, and leaves the caller
+        nothing to commit or roll back:
+
+        1. both sector ids present, and this is a real change of sector;
+        2. the ship is carrying at least one enabled ``illegal:*`` line;
+        3. ``dest_security > origin_security`` — the brief scans you for crossing
+           INTO tighter space, never for leaving it. Equal or looser security is
+           not a scan event (a NULL security_level reads as the mid default 5 on
+           both sides, so an unseeded sector pair is never a scan);
+        4. the [OPEN-9] per-sector cooldown has expired for THIS destination —
+           read straight off the passed-in ``player``, no query and no lock.
+
+        **WHY THE GATES MUST ALL PRECEDE THE LOCK (regression, 2026-08-03).**
+        An earlier revision took the lock before the cooldown check so the check
+        would be serialized, which meant some no-scan outcomes returned holding
+        ``FOR UPDATE`` locks and the caller had to end the transaction to release
+        them. It did that with ``rollback()`` — on the CALLER'S session, on the
+        common path — which expires every ORM instance the request is still
+        using. ``routes/player.py:653`` evaluates ``player.turns`` as a default
+        argument on *every* move, i.e. immediately after this hook, and blew up
+        with ``ObjectDeletedError``. `_roll_mechanical_failure` looks like it does
+        the same thing but does not: its ``rollback()`` is only in an exception
+        handler, so it never runs on a healthy request. Gates-before-lock removes
+        the whole class of problem — no lock is taken unless this call is going to
+        mutate and therefore to be committed.
+
+        ``locked`` in the return tells the caller whether a lock was actually
+        acquired, so it only ends the transaction when there is something to end.
+
+        FLUSH only — the CALLER owns the commit (L1). On the movement path that
+        caller is ``movement_service._roll_contraband_transit_scan``, which
+        commits explicitly because the move itself already committed.
+
+        Returns ``{"scanned": bool, "detected": bool, "locked": bool,
+        "reason": str|None, ...}``; on a bust the ``_resolve_bust`` payload is
+        merged in.
+        """
+        def _skip(reason: str, locked: bool = False) -> Dict[str, Any]:
+            return {"scanned": False, "detected": False, "locked": locked, "reason": reason}
+
+        if origin_sector_id is None or destination_sector_id is None:
+            return _skip("unknown_sector")
+        if origin_sector_id == destination_sector_id:
+            return _skip("same_sector")
+
+        # (2) Is there anything to find? Unlocked read — this is what keeps the
+        # overwhelmingly common clean-hold jump off the lock entirely.
+        pre_ship = self.db.query(Ship).filter(Ship.id == ship_id).first() if ship_id else None
+        if pre_ship is None:
+            return _skip("ship_not_found")
+        if self._worst_held_meta(self._cargo(pre_ship).get("contents", {})) is None:
+            return _skip("no_contraband")
+
+        # (3) Security differential. Both sides resolve through the same default
+        # so a NULL/absent sector can never manufacture a scan.
+        origin_security = self._security_level(self._sector_by_number(origin_sector_id))
+        dest_security = self._security_level(self._sector_by_number(destination_sector_id))
+        if dest_security <= origin_security:
+            return _skip("not_higher_security")
+
+        # (4) [OPEN-9] cooldown — "one scan per sector per traversal (no re-roll
+        # on immediate re-entry)". Keyed on the destination, so bouncing back and
+        # forth across the same border cannot farm rolls, while a genuinely new
+        # crossing always scans. Read off the already-loaded player: no query, and
+        # crucially no lock, so declining here leaves nothing for the caller to
+        # unwind (see the docstring's regression note).
+        now = datetime.now(UTC)
+        if self._transit_scan_on_cooldown(player, destination_sector_id, now):
+            return _skip("cooldown")
+
+        # Everything below MUTATES, so take the lock now.
+        player, ship, reason = self._lock_player_ship(player.id, ship_id)
+        if reason:
+            return _skip(reason, locked=True)
+
+        # Re-check the cooldown under the lock. Two arrivals racing the same
+        # border could both have passed the unlocked check above; the lock makes
+        # exactly one of them the winner. Rare enough that paying a lock to lose
+        # is fine — and the caller ends the transaction because `locked` is set.
+        if self._transit_scan_on_cooldown(player, destination_sector_id, now):
+            return _skip("cooldown_race", locked=True)
+
+        # Re-read the hold under the lock — this is the set the roll is scored on
+        # and the set a bust confiscates; the unlocked pre-check above is advisory.
+        cargo = self._cargo(ship)
+        contents = cargo.get("contents", {})
+        if not isinstance(contents, dict):
+            contents = {}
+        worst = self._worst_held_meta(contents)
+        if worst is None:
+            return _skip("no_contraband", locked=True)
+        worst_commodity, worst_meta = worst
+
+        p_detect = self._transit_detection_probability(
+            illegal_value=self._total_illegal_value(contents),
+            cargo_capacity=self._cargo_capacity(cargo),
+            destination_security=dest_security,
+            personal_reputation=player.personal_reputation or 0,
+        )
+        detected = _RNG.random() < p_detect
+
+        # The cooldown anchor is stamped for BOTH outcomes and BEFORE the branch:
+        # a clean scan has to burn the roll too, or an undetected smuggler could
+        # re-enter and re-roll until the coin landed. Same transaction as the bust
+        # it guards (orchestrator ruling, 2026-08-03) — if that transaction rolls
+        # back, the anchor rolls back with it and the roll is simply never spent.
+        player.last_contraband_scan_at = now
+        player.last_contraband_scan_sector_id = destination_sector_id
+
+        if detected:
+            outcome = self._resolve_bust(
+                player=player,
+                ship=ship,
+                station=None,
+                cargo=cargo,
+                contents=contents,
+                meta=worst_meta,
+                commodity=worst_commodity,
+                p_detect=p_detect,
+                reason="contraband_transit_scan",
+            )
+            outcome["scanned"] = True
+            outcome["locked"] = True
+            outcome["sector_id"] = destination_sector_id
+            return outcome
+
+        # CLEAN transit: nothing is seized and nothing is paid. Deliberately NO
+        # notoriety nudge — that is the reward for a completed SALE (brief §1.5);
+        # merely surviving a customs check is not a black-market transaction, and
+        # nudging here would let a player farm outlaw cred by pacing a border.
+        self.db.flush()
+        return {
+            "scanned": True,
+            "detected": False,
+            "locked": True,
+            "reason": None,
+            "sector_id": destination_sector_id,
+            "detection_probability": round(p_detect, 4),
+        }
+
+    def _transit_scan_on_cooldown(
+        self, player: Player, destination_sector_id: int, now: datetime,
+    ) -> bool:
+        """True iff this player already burned a transit scan on THIS sector
+        inside the [OPEN-9] window. NULL anchor (every pre-migration row) reads as
+        "never scanned", which grants no retroactive immunity."""
+        last_at = player.last_contraband_scan_at
+        last_sector = player.last_contraband_scan_sector_id
+        if last_at is None or last_sector is None:
+            return False
+        if last_sector != destination_sector_id:
+            return False
+        # Legacy rows can be naive; treat a naive stamp as UTC rather than
+        # raising on the subtraction (the column is timezone=True going forward).
+        if last_at.tzinfo is None:
+            last_at = last_at.replace(tzinfo=UTC)
+        return (now - last_at).total_seconds() < TRANSIT_SCAN_COOLDOWN_SECONDS
 
     # ------------------------------------------------------------------
     # Detection
@@ -663,16 +975,128 @@ class ContrabandService:
         )
         return self._clamp(p, DETECT_PROB_MIN, DETECT_PROB_MAX)
 
+    def _transit_detection_probability(
+        self,
+        illegal_value: int,
+        cargo_capacity: int,
+        destination_security: int,
+        personal_reputation: int,
+    ) -> float:
+        """``P(detected)`` for the TRANSIT scan — the sell model with the sector
+        term's polarity flipped, and nothing else changed::
+
+            base(0.05)
+            + cargo·(illegal_value / cargo_cap)
+            + sector·(destination_security / 10)      <-- flipped
+            + rep·(1 − personal_reputation / 1000)
+
+        WHY ONLY THIS TERM FLIPS. The sell term is ``1 − security/10`` because a
+        lax frontier venue is where a sale gets noticed. Transit is the opposite
+        event: the brief scans you for crossing INTO tighter space
+        (black-market.md:18), so it is the DESTINATION's security that makes the
+        customs net dense. Same weights, same base, same clamps, same
+        ``[0, 0.95]`` ceiling — deliberately no second set of tuning knobs, so
+        there is exactly one detection model to balance rather than two.
+
+        The cargo and rep terms are shared verbatim with ``_detection_probability``
+        and carry the identical meaning; see that docstring for their derivation.
+        """
+        cap = cargo_capacity if cargo_capacity and cargo_capacity > 0 else DEFAULT_CARGO_CAPACITY
+        cargo_term = self._clamp(illegal_value / cap, 0.0, 1.0)
+        sector_term = self._clamp(destination_security / 10.0, 0.0, 1.0)
+        rep_term = self._clamp(1.0 - (personal_reputation / 1000.0), 0.0, 2.0)
+
+        p = (
+            DETECT_BASE_RATE
+            + DETECT_CARGO_WEIGHT * cargo_term
+            + DETECT_SECTOR_WEIGHT * sector_term
+            + DETECT_REP_WEIGHT * rep_term
+        )
+        return self._clamp(p, DETECT_PROB_MIN, DETECT_PROB_MAX)
+
     def _resolve_sector(self, player: Player) -> Optional[Sector]:
         """The player's current sector. ``Player.current_sector_id`` is the GLOBAL
         ``Sector.sector_id`` integer (NOT the UUID PK)."""
-        if player.current_sector_id is None:
+        return self._sector_by_number(player.current_sector_id)
+
+    def _sector_by_number(self, sector_number: Optional[int]) -> Optional[Sector]:
+        """Look a sector up by its GLOBAL ``Sector.sector_id`` integer — the value
+        carried in ``Player.current_sector_id`` and passed around the movement
+        path — NOT by the UUID primary key."""
+        if sector_number is None:
             return None
         return (
             self.db.query(Sector)
-            .filter(Sector.sector_id == player.current_sector_id)
+            .filter(Sector.sector_id == sector_number)
             .first()
         )
+
+    @staticmethod
+    def _security_level(sector: Optional[Sector]) -> int:
+        """A sector's 1..10 security level, defaulting to the mid value 5 for a
+        missing sector or a NULL column — the same default the sell-side term
+        uses. Both sides of the transit differential resolve through this, so an
+        unseeded sector pair reads 5 vs 5 and is never a scan event."""
+        if sector is None or sector.security_level is None:
+            return 5
+        try:
+            return int(sector.security_level)
+        except (TypeError, ValueError):
+            return 5
+
+    @staticmethod
+    def _worst_held_meta(
+        contents: Any,
+    ) -> Optional[Tuple[IllegalCommodity, IllegalCommodityMeta]]:
+        """The single worst piece of contraband in the hold, as
+        ``(commodity, meta)`` — or ``None`` when the hold is clean.
+
+        A transit scan sweeps everything, so the consequence has to be keyed on
+        one representative line rather than on "the commodity being traded".
+        Worst = highest ``SEVERITY_ORDER``, ties broken by highest total held
+        value, then by enum value so the pick is DETERMINISTIC (a tie must not
+        resolve on dict iteration order — that would make the fine multiplier
+        depend on the order cargo happened to be loaded).
+
+        Disabled/unknown keys are skipped exactly as ``_total_illegal_value``
+        skips them, so a hold containing only unrecognised ``illegal:*`` junk
+        reads as clean and never triggers a scan.
+        """
+        if not isinstance(contents, dict):
+            return None
+
+        best: Optional[Tuple[int, int, str, IllegalCommodity, IllegalCommodityMeta]] = None
+        for raw_key, qty in contents.items():
+            if not isinstance(raw_key, str) or not raw_key.startswith("illegal:"):
+                continue
+            try:
+                commodity = IllegalCommodity(raw_key.split("illegal:", 1)[1])
+            except ValueError:
+                continue
+            if not is_enabled(commodity):
+                continue
+            try:
+                meta = get_meta(commodity)
+            except (KeyError, ValueError):
+                continue
+            try:
+                units = int(qty)
+            except (TypeError, ValueError):
+                continue
+            if units <= 0:
+                continue
+
+            rank = (
+                SEVERITY_ORDER.get(meta.severity, 0),
+                meta.base_price * units,
+                commodity.value,
+            )
+            if best is None or rank > best[:3]:
+                best = (rank[0], rank[1], rank[2], commodity, meta)
+
+        if best is None:
+            return None
+        return best[3], best[4]
 
     @staticmethod
     def _total_illegal_value(contents: Dict[str, Any]) -> int:
@@ -708,12 +1132,13 @@ class ContrabandService:
         self,
         player: Player,
         ship: Ship,
-        station: Station,
+        station: Optional[Station],
         cargo: Dict[str, Any],
         contents: Dict[str, Any],
         meta: IllegalCommodityMeta,
         commodity: IllegalCommodity,
         p_detect: float,
+        reason: str = "black_market_bust",
     ) -> Dict[str, Any]:
         """Confiscate ALL illegal cargo, levy a severity-scaled fine, apply the
         Federation (+other) rep deltas, and flip the heat flag. No payout — the
@@ -722,6 +1147,18 @@ class ContrabandService:
         Fine = TOTAL confiscated value × {LIGHT 2, MODERATE 3, SEVERE 4}, clamped
         to the player's available credits (credits never go negative — the unpaid
         remainder is simply unrecoverable here; debt is owned elsewhere).
+
+        Shared by both detection sites, which is the point: a bust must cost the
+        same whether it fires at a venue or at a border.
+        * ``station`` is ``None`` on the TRANSIT path (WO-K2) — there is no venue
+          in deep space. It is used for the log line only; nothing about the
+          consequence depends on a station existing.
+        * ``reason`` labels the rep-delta and suspect-lifecycle events so the two
+          sites stay distinguishable in the reputation history
+          (``black_market_bust`` vs ``contraband_transit_scan``).
+        * ``meta``/``commodity`` are the SOLD line on the sell path and the WORST
+          line aboard on the transit path (``_worst_held_meta``) — either way the
+          whole hold is what gets seized.
         """
         # Confiscated value across ALL contraband (the whole hot hold is seized).
         confiscated_value = self._total_illegal_value(contents)
@@ -748,18 +1185,20 @@ class ContrabandService:
         player.credits = available - fine_charged
 
         # Heat flip (severity → suspect/wanted).
-        heat = self._apply_heat(self.db, player, meta.severity)
+        heat = self._apply_heat(self.db, player, meta.severity, reason=reason)
 
         # Faction rep deltas — getting BUSTED applies the contraband rep deltas
         # (Federation down hardest). Sync, in-txn helper.
-        rep_deltas = self._apply_rep_deltas(player.id, meta, "black_market_bust")
+        rep_deltas = self._apply_rep_deltas(player.id, meta, reason)
 
         self.db.flush()
 
         logger.info(
-            "black-market BUST: player %s at station %s — commodity %s severity %s "
+            "black-market BUST (%s): player %s at %s — commodity %s severity %s "
             "p=%.4f confiscated %d units (value %d) fine %d heat=%s",
-            player.id, station.id, commodity.value, meta.severity.value,
+            reason, player.id,
+            f"station {station.id}" if station is not None else "transit",
+            commodity.value, meta.severity.value,
             p_detect, confiscated_units, confiscated_value, fine_charged, heat,
         )
 
@@ -779,24 +1218,35 @@ class ContrabandService:
         }
 
     @staticmethod
-    def _apply_heat(db: Session, player: Player, severity: IllegalSeverity) -> str:
+    def _apply_heat(
+        db: Session,
+        player: Player,
+        severity: IllegalSeverity,
+        reason: str = "black_market_bust",
+    ) -> str:
         """Flip the player's heat flag per severity (brief [OPEN-7]):
         LIGHT/MODERATE → ``is_suspect``; SEVERE → ``is_wanted`` (which also implies
         suspect). Every suspect flip (direct or WANTED-implied) now runs the full
         WO-CMB-SUSPECT-LIFE-1 lifecycle via ``suspect_service.apply_suspect_event``
         -- timer extension capped at 4h cumulative, team snapshot once at first
         acquisition, -25 personal rep per event (ships.md:287-296). Returns the
-        heat state set ("wanted" / "suspect")."""
+        heat state set ("wanted" / "suspect").
+
+        ``reason`` is threaded through to the lifecycle event so a border bust is
+        distinguishable from a venue bust in the suspect history; the CONSEQUENCE
+        is identical either way (WO-K2)."""
         now = datetime.now(UTC)
         if severity in WANTED_SEVERITIES:
-            if not player.is_wanted:
-                player.is_wanted = True
-                player.wanted_declared_at = now
+            # WO-BUILD-WANTED-UNTIL-TIMER: refreshes wanted_until to a flat
+            # 24h window (wanted_service.WANTED_DURATION) so this trigger
+            # auto-clears — previously is_wanted was set once here and NEVER
+            # cleared (a standing bug; see wanted_service module docstring).
+            wanted_service.apply_wanted_event(db, player, now=now)
             # A wanted player is implicitly also a suspect -- same lifecycle event.
-            suspect_service.apply_suspect_event(db, player, reason="black_market_bust", now=now)
+            suspect_service.apply_suspect_event(db, player, reason=reason, now=now)
             return "wanted"
         # LIGHT / MODERATE → suspect.
-        suspect_service.apply_suspect_event(db, player, reason="black_market_bust", now=now)
+        suspect_service.apply_suspect_event(db, player, reason=reason, now=now)
         return "suspect"
 
     # ------------------------------------------------------------------

@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
 from sqlalchemy.orm import Session
-from sqlalchemy import func, and_, or_, desc
+from sqlalchemy import func, desc
 from sqlalchemy.orm.attributes import flag_modified
 
 from src.core.commodity_economy import (
@@ -168,7 +168,7 @@ class EconomyAnalyticsService:
                             "price_change_percent": round(price_change, 2),
                             "recommended_action": self._get_recommended_action(price_change, price.commodity)
                         })
-        except Exception as e:
+        except Exception:
             # If price alert detection fails, return empty list rather than crashing
             pass
 
@@ -192,11 +192,10 @@ class EconomyAnalyticsService:
         The INTERVENTION audit row is written ONLY once the dispatched
         action returns without raising — i.e. only after a real, committed
         state change. Any raised exception (unknown type, invalid input,
-        freeze_trading's honest 501, or a genuine DB error) rolls back and
-        writes NO audit row (WO-ADM-ECON-TRUTH: previously every outcome,
-        success OR failure, logged an unconditional INTERVENTION row,
-        corrupting the audit trail with phantom entries for actions that
-        changed nothing)."""
+        or a genuine DB error) rolls back and writes NO audit row
+        (WO-ADM-ECON-TRUTH: previously every outcome, success OR failure,
+        logged an unconditional INTERVENTION row, corrupting the audit
+        trail with phantom entries for actions that changed nothing)."""
         intervention_id = uuid.uuid4()
 
         try:
@@ -204,8 +203,6 @@ class EconomyAnalyticsService:
                 result = self._adjust_prices(parameters)
             elif intervention_type == "inject_liquidity":
                 result = self._inject_liquidity(parameters)
-            elif intervention_type == "freeze_trading":
-                result = self._freeze_trading(parameters)
             elif intervention_type == "reset_market":
                 result = self._reset_market_prices(parameters)
             else:
@@ -770,24 +767,6 @@ class EconomyAnalyticsService:
             "resources_injected": injected,
             "skipped": skipped,
         }
-
-    def _freeze_trading(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
-        """Trading-freeze has zero consumers repo-wide (grep freeze_trading|
-        trading_freeze hits only this file and the admin_economy.py
-        docstring) and is off-canon: sw2102-docs/OPERATIONS/admin-ui.md's
-        real admin capability list names 'market interventions (price cap /
-        floor / supply injection)' but never trading-freeze. Previously this
-        returned a canned 'trading_freeze_initiated' dict with no state
-        stored anywhere a trade path could ever check — a pure phantom.
-        Raise an honest 501 rather than half-implement an unenforced flag
-        (DECISIONS Pending: should trading-freeze become a real, enforced
-        capability?)."""
-        raise InterventionError(
-            501,
-            "freeze_trading is not implemented — no trade path checks a "
-            "freeze flag, so this would be an unenforced no-op. Off-canon "
-            "capability; see DECISIONS Pending on whether to build it for real."
-        )
 
     def _reset_market_prices(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """Reset market prices to their canonical baseline.

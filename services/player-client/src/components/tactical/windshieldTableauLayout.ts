@@ -10,7 +10,7 @@
  * feeds it from the REAL SystemSnapshot contract (SolarSystemViewscreen.tsx's
  * SystemBody/SystemStation: orbit_au + phase_deg) instead of the demo's
  * hand-authored per-sector x/y. The star anchors OFF-CENTER (a "sliver" of
- * the system, not a centered orrery — Max, live-playtest #4) and bodies are
+ * the system, not a centered orrery — human, live-playtest #4) and bodies are
  * placed on that off-center orbital plane via elliptical projection; nothing
  * here reads the wall clock, so the SYSTEM-level composition never animates
  * at rest. Only the ship marker (owned by WindshieldTableau.tsx) and moon
@@ -60,14 +60,14 @@ export const AU_SEMI_Y_PCT = 120; // = 100 * 2.4 / 2
  *  midpoint of bodySizeEm's own [0.9, 2.4] range. */
 const STAR_SIZE_FALLBACK_PLANET_EM = 1.6;
 
-/** Max, live-playtest #18: "represent the star... as MUCH LARGER than the
+/** human, live-playtest #18: "represent the star... as MUCH LARGER than the
  *  planets" — the rendered star must clear this multiple of the LARGEST
  *  planet actually present in the system, regardless of star kind. 3.2 is a
  *  safety margin over the 3x floor so rounding never lands exactly at the
  *  boundary. */
 export const STAR_MIN_SIZE_VS_LARGEST_PLANET = 3.2;
 
-/** Off-center-left star anchor — the "sliver" (Max: "a sliver of the solar
+/** Off-center-left star anchor — the "sliver" (human: "a sliver of the solar
  *  system... no rotating around the sun"). Ranges mirror the demo's own
  *  per-sector star.x/y authoring (RATIFIED.html L727-748: x 8-12, y 40-50 —
  *  VERIFIED against all 4 SEC entries live-playtest #18; a WO-TABLEAU-TUNE
@@ -101,7 +101,7 @@ export function starAnchor(sectorId: number, star: SystemStar | null, bodies: Sy
   return { xPct, yPct, sizeEm };
 }
 
-/** T0-2 (Max: "your pick, knock it out" — orbit-line view). The tilt ratio
+/** T0-2 (human: "your pick, knock it out" — orbit-line view). The tilt ratio
  *  (ry/rx) every per-body orbit ellipse below uses, so the new individual
  *  orbit lines read as the SAME orbital-plane as the rest of this module's
  *  %-space geometry — this is the exact ratio the RETIRED decorativeRings
@@ -120,7 +120,7 @@ export const ORBIT_TILT_RATIO = AU_SEMI_Y_PCT / AU_SEMI_X_PCT;
  *  `rx = sqrt(dx^2 + (dy/ORBIT_TILT_RATIO)^2)`.
  *
  *  REPLACES the old generic, cosmetic-only decorativeRings (4 fixed rings,
- *  never tied to a real body) — Max's own ask: "every planet/station rides
+ *  never tied to a real body) — human's own ask: "every planet/station rides
  *  its own orbit line, and its spot on that line is where we are on the
  *  orbital plane" — a real per-body ellipse the body visibly sits ON, not
  *  decoration behind it. Returns `null` for the degenerate case (`bodyPos`
@@ -173,7 +173,7 @@ export interface BandGeometry {
 /** Independent per-direction elliptical radii (%-per-orbit_au), one for
  *  each side of the star anchor.
  *
- *  T1-A (Max live-playtest): bodies were rendering partially off every edge
+ *  T1-A (human live-playtest): bodies were rendering partially off every edge
  *  of the flight-mode band — a body clipped off the bottom, another
  *  ("PROCEDURAL-21-6") hugging the very top edge. VERIFY-FIRST finding: the
  *  overflow was NOT vertical-only — a standalone measurement across the
@@ -283,10 +283,10 @@ export function safeOrbitRadii(
   };
 }
 
-/** T0-1 (Max live-catch, sector 1): the fraction of a body's primary X
+/** T0-1 (human live-catch, sector 1): the fraction of a body's primary X
  *  spread (orbitT * rightPctPerAu*ORBIT_AU_MAX below) that phase_deg is
  *  ALSO allowed to contribute, as a small SECONDARY horizontal wiggle —
- *  Max's ruling in his own words: "primarily vertical + secondary
+ *  human's ruling in his own words: "primarily vertical + secondary
  *  horizontal, but must NEVER zero out the horizontal spread." Deliberately
  *  ONE-SIDED (see orbitalPosition's `(cos+1)/2` remap below, always >=0) —
  *  a signed +/- wiggle could subtract enough from a body at the smallest
@@ -296,7 +296,7 @@ export function safeOrbitRadii(
  *  baseline "how far out" position, never behind it. */
 const X_SECONDARY_WIGGLE_FRACTION = 0.15;
 
-/** QUEUE-XPCT-SATURATION-STACK (Max's "pile of planets" catch, phase near
+/** QUEUE-XPCT-SATURATION-STACK (human's "pile of planets" catch, phase near
  *  0deg): the primary X term ALONE is sized so orbitT=1 (au=ORBIT_AU_MAX)
  *  lands EXACTLY on safeRadii.xMaxPct (xSpreadPct = the star's own full
  *  rightward room to the box edge) — but the wiggle term above is ADDED ON
@@ -345,7 +345,7 @@ function xWiggleTaper(orbitT: number): number {
 }
 
 /** Real orbit_au + phase_deg → a STATIC %-position on the star's orbital
- *  plane. No `t` term — zero system-level animation at rest (Max #4).
+ *  plane. No `t` term — zero system-level animation at rest (human #4).
  *
  *  Without `safeRadii` (decorative callers, and any caller mid-mount before
  *  a real band has been measured), this is byte-identical to the original
@@ -354,10 +354,10 @@ function xWiggleTaper(orbitT: number): number {
  *  every pre-T1-A test stay exactly as they were.
  *
  *  With `safeRadii`, Y stays the T1-A mechanism unchanged (phase-DOMINANT,
- *  orbit_au-scaled: `sin(phase) * au * up/downPctPerAu` — Max: "vertical
+ *  orbit_au-scaled: `sin(phase) * au * up/downPctPerAu` — human: "vertical
  *  spread is fine"). X is REDESIGNED (T0-1, live-caught at sector 1): the
  *  old cos-sign-branched left/right radius pair put phase in charge of X
- *  too, and Max's own ruling anchors the star FAR-LEFT permanently (chosen
+ *  too, and human's own ruling anchors the star FAR-LEFT permanently (chosen
  *  deliberately over a centered orrery — not up for renegotiation here), so
  *  `leftPctPerAu` is essentially always ~0 by construction. Whenever every
  *  body in a system happened to share a left-hemisphere phase (sector 1's
@@ -426,7 +426,7 @@ export const BODY_SIZE_EM_MAX = 2.4;
 
 /** A body's own rendered disc size (em) — single source of truth shared by
  *  WindshieldTableau.tsx's `.pl` sizing AND moonOrbits' radius scaling below
- *  (Max addendum, live-playtest #9: moon-orbit DETACHMENT was a planet-size-
+ *  (human addendum, live-playtest #9: moon-orbit DETACHMENT was a planet-size-
  *  blind radius, unrelated to how big the parent disc actually renders). */
 export function bodySizeEm(body: SystemBody): number {
   return Math.min(BODY_SIZE_EM_MAX, Math.max(0.9, 0.55 + body.size_class * 0.28));
@@ -436,7 +436,7 @@ export function stationPosition(star: StarAnchor, station: SystemStation, safeRa
   return orbitalPosition(star, station.orbit_au, station.phase_deg, safeRadii);
 }
 
-/** WO-UI-PLTAG-CLAMP (Max fly-by catch, sector 68: "Pollux" clipped ~1.7px
+/** WO-UI-PLTAG-CLAMP (human fly-by catch, sector 68: "Pollux" clipped ~1.7px
  *  past the band's right edge): `.pl`/`.other`/star-tag's shared `.pltag`
  *  label is `position:absolute` (escapes its anchor's own layout box BY
  *  DESIGN — see PLANET_FOOTPRINT_EM_MAX's own doc-comment, that's what
@@ -505,7 +505,7 @@ export interface MoonOrbit {
   sizeEm: number;
 }
 
-/** Moon-dot diameter band (em) — the "~2-5px" range Max asked for
+/** Moon-dot diameter band (em) — the "~2-5px" range human asked for
  *  (live-playtest #17), expressed against the codebase's nominal 16px em
  *  root (no ancestor of `.ssv-tableau` sets its own font-size — see
  *  index.css's html/body rule — so 1em there resolves against whatever the
@@ -516,13 +516,13 @@ export const MOON_DOT_MAX_EM = 0.32;
 
 /** Minimum radial gap (em) between two consecutive moon orbit tracks of the
  *  SAME family — must clear MOON_DOT_MAX_EM (the largest possible dot) with
- *  margin so no two tracks ever read as touching/competing (Max: "at
+ *  margin so no two tracks ever read as touching/competing (human: "at
  *  varying non-competing distances"). Chosen so even the worst-case
  *  per-moon jitter below can't erode the gap under MOON_DOT_MAX_EM. */
 const MOON_TRACK_STAGGER_EM = 0.55;
 const MOON_TRACK_JITTER_MAX_EM = 0.1;
 
-/** Max's refinement (5a): system-level bodies stay fixed, but a body's own
+/** human's refinement (5a): system-level bodies stay fixed, but a body's own
  *  children (moons) keep slow, local, parent-anchored orbital motion. Reuses
  *  the SAME "moons: number (count only)" field + per-index seeding idiom the
  *  live canvas already uses (SolarSystemViewscreen.tsx's moonRng) — there is
@@ -532,7 +532,7 @@ const MOON_TRACK_JITTER_MAX_EM = 0.1;
  *  looking: any future satellite-count field on SystemStation can attach
  *  here the same way, unchanged shape).
  *
- * Max addendum, live-playtest #9: the first cut read as "erratic wandering
+ * human addendum, live-playtest #9: the first cut read as "erratic wandering
  * stars" rather than moons — two concrete numeric defects, both fixed here
  * ("slow, subtle, parent-anchored"): SPEED (14-24s/lap is fast enough to
  * visibly race around the disc — now 40-90s) and DETACHMENT (the old radius
@@ -545,7 +545,7 @@ const MOON_TRACK_JITTER_MAX_EM = 0.1;
  * `.moon-dot`) was already structurally correct; only these two numbers
  * needed retuning.
  *
- * Max addendum, live-playtest #17: "varied in size, all rotate the SAME WAY
+ * human addendum, live-playtest #17: "varied in size, all rotate the SAME WAY
  * around a planet, at varying non-competing distances" — the previous cut
  * drew `clockwise` PER MOON (independently random), so one planet's moons
  * could spin in opposite directions, and its per-moon radius term
@@ -650,7 +650,7 @@ function lerpPct(a: PctPoint, b: PctPoint, t: number): PctPoint {
 
 /** Build a ≥2 waypoint pool from real docks, falling back to seeded scatter. */
 export type ContactDock = PctPoint & {
-  /** Destination realism bucket (Max 2026-07-16). */
+  /** Destination realism bucket (human 2026-07-16). */
   bucket?: 'habitable' | 'barren' | 'outbound';
 };
 
@@ -843,19 +843,6 @@ export function otherShipFlightPose(
   return { ...to, headingDeg: faceArrival, phase: 'idle', burning: false };
 }
 
-/** @deprecated Use otherShipFlightPose — kept for any stray import during cutover. */
-export function otherShipPose(
-  id: string,
-  tSec: number,
-  opts?: {
-    archetype?: string | null;
-    activity?: string | null;
-    bandAspect?: number;
-  },
-): OtherShipFlightPose {
-  return otherShipFlightPose(id, tSec, [], opts);
-}
-
 /** The player's own ship's RESTING anchor when there is no better seed (no
  *  last-docked/landed host to emerge from) — a fresh arrival into the
  *  sector. Purely cosmetic, matching the existing "no real intrasystem
@@ -868,7 +855,7 @@ export function selfRestingAnchor(sectorId: number): PctPoint {
 /** Heading in degrees (CSS `--hdg`) from a previous position toward a new
  *  one, for the `.shipmk` rotate(var(--hdg)) transform.
  *
- *  FIX B (Max live-playtest): `xPct`/`yPct` are %-of-width and %-of-height
+ *  FIX B (human live-playtest): `xPct`/`yPct` are %-of-width and %-of-height
  *  respectively — NOT interchangeable px units — so `atan2` on the raw %
  *  deltas only gives the correct ON-SCREEN angle if the container happens
  *  to be SQUARE. The flight-mode band is ~4.3:1 wide-short (~1440x335px),

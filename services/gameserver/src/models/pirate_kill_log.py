@@ -33,9 +33,9 @@ nullable and added an out-of-canon ``sector_id`` column, both premised on the
 feeder firing for every generic NPC kill (a "must never fail on missing
 context" concern). That premise was refuted on canon re-read — the log is
 holding-CLEAR-event-shaped, always carries a holding, and therefore always
-has a region. ``region_id`` is now canon-exact (NOT NULL); ``sector_id`` is
-dropped entirely (not in canon's table; sector, when needed, resolves via
-``holding_id`` -> ``PirateHolding.sector_id``).
+has a region. ``region_id`` remains the live FK (now SET NULL / nullable per ADR-0050
+SK24 so region terminate does not wipe kill history); ``region_id_snapshot``
+is the non-FK audit copy. ``sector_id`` stays absent (resolve via holding).
 """
 
 import enum
@@ -68,12 +68,15 @@ class PirateKillLog(Base):
 
     # Canon-exact NOT NULL — every row is a holding-CLEAR event, and
     # PirateHolding.region_id is itself NOT NULL. See module docstring.
+    # Live FK softens to SET NULL on region delete (SK24); snapshot keeps
+    # the audit identity. Nullable so SET NULL is legal.
     region_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("regions.id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("regions.id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
+    region_id_snapshot = Column(UUID(as_uuid=True), nullable=True)
 
     holding_id = Column(
         UUID(as_uuid=True),

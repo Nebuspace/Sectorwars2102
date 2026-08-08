@@ -114,6 +114,9 @@ ALL_STATIC_KEYS = {
     # lock so two gameserver instances booting simultaneously can't both
     # replay the same bounded catch-up batch at once.
     "_LOOP_CRASH_CATCHUP_LOCK_KEY": sched._LOOP_CRASH_CATCHUP_LOCK_KEY,
+    # ADR-0054 X-D3 gc-lapse-window — 7-day liquidation sweep, own lock so
+    # two gameserver instances can't double-finalize the same lapsed GC.
+    "_GC_LAPSE_LOCK_KEY": sched._GC_LAPSE_LOCK_KEY,
 }
 
 # Every {"key": <bare Name>} lock-acquisition site, keyed by its enclosing
@@ -169,6 +172,20 @@ EXPECTED_NAME_SITE_MAP = {
     "_run_beacon_expire_sweep_sync": "_BEACON_EXPIRE_LOCK_KEY",
     # P9-realtime-npc-crash-watermark — startup Loop A/B/C catch-up.
     "_run_loop_crash_catchup_sync": "_LOOP_CRASH_CATCHUP_LOCK_KEY",
+    # WO-FIX-SHIP-REGISTRY-* / WO-BUILD-SHIP-REGISTRY-CONTESTED-TRANSFER
+    # / WO-BUILD-WANTED-UNTIL-TIMER / mining-harvest-resolve /
+    # abandonment-archive sweeps — six new sync-sweep lock sites added
+    # since this file's original pin.
+    "_run_stolen_ship_rep_penalty_sweep_sync": "_STOLEN_SHIP_REP_PENALTY_LOCK_KEY",
+    "_run_transfer_claim_autocomplete_sweep_sync": "_TRANSFER_CLAIM_AUTOCOMPLETE_LOCK_KEY",
+    "_run_bounty_expire_sweep_sync": "_BOUNTY_EXPIRE_LOCK_KEY",
+    "_run_wanted_clear_sweep_sync": "_WANTED_CLEAR_LOCK_KEY",
+    "_run_mining_harvest_resolve_sync": "_MINING_HARVEST_LOCK_KEY",
+    "_run_abandonment_archive_sweep_sync": "_ABANDONMENT_ARCHIVE_LOCK_KEY",
+    # ADR-0050 SK22 — Phase-14 (Nexus cross-region attachment) retry sweep.
+    "_run_phase14_attachment_retry_sweep_sync": "_PHASE14_ATTACHMENT_RETRY_LOCK_KEY",
+    # ADR-0054 X-D3 gc-lapse-window — 7-day liquidation sweep.
+    "_run_gc_lapse_sweep_sync": "_GC_LAPSE_LOCK_KEY",
 }
 
 # 29 bare-Name sites + 1 Call-form site (bootstrap_region_sync) = the true
@@ -303,7 +320,9 @@ def test_all_static_keys_pairwise_distinct():
         seen[value] = name
     assert not dupes, f"colliding lock keys: {dupes}"
     assert len(values) == len(set(values))
-    assert len(ALL_STATIC_KEYS) == 32  # 1 global + 2 legacy + 27 new sweep-type keys + 1 (WO-P4-play-beacon-kernel) + 1 (P9-realtime-npc-crash-watermark)
+    # 1 global + 2 legacy + 27 new sweep-type keys + 1 (WO-P4-play-beacon-kernel)
+    # + 1 (P9-realtime-npc-crash-watermark) + 1 (ADR-0054 X-D3 gc-lapse-window)
+    assert len(ALL_STATIC_KEYS) == 33
 
 
 def test_all_static_keys_nonnegative_and_63bit_safe():

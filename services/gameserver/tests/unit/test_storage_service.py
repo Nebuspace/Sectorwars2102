@@ -80,17 +80,19 @@ class _FakeQuery:
     def __init__(
         self, rows: List[Any], criteria: Optional[List[Any]] = None,
         session: Optional["_FakeSession"] = None, entity: Optional[str] = None,
-        order_by_cols: Optional[List[Any]] = None,
+        order_by_cols: Optional[List[Any]] = None, limit: Optional[int] = None,
     ) -> None:
         self._rows = rows
         self._criteria = criteria or []
         self._session = session
         self._entity = entity
         self._order_by_cols = order_by_cols or []
+        self._limit = limit
 
     def filter(self, *conditions: Any) -> "_FakeQuery":
         return _FakeQuery(
-            self._rows, self._criteria + list(conditions), self._session, self._entity, self._order_by_cols,
+            self._rows, self._criteria + list(conditions), self._session, self._entity,
+            self._order_by_cols, self._limit,
         )
 
     def order_by(self, *columns: Any) -> "_FakeQuery":
@@ -100,8 +102,21 @@ class _FakeQuery:
         # key sorts equivalent to a real multi-column ORDER BY) -- this
         # file only ever passes one column, but this stays correct if a
         # future caller passes more.
+        # WO-FIX-CONTRACT-SWEEP-IDLE-IN-TRANSACTION-DEADLOCK: sweep gathers
+        # chain .order_by(Contract.deadline.asc()) — UnaryExpression has
+        # key=None, so skip those (no-op passthrough) rather than
+        # AttributeError/TypeError in _matching.
+        usable = [c for c in columns if isinstance(getattr(c, "key", None), str)]
         return _FakeQuery(
-            self._rows, self._criteria, self._session, self._entity, self._order_by_cols + list(columns),
+            self._rows, self._criteria, self._session, self._entity,
+            self._order_by_cols + usable, self._limit,
+        )
+
+    def limit(self, n: int) -> "_FakeQuery":
+        # WO-FIX-CONTRACT-SWEEP-IDLE-IN-TRANSACTION-DEADLOCK: gather
+        # chains .order_by(...).limit(N).
+        return _FakeQuery(
+            self._rows, self._criteria, self._session, self._entity, self._order_by_cols, n,
         )
 
     def with_for_update(self, skip_locked: bool = False) -> "_FakeQuery":
@@ -117,7 +132,9 @@ class _FakeQuery:
             # already holds this row's lock." Real contention proof is
             # the live-Postgres two-connection CI leg, not this.
             rows = [r for r in self._rows if getattr(r, "id", None) not in self._session.contended_locker_ids]
-            return _FakeQuery(rows, self._criteria, self._session, self._entity, self._order_by_cols)
+            return _FakeQuery(
+                rows, self._criteria, self._session, self._entity, self._order_by_cols, self._limit,
+            )
         return self
 
     def populate_existing(self) -> "_FakeQuery":
@@ -144,7 +161,10 @@ class _FakeQuery:
         return matches[0] if matches else None
 
     def all(self) -> List[Any]:
-        return self._matching()
+        matches = self._matching()
+        if self._limit is not None:
+            return matches[: self._limit]
+        return matches
 
 
 class _FakeSumQuery:
@@ -1909,7 +1929,7 @@ class TestBulkProcurementFullLifecycleConservation:
         paid to the issuer -- punitive-sink convention). Locker ->
         CLAIMABLE via the SAME tick's sweep_expired_lockers (acceptor
         keeps the 3 already-deposited units -- a cargo asset, outside
-        this credit-conservation accounting, per Max's own two-mechanics-
+        this credit-conservation accounting, per human's own two-mechanics-
         decoupling ruling). Issuer refunded FULL escrow (1000cr) via the
         SEPARATE, later sweep_expired_dispute_window pass, undisputed."""
         now = datetime.now(UTC)

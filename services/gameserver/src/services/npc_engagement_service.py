@@ -33,7 +33,7 @@ Documented v1 deferrals (flagged, not invented):
     jurisdiction) — the squad releases when the offender leaves the
     encounter sector.
   - Surrender (police-forces.md "Engagement outcomes" #1 — a pre-combat
-    choice to decline and pay a fine). WO-CMB-NPC-INITIATED-1 (Max
+    choice to decline and pay a fine). WO-CMB-NPC-INITIATED-1 (human
     ruling, 2026-07-10) supersedes this bullet's old text ("combat with
     the arrived squad is player-initiated PvE via the existing attack
     path"): npc_combat_initiation_service.initiate_npc_combat now has
@@ -78,8 +78,18 @@ GRACE_MIN_MINUTES = 5
 GRACE_MAX_MINUTES = 15
 
 # ADR-0063 N-I1 routing caps (warp-graph hops; no QJ pursuit).
+# npc-scheduler.md NPC_CLASS_ROUTING_DISTANCE defaults.
 MARSHAL_MAX_HOPS = 5
 CAPTAIN_MAX_HOPS = 8
+PIRATE_LORD_MAX_HOPS = 3
+
+NPC_CLASS_ROUTING_DISTANCE = {
+    "sector_marshal": MARSHAL_MAX_HOPS,
+    "faction_patrol_captain": CAPTAIN_MAX_HOPS,
+    "pirate_lord": PIRATE_LORD_MAX_HOPS,
+}
+
+_MAX_ROUTING_HOPS = max(NPC_CLASS_ROUTING_DISTANCE.values())
 
 # police-forces.md: Federation Zone = first 33% of a region's sectors.
 FEDERATION_ZONE_FRACTION = 0.33
@@ -136,7 +146,6 @@ def _hop_distances(db: Session, origin_sector_id: int, max_hops: int) -> Dict[in
         return {}
 
     distances: Dict[uuid.UUID, int] = {origin.id: 0}
-    sector_ids: Dict[uuid.UUID, int] = {origin.id: origin.sector_id}
     queue = deque([(origin.id, 0)])
 
     while queue:
@@ -200,6 +209,21 @@ def _is_captain(npc: NPCCharacter) -> bool:
     return "Captain" in (npc.title or "")
 
 
+def _is_pirate_lord(npc: NPCCharacter) -> bool:
+    """Pirate Lords are HOSTILE_RAIDER NPCs titled ``Pirate Lord``
+    (npc-scheduler.md / ADR-0063 N-I1). Distinct from ``Pirate Captain``."""
+    return (npc.title or "") == "Pirate Lord"
+
+
+def hop_cap_for_npc(npc: NPCCharacter) -> int:
+    """Per-class pursuit hop cap from ``NPC_CLASS_ROUTING_DISTANCE``."""
+    if _is_pirate_lord(npc):
+        return PIRATE_LORD_MAX_HOPS
+    if _is_captain(npc):
+        return CAPTAIN_MAX_HOPS
+    return MARSHAL_MAX_HOPS
+
+
 def _federation_squad_size(player: Player) -> Tuple[int, bool]:
     """(named officer count, captain joins) per police-forces.md threat
     tiers, mapped onto this codebase's REPUTATION_TIERS bands (code wins
@@ -238,13 +262,13 @@ def _pick_squad(
     if not candidates:
         return []
 
-    distances = _hop_distances(db, offense_sector_id, CAPTAIN_MAX_HOPS)
+    distances = _hop_distances(db, offense_sector_id, _MAX_ROUTING_HOPS)
 
     def in_range(npc: NPCCharacter) -> Optional[int]:
         hops = distances.get(npc.current_sector_id)
         if hops is None:
             return None
-        cap = CAPTAIN_MAX_HOPS if _is_captain(npc) else MARSHAL_MAX_HOPS
+        cap = hop_cap_for_npc(npc)
         return hops if hops <= cap else None
 
     ranked = sorted(
@@ -271,6 +295,43 @@ def _pick_squad(
         if npc not in squad:
             squad.append(npc)
     return squad
+
+
+def _pick_pirate_lord_responders(
+    db: Session,
+    region_id,
+    offense_sector_id: int,
+    size: int = 1,
+) -> List[NPCCharacter]:
+    """Nearest on-duty Pirate Lords within the 3-hop pursuit cap
+    (WO-CANON-ESCALATE-PIRATE-LORD-HOP-CAP-MISSING / DECISIONS.md
+    pirate-lord-hop-cap-build). Callers that open a pirate-pursuit
+    offense path use this; police ``route_engagement`` stays LE-only."""
+    candidates = (
+        db.query(NPCCharacter)
+        .filter(
+            NPCCharacter.archetype == NPCArchetype.HOSTILE_RAIDER,
+            NPCCharacter.status == NPCStatus.ON_DUTY,
+            NPCCharacter.title == "Pirate Lord",
+            NPCCharacter.home_region_id == region_id,
+            NPCCharacter.current_sector_id.isnot(None),
+        )
+        .all()
+    )
+    if not candidates:
+        return []
+
+    distances = _hop_distances(db, offense_sector_id, PIRATE_LORD_MAX_HOPS)
+    ranked = sorted(
+        (
+            (hops, npc)
+            for npc in candidates
+            if (hops := distances.get(npc.current_sector_id)) is not None
+            and hops <= PIRATE_LORD_MAX_HOPS
+        ),
+        key=lambda pair: (pair[0], str(pair[1].id)),
+    )
+    return [npc for _, npc in ranked[:size]]
 
 
 # ---------------------------------------------------------------------------
@@ -484,7 +545,7 @@ def _release_squad(db: Session, engagement: PendingEngagement) -> None:
 
 
 # ---------------------------------------------------------------------------
-# NPC-initiated combat trigger (WO-CMB-NPC-INITIATED-1, Max ruling
+# NPC-initiated combat trigger (WO-CMB-NPC-INITIATED-1, human ruling
 # 2026-07-10) — supersedes the "combat is player-initiated PvE" deferral
 # above: an arrived squad attacks FIRST once co-located with the
 # offender, via npc_combat_initiation_service.initiate_npc_combat (the

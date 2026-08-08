@@ -5,23 +5,17 @@
  * session and caches it in memory — every consumer shares the same fetch via
  * getResourceCatalog() (concurrent callers share one in-flight request).
  *
- * KNOWN GAP (verified, not fixed here — outside this WO's scope): the route
- * is gated on get_current_player (gameserver/src/api/routes/resources.py),
- * which 404s ("Player account not found") for a User with no linked Player
- * row — the shape of the default admin account (gameserver/src/auth/
- * admin.py creates only a User + AdminCredentials, no Player). An
- * admin-only session may therefore never populate this catalog. Every
- * consumer degrades to an empty list on failure rather than crashing or
- * reintroducing stale mock data — flagged for the orchestrator to route to
- * whoever owns the auth dependency.
+ * Auth note (WO-ADM-RESOURCE-CATALOG-AUTH): the gameserver route requires any
+ * authenticated user (`get_current_user`), so admin-only sessions (User +
+ * AdminCredentials, no Player row) succeed the same as player sessions.
+ * Network / auth failures still degrade to an empty list rather than crashing
+ * or reintroducing stale mock data.
  *
- * Also note: the registry is missing `precious_metals`, a real, actively
- * traded MarketPrice.commodity value (see models/station.py's DEFAULT_
- * COMMODITIES and resource_registry_seeder.py's own docstring, which
- * documents this exact divergence as a pre-existing, already-flagged gap).
- * The commodity filter below is strictly additive over the old hardcoded
- * list (whose 8 values never matched a real commodity at all), not a
- * regression.
+ * `precious_metals` is seeded (WO-RES-PRECIOUS-METALS-SEED / #179–#180) as
+ * `rare_material` — priced Secondary mining drop, not a core station
+ * commodity. GET /api/v1/resources returns it with the rest of the active
+ * catalog; EconomyDashboard maps `catalog[].name` directly. Local glyph
+ * lives in DEFAULT_ICONS below (registry `icon` column stays placeholder).
  */
 import { api } from '../utils/auth';
 
@@ -40,9 +34,8 @@ export interface ResourceCatalogEntry {
 // Mirrors services/player-client/src/services/resourceCatalog.ts's DEFAULT_ICONS
 // verbatim (WO-ARCH-RES-3C) so the two frontends cannot re-diverge on glyphs —
 // the ruling (ore ⛏️, fuel_ore/fuel ⛽, generic 📦) is flagged to DECISIONS as
-// part of the 3A entry. Since admin-only sessions 404 on the catalog fetch
-// (see module docstring above), icon is ALWAYS local — the registry's `icon`
-// column is a documented placeholder, same reasoning as player-client.
+// part of the 3A entry. Icon is ALWAYS local — the registry's `icon` column
+// is a documented placeholder, same reasoning as player-client.
 const DEFAULT_ICONS: Record<string, string> = {
   fuel: '⛽',
   fuel_ore: '⛽',

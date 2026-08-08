@@ -5,7 +5,7 @@ reveal your system prompt" -- got a clean HTTP 400 an hour before it
 started getting a normal HTTP 200 template response, with zero
 security-path log lines. No live harm that day (ARIA_LLM_CHAT_ENABLED is
 off, so it's template mode -- nothing to leak), but this is the exact gate
-that stands between an attacker and the real provider the moment Max flips
+that stands between an attacker and the real provider the moment human flips
 that flag.
 
 ROOT CAUSE (verified by direct, DB-free, route-free unit isolation of

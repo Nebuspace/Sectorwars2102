@@ -67,7 +67,7 @@ class TestTaxonomyDerivation:
         }
 
     def test_rare_materials_uses_lumen_crystals_not_photonic_crystals(self, service):
-        assert set(service.rare_materials) == {"prismatic_ore", "lumen_crystals"}
+        assert set(service.rare_materials) == {"prismatic_ore", "lumen_crystals", "precious_metals"}
 
     def test_strategic_resources_membership_unchanged(self, service):
         assert set(service.strategic_resources) == {

@@ -24,12 +24,11 @@ class TreasuryTransaction(Base):
 
     __tablename__ = "team_treasury_transactions"
 
-    # Canon-silent taxonomy of what moved the balance. The set is open by design
-    # (a plain String, like RegionalTreasuryEntry.cause_type) so future treasury
-    # mechanics — tax, payout — can append new kinds without a migration.
-    # [NO-CANON] the kind strings themselves are not specified in sw2102-docs;
-    # these mirror the existing TeamService mutation sites and are the proposed
-    # values (flagged for DECISIONS.md).
+    # Movement taxonomy — open String (like RegionalTreasuryEntry.cause_type) so
+    # new kinds can append without a migration. Ratified set (DECISIONS.md
+    # treasury-transaction-kind-enum, human 2026-06-22): deposit · withdraw ·
+    # transfer · combat_loot. KIND_TAX / KIND_PAYOUT are reserved labels for
+    # future writers; they are not live mutation sites today.
     KIND_DEPOSIT = "deposit"            # member → treasury
     KIND_WITHDRAW = "withdraw"          # treasury → the acting member
     KIND_TRANSFER = "transfer"          # treasury → another named member

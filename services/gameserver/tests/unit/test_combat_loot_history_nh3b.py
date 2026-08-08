@@ -348,7 +348,7 @@ def test_pvp_leg_persists_capped_actual_not_pre_cap_request(monkeypatch):
     # and prove it fires strictly AFTER the transfer has already landed.
     destruction_calls = []
 
-    def _fake_destroy(player, destroyer, cause):
+    def _fake_destroy(player, destroyer, cause, outbox=None, killing_damage_type=None):
         destruction_calls.append((player, destroyer, cause))
 
     monkeypatch.setattr(cs, "_handle_ship_destruction", _fake_destroy)
@@ -421,6 +421,13 @@ def test_npc_leg_wreck_still_spawns_and_transaction_still_commits(monkeypatch):
     db = _FakeCombatDb(players=[attacker], ship_first=npc_ship, sector=sector, npc_char=npc_char)
     cs = CombatService(db)
     monkeypatch.setattr(cs, "_resolve_ship_combat", lambda *a, **k: _victory_result())
+    # WO-FIX-CARGO-WRECK-LOOT-INFLATION: _spawn_cargo_wreck now rolls each
+    # commodity within the killing-weapon's recovery band instead of dropping
+    # 100%. Pin random.uniform to a fixed value so the wreck contents stay
+    # deterministic — this test is about the no-reordering guard (wreck still
+    # spawns, single commit), not the recovery-band roll itself (covered by
+    # test_cargo_wreck_recovery_band.py).
+    monkeypatch.setattr("src.services.combat_service.random.uniform", lambda a, b: 1.0)
 
     result = cs.attack_npc_ship(attacker_id=attacker.id, ship_id=npc_ship.id)
 

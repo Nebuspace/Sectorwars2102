@@ -151,65 +151,6 @@ class ARIAExplorationMap(Base):
     )
 
 
-class ARIATradingPattern(Base):
-    """
-    DEPRECATED (WO-ARIA-GA-CLEANUP, pending Max ruling) -- the genetic-
-    algorithm "Trade DNA" model this table backed (evolve_trading_pattern /
-    get_evolved_patterns / _create_trading_pattern / _classify_pattern_type
-    in aria_personal_intelligence_service.py) has been REMOVED per
-    ADR-0038 (../../../sw2102-docs/ADR/0038-aria-observation-log-learning-
-    model.md): no genetic algorithm, no fitness scoring. Those functions
-    were this table's ONLY writers/readers; as of the removal it has zero
-    live callers. The table itself is NOT dropped here -- that is a
-    destructive migration and explicitly Max-gated; see the WO's report
-    for the proposed DROP TABLE SQL staged for that ruling. Do not add new
-    callers against this model -- the replacement is the append-only
-    ARIATradingObservation log + SQL-aggregate recommendation engine
-    (aria.md#recommendation-engine).
-
-    Learned trading patterns unique to each player
-    This is their personal 'Trade DNA' that evolves
-    """
-    __tablename__ = "aria_trading_patterns"
-    
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    player_id = Column(UUID(as_uuid=True), ForeignKey("players.id"), nullable=False)
-    pattern_id = Column(String(100), nullable=False)  # Unique pattern identifier
-    
-    # Pattern definition
-    pattern_type = Column(String(50), nullable=False)  # arbitrage, bulk_trade, speculation
-    pattern_dna = Column(JSON, nullable=False)  # The actual pattern genes
-    
-    # Evolution tracking
-    generation = Column(Integer, default=1)
-    parent_pattern = Column(String(100), nullable=True)  # Parent pattern ID
-    mutations = Column(JSON, default=list)  # List of mutations
-    
-    # Performance metrics
-    times_used = Column(Integer, default=0)
-    success_rate = Column(Float, default=0.0)
-    average_profit = Column(Float, default=0.0)
-    best_profit = Column(Float, default=0.0)
-    worst_loss = Column(Float, default=0.0)
-    
-    # Fitness scoring
-    fitness_score = Column(Float, default=0.5)  # 0-1, evolutionary fitness
-    survival_probability = Column(Float, default=0.5)  # Chance of passing to next gen
-    
-    # Metadata
-    discovered_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
-    last_used = Column(DateTime(timezone=True), nullable=True)
-    evolved_at = Column(DateTime(timezone=True), nullable=True)
-    
-    # Relationships
-    player = relationship("Player", back_populates="aria_trading_patterns")
-    
-    __table_args__ = (
-        Index("idx_aria_pattern_player_fitness", "player_id", "fitness_score"),
-        UniqueConstraint("player_id", "pattern_id", name="uq_player_pattern"),
-    )
-
-
 class ARIAQuantumCache(Base):
     """
     Cache for quantum trade calculations
@@ -332,9 +273,10 @@ class ARIATradingObservation(Base):
     player_id = Column(UUID(as_uuid=True), ForeignKey("players.id"), nullable=False)
 
     # The underlying trading-service event, when one materialized at insert
-    # time. Nullable: this WO leaves the trading.py insert hook (lane C)
-    # deferred/unwired, so a defensive nullable FK avoids over-committing to
-    # an insert-time guarantee no caller exists to satisfy yet.
+    # time. Populated by trading.py's _record_aria_trade_hooks on every live
+    # trade. Nullable defensively (not because the hook is unwired) so a
+    # historical/partial observation row can exist without a backing
+    # MarketTransaction id.
     trade_id = Column(UUID(as_uuid=True), ForeignKey("enhanced_market_transactions.id"), nullable=True)
 
     commodity = Column(String(50), nullable=False)
@@ -360,6 +302,8 @@ class ARIATradingObservation(Base):
     dest_station_id = Column(UUID(as_uuid=True), ForeignKey("stations.id"), nullable=True)  # nullable for buy-only events
     source_sector_id = Column(Integer, nullable=True)
     dest_sector_id = Column(Integer, nullable=True)  # nullable for buy-only events
+    # ADR-0050 SK24 (sketch name aria_observation_log) — non-FK region snapshot.
+    region_id_snapshot = Column(UUID(as_uuid=True), nullable=True)
 
     quantity = Column(Integer, nullable=False)
     unit_price = Column(Integer, nullable=False)

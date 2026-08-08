@@ -4,7 +4,7 @@ Faction service for managing faction relationships, reputation, and missions.
 
 from uuid import UUID
 from typing import List, Optional, Dict, Any
-from datetime import datetime, timedelta
+from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, func
 from sqlalchemy.exc import IntegrityError
@@ -177,7 +177,7 @@ def adjust_sector_influence(
     warp-gate-build paths, mirroring ``apply_faction_rep_delta``).
 
     The READ-side taxonomy / patrol-spawn effects (ADR-0021) are deliberately
-    NOT computed here (Max-gated) — this only maintains the canonical stored
+    NOT computed here (human-gated) — this only maintains the canonical stored
     influence value. ``patrol_spawn_weight`` is left at its model default and is
     untouched until the read-side lands.
 
@@ -674,7 +674,6 @@ class FactionService:
         ).all()
 
         now = datetime.utcnow()
-        decay_threshold = timedelta(days=30)
         max_decay = 50  # absolute cap on total decay applied per invocation
         results: List[Dict[str, Any]] = []
 

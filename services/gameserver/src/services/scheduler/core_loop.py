@@ -35,15 +35,19 @@ from src.services.scheduler._common import (
     IDLE_INCOME_CHECK_SECONDS,
     DAILY_STIPEND_CHECK_SECONDS,
     BOUNTY_ACCRUAL_CHECK_SECONDS,
+    STOLEN_SHIP_REP_PENALTY_CHECK_SECONDS,
+    TRANSFER_CLAIM_AUTOCOMPLETE_CHECK_SECONDS,
     PORT_OPERATING_COST_CHECK_SECONDS,
     STATION_RECOVERY_CHECK_SECONDS,
     RECLAIM_FLAG_CHECK_SECONDS,
+    GC_LAPSE_CHECK_SECONDS,
     SUSTAINED_REP_DRIP_CHECK_SECONDS,
     PRICE_RECOMPUTE_FLUSH_SECONDS,
     PRICE_ALERT_SWEEP_SECONDS,
     PRICE_HISTORY_SWEEP_SECONDS,
     ROUTE_RUNS_RETENTION_SWEEP_SECONDS,
     PRESENCE_SWEEP_CHECK_SECONDS,
+    MINING_HARVEST_SWEEP_SECONDS,
     _broadcast_events,
 )
 from src.services.scheduler.presence_helpers import (
@@ -73,9 +77,15 @@ from src.services.scheduler.economy_sweeps import (
     _run_idle_income_sweep_sync,
     _run_daily_stipend_sweep_sync,
     _run_bounty_accrual_sweep_sync,
+    _run_stolen_ship_rep_penalty_sweep_sync,
+    _run_transfer_claim_autocomplete_sweep_sync,
+    _run_bounty_expire_sweep_sync,
+    _run_wanted_clear_sweep_sync,
+    _run_phase14_attachment_retry_sweep_sync,
     _run_port_operating_costs_sync,
     _run_station_recovery_sync,
     _run_reclaim_flag_sweep_sync,
+    _run_gc_lapse_sweep_sync,
     _run_price_recompute_flush_sync,
     _run_price_alert_sweep_sync,
     _run_price_history_sweep_sync,
@@ -94,6 +104,8 @@ from src.services.scheduler.contract_sweeps import (
     _run_contract_expire_sweep_sync,
 )
 from src.services.scheduler.beacon_sweeps import _run_beacon_expire_sweep_sync
+from src.services.scheduler.mining_sweeps import _run_mining_harvest_resolve_sync
+from src.services.scheduler.ship_registry_sweeps import _run_abandonment_archive_sweep_sync
 
 logger = logging.getLogger(__name__)
 
@@ -275,6 +287,28 @@ async def _npc_scheduler_main_loop() -> None:
         except Exception:
             logger.exception("NPC scheduler: tick crashed (loop continues)")
 
+        # Async asteroid-harvest resolve (WO-MINING-ASYNC-HARVEST). Completes
+        # PENDING mining_harvests past resolves_at so MINING spans requests.
+        if elapsed % MINING_HARVEST_SWEEP_SECONDS == 0:
+            try:
+                completed, mining_events = await asyncio.to_thread(
+                    _run_mining_harvest_resolve_sync
+                )
+                if completed:
+                    logger.info(
+                        "NPC scheduler: completed %d due mining harvest(s)",
+                        completed,
+                    )
+                if mining_events:
+                    await _broadcast_events(mining_events)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "NPC scheduler: mining harvest resolve sweep crashed "
+                    "(loop continues)"
+                )
+
         # Genesis formation completion sweep (every GENESIS_COMPLETION_SECONDS).
         # Makes the 48h formation timer authoritative for all planets, not just
         # those a player happens to read — runs in the worker thread, own
@@ -377,6 +411,16 @@ async def _npc_scheduler_main_loop() -> None:
                         gov.get("advanced_to_terminated", 0),
                         gov.get("cleanup_eligible", 0),
                     )
+                if gov.get("anchors_missing") or gov.get("anchors_scanned"):
+                    logger.info(
+                        "NPC scheduler: anchor-repair scan — %d region(s), "
+                        "%d missing check(s)",
+                        gov.get("anchors_scanned", 0),
+                        gov.get("anchors_missing", 0),
+                    )
+                anchor_events = gov.get("events") or []
+                if anchor_events:
+                    await _broadcast_events(anchor_events)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -431,7 +475,7 @@ async def _npc_scheduler_main_loop() -> None:
                 logger.exception("NPC scheduler: weekly decay crashed (loop continues)")
 
         # Economy faucet (WEEKLY) — galactic-citizen subscription perk ONLY.
-        # Max's 2026-06-20 split moved the rep stipend to the DAILY sweep below;
+        # human's 2026-06-20 split moved the rep stipend to the DAILY sweep below;
         # this weekly path now pays only the paid citizen perk. Same coarse
         # pre-filter / durable-anchor pattern as the weekly decay; intentionally
         # on a separate cadence (20 min) to avoid colliding with the decay wake.
@@ -502,7 +546,7 @@ async def _npc_scheduler_main_loop() -> None:
 
         # Daily rep-stipend faucet — credit each player who logged in THIS UTC
         # day their per-reputation-tier stipend, once per day (idle day = 0).
-        # Max's 2026-06-20 split moved the rep stipend off the weekly faucet onto
+        # human's 2026-06-20 split moved the rep stipend off the weekly faucet onto
         # this DAILY, active-gated cadence. Coarse elapsed pre-filter (35 min) so
         # we don't scan players every 60s; the once-per-day-per-player guarantee
         # + restart-proofing come from the durable per-player UTC-date anchor in
@@ -548,6 +592,42 @@ async def _npc_scheduler_main_loop() -> None:
                 raise
             except Exception:
                 logger.exception("NPC scheduler: system-bounty accrual crashed (loop continues)")
+
+        # Stolen-ship possession rep-penalty sweep (ship-registry.md "Wanted
+        # Status" — −100/canonical-day while piloting a stolen ship). Same
+        # coarse-elapsed-pre-filter + durable per-player canonical-day anchor
+        # discipline as the bounty-accrual sweep directly above.
+        if elapsed % STOLEN_SHIP_REP_PENALTY_CHECK_SECONDS == 0:
+            try:
+                penalized = await asyncio.to_thread(_run_stolen_ship_rep_penalty_sweep_sync)
+                if penalized.get("pilots"):
+                    logger.info(
+                        "NPC scheduler: stolen-ship rep penalty — %d pilot(s), "
+                        "%d total reputation",
+                        penalized.get("pilots", 0), penalized.get("total_penalty", 0),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("NPC scheduler: stolen-ship rep-penalty sweep crashed (loop continues)")
+
+        # Contested registration-transfer 24h auto-complete sweep
+        # (ship-registry.md "Legal ownership transfer" — a real-time
+        # deadline, so this runs on a finer cadence than the canonical-day
+        # sweeps above). Own session, own advisory lock, per-claim failure
+        # isolated — same discipline as the stolen-ship rep-penalty sweep.
+        if elapsed % TRANSFER_CLAIM_AUTOCOMPLETE_CHECK_SECONDS == 0:
+            try:
+                completed = await asyncio.to_thread(_run_transfer_claim_autocomplete_sweep_sync)
+                if completed.get("claims"):
+                    logger.info(
+                        "NPC scheduler: transfer-claim autocomplete — completed %d claim(s)",
+                        completed.get("claims", 0),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("NPC scheduler: transfer-claim autocomplete sweep crashed (loop continues)")
 
         # Port operating-cost sweep (WO-B3) — charge each player-owned port its
         # accrued maintenance/upkeep and force-sell any port insolvent for the
@@ -639,6 +719,25 @@ async def _npc_scheduler_main_loop() -> None:
                 raise
             except Exception:
                 logger.exception("NPC scheduler: reclaim-flag sweep crashed (loop continues)")
+
+        # GC-lapse 7-day liquidation-window sweep (ADR-0054 X-D3). Flips
+        # players.is_galactic_citizen False once gc_lapsed_at has run 7+
+        # wall-clock days with no re-subscription. Own session, own advisory
+        # lock -- same discipline as the reclaim-flag sweep above; the durable
+        # per-player anchor (gc_lapsed_at) makes it idempotent/restart-safe.
+        if elapsed % GC_LAPSE_CHECK_SECONDS == 0:
+            try:
+                gc_lapse = await asyncio.to_thread(_run_gc_lapse_sweep_sync)
+                if gc_lapse.get("lapsed"):
+                    logger.info(
+                        "NPC scheduler: GC-lapse sweep — flipped %d player(s) "
+                        "past the 7-day liquidation window",
+                        gc_lapse.get("lapsed", 0),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("NPC scheduler: GC-lapse sweep crashed (loop continues)")
 
         # Sustained-reputation-drip sweep (factions-and-teams.md:229-230,
         # WO-PROG-SUSTAINED-DRIPS) — a player sustaining Heroic+ personal
@@ -911,6 +1010,97 @@ async def _npc_scheduler_main_loop() -> None:
             raise
         except Exception:
             logger.exception("NPC scheduler: beacon expiry sweep crashed (loop continues)")
+
+        # Bounty expiry sweep (bounty-and-reputation.md 📐 "auto-refund-minus-
+        # fee on expiry") — same no-gate treatment as beacon expiry directly
+        # above; the sweep's own durable due-check (BOUNTY_EXPIRE_SWEEP_
+        # SECONDS) gates the real work. Opt-in feature (place_bounty's
+        # duration_days defaults to None/no-expiry), so this is a no-op scan
+        # until a caller actually sets one.
+        try:
+            bounty_result = await asyncio.to_thread(_run_bounty_expire_sweep_sync)
+            if bounty_result.get("expired"):
+                logger.info(
+                    "NPC scheduler: bounty expiry sweep — expired %d bounty(ies), "
+                    "refunded %d total",
+                    bounty_result.get("expired", 0), bounty_result.get("total_refunded", 0),
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("NPC scheduler: bounty expiry sweep crashed (loop continues)")
+
+        # Suspect auto-clear sweep (ships.md:293 "auto-clears at suspect_until")
+        # — WO-CMB-SUSPECT-LIFE-1 left this wiring out explicitly (see
+        # suspect_service.py's module docstring); closing it here.
+        try:
+            suspect_cleared = await asyncio.to_thread(_run_suspect_clear_sweep_sync)
+            if suspect_cleared:
+                logger.info(
+                    "NPC scheduler: suspect clear sweep — cleared %d player(s)",
+                    suspect_cleared,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("NPC scheduler: suspect clear sweep crashed (loop continues)")
+
+        # Wanted auto-clear sweep (WO-BUILD-WANTED-UNTIL-TIMER) — same
+        # no-gate treatment as the suspect sweep directly above.
+        try:
+            wanted_cleared = await asyncio.to_thread(_run_wanted_clear_sweep_sync)
+            if wanted_cleared:
+                logger.info(
+                    "NPC scheduler: wanted clear sweep — cleared %d player(s)",
+                    wanted_cleared,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("NPC scheduler: wanted clear sweep crashed (loop continues)")
+
+        # Phase-14 attachment retry sweep (ADR-0050 SK22) — exponential
+        # backoff retry of the cross-region Nexus warp-tunnel attach for any
+        # region whose synchronous attempt-1 (at purchase time,
+        # bang_import_service.apply_additional_region) failed. Own
+        # session/lock/due-check, same discipline as every sweep above.
+        # Broadcasts an ops alert (admins) + ARIA narration personal frame
+        # (owner) on the event loop only when a region exhausts all 5
+        # retries and flips to attachment_pending — never on an ordinary
+        # in-progress retry.
+        try:
+            phase14_retried, phase14_events = await asyncio.to_thread(
+                _run_phase14_attachment_retry_sweep_sync
+            )
+            if phase14_retried:
+                logger.info(
+                    "NPC scheduler: Phase-14 attachment retry sweep — "
+                    "retried %d region(s)",
+                    phase14_retried,
+                )
+            if phase14_events:
+                await _broadcast_events(phase14_events)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("NPC scheduler: Phase-14 attachment retry sweep crashed (loop continues)")
+
+        # Abandoned-ship 7-day auto-archive (WO-FIX-SHIP-REGISTRY-AUTO-ARCHIVE-MISSING)
+        try:
+            abandoned_archived = await asyncio.to_thread(
+                _run_abandonment_archive_sweep_sync
+            )
+            if abandoned_archived:
+                logger.info(
+                    "NPC scheduler: abandonment archive sweep — archived %d ship(s)",
+                    abandoned_archived,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                "NPC scheduler: abandonment archive sweep crashed (loop continues)"
+            )
 
         # Suspect auto-clear sweep (WO-CMB-SUSPECT-LIFE-1 held wiring) —
         # ships.md:293's "auto-clears at suspect_until" guarantee needed a

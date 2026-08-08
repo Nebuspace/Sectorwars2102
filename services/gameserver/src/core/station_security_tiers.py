@@ -23,14 +23,22 @@ Starport Prime" (Central Nexus's CLASS_0 hub), and "Terran Space hub
 stations" (the region's other service hubs — the CLASS_11 Stardock
 SpaceDock, the Tier-A TradeDocks). Frontier/lawless CLUSTERS get "none"
 ("frontier outposts...lawless ports" — the ClusterType vocabulary already
-used for hazard/resource biasing, WO-GX1). Everything else is NO-CANON
-(see WO-STN-SEC-1 report): canon states only "Player-owned stations
-default to Basic" and is silent on ordinary CLASS_1-11 NPC ports (in ANY
-region, including the thousands of background ports inside Terran Space/
-Central Nexus that aren't a named anchor). The proposed default is a
-uniform "basic" floor — matching the stated player-owned default and
-giving every unconfigured station SOME protection — rather than a
-per-class gradient canon gives no basis for.
+used for hazard/resource biasing, WO-GX1).
+
+Ordinary CLASS_1-11 NPC ports (in ANY region, including the thousands of
+background ports inside Terran Space/Central Nexus that aren't a named
+anchor): canon states only "Player-owned stations default to Basic" and
+is silent here — WO-STN-SEC-1's original report shipped a uniform "basic"
+floor. **Ratified 2026-08-04 (human):** replaced with a per-class gradient,
+matching the docking-slips precedent's own class-banding
+(docking-slips.md § Per-station-class slip counts: 0-2 / 3-6 / 7-10 / 11).
+Higher station classes carry higher default security. Premium stays
+reserved for the three literal anchors above (never granted by class
+alone) — the gradient's ceiling is "standard":
+  - CLASS_1-2 (basic trading) -> basic
+  - CLASS_3-6 (mid-tier trading) -> basic
+  - CLASS_7-10 (premium / refining) -> standard
+  - CLASS_11 (Premium Tech Specialist) -> standard
 """
 from __future__ import annotations
 
@@ -41,6 +49,18 @@ from src.models.station import StationClass
 
 _OPERATOR_MANAGED_REGION_TYPES = ("terran_space", "central_nexus")
 _LAWLESS_CLUSTER_TYPES = (ClusterType.FRONTIER_OUTPOST, ClusterType.CONTESTED)
+
+# Per-class default gradient for ordinary CLASS_1-11 NPC ports, mirroring
+# docking-slips.md's own class-banding (0-2 / 3-6 / 7-10 / 11). Premium is
+# deliberately absent here -- it stays reserved for the three literal
+# canon anchors handled above this table in _derive_station_security_tier.
+_CLASS_GRADIENT_HIGH_TIERS = (
+    StationClass.CLASS_7,
+    StationClass.CLASS_8,
+    StationClass.CLASS_9,
+    StationClass.CLASS_10,
+    StationClass.CLASS_11,
+)
 
 
 def _derive_station_security_tier(
@@ -64,4 +84,6 @@ def _derive_station_security_tier(
             return "standard"  # Terran Space / Central Nexus hub stations
     if cluster_type in _LAWLESS_CLUSTER_TYPES:
         return "none"
+    if station_class in _CLASS_GRADIENT_HIGH_TIERS:
+        return "standard"
     return "basic"

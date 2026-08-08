@@ -192,7 +192,7 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
   // Row action: here ? LAND/CLAIM : (flying ? HALT : APPROACH). CLAIM is
   // gated behind `planetHere` exactly like LAND -- the server now enforces
   // the same DOCK_LAND_PROXIMITY_RANGE_EM range on claim (WO-CLAIM-
-  // PROXIMITY, Max 2026-07-17: "a claim that lands is a landing"), so a
+  // PROXIMITY, human 2026-07-17: "a claim that lands is a landing"), so a
   // CLAIM button reachable before arrival would dangle a click that 400s.
   const planetAction: { label: string; onClick: (e: React.MouseEvent) => void; armed: boolean; ariaLabel: string } | null =
     !planet ? null : flying

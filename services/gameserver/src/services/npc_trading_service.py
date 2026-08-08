@@ -107,7 +107,7 @@ DEMAND_SCORE_MAX = 2.0
 # small so a captain's standing shifts over many legs rather than flipping on a
 # single block: a trader needs ~10 illicit blocks to cross a 24→50 band boundary,
 # and honest trade erodes notoriety roughly half as fast (a reputation is easier
-# to lose than to rebuild). Tune once Max sets canon.
+# to lose than to rebuild). Tune once human sets canon.
 NOTORIETY_AXIS_MIN = 0
 NOTORIETY_AXIS_MAX = 100
 NOTORIETY_ILLICIT_DRIFT = 3   # NO-CANON: per illicit (black-market) work block, toward 100
@@ -153,7 +153,7 @@ NPC_HOSTILITY_LEDGER_KEY = "npc_takeover_hostility"
 # and the isolation REQUIREMENT, but no magnitude). A conservative, gross-value-
 # proportional weight with a hard cap keeps the NPC tally small and bounded so it
 # can never be mistaken for, or grow into, a player-scale takeover signal. Tune
-# once Max sets canon.
+# once human sets canon.
 NPC_HOSTILITY_PER_TRADE_WEIGHT = 0.001   # NO-CANON: hostility units per credit of NPC trade value
 NPC_HOSTILITY_CAP = 1000.0               # NO-CANON: hard ceiling on accumulated NPC-driven hostility per station
 
@@ -485,6 +485,7 @@ def _record_transaction(
         station_buy_price=market_price.buy_price,
         station_sell_price=market_price.sell_price,
         station_quantity=market_price.quantity,
+        region_id_snapshot=getattr(station, "region_id", None),
         timestamp=datetime.now(UTC),
     ))
 

@@ -45,8 +45,9 @@ class TestScopeCatalog:
     """The catalog is the authoritative scope vocabulary (ADR-0058 + staged ops)."""
 
     def test_catalog_size(self):
-        # ADR-0058: 19 platform + 7 operational + admin.audit.review (26→27).
-        assert len(ALL_SCOPES) == 27
+        # ADR-0058: 19 platform + 7 operational + admin.audit.review (26→27)
+        # + admin.system.health_view (27→28, WO gameserver-CI-fix 2026-07-19).
+        assert len(ALL_SCOPES) == 28
 
     def test_all_scopes_start_with_admin_prefix(self):
         for scope in ALL_SCOPES:
@@ -116,6 +117,7 @@ class TestScopeCatalog:
             admin_scopes.ECONOMY_INTERVENE,
             admin_scopes.SECURITY_ACT,
             admin_scopes.DISPUTES_RESOLVE,
+            admin_scopes.SYSTEM_HEALTH_VIEW,
         ]
         assert len(expected) == len(set(expected)), "Duplicate scope value in catalog constants"
         assert set(expected) == ALL_SCOPES

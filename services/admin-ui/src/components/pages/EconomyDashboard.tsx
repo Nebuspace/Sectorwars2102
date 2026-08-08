@@ -323,10 +323,11 @@ const EconomyDashboard: React.FC = () => {
   // (Food/Tech/Minerals/Electronics/Weapons/Medical) never matched a real
   // MarketPrice.commodity value, so this filter was never actually
   // functional. `name` is the wire value market-data's commodity_filter
-  // expects (matches models/station.py's DEFAULT_COMMODITIES keys); `label`
-  // is the display text. See services/resourceCatalog.ts for the known gap
-  // (admin sessions may not be able to reach this endpoint; the filter just
-  // degrades to "All Commodities" only, never crashes).
+  // expects (same slug vocabulary as Station.commodities JSONB keys —
+  // models/station.py:133); `label` is the display text. See
+  // services/resourceCatalog.ts for catalog fetch (admin sessions may not
+  // be able to reach this endpoint; the filter just degrades to "All
+  // Commodities" only, never crashes).
   const { catalog: resourceCatalog, getLabel: getResourceLabel } = useResourceCatalog();
   const commodities = resourceCatalog.map((r) => r.name);
 

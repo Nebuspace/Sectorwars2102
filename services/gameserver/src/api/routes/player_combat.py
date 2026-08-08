@@ -18,7 +18,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from src.core.database import get_db
 from src.auth.dependencies import get_current_player
@@ -117,7 +117,7 @@ def _execute_planet_assault(db: Session, player: Player, planet_id: UUID) -> dic
     # direct assault (only that morale<=0 marks a planet "vulnerable to
     # capture"). With canon silent on the assault×vulnerability interaction we
     # do NOT invent a morale-based capture path; we only settle the siege state
-    # so morale/isVulnerable are truthful. Flagged for Max — see return.
+    # so morale/isVulnerable are truthful. Flagged for human — see return.
     if planet.under_siege:
         try:
             PlanetaryService(db).check_and_update_siege(planet_id)
@@ -252,14 +252,14 @@ async def engage_combat(
             result = service.attack_player(player.id, ship.owner_id)
     elif request.targetType == "planet":
         result = _execute_planet_assault(db, player, target_id)
+    elif request.targetType == "port":
+        # WO attack-port-build (corrected scope): JSONB defenses + live route.
+        # Capture remains unreachable in the station-defense kernel.
+        result = service.attack_port(player.id, target_id)
     else:
-        # Port assault transfers station ownership — economically sensitive,
-        # deliberately disabled this pass. Return 501 Not Implemented (not a
-        # 200 "error" body) so the client treats it as a permanently-unavailable
-        # feature, not a transient/game-logic failure worth retrying.
         raise HTTPException(
-            status_code=501,
-            detail="Port assault operations are not yet authorized."
+            status_code=400,
+            detail=f"Unsupported targetType: {request.targetType}"
         )
 
     if not result.get("success"):
@@ -473,8 +473,19 @@ async def attack_sector_drones(
 # --- Warp-gate destruction (WO-P3-galaxy-gate-destruction) -----------------
 
 class AttackWarpGateRequest(BaseModel):
-    """Request to attack a warp gate."""
-    gateId: str = Field(..., description="UUID of the WarpGate to attack")
+    """Request to attack a warp gate or Phase-1 beacon."""
+    gateId: Optional[str] = Field(None, description="UUID of the WarpGate to attack")
+    beaconId: Optional[str] = Field(
+        None, description="UUID of a DEPLOYED WarpGateBeacon to attack (Phase 1)"
+    )
+
+    @model_validator(mode="after")
+    def _exactly_one_target(self) -> "AttackWarpGateRequest":
+        has_gate = bool(self.gateId)
+        has_beacon = bool(self.beaconId)
+        if has_gate == has_beacon:
+            raise ValueError("Provide exactly one of gateId or beaconId")
+        return self
 
 
 class AttackWarpGateResponse(BaseModel):
@@ -495,7 +506,7 @@ async def attack_warp_gate(
     db: Session = Depends(get_db)
 ):
     """
-    Attack a warp gate (beacon, focus, or active) after its 48-hour
+    Attack a warp gate (HARMONIZING/ACTIVE) or a Phase-1 DEPLOYED beacon after its 48-hour
     invulnerability window (warp-gates.md:323-354).
 
     A 75-turn engagement resolved against the gate's HP pool using the
@@ -506,19 +517,26 @@ async def attack_warp_gate(
     cargo. Turn cost, locking, and commit are all handled inside
     CombatService.attack_warp_gate.
     """
+    service = CombatService(db)
     try:
-        gate_uuid = UUID(body.gateId)
+        if body.beaconId:
+            target_uuid = UUID(body.beaconId)
+            result = service.attack_warp_beacon(attacker_id=player.id, beacon_id=target_uuid)
+        else:
+            target_uuid = UUID(body.gateId)  # type: ignore[arg-type]
+            result = service.attack_warp_gate(attacker_id=player.id, gate_id=target_uuid)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid gateId") from None
-
-    result = CombatService(db).attack_warp_gate(attacker_id=player.id, gate_id=gate_uuid)
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid gateId" if body.gateId else "Invalid beaconId",
+        ) from None
 
     if not result.get("success"):
         message = result.get("message", "Warp gate attack failed")
         status_code = 400
         if message.startswith("ERR_GATE_INVULNERABLE"):
             status_code = 400  # validation-class rejection, not a 404/403
-        elif message == "Warp gate not found":
+        elif message in ("Warp gate not found", "Warp gate beacon not found"):
             status_code = 404
         raise HTTPException(status_code=status_code, detail=message)
 

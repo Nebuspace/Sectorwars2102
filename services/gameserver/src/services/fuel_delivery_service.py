@@ -3,7 +3,7 @@ Fuel delivery -- the paid-rescue counterpart to the free Escape Pod
 (escape_pod_service.py) and the self-rescue Slipdrive (slipdrive_service.py,
 now fuel-commodity-denominated per WO-GWQ-STRANDING-2).
 
-Canon: Max's design direction (WO-GWQ-STRANDING-2, 2026-07-10) --
+Canon: human's design direction (WO-GWQ-STRANDING-2, 2026-07-10) --
 "conversely you could pay for someone to deliver you fuel." A stranded ship
 with an empty fuel hold cannot charge/complete a Slipdrive escape on its
 own; another player can fly fuel cargo to the stranded ship's sector and

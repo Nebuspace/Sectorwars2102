@@ -2,7 +2,7 @@
 Trade Contract API routes. WO-ECON-CONTRACT-1-KERNEL lane 4 shipped
 board/mine/{id} reads and accept/complete/abandon writes. WO-ECON-
 CONTRACT-2-PLAYER-ESCROW adds player-issued posting (`POST /contracts`,
-cargo_delivery only) and issuer-only `POST /contracts/{id}/cancel`.
+cargo_delivery or bulk_procurement) and issuer-only `POST /contracts/{id}/cancel`.
 WO-1a-CORE adds `POST /contracts/{id}/insure` (contracts.md:219/:224).
 A claim-filing route (the state-transition diagram's "cargo destroyed in
 transit -> cancelled (insurance pays if held)" edge, :84) was built and
@@ -27,7 +27,7 @@ build step (contracts.md:421-431 step 7) and is intentionally NOT
 mounted here either.
 """
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
@@ -200,10 +200,14 @@ async def get_contract_board(
     automatically once CONTRACT-2 ships player posting -- this WO
     generates no player-issued rows yet)."""
     station_uuid = _parse_uuid(station_id, "station_id")
+    # Defense-in-depth vs expiry-sweep lag: past-deadline rows can linger as
+    # status=POSTED (accept already 400s them). Never surface those as open.
+    now = datetime.now(timezone.utc)
     contracts = (
         db.query(Contract)
         .filter(
             Contract.status == ContractStatus.POSTED,
+            or_(Contract.deadline.is_(None), Contract.deadline > now),
             or_(
                 Contract.issuer_id == station_uuid,
                 Contract.posting_stations.any(station_uuid),

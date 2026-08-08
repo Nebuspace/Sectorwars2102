@@ -59,6 +59,7 @@ import {
   TRAVEL_MOVE_MS,
   TRAVEL_ORIENT_MS,
   TRAVEL_REDIRECT_TURN_MS,
+  TRAVEL_REDIRECT_PAINT_MS,
   TRAVEL_SETTLE_MS,
   chooseWarpArrivalAnchor,
   clampPct,
@@ -76,7 +77,7 @@ import {
   type TravelPhase,
 } from './windshieldTableauHelpers';
 import { renderTableauPopupContent } from './windshieldTableauPopupContent';
-import { HazardArcsLayer, PlayerShipAndWarpLayer, ScanLayer } from './windshieldTableauChrome';
+import { BeaconLayer, HazardArcsLayer, PlayerShipAndWarpLayer, ScanLayer } from './windshieldTableauChrome';
 import './solar-system-viewscreen.css';
 
 // Re-exported for existing external consumers (TacticalTargetPage.tsx's own
@@ -90,7 +91,7 @@ export { distancePx, chooseWarpArrivalAnchor, REFERENCE_BAND, ENGAGE_RANGE_EM };
 /**
  * WindshieldTableau — the flight-mode windshield-band scene
  * (WO-UI2-WINDSHIELD-TABLEAU), replacing SolarSystemViewscreen's canvas
- * orrery with the ratified demo's STATIC DOM "sliver" composition (Max,
+ * orrery with the ratified demo's STATIC DOM "sliver" composition (human,
  * live-playtest #4: "a sliver of the solar system with all objects in it,
  * no rotating around the sun").
  *
@@ -185,7 +186,7 @@ export interface WindshieldTableauProps {
   onRequestDock?: (stationId: string) => void;
   selectedShipId?: string | null;
   onSelectShip?: (id: string) => void;
-  /** Max refinement (5b): "undock emerges at the host's position" — the
+  /** human refinement (5b): "undock emerges at the host's position" — the
    *  station/planet id the player just left, so the ship's FIRST frame in
    *  this fresh mount starts there instead of a generic seeded anchor.
    *  GameDashboard tracks these via a ref that survives the docked/landed
@@ -761,22 +762,27 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
       setLocalBurn(false);
       setTravelPhase('redirect-turn');
       setHeading(arcHeading);
-      // Retarget the running glide onto the arc waypoint — browser continues
-      // from the live interpolated position (momentum preserved).
-      setShipPos(waypoint);
-      shipPosRef.current = waypoint;
-
+      // Do NOT setShipPos(waypoint) in this same synchronous turn as the click.
+      // Paint redirect-turn heading/RCS first; then retarget the running glide
+      // onto the arc waypoint; only then burn to the final destination. A sync
+      // waypoint write can coalesce with the burn retarget and teleport.
       const timers = travelTimersRef.current;
       timers.push(setTimeout(() => {
-        setTravelPhase('accelerating');
-        setLocalBurn(true);
-        setHeading(prograde);
-        setShipPos(target);
-        shipPosRef.current = target;
-        travelOriginRef.current = waypoint;
-        armArrivalProfile(prograde);
-        commitIspBurn(target, objectId);
-      }, TRAVEL_REDIRECT_TURN_MS));
+        // Retarget the running glide onto the arc waypoint — browser continues
+        // from the live interpolated position (momentum preserved).
+        setShipPos(waypoint);
+        shipPosRef.current = waypoint;
+        timers.push(setTimeout(() => {
+          setTravelPhase('accelerating');
+          setLocalBurn(true);
+          setHeading(prograde);
+          setShipPos(target);
+          shipPosRef.current = target;
+          travelOriginRef.current = waypoint;
+          armArrivalProfile(prograde);
+          commitIspBurn(target, objectId);
+        }, TRAVEL_REDIRECT_TURN_MS));
+      }, TRAVEL_REDIRECT_PAINT_MS));
       return;
     }
 
@@ -876,8 +882,21 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
   // context (GameDashboard.tsx -> PlanetPortPair's onApproach ->
   // flight.approach(id)); resolve it against the fetched system data and
   // run the SAME glide a direct band click performs — reuse, don't fork.
+  //
+  // Bug fix (2026-08-06, live: "travel to planet is broke" / mid-course
+  // redirect broke): flight.pendingApproach is never cleared after being
+  // consumed -- it stays set until the NEXT approach() call overwrites it
+  // with a fresh object. This effect's own deps (ships/contactT/contactDocks
+  // update on nearly every tick) mean it was re-firing travelTo() with the
+  // SAME still-pending request on every unrelated tick, fighting the glide
+  // already in progress (re-entering the mid-course-redirect branch against
+  // itself repeatedly). Track the request's own `seq` and only dispatch
+  // once per distinct approach() call.
+  const handledApproachSeqRef = useRef<number | null>(null);
   useEffect(() => {
     if (!flight.pendingApproach || !system) return;
+    if (flight.pendingApproach.seq === handledApproachSeqRef.current) return;
+    handledApproachSeqRef.current = flight.pendingApproach.seq;
     const { objectId } = flight.pendingApproach;
     const bodyMatch = system.bodies.find((b) => b.real && b.planet_id === objectId);
     if (bodyMatch) {
@@ -1036,9 +1055,9 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
     if (meta.kind !== 'station' && meta.kind !== 'planet') travelTo(pos, objectId);
   }, [travelTo]);
 
-  // FIX C revise (Max correction: "no longer able to right click anywhere
+  // FIX C revise (human correction: "no longer able to right click anywhere
   // and travel there" was fixed as DIRECT travel-on-right-click first, but
-  // Max wants it MENU-mediated -- right-click opens a small "Travel To"
+  // human wants it MENU-mediated -- right-click opens a small "Travel To"
   // menu at the click point and the ship does NOT move until that item is
   // explicitly chosen). preventDefault still suppresses the native browser
   // menu; only the STASHED target + the immediate travel are new. Closes
@@ -1276,7 +1295,7 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
           const sizeEm = bodySizeEm(body);
           const moons = moonOrbits(sectorId, body);
           const isReal = body.real && body.planet_id;
-          // FIX A (Max live-playtest): decorative (non-real) bodies used to
+          // FIX A (human live-playtest): decorative (non-real) bodies used to
           // show a fabricated `PROCEDURAL-${sectorId}-${idx}` designation,
           // discarding the REAL corpus name the server already generates for
           // every body slot (celestial_service.py's own generate_skeleton/
@@ -1386,6 +1405,9 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
 
         {/* SCAN layer — wrecks + formations, gated behind scanActive */}
         <ScanLayer scanActive={scanActive} wrecks={wrecks} formations={formations} star={star} onOpenPopup={openPopup} />
+
+        {/* Message beacons — always visible (message-beacons.md), not scan-gated */}
+        <BeaconLayer beacons={system?.messageBeacons ?? []} star={star} onOpenPopup={openPopup} />
 
         {/* other ships — prefer server ISP pose/leg; fall back to local flight
             profile until the sector presence carries pose (Loop A tick). */}

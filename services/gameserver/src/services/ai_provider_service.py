@@ -9,10 +9,9 @@ sophisticated manual fallback that includes cat boost and ship tier logic.
 import asyncio
 import logging
 import os
-import random
 import re
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Any, Tuple, Union
+from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
 from enum import Enum
 

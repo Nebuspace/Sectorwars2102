@@ -6,8 +6,8 @@ this exact pattern for `contract_insurance.py`/`contract_dispute.py`).
 Pure move for the two new functions themselves; zero behavior change from
 how they were first written.
 
-RETIRED (WO-CONTRACT-4-BULK, Max-ruled 2026-07-17): this module's own
-pro-rata direct-delivery model is SUPERSEDED, not deleted. Max chose the
+RETIRED (WO-CONTRACT-4-BULK, human-ruled 2026-07-17): this module's own
+pro-rata direct-delivery model is SUPERSEDED, not deleted. human chose the
 STATION-LOCKER fulfillment path instead (deposit_cargo -> complete(),
 storage_service.py -- already built for cargo_delivery, extended to
 bulk_procurement by WO-4) for every bulk_procurement contract going
@@ -25,12 +25,10 @@ reached directly by bulk; `deliver()` itself transitions straight to
 COMPLETED on the final partial). FUNCTION ONLY -- nothing yet GENERATES or
 POSTS a bulk_procurement row anywhere in this codebase
 (contract_generator.py's own WO-CONTRACT-3-NPCGEN-TYPES build produced
-express_delivery/hazardous_transport only; `post_player_contract`,
-contract_service.py, still hardcodes cargo_delivery) -- these two
-functions are built and DB-free-tested against hand-constructed fixtures,
-matching this codebase's own established `resolve_dispute`-style "function
-only" precedent (contract_dispute.py) until a future WO wires a real
-posting/generation path to them.
+express_delivery/hazardous_transport only) -- player posting of
+bulk_procurement is live via `post_player_contract` + the route
+allowlist. These two RETIRED functions stay for fixture/history only
+until a cleanup WO deletes them.
 
 [VERIFY-FIRST FINDING, premise correction] the WO-3b dispatch's own brief
 proposed a NEW `acceptance_fee_charged_at` column so the 2% acceptance fee
@@ -234,7 +232,7 @@ def deliver(
     now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     """RETIRED (WO-CONTRACT-4-BULK) -- dormant, not wired to any route;
-    Max chose the station-locker fulfillment path instead (see this
+    human chose the station-locker fulfillment path instead (see this
     module's own docstring). Kept function-only for now.
 
     Bulk-procurement partial delivery -- contracts.md:130: "Partial
@@ -377,7 +375,7 @@ def walk_away_bulk_procurement(
     db: Session, contract_id: uuid.UUID, player_id: uuid.UUID, now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     """RETIRED (WO-CONTRACT-4-BULK) -- dormant, not wired to any route;
-    Max chose the station-locker fulfillment path instead, where a bulk
+    human chose the station-locker fulfillment path instead, where a bulk
     contract's abandon() goes through contract_service.abandon()'s own
     now-bulk-aware dispatch (dynamic penalty + EXPIRED, not this
     function's "returns to posted, no penalty" model) -- see this

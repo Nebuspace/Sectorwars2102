@@ -7,7 +7,7 @@ Uses Player.settings["bounties"] JSONB — no new database table required.
 
 import logging
 import uuid
-from datetime import datetime, UTC
+from datetime import datetime, timedelta, UTC
 from typing import Dict, Any, List, Optional
 
 from sqlalchemy.orm import Session
@@ -15,11 +15,30 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from src.models.player import Player
 from src.models.bounty_claim import BountyClaim, BountyClaimStatus
+from src.models.faction import Faction, FactionType
+from src.models.reputation import Reputation, ReputationLevel
 
 logger = logging.getLogger(__name__)
 
 BOUNTY_MIN_AMOUNT = 1000
 BOUNTY_PLACEMENT_FEE = 0.10  # 10% fee
+
+# Optional bounty expiry (bounty-and-reputation.md 📐 "optional expiry
+# timestamp on placement (expires_at); auto-refund-minus-fee on expiry" —
+# design-only, no ratified duration; canon's own example, "a 48-hour
+# vendetta," is illustrative not normative). Opt-in only: place_bounty's
+# default (duration_days=None) sets no expires_at, preserving the documented
+# baseline "bounties do NOT auto-expire." NO-CANON bounds pending a
+# DECISIONS.md magnitude ruling — conservative clamp so a placer can't set
+# an effectively-permanent or effectively-instant expiry.
+BOUNTY_MIN_DURATION_DAYS = 1
+BOUNTY_MAX_DURATION_DAYS = 90
+
+# Soft cap on a target's bounty-entry list (bounty-and-reputation.md:192,
+# ratified number — "50 entries"). Collapse (not deletion) via
+# collapse_excess_bounties: over-cap entries merge per-placer, summing
+# amount, into one entry each — no credits lost, list length bounded.
+BOUNTY_SOFT_CAP_ENTRIES = 50
 
 # System-generated bounty thresholds based on personal reputation. These define
 # WHO the Federation wants (a player must be at or below the shallowest tier,
@@ -90,6 +109,156 @@ SYSTEM_BOUNTY_ACCRUAL_MULTIPLIER = {
     -750: 2.0,   # Villain low: 500/day
     -1000: 4.0,  # Villain max: 1,000/day
 }
+
+# --- Faction-issued bounties (bounties.md:26, 📐 Design-only until this WO) -
+# "The Federation putting a bounty on a specific pirate captain that pays out
+# only to faction members." Distinct from the player-placed pot (target is a
+# PLAYER, escrowed in Player.settings) and the system pot (auto-accrued from
+# personal_reputation): a faction bounty is PLACED by faction fiat on an NPC
+# pirate captain (NPCCharacter — HOSTILE_RAIDER archetype), not a player, so it
+# cannot live in Player.settings["bounties"] (no Player row for an NPC). Reuses
+# NPCCharacter.backstory JSONB (schema:no — no new column, no new table),
+# mirroring the single-value system-bounty-pot pattern rather than a list: one
+# active faction bounty per NPC at a time.
+#
+# Storage key (NPCCharacter.backstory):
+#   faction_bounty -> {faction_type, amount, reason, placed_at}
+FACTION_BOUNTY_KEY = "faction_bounty"
+
+# Payout gated on the collector's OWN standing with the issuing faction being
+# at least RECOGNIZED — mirrors contraband_service.GATE_MIN_LEVEL exactly (the
+# established "faction membership" proxy in this codebase: there is no
+# discrete membership row, only a Reputation tier per faction). A collector
+# below the gate still gets the kill; they simply don't get paid — "pays out
+# only to faction members" per bounties.md.
+FACTION_BOUNTY_GATE_LEVEL = ReputationLevel.RECOGNIZED
+
+# Ordered rank table — same values as contraband_service._level_rank (kept as
+# a local copy rather than a cross-module import: a lightweight ordinal
+# lookup, not shared business logic, and bounty_service should not depend on
+# contraband_service for it).
+_REPUTATION_LEVEL_RANK = {
+    ReputationLevel.PUBLIC_ENEMY: -8,
+    ReputationLevel.CRIMINAL: -7,
+    ReputationLevel.OUTLAW: -6,
+    ReputationLevel.PIRATE: -5,
+    ReputationLevel.SMUGGLER: -4,
+    ReputationLevel.UNTRUSTWORTHY: -3,
+    ReputationLevel.SUSPICIOUS: -2,
+    ReputationLevel.QUESTIONABLE: -1,
+    ReputationLevel.NEUTRAL: 0,
+    ReputationLevel.RECOGNIZED: 1,
+    ReputationLevel.ACKNOWLEDGED: 2,
+    ReputationLevel.TRUSTED: 3,
+    ReputationLevel.RESPECTED: 4,
+    ReputationLevel.VALUED: 5,
+    ReputationLevel.HONORED: 6,
+    ReputationLevel.REVERED: 7,
+    ReputationLevel.EXALTED: 8,
+}
+
+
+def place_faction_bounty(
+    db: Session, npc, faction_type: FactionType, amount: int, reason: str,
+) -> Dict[str, Any]:
+    """Place (or replace) a faction-issued bounty on an NPC pirate captain.
+
+    One active faction bounty per NPC — a second placement overwrites the
+    first rather than stacking (mirrors the system-bounty-pot's single-value
+    shape, not the player-placed list's append shape, since there's exactly
+    one issuing faction per call and no per-placer escrow to track)."""
+    if amount < BOUNTY_MIN_AMOUNT:
+        return {"success": False, "message": f"Minimum bounty is {BOUNTY_MIN_AMOUNT} credits"}
+
+    backstory = dict(npc.backstory or {})
+    backstory[FACTION_BOUNTY_KEY] = {
+        "faction_type": faction_type.value,
+        "amount": int(amount),
+        "reason": reason,
+        "placed_at": datetime.now(UTC).isoformat(),
+    }
+    npc.backstory = backstory
+    flag_modified(npc, "backstory")
+
+    logger.info(
+        "Faction bounty placed: %s put %d on NPC %s (%s)",
+        faction_type.value, amount, npc.id, reason,
+    )
+    return {
+        "success": True,
+        "npc_id": str(npc.id),
+        "faction_type": faction_type.value,
+        "amount": int(amount),
+    }
+
+
+def _collector_passes_faction_gate(db: Session, collector: Player, faction_type: FactionType) -> bool:
+    """True iff the collector's reputation with the issuing faction is at
+    least FACTION_BOUNTY_GATE_LEVEL. Mirrors contraband_service._passes_rep_gate:
+    a missing Faction row or missing Reputation row both read as below-gate."""
+    faction = db.query(Faction).filter(Faction.faction_type == faction_type).first()
+    if faction is None:
+        return False
+    reputation = (
+        db.query(Reputation)
+        .filter(Reputation.player_id == collector.id, Reputation.faction_id == faction.id)
+        .first()
+    )
+    if reputation is None:
+        return False
+    return (
+        _REPUTATION_LEVEL_RANK.get(reputation.current_level, -99)
+        >= _REPUTATION_LEVEL_RANK[FACTION_BOUNTY_GATE_LEVEL]
+    )
+
+
+def collect_faction_bounty(db: Session, npc, collector: Player) -> Optional[Dict[str, Any]]:
+    """Pay out and clear an NPC's faction bounty on kill, iff the collector
+    passes the issuing faction's standing gate.
+
+    Returns None when the NPC carries no faction bounty (nothing to do — the
+    caller's kill-resolution flow should not treat this as an error). Returns
+    a dict with ``paid: 0`` (bounty existed but the collector failed the
+    gate — bounty is left standing, uncleared, for a future eligible hunter)
+    or ``paid: <amount>`` (gate passed — bounty cleared, credited)."""
+    backstory = npc.backstory or {}
+    entry = backstory.get(FACTION_BOUNTY_KEY)
+    if not entry:
+        return None
+
+    try:
+        faction_type = FactionType(entry.get("faction_type"))
+    except ValueError:
+        logger.error("Faction bounty on NPC %s has an unrecognized faction_type %r", npc.id, entry.get("faction_type"))
+        return None
+    amount = int(entry.get("amount", 0) or 0)
+
+    if not _collector_passes_faction_gate(db, collector, faction_type):
+        logger.info(
+            "Faction bounty on NPC %s NOT paid: collector %s below %s standing with %s",
+            npc.id, collector.id, FACTION_BOUNTY_GATE_LEVEL.name, faction_type.value,
+        )
+        return {"success": True, "paid": 0, "faction_type": faction_type.value, "gate_passed": False}
+
+    if amount > 0:
+        collector.credits += amount
+
+    new_backstory = dict(backstory)
+    del new_backstory[FACTION_BOUNTY_KEY]
+    npc.backstory = new_backstory
+    flag_modified(npc, "backstory")
+
+    logger.info(
+        "Faction bounty collected: %s paid %d to %s for NPC %s (%s)",
+        faction_type.value, amount, collector.id, npc.id, entry.get("reason"),
+    )
+    return {
+        "success": True,
+        "paid": amount,
+        "faction_type": faction_type.value,
+        "gate_passed": True,
+        "new_credits": collector.credits,
+    }
 
 
 class BountyService:
@@ -318,13 +487,42 @@ class BountyService:
         return player_a, player_b
 
     def place_bounty(
-        self, placer_id: uuid.UUID, target_id: uuid.UUID, amount: int
+        self,
+        placer_id: uuid.UUID,
+        target_id: uuid.UUID,
+        amount: int,
+        duration_days: Optional[int] = None,
+        fee_pct: Optional[float] = None,
     ) -> Dict[str, Any]:
-        """Place a bounty on a target player. Placer pays amount + 10% fee."""
+        """Place a bounty on a target player. Placer pays amount + fee.
+
+        ``fee_pct`` overrides the standard ``BOUNTY_PLACEMENT_FEE`` (10%) when
+        given -- used by ship_registry_service's auto-placed stolen-report
+        bounty, which per ship-registry.md "Reporting a ship stolen" waives
+        the placement fee ("the owner has already lost the use of their
+        ship; the registry doesn't double-tax"). Defaults to the standard
+        fee for every other caller -- zero behavior change otherwise.
+
+        ``duration_days`` is optional (default None = no expiry, the
+        documented baseline). When given, must be within
+        [BOUNTY_MIN_DURATION_DAYS, BOUNTY_MAX_DURATION_DAYS]; the bounty
+        entry then carries an ``expires_at`` the sweep (``expire_due_
+        bounties``) auto-cancels-and-refunds once passed."""
         if amount < BOUNTY_MIN_AMOUNT:
             return {
                 "success": False,
                 "message": f"Minimum bounty is {BOUNTY_MIN_AMOUNT} credits",
+            }
+
+        if duration_days is not None and not (
+            BOUNTY_MIN_DURATION_DAYS <= duration_days <= BOUNTY_MAX_DURATION_DAYS
+        ):
+            return {
+                "success": False,
+                "message": (
+                    f"duration_days must be between {BOUNTY_MIN_DURATION_DAYS} "
+                    f"and {BOUNTY_MAX_DURATION_DAYS}"
+                ),
             }
 
         # Lock placer AND target rows, in ASCENDING-ID order — deterministic,
@@ -351,7 +549,25 @@ class BountyService:
         if placer_id == target_id:
             return {"success": False, "message": "Cannot place a bounty on yourself"}
 
-        fee = int(amount * BOUNTY_PLACEMENT_FEE)
+        # ADR-0055 S-V3 / bounty-and-reputation.md "Bounty uniqueness": one
+        # active bounty per (placer, target) pair. A single placer cannot
+        # stack a second active bounty on the same target while their first
+        # is still outstanding; DISTINCT placers each having their own
+        # active bounty on the same target is intentional (ADR-0054 X-V2
+        # stacking-pressure design) and is NOT blocked here. "Active" ==
+        # "still present in the target's JSONB bounty list" — cancel_bounty/
+        # collect_bounty/expire_due_bounties all REMOVE an entry the moment
+        # it resolves (no separate resolved/cancelled/expired marker), so a
+        # plain membership check is sufficient and matches every other
+        # invalidation path in this file.
+        existing_bounties = self._get_bounties(target)
+        if any(str(b.get("placed_by")) == str(placer_id) for b in existing_bounties):
+            return {
+                "success": False,
+                "message": "You already have an active bounty on this target",
+            }
+
+        fee = int(amount * (BOUNTY_PLACEMENT_FEE if fee_pct is None else fee_pct))
         total_cost = amount + fee
 
         if placer.credits < total_cost:
@@ -372,6 +588,11 @@ class BountyService:
             "amount": amount,
             "placed_at": datetime.now(UTC).isoformat(),
             "type": "player",
+            "expires_at": (
+                (datetime.now(UTC) + timedelta(days=duration_days)).isoformat()
+                if duration_days is not None
+                else None
+            ),
         }
         bounties.append(bounty_entry)
         self._set_bounties(target, bounties)
@@ -391,12 +612,20 @@ class BountyService:
             "fee": fee,
             "total_cost": total_cost,
             "remaining_credits": placer.credits,
+            "expires_at": bounty_entry["expires_at"],
         }
 
     def cancel_bounty(
-        self, placer_id: uuid.UUID, bounty_id: str, target_id: uuid.UUID
+        self, placer_id: uuid.UUID, bounty_id: str, target_id: uuid.UUID,
+        refund_pct: float = 1.0,
     ) -> Dict[str, Any]:
         """Cancel a still-uncollected PLAYER-placed bounty and refund the placer.
+
+        ``refund_pct`` overrides the default 100%-of-principal refund --
+        used by ship_registry_service's retract-stolen-report flow, whose
+        75%/0% timing-dependent refund schedule (ship-registry.md "Reporting
+        a ship stolen" retract paragraph) differs from this method's
+        cancellation invariant #9.
 
         Canon (SYSTEMS/bounty-and-reputation.md#cancellation, invariant #9):
         only the ORIGINAL PLACER may cancel; only a not-yet-collected bounty is
@@ -459,8 +688,9 @@ class BountyService:
                 "message": "System bounties cannot be cancelled",
             }
 
-        # Refund the escrowed principal only (fee is non-refundable, invariant #9).
-        refund = int(entry.get("amount", 0))
+        # Refund the escrowed principal only (fee is non-refundable, invariant #9),
+        # scaled by refund_pct for callers with a partial-refund schedule.
+        refund = int(int(entry.get("amount", 0)) * refund_pct)
 
         # Remove the entry FIRST so it can never be collected after the refund,
         # then credit. Both happen under the target+placer locks atomically.
@@ -482,6 +712,219 @@ class BountyService:
             "target_id": str(target_id),
             "refund": refund,
             "remaining_credits": placer.credits,
+        }
+
+    def expire_due_bounties(self, now: Optional[datetime] = None) -> Dict[str, int]:
+        """Auto-cancel every PLAYER-placed bounty past its optional
+        ``expires_at`` and refund the placer (bounty-and-reputation.md 📐
+        "auto-refund-minus-fee on expiry") — the sweep counterpart to
+        ``cancel_bounty``, triggered by the clock instead of the placer.
+
+        Refund equals the escrowed ``amount`` only (the 10% placement fee
+        was already taken and stays non-refundable, matching cancel's
+        invariant #9 exactly — "refund-minus-fee" describes that the fee
+        is never returned, not a further deduction off the principal).
+
+        Scans all active players' JSONB bounty lists (mirrors
+        ``get_available_bounties``'s existing full-scan pattern — no GIN
+        index on ``Player.settings`` exists to query this server-side).
+        Entries with no ``expires_at`` (the default — "do NOT auto-expire")
+        are untouched. System (``type == "system"``) entries never carry
+        ``expires_at`` and are skipped defensively. Caller commits."""
+        now = now or datetime.now(UTC)
+        result = {"expired": 0, "total_refunded": 0}
+
+        targets = self.db.query(Player).filter(Player.is_active == True).all()  # noqa: E712
+        for target in targets:
+            bounties = self._get_bounties(target)
+            if not bounties:
+                continue
+
+            due = []
+            kept = []
+            for entry in bounties:
+                expires_at_raw = entry.get("expires_at")
+                if entry.get("type") == "system" or not expires_at_raw:
+                    kept.append(entry)
+                    continue
+                try:
+                    expires_at = datetime.fromisoformat(str(expires_at_raw).replace("Z", "+00:00"))
+                except (ValueError, TypeError):
+                    kept.append(entry)
+                    continue
+                if expires_at <= now:
+                    due.append(entry)
+                else:
+                    kept.append(entry)
+
+            if not due:
+                continue
+
+            self._set_bounties(target, kept)
+
+            for entry in due:
+                try:
+                    placer_id = uuid.UUID(str(entry.get("placed_by")))
+                except (ValueError, TypeError):
+                    logger.error(
+                        "expire_due_bounties: bounty %s on %s has an unresolvable "
+                        "placed_by (%r) — refund skipped",
+                        entry.get("id"), target.id, entry.get("placed_by"),
+                    )
+                    continue
+                placer = (
+                    self.db.query(Player)
+                    .filter(Player.id == placer_id)
+                    .with_for_update()
+                    .first()
+                )
+                if placer is None:
+                    continue
+                refund = int(entry.get("amount", 0))
+                placer.credits += refund
+                result["expired"] += 1
+                result["total_refunded"] += refund
+                logger.info(
+                    "Bounty expired: %s on %s, refunded %d to placer %s",
+                    entry.get("id"), target.id, refund, placer_id,
+                )
+
+        self.db.flush()
+        return result
+
+    def admin_force_cancel_bounty(
+        self, target_id: uuid.UUID, bounty_id: str
+    ) -> Dict[str, Any]:
+        """Admin-only force-cancel of a stuck bounty (bounty-and-reputation.md:190
+        — "Bounty placed on player who deletes account: bounty stays attached to
+        deleted target's settings; mark unclaimable; admin tool refunds
+        placers"). Unlike ``cancel_bounty``, this does NOT require the caller to
+        be the original placer — any admin invoking this (via the RBAC-gated
+        route) may force-cancel any player-placed bounty on ``target_id``.
+
+        Refund mirrors ``cancel_bounty`` exactly (escrowed ``amount`` only, fee
+        non-refundable). If the placer's Player row no longer resolves (also
+        deleted, or a corrupted ``placed_by``), the entry is still removed
+        (unstuck) but the refund is skipped and logged — the canon scenario is
+        explicitly "target" deletion, but this guards the symmetric case too
+        rather than leaving the entry unremovable."""
+        target = self.db.query(Player).filter(Player.id == target_id).with_for_update().first()
+        if not target:
+            return {"success": False, "message": "Target player not found"}
+
+        bounties = self._get_bounties(target)
+        entry = next((b for b in bounties if str(b.get("id")) == str(bounty_id)), None)
+        if entry is None:
+            return {"success": False, "message": "Bounty not found or already resolved"}
+
+        if entry.get("type") == "system":
+            return {"success": False, "message": "System bounties cannot be force-cancelled"}
+
+        remaining = [b for b in bounties if str(b.get("id")) != str(bounty_id)]
+        self._set_bounties(target, remaining)
+
+        refund = int(entry.get("amount", 0))
+        placer_id_raw = entry.get("placed_by")
+        placer = None
+        try:
+            placer_id = uuid.UUID(str(placer_id_raw))
+            placer = self.db.query(Player).filter(Player.id == placer_id).with_for_update().first()
+        except (ValueError, TypeError):
+            placer_id = None
+
+        refunded = False
+        if placer is not None:
+            placer.credits += refund
+            refunded = True
+        else:
+            logger.error(
+                "admin_force_cancel_bounty: bounty %s on %s had an unresolvable "
+                "placer (%r) — entry removed, %d credits NOT refunded",
+                bounty_id, target_id, placer_id_raw, refund,
+            )
+
+        self.db.flush()
+
+        logger.info(
+            "Admin force-cancelled bounty %s on %s (placer %s, refund %d, refunded=%s)",
+            bounty_id, target_id, placer_id_raw, refund, refunded,
+        )
+
+        return {
+            "success": True,
+            "bounty_id": str(bounty_id),
+            "target_id": str(target_id),
+            "refund": refund,
+            "refunded": refunded,
+        }
+
+    def collapse_excess_bounties(self, target_id: uuid.UUID) -> Dict[str, Any]:
+        """Soft-cap collapse (bounty-and-reputation.md:192 — "Bounty list grows
+        unbounded (many small placements): soft cap 50 entries; older entries
+        collapsed by placer (sum amounts under one entry)"). No expiry/refund
+        happens here — this only compacts the JSONB list so it can't grow
+        unbounded; every credit stays escrowed exactly as before, just
+        regrouped. System entries are never counted toward the cap (they don't
+        live in the JSONB list) and are left untouched.
+
+        Idempotent: a target already at or under the cap is a no-op."""
+        target = self.db.query(Player).filter(Player.id == target_id).with_for_update().first()
+        if not target:
+            return {"success": False, "message": "Target player not found"}
+
+        bounties = self._get_bounties(target)
+        if len(bounties) <= BOUNTY_SOFT_CAP_ENTRIES:
+            return {
+                "success": True,
+                "target_id": str(target_id),
+                "collapsed": 0,
+                "entry_count": len(bounties),
+            }
+
+        # Oldest-first by placed_at (entries without a parseable timestamp sort
+        # first — treated as oldest, the conservative choice for what to collapse).
+        def _sort_key(b: Dict[str, Any]) -> str:
+            return str(b.get("placed_at") or "")
+
+        ordered = sorted(bounties, key=_sort_key)
+        overflow_count = len(ordered) - BOUNTY_SOFT_CAP_ENTRIES
+        to_collapse = ordered[:overflow_count]
+        kept = ordered[overflow_count:]
+
+        by_placer: Dict[str, Dict[str, Any]] = {}
+        for entry in to_collapse:
+            placer_id = str(entry.get("placed_by"))
+            bucket = by_placer.setdefault(placer_id, {
+                "id": str(uuid.uuid4()),
+                "placed_by": placer_id,
+                "placed_by_name": entry.get("placed_by_name", "Anonymous"),
+                "amount": 0,
+                "placed_at": entry.get("placed_at"),
+                "type": "player",
+                "expires_at": None,  # a collapsed entry drops any individual expiry
+            })
+            bucket["amount"] += int(entry.get("amount", 0))
+            # Keep the EARLIEST placed_at among the collapsed entries for this placer.
+            if entry.get("placed_at") and (
+                not bucket["placed_at"] or entry["placed_at"] < bucket["placed_at"]
+            ):
+                bucket["placed_at"] = entry["placed_at"]
+
+        collapsed_entries = list(by_placer.values())
+        self._set_bounties(target, kept + collapsed_entries)
+        self.db.flush()
+
+        logger.info(
+            "Collapsed %d bounty entries into %d on target %s (soft cap %d)",
+            len(to_collapse), len(collapsed_entries), target_id, BOUNTY_SOFT_CAP_ENTRIES,
+        )
+
+        return {
+            "success": True,
+            "target_id": str(target_id),
+            "collapsed": len(to_collapse),
+            "collapsed_into": len(collapsed_entries),
+            "entry_count": len(kept) + len(collapsed_entries),
         }
 
     def get_bounties_on_player(self, target_id: uuid.UUID) -> Dict[str, Any]:
@@ -550,10 +993,28 @@ class BountyService:
         now = datetime.now(UTC)
 
         # --- Player-placed bounties: pay every entry, record a PAID claim ---
-        # These are pay-once-then-cleared (the list is wiped below), so no
-        # ledger dedup is needed — clearing the JSONB is the dedup.
+        # These are pay-once-then-cleared (paid entries are wiped below), so
+        # no ledger dedup is needed for them — clearing the JSONB is the
+        # dedup.
+        #
+        # Same-team collusion block (ADR-0055 S-F1, bounty-collection half):
+        # a collector sharing a team with the entry's placer does NOT get
+        # paid for that entry — cross-team hunting still works, same-team
+        # laundering is blocked. The entry is left standing (escrow held,
+        # untouched) rather than paid or removed, so the placer can still
+        # retract it or a non-team-mate hunter can still collect it later.
         total_player = 0
+        withheld_player_bounties = []
         for b in player_bounties:
+            placed_by = b.get("placed_by")
+            collector_team_id = getattr(collector, "team_id", None)
+            if placed_by and collector_team_id is not None:
+                placer_team = (
+                    self.db.query(Player.team_id).filter(Player.id == placed_by).first()
+                )
+                if placer_team is not None and placer_team[0] is not None and placer_team[0] == collector.team_id:
+                    withheld_player_bounties.append(b)
+                    continue
             amount = b.get("amount", 0)
             total_player += amount
             self._write_claim(
@@ -633,9 +1094,11 @@ class BountyService:
         # Award credits
         collector.credits += total
 
-        # Clear player-placed bounties (clearing the JSONB list IS their dedup).
-        # The system pot was already zeroed above (its reset is ITS dedup).
-        self._set_bounties(target, [])
+        # Clear PAID player-placed bounties (clearing them IS their dedup);
+        # same-team-withheld entries (see above) are left standing for a
+        # future retract or a non-team-mate hunter. The system pot was
+        # already zeroed above (its reset is ITS dedup).
+        self._set_bounties(target, withheld_player_bounties)
 
         # Flush within the caller's locked transaction (caller owns the commit).
         self.db.flush()
@@ -840,6 +1303,20 @@ class BountyService:
         flush would poison the session and make combat's terminal commit raise
         PendingRollbackError). The savepoint also keeps the row visible to
         subsequent same-txn dedup reads; the caller owns the outer commit."""
+        snap = None
+        try:
+            from src.models.player import Player
+            from src.models.sector import Sector
+            claimant = self.db.query(Player).filter(Player.id == claimant_id).first()
+            if claimant and claimant.current_sector_id is not None:
+                sec = (
+                    self.db.query(Sector)
+                    .filter(Sector.sector_id == claimant.current_sector_id)
+                    .first()
+                )
+                snap = getattr(sec, "region_id", None) if sec else None
+        except Exception:
+            snap = None
         claim = BountyClaim(
             bounty_ref=bounty_ref,
             claimant_id=claimant_id,
@@ -847,6 +1324,7 @@ class BountyService:
             amount=amount,
             status=BountyClaimStatus.PAID,
             resolved_at=resolved_at,
+            region_id_snapshot=snap,
         )
         with self.db.begin_nested():
             self.db.add(claim)

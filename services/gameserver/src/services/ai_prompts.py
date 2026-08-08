@@ -9,7 +9,6 @@ Supports three generation types:
 """
 
 from typing import List, Dict, Any
-from src.models.first_login import ShipChoice
 
 
 def _humanize_ship_name(enum_name: str) -> str:
@@ -240,7 +239,7 @@ IMPORTANT: Write as natural speech, NOT numbered lists or bullet points. Just th
 SHIP THEY'RE CLAIMING ({claimed_ship_display}):
 - Market Value: {ship_specs.get('market_value', 'Unknown')}
 - Cargo Capacity: {ship_specs.get('cargo_capacity', 'Unknown')}
-- Max Speed: {ship_specs.get('max_speed', 'Unknown')}
+- human Speed: {ship_specs.get('max_speed', 'Unknown')}
 - Weapons: {ship_specs.get('weapons', 'Unknown')}
 - Key Features: {ship_specs.get('features', 'Unknown')}
 - Typical Owner: {ship_specs.get('typical_owner', 'Unknown')}

@@ -5,17 +5,9 @@ P8-region-lifecycle-schema (``RegionStatus`` enum + ``suspended_at`` /
 ``b7e4a29f1c68_region_lifecycle_columns.py``, verified present) -- this WO
 is additive-only, no new schema.
 
-CANON-VS-WO-BRIEF CONFLICT (flagged, not silently resolved either way):
-this WO's own brief cited ``suspended_at + 8 days -> GRACE`` and
-``suspended_at + 31 days -> TERMINATED``. ``SYSTEMS/region-lifecycle.md``'s
-state diagram (lines 17-46), transition-trigger table (lines 59-60), and
-worked pseudocode (lines 764/770/773-774) unambiguously say **7** and
-**30** days instead -- both measured from the ORIGINAL ``Region.
-suspended_at``, not reset on entering grace -- with a **7**-day terminated
--> hard-delete window (line 80, 773-774), which DOES match the brief's
-third number. Built against the DOCUMENTED numbers (7/30/7) per this
-codebase's docs-win convention; the 8/31 discrepancy is surfaced back to
-the lead for a ruling, not silently picked either way.
+Timers follow ``SYSTEMS/region-lifecycle.md``: suspended_at + 7d → GRACE,
+suspended_at + 30d → TERMINATED (both from the original suspended_at, not
+reset on grace), then a 7-day terminated → hard-delete window.
 
 Both advance functions are pure, session-injectable BULK conditional
 UPDATEs -- canon's trigger table lists no per-region side effect for
@@ -26,15 +18,36 @@ the caller (economy_governance_sweeps._run_region_lifecycle_advance_gated,
 Phase 7 of the daily governance sweep) owns the commit.
 """
 import logging
-from datetime import datetime, timedelta, UTC
+import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Dict, Optional
 
-from sqlalchemy import update
+from sqlalchemy import exists, or_, update
 from sqlalchemy.orm import Session
 
+from src.models.pirate_holding import PirateHolding
+from src.models.planet import Planet
+from src.models.player import Player
 from src.models.region import Region, RegionStatus
+from src.models.sector import Sector
+from src.models.ship import Ship
+from src.models.station import Station
+from src.models.warp_gate import WarpGate, WarpGateBeacon
+from src.services.realtime_outbox import RealtimeOutbox
+from src.services.region_termination_cascade_service import (
+    dispatch_station_termination,
+    process_planet_termination,
+)
+from src.services.warp_gate_service import cascade_region_gate_teardown
 
 logger = logging.getLogger(__name__)
+
+# ADR-0054 X-D1 -- suspended-region stakeholder-ingress error contract
+# (region-lifecycle.md's "The rule keeps stakeholders connected to their
+# assets" paragraph; movement_service surfaces this verbatim, mirroring
+# ERR_GALACTIC_CITIZEN_REQUIRED's own string-as-code convention on the
+# sibling ADR-0043 Nexus-subscription gate).
+ERR_REGION_NEW_RESIDENTS_BLOCKED = "ERR_REGION_NEW_RESIDENTS_BLOCKED"
 
 # region-lifecycle.md:59 / :764 -- 7 days elapsed since Region.suspended_at,
 # payment unrecovered.
@@ -114,39 +127,154 @@ def advance_to_terminated(db: Session, now: Optional[datetime] = None) -> Dict[s
 
 
 def dispatch_terminated_cleanup(db: Session, now: Optional[datetime] = None) -> Dict[str, int]:
-    """DISCOVERY STUB (WO-P8 lane c), NOT a cleanup implementation. Finds
-    TERMINATED regions past their ``scheduled_hard_delete_at`` (region-
-    lifecycle.md:293's ``cleanup_orchestrator`` daily-cron trigger
-    condition) and logs them as eligible -- the discoverable dispatch
-    POINT gate-cascade (W12, ruled GO) wires the real cascade onto when it
-    lands. Deliberately does NOTHING destructive: no ship evacuation,
-    station relocation, planet-safe Bank transfer, or ``hard_delete_
-    region`` call.
+    """Finds TERMINATED regions past their ``scheduled_hard_delete_at``
+    (region-lifecycle.md:293's ``cleanup_orchestrator`` daily-cron trigger
+    condition) and dispatches ``region_termination_cascade_service``'s
+    reduced-scope cascade (WO-BUILD-REGION-LIFECYCLE-CLEANUP-CASCADE,
+    commit bae0abcf) against each eligible region's planets and stations:
+    ``process_planet_termination`` per planet (planet-safe transport +
+    Genesis compensation), ``dispatch_station_termination`` for the region
+    as a whole (still a discovery-only stub there pending the
+    acquisition_cost/upgrade-capital blocker documented in that module --
+    this dispatch does not change that module's own scope), and
+    ``cascade_region_gate_teardown`` (ADR-0052 SK38) to tear down every
+    player-built warp gate with an endpoint in the region. ADR-0052 SK38
+    states no ordering dependency between the gate cascade and the
+    planet/station cascade -- each processes a disjoint entity type -- so
+    the gate teardown runs alongside them in the same per-region pass.
 
-    Canon's ``cleanup_started_at`` / ``cleanup_completed_at`` tracking
-    columns (region-lifecycle.md:303 pseudocode) are NOT in the shipped
-    schema -- P8-region-lifecycle-schema's migration only added
-    ``suspended_at`` / ``terminated_at`` / ``scheduled_hard_delete_at``.
-    Adding them would be a NEW schema change outside this WO's additive-
-    only scope, so this stub can only detect ELIGIBILITY, not track an
-    in-progress/completed cleanup state across ticks (idempotent by
-    construction: re-finding the same eligible region every day until
-    gate-cascade actually processes it is harmless — a read-only re-log,
-    not a re-charge or re-mutation). Read-only; never writes."""
+    Does NOT stamp ``Region.cleanup_completed_at`` while
+    ``dispatch_station_termination`` remains discovery-only
+    (WO-ESCALATE-CYCLE26-DESIGN-FLAGS / DECISIONS.md cycle26-design-flags-fix):
+    asserting "cleanup complete" while stations are never terminated is a
+    data-integrity bug. Planet re-entry is gated by
+    ``Planet.termination_compensated_at`` instead; gate teardown is already
+    status-flip idempotent. Eligibility still filters
+    ``cleanup_completed_at IS NULL`` so a future station-termination
+    implementation can stamp the region marker once and stop re-dispatch.
+
+    Flush-only -- caller owns the commit, per this codebase's
+    route-owns-commit convention (mirrors both cascade functions below it).
+
+    ADR-0054 X-V1: accumulates realtime events (currently ``process_planet_
+    termination``'s ``region.planet_terminated`` notice) in a per-call
+    ``RealtimeOutbox`` rather than emitting them directly, and returns it
+    to the caller as ``result["_outbox"]`` -- this function does NOT own
+    the commit (Phase 7 of the governance sweep does, one call up via
+    ``_run_region_lifecycle_advance_gated``), so it cannot safely flush
+    here. The caller must call ``result["_outbox"].flush()`` after ITS
+    ``db.commit()`` succeeds, and must NOT call it on the rollback path."""
     now = now or datetime.now(UTC)
+    outbox = RealtimeOutbox()
     eligible = (
-        db.query(Region.id, Region.name)
+        db.query(Region)
         .filter(
             Region.status == RegionStatus.TERMINATED,
             Region.scheduled_hard_delete_at.isnot(None),
             Region.scheduled_hard_delete_at <= now,
+            Region.cleanup_completed_at.is_(None),
         )
         .all()
     )
-    if eligible:
+    for region in eligible:
+        planets = db.query(Planet).filter(Planet.region_id == region.id).all()
+        for planet in planets:
+            process_planet_termination(db, planet, now=now, outbox=outbox)
+        dispatch_station_termination(db, region.id)
+        cascade_region_gate_teardown(db, region.id)
+        # Intentionally leave cleanup_completed_at NULL until station
+        # termination is real (cycle26-design-flags-fix).
         logger.info(
-            "region_lifecycle: %d region(s) eligible for cleanup cascade "
-            "(gate-cascade dispatch not yet wired -- discovery only)",
-            len(eligible),
+            "region_lifecycle: dispatched cleanup cascade for region %s "
+            "(%d planet(s) processed; cleanup_completed_at deferred — "
+            "station termination still discovery-only)",
+            region.id, len(planets),
         )
-    return {"cleanup_eligible": len(eligible)}
+    return {"cleanup_eligible": len(eligible), "_outbox": outbox}
+
+
+def is_region_stakeholder(db: Session, player_id: uuid.UUID, region_id: uuid.UUID) -> bool:
+    """ADR-0054 X-D1 -- one query covering every asset class that makes a
+    player a "stakeholder" of ``region_id``: owns a planet, owns a station,
+    controls a captured pirate holding (individually OR via their team --
+    ``PirateHolding.owner_team_id`` is a TEAM FK, not a player FK, so a
+    teammate's capture counts too), owns a player-built warp-gate endpoint
+    anchored in the region, or has a registered ship currently sitting in
+    one of the region's sectors.
+
+    Ship/WarpGate don't carry ``region_id`` directly (unlike Planet/
+    Station/PirateHolding, which do) -- they're keyed by the human-readable
+    Integer ``sector_id`` (Ship.sector_id / WarpGateBeacon.source_sector_id
+    /destination_sector_id), so those two arms correlate through ``Sector.
+    region_id`` instead.
+
+    Implemented as up to five short-circuiting, individually-indexed EXISTS
+    checks (each is exactly the "one query per ownership type, indexed by
+    player_id" region-lifecycle.md describes) rather than one mega-SELECT
+    OR-ing five correlated subqueries together -- the ADR's "one SQL
+    query" framing is about avoiding an N+1 loop over the player's assets,
+    not mandating a single monolithic statement, and short-circuiting on
+    the common case (a stakeholder usually owns exactly one asset type)
+    means most calls fire ONE query, not five.
+
+    Region ownership and the post-takeover-commit case are handled by the
+    CALLER (movement_service._check_region_ingress_gate), not here --
+    ``Region.owner_id`` isn't an asset-ownership row this query touches,
+    and a just-committed takeover has already flipped ``Region.status`` to
+    ACTIVE by the time any traversal check runs, so the gate never reaches
+    this function for that case in the first place.
+    """
+    if (
+        db.query(exists().where(
+            Planet.owner_id == player_id, Planet.region_id == region_id,
+        )).scalar()
+    ):
+        return True
+
+    if (
+        db.query(exists().where(
+            Station.owner_id == player_id, Station.region_id == region_id,
+        )).scalar()
+    ):
+        return True
+
+    player = db.query(Player).filter(Player.id == player_id).first()
+    team_id = player.team_id if player is not None else None
+    holding_conditions = [PirateHolding.owner_player_id == player_id]
+    if team_id is not None:
+        holding_conditions.append(PirateHolding.owner_team_id == team_id)
+    if (
+        db.query(exists().where(
+            or_(*holding_conditions), PirateHolding.region_id == region_id,
+        )).scalar()
+    ):
+        return True
+
+    if (
+        db.query(exists().where(
+            WarpGate.player_id == player_id,
+            WarpGate.beacon_id == WarpGateBeacon.id,
+            or_(
+                exists().where(
+                    Sector.sector_id == WarpGateBeacon.source_sector_id,
+                    Sector.region_id == region_id,
+                ),
+                exists().where(
+                    Sector.sector_id == WarpGateBeacon.destination_sector_id,
+                    Sector.region_id == region_id,
+                ),
+            ),
+        )).scalar()
+    ):
+        return True
+
+    if (
+        db.query(exists().where(
+            or_(Ship.owner_id == player_id, Ship.registered_owner_id == player_id),
+            Sector.sector_id == Ship.sector_id,
+            Sector.region_id == region_id,
+        )).scalar()
+    ):
+        return True
+
+    return False

@@ -9,7 +9,7 @@ re-deriving them.
 """
 
 from dataclasses import dataclass
-from typing import List
+from typing import Optional
 
 
 @dataclass
@@ -75,6 +75,31 @@ GUARD_TRAITS = [
         description="Seen too many lies to trust anyone easily"
     )
 ]
+
+# Persuasion-threshold delta applied at first-login resolve (negative = easier).
+# Trait-keyed so Tired Night-Shifter (0.40) is not skipped by suspicion bands.
+PERSONALITY_THRESHOLD_MOD = {
+    "Friendly Veteran": -0.10,
+    "Tired Night-Shifter": -0.10,
+    "Strict Rule-Follower": +0.10,
+    "Paranoid Newbie": +0.10,
+    "Shrewd Investigator": 0.0,
+    "Cynical Bureaucrat": 0.0,
+}
+
+
+def personality_threshold_modifier(
+    trait_name: Optional[str], base_suspicion: Optional[float]
+) -> float:
+    """Return threshold delta for a guard trait (WO-FIRSTLOGIN-NIGHTSHIFTER)."""
+    name = (trait_name or "").strip()
+    if name in PERSONALITY_THRESHOLD_MOD:
+        return float(PERSONALITY_THRESHOLD_MOD[name])
+    if base_suspicion is None:
+        return 0.0
+    if base_suspicion < 0.60:
+        return -0.10
+    return +0.10
 
 
 def get_guard_for_session(session_id: str) -> GuardPersonality:

@@ -25,6 +25,7 @@ import logging
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import src.models  # register all mappers
+from src.core.commodity_economy import base_price as _commodity_base_price
 from src.core.database import SessionLocal
 from src.core.station_class_map import apply_class_pattern
 from src.core.market_bootstrap import build_market_prices
@@ -50,17 +51,20 @@ TIER_A_NAMES_BY_REGION = {
     "central_nexus": ["TradeDock Nexus Prime", "TradeDock Nexus Apex"],
 }
 
-# Default commodity scaffold matching the translator's _build_full_commodities
+# Default commodity scaffold matching the translator's _build_full_commodities.
+# base_price derives from the WO-Y / ADR-0082 single source of truth
+# (src.core.commodity_economy) — WO-ARCH-RES-2 dedup; capacity/production_rate/
+# price_variance remain local bootstrap shape, not price econ.
 COMMODITY_DEFAULTS = {
-    "ore": {"capacity": 5000, "base_price": 15, "price_variance": 20, "production_rate": 100},
-    "fuel": {"capacity": 4000, "base_price": 12, "price_variance": 15, "production_rate": 120},
-    "organics": {"capacity": 3000, "base_price": 18, "price_variance": 25, "production_rate": 80},
-    "colonists": {"capacity": 500, "base_price": 50, "price_variance": 10, "production_rate": 10},
-    "equipment": {"capacity": 2000, "base_price": 35, "price_variance": 30, "production_rate": 50},
-    "gourmet_food": {"capacity": 600, "base_price": 80, "price_variance": 35, "production_rate": 15},
-    "luxury_goods": {"capacity": 800, "base_price": 100, "price_variance": 40, "production_rate": 20},
-    "precious_metals": {"capacity": 400, "base_price": 130, "price_variance": 30, "production_rate": 8},
-    "exotic_technology": {"capacity": 200, "base_price": 250, "price_variance": 50, "production_rate": 5},
+    "ore": {"capacity": 5000, "base_price": _commodity_base_price("ore"), "price_variance": 20, "production_rate": 100},
+    "fuel": {"capacity": 4000, "base_price": _commodity_base_price("fuel"), "price_variance": 15, "production_rate": 120},
+    "organics": {"capacity": 3000, "base_price": _commodity_base_price("organics"), "price_variance": 25, "production_rate": 80},
+    "colonists": {"capacity": 500, "base_price": _commodity_base_price("colonists"), "price_variance": 10, "production_rate": 10},
+    "equipment": {"capacity": 2000, "base_price": _commodity_base_price("equipment"), "price_variance": 30, "production_rate": 50},
+    "gourmet_food": {"capacity": 600, "base_price": _commodity_base_price("gourmet_food"), "price_variance": 35, "production_rate": 15},
+    "luxury_goods": {"capacity": 800, "base_price": _commodity_base_price("luxury_goods"), "price_variance": 40, "production_rate": 20},
+    "precious_metals": {"capacity": 400, "base_price": _commodity_base_price("precious_metals"), "price_variance": 30, "production_rate": 8},
+    "exotic_technology": {"capacity": 200, "base_price": _commodity_base_price("exotic_technology"), "price_variance": 50, "production_rate": 5},
 }
 
 

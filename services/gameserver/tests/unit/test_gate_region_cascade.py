@@ -40,6 +40,16 @@ from src.services import warp_gate_service
 GATE_CASCADE_REFUND_DIVISOR = warp_gate_service.GATE_CASCADE_REFUND_DIVISOR
 
 
+@pytest.fixture(autouse=True)
+def _default_owner_online(monkeypatch):
+    """Preserve pre-Bank wallet-refund assertions: treat owners as online
+    unless a test explicitly patches offline routing."""
+    monkeypatch.setattr(
+        "src.services.central_bank_service.is_player_online_sync",
+        lambda _player_id: True,
+    )
+
+
 # --- shared fakes (mirrors test_warp_gate_toll.py / test_gate_construction_staging.py) --
 
 
@@ -558,3 +568,55 @@ class TestNoMatchingSectors:
         # sectors to match — proven by _FakeSession.query raising for any
         # model with no registered spec (WarpGate/WarpTunnel/Player are
         # absent above).
+
+
+# --- Central Bank offline routing (WO-BUILD-PLAYER-CENTRAL-BANK-ACCOUNT) -----
+
+
+@pytest.mark.unit
+class TestOfflineOwnerBanksRefund:
+    def test_offline_owner_refund_lands_in_central_bank(self, monkeypatch) -> None:
+        from src.models.player_central_bank import PlayerCentralBankAccount
+
+        monkeypatch.setattr(
+            "src.services.central_bank_service.is_player_online_sync",
+            lambda _player_id: False,
+        )
+        region = _fake_region()
+        sectors = [_fake_sector(1, region.id)]
+        owner = _fake_player(credits=0)
+        tunnel = _fake_tunnel()
+        gate = _fake_gate(
+            owner.id, construction_cost=1_020_000, warp_tunnel_id=tunnel.id,
+        )
+
+        banks: dict = {}
+
+        class _BankAwareSession(_FakeSession):
+            def query(self, model: type) -> _FakeQuery:
+                if model is PlayerCentralBankAccount:
+                    return _FakeQuery(first=banks.get(owner.id))
+                return super().query(model)
+
+            def add(self, obj: Any) -> None:
+                super().add(obj)
+                if isinstance(obj, PlayerCentralBankAccount):
+                    banks[obj.player_id] = obj
+
+        db = _BankAwareSession({
+            Region: _FakeQuery(first=region),
+            Sector: _FakeQuery(all=sectors),
+            WarpGate: _FakeQuery(all=[gate]),
+            Player: _FakeQuery(first=owner),
+            WarpTunnel: _FakeQuery(first=tunnel),
+            Message: _FakeQuery(first=None),
+        })
+
+        result = warp_gate_service.cascade_region_gate_teardown(db, region.id)
+
+        assert result["total_refunded"] == 510_000
+        assert owner.credits == 0
+        assert owner.id in banks
+        assert banks[owner.id].credits == 510_000
+        assert banks[owner.id].ledger[-1]["type"] == "warp_gate_cascade_refund"
+

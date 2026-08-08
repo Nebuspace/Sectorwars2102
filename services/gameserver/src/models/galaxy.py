@@ -1,10 +1,7 @@
 import uuid
 import enum
-from datetime import datetime
-from typing import List, Dict, Optional, Any
 from sqlalchemy import BigInteger, Boolean, Column, DateTime, String, Integer, Enum, func
 from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY
-from sqlalchemy.orm import relationship
 
 from src.core.database import Base
 
@@ -94,7 +91,9 @@ class Galaxy(Base):
     # NOTE (ADR-0006): expansion_enabled and warp_shifts_enabled dropped. The
     # galaxy evolves only via region attachment to the Central Nexus; in-place
     # mutation (warp shifts, edge expansion) is not part of the launch design.
-    max_sectors = Column(Integer, nullable=False, default=500)
+    # Soft observability target only (ADR-0050 SK23) — NOT a hard provisioning
+    # cap. Nullable; default 500 is a dashboard hint, never enforced in code.
+    max_sectors = Column(Integer, nullable=True, default=500)
     resources_regenerate = Column(Boolean, nullable=False, default=True)
 
     # Game Rules
@@ -143,14 +142,6 @@ class Galaxy(Base):
     
     def update_statistics(self):
         """Update the galaxy statistics based on related entities"""
-        from src.models.region import Region as PlayerRegion
-        from src.models.cluster import Cluster
-        from src.models.sector import Sector
-        from src.models.station import Station
-        from src.models.planet import Planet
-        from src.models.player import Player
-        from src.models.team import Team
-        from src.models.warp_tunnel import WarpTunnel
         
         # This method would be implemented to update stats in real-time
         pass

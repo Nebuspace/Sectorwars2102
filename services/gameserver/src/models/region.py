@@ -1,6 +1,6 @@
 """Regional models for multi-regional platform"""
 
-from sqlalchemy import Column, String, Integer, BigInteger, DECIMAL, Boolean, Text, TIMESTAMP, ForeignKey, CheckConstraint, UniqueConstraint
+from sqlalchemy import Column, String, Integer, BigInteger, DECIMAL, Boolean, Text, TIMESTAMP, ForeignKey, CheckConstraint, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -93,6 +93,9 @@ class Region(Base):
     subscription_expires_at = Column(TIMESTAMP, nullable=True)
     last_payment_at = Column(TIMESTAMP, nullable=True)
     next_billing_at = Column(TIMESTAMP, nullable=True)
+    # Consecutive failed recurring-payment count for this region's ownership
+    # subscription. Same semantics as users.payment_failure_count.
+    payment_failure_count = Column(Integer, nullable=True, default=0)
     status = Column(String(50), nullable=False, default=RegionStatus.ACTIVE)
     # ADR-0050 batch3 provisioning-lifecycle hardening (SK17/SK19/SK21/SK22):
     # lifecycle timestamps + generation-tracking columns backing the 7-state
@@ -102,11 +105,44 @@ class Region(Base):
     suspended_at = Column(TIMESTAMP, nullable=True)
     terminated_at = Column(TIMESTAMP, nullable=True)
     scheduled_hard_delete_at = Column(TIMESTAMP, nullable=True)
-    # Canon (galaxy.md:93) marks generation_seed NOT NULL; shipped nullable
-    # here per the additive-only migration rule -- a NOT NULL column against
-    # existing region rows with no recorded seed would be destructive.
-    generation_seed = Column(BigInteger, nullable=True)
+    cleanup_completed_at = Column(TIMESTAMP, nullable=True)
+    # Canon (galaxy.md:93 / ADR-0050:177) marks generation_seed NOT NULL.
+    # WO-FIX-GENERATION-SEED-WRITER-AND-BACKFILL (2026-08-04): all 4 live
+    # Region-creation sites now set it (nexus_generation_service.py,
+    # paypal_service.py, bang_galaxy.py x2 -- bang-import seed where one
+    # exists, server-generated uint64-positive fallback otherwise), and
+    # migration ae4f2ed102fc backfilled every pre-existing NULL row
+    # (deterministic md5-of-id derivation) before flipping this NOT NULL.
+    # server_default MUST be mirrored here (not just the migration's raw
+    # ALTER TABLE ... SET DEFAULT) -- without it, SQLAlchemy's metadata
+    # doesn't know a DB-side default exists, so on flush it sends an
+    # explicit NULL for any Region() built without generation_seed
+    # (16 test fixtures do exactly this), which violates NOT NULL despite
+    # the column technically having a default at the DB level. Found via
+    # tests/integration/test_core_loop_playthrough.py surfacing the gap at
+    # runtime -- the original WO's "safety net" was never actually
+    # exercised against a live Postgres before this promotion slice.
+    generation_seed = Column(
+        BigInteger,
+        nullable=False,
+        server_default=text(
+            "(('x' || substr(md5(random()::text || clock_timestamp()::text), 1, 16))::bit(63)::bigint)"
+        ),
+    )
     generation_phase_checksums = Column(JSONB, nullable=True, server_default='{}')
+    # ADR-0050 SK22 — Phase 14 (Nexus-warp cross-region attachment, ADR-0043)
+    # retry bookkeeping. attempt_count/next_retry_at drive the exponential
+    # backoff retry loop (RegionAttachmentService); operator_confirmed gates
+    # the attachment_pending refund path and is NEVER set automatically —
+    # see region_attachment_service.refund_trigger_reason.
+    nexus_attach_attempt_count = Column(Integer, nullable=False, server_default="0")
+    nexus_attach_next_retry_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    nexus_attach_operator_confirmed = Column(Boolean, nullable=False, server_default="false")
+    # Set once the Phase-14 cross-region WarpTunnel insert actually succeeds.
+    # Deliberately distinct from nexus_warp_sector (set during region-content
+    # generation regardless of whether the cross-region tunnel has landed) —
+    # this is the real "Phase 14 done" signal the retry sweep queries on.
+    nexus_attach_completed_at = Column(TIMESTAMP(timezone=True), nullable=True)
     created_at = Column(TIMESTAMP, nullable=False, server_default=func.now())
     updated_at = Column(TIMESTAMP, nullable=False, server_default=func.now(), onupdate=func.now())
     

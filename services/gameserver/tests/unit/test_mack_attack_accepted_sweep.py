@@ -104,6 +104,12 @@ class _FakeQuery:
         # project memory.
         return self
 
+    def order_by(self, *args: Any) -> "_FakeQuery":
+        return self
+
+    def limit(self, n: int) -> "_FakeQuery":
+        return self
+
     def first(self) -> Any:
         for row in self._rows:
             if all(_match(row, c) for c in self._criteria):

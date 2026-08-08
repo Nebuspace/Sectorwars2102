@@ -210,6 +210,24 @@ interface WebSocketContextType {
     timestamp: string | null;
   } | null;
 
+  // Bounty lifecycle (WO-BOUNTY-REALTIME-EVENTS): bumps once per inbound
+  // `bounty_updated` frame (ranking.py place/cancel + combat collect emit).
+  // Pure plumbing — GameContext refreshes playerState when the current
+  // player is placer/target/collector so StatusBar bounty_total / credits
+  // move without polling. Future bounty-board UI can watch the signal.
+  bountyEventSignal: number;
+  lastBountyUpdated: {
+    action: string;
+    bounty_id: string | null;
+    target_id: string | null;
+    amount: number | null;
+    placed_by: string | null;
+    collected_by: string | null;
+    total_collected: number | null;
+    refund: number | null;
+    timestamp: string | null;
+  } | null;
+
   // Connection management
   connect: () => void;
   disconnect: () => void;
@@ -343,6 +361,18 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
     sector_id: number | null;
     trigger: string | null;
     combat_id: string;
+    timestamp: string | null;
+  } | null>(null);
+  const [bountyEventSignal, setBountyEventSignal] = useState(0);
+  const [lastBountyUpdated, setLastBountyUpdated] = useState<{
+    action: string;
+    bounty_id: string | null;
+    target_id: string | null;
+    amount: number | null;
+    placed_by: string | null;
+    collected_by: string | null;
+    total_collected: number | null;
+    refund: number | null;
     timestamp: string | null;
   } | null>(null);
 
@@ -593,6 +623,9 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           });
           break;
           
+        // Server WS path emits `combat_update` (websocket_service.send_combat_update).
+        // `combat_event` is a legacy/redis alias — accept both so live updates aren't dropped.
+        case 'combat_update':
         case 'combat_event':
           addNotification({
             title: 'Combat Activity',
@@ -619,6 +652,23 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           break;
         }
 
+
+        case 'hostile_detected': {
+          // Long-Range Scanner Array pickup (citadel_service DEFENSE_BUILDINGS
+          // "scanner_array") — a hostile ship moved within detection range of
+          // an owned planet's sector (movement_service._dispatch_hostile_detected
+          // → websocket_service.send_hostile_detected). Toast only, matching
+          // teammate_under_attack's heads-up-not-interrupt convention.
+          const detectedSectorId = message.sector_id;
+          addNotification({
+            title: 'Hostile Detected',
+            content: detectedSectorId !== undefined && detectedSectorId !== null
+              ? `A hostile ship was detected in sector ${detectedSectorId}`
+              : 'A hostile ship was detected near your planet',
+            level: 'warning'
+          });
+          break;
+        }
 
         case 'new_message': {
           // Player-to-player hail (message_service → notification_service).
@@ -870,6 +920,25 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           break;
         }
 
+        case 'bounty_updated': {
+          // WO-BOUNTY-REALTIME-EVENTS: see bountyEventSignal field doc.
+          // Stash + bump only — GameContext.onBountyUpdated refreshes
+          // playerState when the current player is involved.
+          setLastBountyUpdated({
+            action: String(message.action || ''),
+            bounty_id: message.bounty_id != null ? String(message.bounty_id) : null,
+            target_id: message.target_id != null ? String(message.target_id) : null,
+            amount: typeof message.amount === 'number' ? message.amount : null,
+            placed_by: message.placed_by != null ? String(message.placed_by) : null,
+            collected_by: message.collected_by != null ? String(message.collected_by) : null,
+            total_collected: typeof message.total_collected === 'number' ? message.total_collected : null,
+            refund: typeof message.refund === 'number' ? message.refund : null,
+            timestamp: message.timestamp != null ? String(message.timestamp) : null,
+          });
+          setBountyEventSignal(prev => prev + 1);
+          break;
+        }
+
         case 'admin_broadcast':
           addNotification({
             title: message.title || 'System Message',
@@ -902,7 +971,7 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           // send_failed is consumed by sendFailedHandler above — it's a
           // client-local synthetic event (websocket.ts's own send()), not
           // an unhandled server frame.)
-          if (!['sector_players', 'connection_status', 'chat_message', 'player_entered_sector', 'player_left_sector', 'notification', 'aria_response', 'aria_narration', 'medal_awarded', 'genesis_progress', 'planetary_update', 'contract_offer', 'contract_settled', 'rp_governor_status', 'reputation_changed', 'team_reputation_changed', 'npc_combat_initiated', 'send_failed'].includes(message.type)) {
+          if (!['sector_players', 'connection_status', 'chat_message', 'player_entered_sector', 'player_left_sector', 'notification', 'aria_response', 'aria_narration', 'medal_awarded', 'genesis_progress', 'planetary_update', 'contract_offer', 'contract_settled', 'rp_governor_status', 'reputation_changed', 'team_reputation_changed', 'npc_combat_initiated', 'bounty_updated', 'turn_pool_updated', 'send_failed'].includes(message.type)) {
             console.warn('WebSocket: Unhandled message type:', message.type);
           }
       }
@@ -999,6 +1068,10 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
     // NPC-initiated combat (npc_combat_initiated — WO-CMB-NPC-INITIATED-1 lane D)
     npcCombatSignal,
     lastNpcCombatInitiated,
+
+    // Bounty lifecycle (bounty_updated — WO-BOUNTY-REALTIME-EVENTS)
+    bountyEventSignal,
+    lastBountyUpdated,
 
     // Connection management
     connect,

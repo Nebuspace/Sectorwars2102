@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * CargoPage — WO-UI-MAX-BATCH-1 (mfd-crgo lane, Max #15 visual re-emit).
+ * CargoPage — WO-UI-MAX-BATCH-1 (mfd-crgo lane, human #15 visual re-emit).
  *
  * Mirrors ReputationPage.test.tsx / CommsCrewPage.test.tsx's seam: jsdom +
  * react-dom/client createRoot + act(), no RTL, no new deps. Pins the demo

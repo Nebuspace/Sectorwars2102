@@ -143,10 +143,11 @@ async def test_track_player_login_returns_granted_outcome_for_qualifying_gap(mon
 
     outcome = await auth_mod._track_player_login(db, player.user_id)
 
-    assert outcome is not None
-    assert outcome["granted"] is True
-    assert outcome["bonus"] == 400  # min(500, 8 * 50)
-    assert outcome["days_inactive"] == 8
+    welcome_back = outcome["welcome_back"]
+    assert welcome_back is not None
+    assert welcome_back["granted"] is True
+    assert welcome_back["bonus"] == 400  # min(500, 8 * 50)
+    assert welcome_back["days_inactive"] == 8
     assert player.turns == 500  # 100 + 400, under max_turns=1000
     assert db.committed is True
 
@@ -163,10 +164,11 @@ async def test_track_player_login_immediate_second_login_not_granted(monkeypatch
 
     # Shape is always present (a Player was found, evaluation succeeded) --
     # granted=False, NOT None. None is reserved for "nothing to surface".
-    assert outcome is not None
-    assert outcome["granted"] is False
-    assert outcome["bonus"] == 0
-    assert outcome["days_inactive"] == 0
+    welcome_back = outcome["welcome_back"]
+    assert welcome_back is not None
+    assert welcome_back["granted"] is False
+    assert welcome_back["bonus"] == 0
+    assert welcome_back["days_inactive"] == 0
     assert player.turns == 100  # untouched
     assert db.committed is True
 
@@ -181,7 +183,7 @@ async def test_track_player_login_bonus_failure_returns_null_and_login_still_suc
     # Must not raise -- a bonus failure is defensive/non-fatal by contract.
     outcome = await auth_mod._track_player_login(db, player.user_id)
 
-    assert outcome is None
+    assert outcome == {"welcome_back": None, "gc_lapse_notice": None}
     assert db.rolled_back is True
     # Login-adjacent activity tracking still ran (unaffected by the bonus failure).
     assert activity_service.track_login_calls == [str(player.id)]
@@ -194,7 +196,7 @@ async def test_track_player_login_no_player_returns_none(monkeypatch):
 
     outcome = await auth_mod._track_player_login(db, uuid.uuid4())
 
-    assert outcome is None
+    assert outcome == {"welcome_back": None, "gc_lapse_notice": None}
 
 
 # ---------------------------------------------------------------------------
@@ -252,13 +254,16 @@ async def test_login_json_threads_welcome_back_without_touching_token_fields(mon
     # Baseline: no welcome-back outcome (the common case -- every login where
     # no bonus is due).
     async def _no_bonus(db, user_id):
-        return None
+        return {"welcome_back": None, "gc_lapse_notice": None}
     monkeypatch.setattr(auth_mod, "_track_player_login", _no_bonus)
     baseline = await auth_mod.login_json(json_data=login_form, db=object())
 
     # Same call, but this login DID grant a bonus.
     async def _granted_bonus(db, user_id):
-        return {"granted": True, "bonus": 250, "days_inactive": 12, "old_turns": 50, "new_turns": 300}
+        return {
+            "welcome_back": {"granted": True, "bonus": 250, "days_inactive": 12, "old_turns": 50, "new_turns": 300},
+            "gc_lapse_notice": None,
+        }
     monkeypatch.setattr(auth_mod, "_track_player_login", _granted_bonus)
     granted = await auth_mod.login_json(json_data=login_form, db=object())
 

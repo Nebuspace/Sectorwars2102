@@ -1,4 +1,4 @@
-"""Suspect-status lifecycle (WO-CMB-SUSPECT-LIFE-1, Max ruling 2026-07-10).
+"""Suspect-status lifecycle (WO-CMB-SUSPECT-LIFE-1, human ruling 2026-07-10).
 
 Canon: sw2102-docs/FEATURES/gameplay/ships.md:287-296 + ADR-0061 S-V4 +
 DATA_MODELS/player.md's target schema for suspect_until/suspect_team_snapshot.

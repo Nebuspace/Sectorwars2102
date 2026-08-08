@@ -3,7 +3,7 @@ Escape Pod stranding egress -- the FREE (zero fuel, zero turns, zero
 reputation) recovery mechanic from a WARP_SINK, at the cost of the ship
 itself.
 
-Canon: Max's design direction (WO-GWQ-STRANDING-2, 2026-07-10) -- "[stranded
+Canon: human's design direction (WO-GWQ-STRANDING-2, 2026-07-10) -- "[stranded
 players] have to escape pod out of there, as the escape pod uses no fuel";
 abandoning the ship is the free path's real cost, contrasted with the
 Slipdrive's now fuel-commodity-denominated self-rescue (slipdrive_service.py)
@@ -209,7 +209,7 @@ def eject_to_escape_pod(
     escape_pod = ShipService(db)._ensure_escape_pod(player, origin.sector_id)
     player.current_ship_id = escape_pod.id
     from src.services.ship_service import sync_current_pilot
-    sync_current_pilot(player, escape_pod, old_ship=abandoned_ship)  # QUEUE-REGISTRY-PILOT-WIRING
+    sync_current_pilot(player, escape_pod, old_ship=abandoned_ship, db=db)  # QUEUE-REGISTRY-PILOT-WIRING
 
     # Teleport arrival -- mirrors slipdrive_service.complete_charge /
     # distress_service.use_distress_beacon's own player-state sync (sector,

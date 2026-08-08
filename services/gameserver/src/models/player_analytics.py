@@ -4,8 +4,6 @@ Tracks comprehensive player metrics and analytics data
 """
 
 import uuid
-from datetime import datetime, timedelta
-from typing import Dict, Any, Optional
 from sqlalchemy import Boolean, Column, DateTime, String, Integer, Float, ForeignKey, Index, func, text
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship

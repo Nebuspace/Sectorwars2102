@@ -4,18 +4,18 @@ from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from typing import Dict, List, Any, Optional
+from typing import Dict, Any, Optional
 from pydantic import BaseModel, Field, ValidationError
 from datetime import datetime, timezone
 import json
 
-from src.auth.dependencies import get_current_user, get_current_player
+from src.auth.admin_scopes import SUBSCRIPTIONS_VIEW
+from src.auth.dependencies import get_current_user, get_current_player, require_scope
 from src.core.database import get_async_session
 from src.models.user import User
 from src.models.player import Player
 from src.models.region import Region
-from src.services.paypal_service import paypal_service, PayPalWebhookEvent, SubscriptionTier
-from src.services.regional_auth_service import regional_auth, RegionalPermission
+from src.services.paypal_service import paypal_service, PayPalWebhookEvent
 
 import logging
 
@@ -161,7 +161,7 @@ async def create_subscription(
     
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to create subscription")
         raise HTTPException(status_code=500, detail="Failed to create subscription")
 
@@ -175,7 +175,7 @@ async def get_user_subscriptions(
         subscriptions = await paypal_service.get_user_subscriptions(str(current_user.id))
         return {"subscriptions": subscriptions}
     
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to get user subscriptions")
         raise HTTPException(status_code=500, detail="Failed to retrieve subscriptions")
 
@@ -213,7 +213,7 @@ async def get_subscription_details(
     
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to get subscription details")
         raise HTTPException(status_code=500, detail="Failed to retrieve subscription details")
 
@@ -249,7 +249,7 @@ async def cancel_subscription(
     
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to cancel subscription")
         raise HTTPException(status_code=500, detail="Failed to cancel subscription")
 
@@ -312,7 +312,7 @@ async def handle_paypal_webhook(
         # Deliberate 4xx (bad timestamp / replay window) — must not be downgraded
         # to a 500, which would tell PayPal to retry the rejected event.
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("Webhook processing error")
         raise HTTPException(status_code=500, detail="Webhook processing failed")
 
@@ -407,37 +407,18 @@ async def check_region_name_availability(
             "name": name
         }
     
-    except Exception as e:
+    except Exception:
         logger.exception("Error checking region name availability")
         raise HTTPException(status_code=500, detail="Failed to check name availability")
 
 
 @router.get("/admin/subscriptions")
 async def admin_get_all_subscriptions(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_scope(SUBSCRIPTIONS_VIEW)),
     session: AsyncSession = Depends(get_async_session)
 ):
-    """Admin endpoint to view all subscriptions (requires admin permissions)"""
+    """Admin endpoint to view all subscriptions (requires admin.subscriptions.view)."""
     try:
-        # Check if user has admin permissions
-        current_player = await session.execute(
-            select(Player).where(Player.user_id == current_user.id)
-        )
-        player = current_player.scalar_one_or_none()
-        
-        if not player:
-            raise HTTPException(status_code=404, detail="Player not found")
-        
-        # Check galaxy admin permission
-        has_permission = await regional_auth.check_regional_permission(
-            str(current_user.id),
-            "any",  # Galaxy-level permission
-            RegionalPermission.GALAXY_ADMIN_FULL
-        )
-        
-        if not has_permission:
-            raise HTTPException(status_code=403, detail="Admin access required")
-        
         # Get all regions with subscriptions
         result = await session.execute(
             select(Region).where(Region.paypal_subscription_id.isnot(None))
@@ -479,6 +460,6 @@ async def admin_get_all_subscriptions(
     
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("Admin subscription query failed")
         raise HTTPException(status_code=500, detail="Failed to retrieve subscription data")

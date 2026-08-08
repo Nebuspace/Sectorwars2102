@@ -26,7 +26,7 @@ GET /api/v1/nav/threat
   (WO-UI2-TACTICAL-THREAT-ENDPOINT), STATIC-ONLY — scored from
   security_level / hazard_level / last_combat recency / region
   pirate-pressure; see threat_service.py for the formula/weights (all
-  TENTATIVE pending Max's ratification) and the resolved pirate-pressure
+  TENTATIVE pending human's ratification) and the resolved pirate-pressure
   grounding. Read-only, additive. PLAYER-SCOPED exactly like /nav/chart:
   same auth dependency, reports ONLY sectors in
   NavService.get_known_sector_ids(player).
@@ -41,7 +41,7 @@ The route handler follows the trading.py pattern:
 import logging
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -175,7 +175,7 @@ async def get_nav_threat(
 
     STATIC-ONLY: scored from security_level / hazard_level / last_combat
     recency / region pirate-pressure. Formula/weights are TENTATIVE pending
-    Max's ratification — see threat_service.py's module-top constants
+    human's ratification — see threat_service.py's module-top constants
     block for the full breakdown and the resolved pirate-pressure
     grounding.
     """

@@ -277,3 +277,9 @@ def assert_dag_reachable() -> None:
             f"tech_tree: node {nid!r} is not reachable from free root "
             f"{FREE_ROOT_ID!r}"
         )
+
+
+# Fail fast at import if the catalog is malformed (cheap; runs once at module load).
+# Mirrors building_catalog.assert_catalog_valid — a catalog edit that breaks the
+# DAG fails loudly rather than shipping a silently unreachable tech node.
+assert_dag_reachable()

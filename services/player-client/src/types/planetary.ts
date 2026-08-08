@@ -46,6 +46,16 @@ export interface Building {
   level: number;
   upgrading: boolean;
   completionTime?: string;
+  // Server-authoritative cost for the NEXT level (current -> current+1),
+  // computed server-side via the exact fn the upgrade commit path charges
+  // (WO-API-PHASE1 B4). Absent once the building is already at the
+  // server's level cap -- there is no next level to price.
+  nextUpgradeCost?: {
+    credits: number;
+    resources: {
+      equipment: number;
+    };
+  };
 }
 
 export type BuildingType = 'factory' | 'farm' | 'mine' | 'defense' | 'research';

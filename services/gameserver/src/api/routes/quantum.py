@@ -29,6 +29,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/quantum", tags=["quantum"])
 
 
+def _quantum_http_detail(exc: QuantumError) -> Any:
+    """Surface machine-readable ERR_QJ_* when present; keep plain string
+    detail for uncoded raises so existing clients stay compatible."""
+    if exc.error_code:
+        return {"message": str(exc), "error_code": exc.error_code}
+    return str(exc)
+
+
 # Request models
 
 class BearingRequest(BaseModel):
@@ -121,7 +129,7 @@ async def quantum_minimap(
     try:
         return quantum_service.get_minimap(db, player)
     except QuantumError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=_quantum_http_detail(e))
 
 
 @router.post("/scan")
@@ -138,7 +146,7 @@ async def quantum_scan(
             db, player.id, request.yaw_deg, request.pitch_deg, request.range_band
         )
     except QuantumError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=_quantum_http_detail(e))
 
 
 @router.post("/refine-charge")
@@ -152,7 +160,7 @@ async def quantum_refine_charge(
     try:
         return quantum_service.refine_charge(db, player.id)
     except QuantumError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=_quantum_http_detail(e))
 
 
 @router.post("/jump")
@@ -170,7 +178,7 @@ async def quantum_jump(
             db, player.id, request.yaw_deg, request.pitch_deg, request.range_band
         )
     except QuantumError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=_quantum_http_detail(e))
 
 
 @router.post("/harvest")
@@ -203,7 +211,7 @@ async def quantum_harvest(
         return result
     except QuantumError as e:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=_quantum_http_detail(e))
     except Exception:
         db.rollback()
         raise

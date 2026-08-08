@@ -192,7 +192,7 @@ def test_sell_accept_never_below_posted_price():
 
 
 # ── FIX 2: per-player haggle memory prunes at a UNIFORM 90 days ────────────────
-# Max ruling (DECISIONS.md haggling-personality-reconciliation, 2026-06-20):
+# human ruling (DECISIONS.md haggling-personality-reconciliation, 2026-06-20):
 # memory = 90 days uniform, regardless of the per-archetype memory_duration_days.
 def test_memory_prune_uniform_90_days_ignores_archetype_window():
     from datetime import timedelta
@@ -246,7 +246,7 @@ def test_archetype_for_station_class():
 # ── jsonb-schema archetype defaults ───────────────────────────────────────────
 def test_archetype_defaults_match_jsonb_schema():
     # memory_duration_days values are FEATURES/economy/haggling.md's per-
-    # archetype table (Max DECISION #4, 2026-06-22) — Federation=14,
+    # archetype table (human DECISION #4, 2026-06-22) — Federation=14,
     # Black Market=90, confirmed identical in DATA_MODELS/jsonb-schema.md's
     # own archetype-defaults table (both docs and trader_personalities.py's
     # _ARCHETYPE_DEFAULTS agree; no reconcile note needed). Previously pinned
@@ -311,3 +311,132 @@ def test_reseed_preserves_player_memory_and_trust():
     assert reseeded["haggling_difficulty"] == 9
     assert reseeded["player_memory"] == {"pid-1": {"trust": 40, "session_count": 3}}
     assert reseeded["trust_level"] == 40  # non-default trust preserved
+
+
+# ── round-reset exploit fix (WO-FIX-HAGGLE-ROUND-RESET-EXPLOIT) ────────────────
+# HaggleService.open_session / submit_offer only touch the DB session to satisfy
+# private helper signatures — no query is issued once _fair_price and
+# _aggregate_band_multiplier are neutralized. flag_modified() requires a real
+# SQLAlchemy-mapped instance (raises AttributeError on a plain object), so we
+# construct real Player/Station ORM instances directly (no db.add/commit —
+# `create_engine()` is lazy, per gameserver-unit-test-fake-db) rather than
+# plain stand-ins.
+from src.models.player import Player
+from src.models.station import Station
+
+
+def _FakePlayer(player_id="player-1"):
+    return Player(id=player_id, settings={})
+
+
+def _FakeStation(station_id="station-1", commodities=None):
+    return Station(
+        id=station_id,
+        commodities=commodities or {"ore": {"sells": True, "buys": True}},
+        trader_personality={},
+    )
+
+
+@pytest.fixture
+def _neutral_haggle_engine(monkeypatch):
+    """Neutral fair price (100) and a neutral (1.0) band multiplier — isolates
+    the session-state machinery (open/reopen/close) from the modifier stack."""
+    monkeypatch.setattr(h, "_fair_price", lambda db, player, station, commodity, side: 100.0)
+    monkeypatch.setattr(
+        h, "_aggregate_band_multiplier", lambda db, player, station, personality: 1.0
+    )
+
+
+def test_reopen_inprogress_session_resumes_round_not_reset(_neutral_haggle_engine):
+    """The exploit: re-opening a session that is still IN-PROGRESS (not yet
+    closed) must NOT hand back a fresh round-1 band — that let a player
+    binary-search the acceptance threshold for free by re-opening instead of
+    submitting an offer, since the point-7 cooldown only fires on session
+    CLOSE."""
+    svc = h.HaggleService(db=None)
+    player = _FakePlayer()
+    station = _FakeStation()
+
+    card = svc.open_session(player, station, "ore", "buy", 10)
+    assert card["round"] == 1
+
+    # An offer inside the counter zone advances the session to round 2 without
+    # closing it.
+    result = svc.submit_offer(player, station, "ore", "buy", 90.0)
+    assert result["verdict"] == "counter"
+    session = h._get_haggle_state(player)["sessions"][h._session_key(station.id, "ore", "buy")]
+    assert session["round"] == 2
+    assert session["status"] == "open"
+
+    # Re-opening now (no close occurred — the cooldown was never set) must
+    # RESUME at round 2, not reset to round 1's wider band.
+    reopened = svc.open_session(player, station, "ore", "buy", 10)
+    assert reopened["round"] == 2
+    session_after = h._get_haggle_state(player)["sessions"][
+        h._session_key(station.id, "ore", "buy")
+    ]
+    assert session_after["round"] == 2
+
+
+def test_reopen_after_accept_close_is_cooldown_gated(_neutral_haggle_engine):
+    """A CLOSED session (accept/reject/timeout) still gates re-entry via the
+    existing point-7 cooldown/lock — the resume-in-place fix only changes the
+    still-open-session path."""
+    svc = h.HaggleService(db=None)
+    player = _FakePlayer()
+    station = _FakeStation()
+
+    svc.open_session(player, station, "ore", "buy", 10)
+    result = svc.submit_offer(player, station, "ore", "buy", 98.0)  # accept
+    assert result["verdict"] == "accept"
+
+    with pytest.raises(h.HaggleError, match="cooldown"):
+        svc.open_session(player, station, "ore", "buy", 10)
+
+
+def test_reopen_after_reject_is_lock_gated(_neutral_haggle_engine):
+    svc = h.HaggleService(db=None)
+    player = _FakePlayer()
+    station = _FakeStation()
+
+    svc.open_session(player, station, "ore", "buy", 10)
+    result = svc.submit_offer(player, station, "ore", "buy", 50.0)  # reject
+    assert result["verdict"] == "reject"
+
+    with pytest.raises(h.HaggleError, match="locked"):
+        svc.open_session(player, station, "ore", "buy", 10)
+
+
+def test_normal_haggle_flow_open_counter_accept_close_unchanged(_neutral_haggle_engine):
+    """Sanity: the resume-in-place fix does not disturb the ordinary
+    open -> counter -> accept -> close flow, or the ability to haggle a
+    DIFFERENT commodity/side (independent session key) while one is open."""
+    svc = h.HaggleService(db=None)
+    player = _FakePlayer()
+    station = _FakeStation(
+        commodities={
+            "ore": {"sells": True, "buys": True},
+            "fuel": {"sells": True, "buys": True},
+        }
+    )
+
+    card = svc.open_session(player, station, "ore", "buy", 5)
+    assert card["status"] == "open"
+    assert card["round"] == 1
+
+    countered = svc.submit_offer(player, station, "ore", "buy", 90.0)
+    assert countered["verdict"] == "counter"
+    assert countered["next_round"] == 2
+
+    accepted = svc.submit_offer(player, station, "ore", "buy", 98.0)
+    assert accepted["verdict"] == "accept"
+    assert accepted["status"] == "accepted"
+
+    # single-use agreed price consumption still works post-fix.
+    price = svc.consume_agreed_price(player, station.id, "ore", "buy")
+    assert price == pytest.approx(accepted["agreed_price"], abs=0.01)
+    assert svc.consume_agreed_price(player, station.id, "ore", "buy") is None
+
+    # a fresh, unrelated commodity/side is unaffected by the ore session state.
+    fuel_card = svc.open_session(player, station, "fuel", "sell", 3)
+    assert fuel_card["round"] == 1

@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from src.models.user import User
 from src.models.admin_credentials import AdminCredentials
 from src.models.player_credentials import PlayerCredentials
-from src.core.security import get_password_hash, verify_password
+from src.core.security import verify_password
 
 
 def get_user(db: Session, user_id: str) -> Optional[User]:

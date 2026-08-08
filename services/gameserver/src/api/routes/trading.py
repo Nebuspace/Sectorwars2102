@@ -1,11 +1,11 @@
 import logging
 from datetime import UTC, datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -19,14 +19,17 @@ from src.models.ship import Ship, ShipStatus, effective_cargo_capacity
 from src.models.station import Station
 from src.models.user import User
 from src.services import docking_service, station_security_service
-from src.services.medal_service import MedalService, check_and_award_trade_medals
+from src.services.medal_service import check_and_award_trade_medals
 from src.services.ranking_service import RankingService
 from src.services.trading_service import (
     TradingService,
     clamp_to_commodity_band,
     compute_player_price_multiplier,
     compute_region_tariff_multiplier,
+    compute_region_tax_rate,
     compute_station_lever_multiplier,
+    fallback_credit_region_tax,
+    realize_region_tax,
 )
 from src.services.turn_service import regenerate_turns, spend_turns
 
@@ -81,6 +84,13 @@ def _get_station_or_404(db: Session, station_id: str) -> Station:
     if not station:
         raise HTTPException(status_code=404, detail="Station not found")
     return station
+
+
+def _require_can_trade(player: Player, station: Station) -> None:
+    """Docked + co-located + station functional (WO-STATION-DESTROYED-TRADE-GATE)."""
+    ok, reason = TradingService.can_player_trade(player, station)
+    if not ok:
+        raise HTTPException(status_code=400, detail=reason)
 
 
 def _ensure_market_prices(db: Session, station: Station) -> None:
@@ -197,10 +207,32 @@ def _dispatch_trade_medals(db: Session, player: Player) -> None:
             .scalar()
             or 0
         )
+        # economic.cartel_breaker: best single-region lifetime SELL total
+        # (query-derived from the never-deleted enhanced_market_transactions
+        # table, joined through Sector.region_id — no durable counter needed,
+        # mirrors the total_trades/lifetime_credits pattern above).
+        best_region_sales: int = int(
+            db.query(func.sum(MarketTransaction.total_value))
+            .join(Sector, Sector.id == MarketTransaction.sector_uuid)
+            .filter(
+                MarketTransaction.player_id == player.id,
+                MarketTransaction.transaction_type == TransactionType.SELL,
+                Sector.region_id.isnot(None),
+            )
+            .group_by(Sector.region_id)
+            .order_by(func.sum(MarketTransaction.total_value).desc())
+            .limit(1)
+            .scalar()
+            or 0
+        )
         check_and_award_trade_medals(
             db,
             player,
-            {"total_trades": total_trades, "lifetime_credits": lifetime_revenue},
+            {
+                "total_trades": total_trades,
+                "lifetime_credits": lifetime_revenue,
+                "regional_commodity_sales": best_region_sales,
+            },
         )
     except Exception:
         logger.warning("_dispatch_trade_medals failed (non-fatal)", exc_info=True)
@@ -550,17 +582,9 @@ async def buy_resource(
     current_player: Player = Depends(get_current_player)
 ):
     """Buy a resource from a station"""
-    
-    # Verify player is docked at this port
-    if not current_player.is_docked:
-        raise HTTPException(status_code=400, detail="You must be docked at a station to trade")
 
-    # Get the station
     station = _get_station_or_404(db, trade_request.station_id)
-
-    # Verify player is in the same sector as the station
-    if current_player.current_sector_id != station.sector_id:
-        raise HTTPException(status_code=400, detail="You must be in the same sector as the station")
+    _require_can_trade(current_player, station)
 
     # Populate MarketPrice rows from the commodities JSONB if missing
     _ensure_market_prices(db, station)
@@ -619,7 +643,7 @@ async def buy_resource(
     # charges players). Charging buy_price here created a same-station
     # buy-low/sell-high arbitrage loop.
     #
-    # Canon (trading.md#price-stacking-order, Max-blessed): the full per-unit
+    # Canon (trading.md#price-stacking-order, human-blessed): the full per-unit
     # stack is rank discount × faction-rep × personal-rep × first-login × region
     # tariff × station lever, then the commodity hard [min, max] band as the
     # FINAL clamp. compute_effective_unit_price is the single source of truth for
@@ -677,6 +701,14 @@ async def buy_resource(
     tax_amount = _buy_totals["tax_amount"]
     total_with_tax = _buy_totals["total_with_tax"]
 
+    # WO-BUILD-REGION-TAX-RATE-WIRING: Region.tax_rate is a SEPARATE levy from
+    # the station tax above (governance-set, applies regardless of station
+    # ownership) — charged on top of total_cost, realized via realize_region_tax
+    # (50/50 owner/treasury split, WO-BUILD-REGION-TAX-REVENUE-SHARE-PAYOUT).
+    region_tax_rate = compute_region_tax_rate(station)
+    region_tax_amount = int(total_cost * region_tax_rate)
+    total_with_tax += region_tax_amount
+
     # Check if player has enough credits (goods + station trade tax)
     if current_player.credits < total_with_tax:
         raise HTTPException(
@@ -716,6 +748,18 @@ async def buy_resource(
                     exc_info=True,
                 )
                 station.treasury_balance = (station.treasury_balance or 0) + tax_amount
+
+        if region_tax_amount > 0:
+            try:
+                realize_region_tax(db, station, region_tax_amount)
+            except Exception:
+                logger.warning(
+                    "realize_region_tax failed (buy); falling back to region treasury",
+                    exc_info=True,
+                )
+                # NEVER station.treasury_balance — that is the station owner's
+                # private purse (WO-FIX-REGION-TAX-FALLBACK-MISROUTES-STATION-TREASURY).
+                fallback_credit_region_tax(db, station, region_tax_amount)
 
         # Update ship cargo (using proper structure)
         if not current_ship.cargo:
@@ -773,6 +817,7 @@ async def buy_resource(
             # stations. These only RECORD context; they do not change the charge.
             owner_tariff_rate=tariff_rate_eff,
             port_owner_id=station.owner_id,
+            region_id_snapshot=getattr(station, "region_id", None),
             timestamp=datetime.now(UTC)
         )
         db.add(transaction)
@@ -850,6 +895,26 @@ async def buy_resource(
             total_value=total_cost,
         )
 
+        # WO-WIRE-RETENTION-TRADE-ACTIVITY: PlayerActivityService.track_activity
+        # had zero production callers (retention_service.py's own
+        # "STILL DORMANT" note) — the economic_loss_streak at-risk signal and
+        # the Redis session trades_count/trade_volume counters never populated
+        # for any trade. Best-effort, mirrors every other post-trade hook above.
+        try:
+            from src.services.player_activity_service import (
+                ActivityEventType,
+                get_player_activity_service,
+            )
+            activity_service = await get_player_activity_service()
+            await activity_service.track_activity(
+                str(current_player.id),
+                ActivityEventType.TRADE_BUY,
+                {"total_value": total_cost, "commodity": trade_request.resource_type,
+                 "quantity": trade_request.quantity, "station_id": str(station.id)},
+            )
+        except Exception:
+            logger.warning("activity tracking failed (buy trade)", exc_info=True)
+
         db.commit()
 
         # Real-time market broadcast (post-commit, batched, defensive).
@@ -908,16 +973,8 @@ async def sell_resource(
 ):
     """Sell a resource to a station"""
 
-    # Verify player is docked at this port
-    if not current_player.is_docked:
-        raise HTTPException(status_code=400, detail="You must be docked at a station to trade")
-
-    # Get the station
     station = _get_station_or_404(db, trade_request.station_id)
-
-    # Verify player is in the same sector as the station
-    if current_player.current_sector_id != station.sector_id:
-        raise HTTPException(status_code=400, detail="You must be in the same sector as the station")
+    _require_can_trade(current_player, station)
 
     # Populate MarketPrice rows from the commodities JSONB if missing
     # (may COMMIT — must run before any row locks are taken)
@@ -979,7 +1036,7 @@ async def sell_resource(
     # pays players). Paying out sell_price here was the other half of the
     # same-station arbitrage loop.
     #
-    # Canon (trading.md#price-stacking-order, Max-blessed): the full per-unit
+    # Canon (trading.md#price-stacking-order, human-blessed): the full per-unit
     # payout stack flips the relationship direction (a favoured trader is paid
     # MORE) — rank bonus, then divide by player-rep/tariff/lever, then the
     # commodity hard band as the FINAL clamp. compute_effective_unit_price owns
@@ -1025,6 +1082,12 @@ async def sell_resource(
     tax_amount = _sell_totals["tax_amount"]
     net_earnings = _sell_totals["net_earnings"]
 
+    # WO-BUILD-REGION-TAX-RATE-WIRING: Region.tax_rate withheld from sale
+    # proceeds on top of the station tax above — see the buy-path comment.
+    region_tax_rate = compute_region_tax_rate(station)
+    region_tax_amount = int(total_earnings * region_tax_rate)
+    net_earnings -= region_tax_amount
+
     # Execute the trade
     try:
         # Update player credits (net of tax); the withheld tax is realized to
@@ -1043,6 +1106,18 @@ async def sell_resource(
                     exc_info=True,
                 )
                 station.treasury_balance = (station.treasury_balance or 0) + tax_amount
+
+        if region_tax_amount > 0:
+            try:
+                realize_region_tax(db, station, region_tax_amount)
+            except Exception:
+                logger.warning(
+                    "realize_region_tax failed (sell); falling back to region treasury",
+                    exc_info=True,
+                )
+                # NEVER station.treasury_balance — that is the station owner's
+                # private purse (WO-FIX-REGION-TAX-FALLBACK-MISROUTES-STATION-TREASURY).
+                fallback_credit_region_tax(db, station, region_tax_amount)
 
         # Update ship cargo (using proper structure)
         if not current_ship.cargo:
@@ -1099,6 +1174,7 @@ async def sell_resource(
             # stations. These only RECORD context; they do not change the payout.
             owner_tariff_rate=tariff_rate_eff,
             port_owner_id=station.owner_id,
+            region_id_snapshot=getattr(station, "region_id", None),
             timestamp=datetime.now(UTC)
         )
         db.add(transaction)
@@ -1219,6 +1295,23 @@ async def sell_resource(
         except Exception:
             logger.warning("ARIA narration hook failed (P-F1)", exc_info=True)
 
+        # WO-WIRE-RETENTION-TRADE-ACTIVITY: see the buy-path hook above for
+        # the full rationale — same wire, sell side.
+        try:
+            from src.services.player_activity_service import (
+                ActivityEventType,
+                get_player_activity_service,
+            )
+            activity_service = await get_player_activity_service()
+            await activity_service.track_activity(
+                str(current_player.id),
+                ActivityEventType.TRADE_SELL,
+                {"total_value": total_earnings, "commodity": trade_request.resource_type,
+                 "quantity": trade_request.quantity, "station_id": str(station.id)},
+            )
+        except Exception:
+            logger.warning("activity tracking failed (sell trade)", exc_info=True)
+
         db.commit()
 
         # Real-time market broadcast (post-commit, batched, defensive).
@@ -1305,13 +1398,8 @@ async def get_trade_quote(
     if action not in ("buy", "sell"):
         raise HTTPException(status_code=400, detail="action must be 'buy' or 'sell'")
 
-    if not current_player.is_docked:
-        raise HTTPException(status_code=400, detail="You must be docked at a station to trade")
-
     station = _get_station_or_404(db, quote_request.station_id)
-
-    if current_player.current_sector_id != station.sector_id:
-        raise HTTPException(status_code=400, detail="You must be in the same sector as the station")
+    _require_can_trade(current_player, station)
 
     # Same lazy-init idiom GET /market/{id} already uses — populates
     # MarketPrice rows from the commodities JSONB on first read. Not a
@@ -1540,6 +1628,14 @@ async def dock_at_station(
     if not station:
         raise HTTPException(status_code=404, detail="Station not found")
 
+    from src.services.station_service import is_station_functional
+
+    if not is_station_functional(station):
+        raise HTTPException(
+            status_code=400,
+            detail="This station is destroyed and rebuilding — docking is suspended",
+        )
+
     # Lock player row to prevent concurrent turn deduction races
     # (after the station lock — see lock-order note above)
     current_player = db.query(Player).filter(Player.id == current_player.id).populate_existing().with_for_update().first()
@@ -1595,7 +1691,9 @@ async def dock_at_station(
     # shown by /slips and the charge here always agree. Validated after the
     # turn check, in addition to the 1-turn dock cost.
     docking_ship_size = docking_service.ship_size_for(db, current_ship)
-    docking_fee = docking_service.docking_fee_for(station, docking_ship_size)
+    docking_fee = docking_service.docking_fee_for(
+        station, docking_ship_size, player=current_player
+    )
     if current_player.credits < docking_fee:
         raise HTTPException(
             status_code=400,
@@ -1607,6 +1705,22 @@ async def dock_at_station(
     slip_result = docking_service.acquire(
         db, station, current_player, ship_id=current_player.current_ship_id
     )
+
+    # Access denials (reputation gate / defense_policy) — mirror long-term
+    # mooring's reputation_denied → HTTP 403; do not enqueue.
+    if slip_result["status"] in ("reputation_denied", "access_denied"):
+        db.rollback()
+        raise HTTPException(status_code=403, detail=slip_result["detail"])
+
+    # Stolen-ship impound (ship-registry.md "Port-docking impound"): the ship
+    # never enters the slip queue at all — it's seized. acquire() already
+    # applied the fine/rep-hit/eject in-memory (flush-only); commit here and
+    # report it plainly rather than falling into the queue/full branch below
+    # (which expects queue_length/occupied/capacity/bumpable keys this
+    # result doesn't carry).
+    if slip_result["status"] == "impounded":
+        db.commit()
+        return JSONResponse(status_code=403, content=slip_result)
 
     if slip_result["status"] != "granted":
         # All transient slips taken (or the free slot belongs to the queue
@@ -1684,11 +1798,19 @@ async def dock_at_station(
             from src.models.contract import Contract, ContractStatus
 
             with db.begin_nested():
+                # Match GET /contracts/board: status=POSTED, still before
+                # deadline, visible at this station (issuer OR posting_stations).
+                # Past-deadline POSTED rows (sweep lag) must not narrate as open.
+                now = datetime.now(UTC)
                 open_contract_count = (
                     db.query(Contract)
                     .filter(
-                        Contract.destination_station_id == station.id,
                         Contract.status == ContractStatus.POSTED,
+                        or_(Contract.deadline.is_(None), Contract.deadline > now),
+                        or_(
+                            Contract.issuer_id == station.id,
+                            Contract.posting_stations.any(station.id),
+                        ),
                     )
                     .count()
                 )

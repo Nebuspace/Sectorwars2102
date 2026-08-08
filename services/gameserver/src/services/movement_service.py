@@ -19,8 +19,6 @@ from src.models.player_warp_knowledge import (
     WarpRevealedVia,
 )
 from src.models.team_member import TeamMember
-from src.models.combat import CombatResult
-from src.models.combat_log import CombatLog
 from src.models.drone import Drone, DroneStatus
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -163,6 +161,53 @@ def _reveal_warp_to_player(
             revealed_via=revealed_via,
         )
         db.add(row)
+        # ARIA narration — P-A5, first PERSONAL warp reveal (aria-companion.md
+        # § Warp discovery: "ARIA surfaces these conversationally — flagging a
+        # first reveal ... special-casing the player's region Nexus warp").
+        # Gated on the new-row branch (fires exactly once per (player, tunnel))
+        # AND revealed_via != CORP_SHARE — a teammate's share isn't the
+        # player's own discovery moment (mirrors ADR-0064 R-V3's "requires
+        # PERSONAL discovery" framing already enforced a few lines below for
+        # the upgrade-to-personal case). Best-effort, own try/except so a
+        # narration hiccup can never strand the warp-knowledge write it rides
+        # alongside — same idiom as P-A2 above.
+        if revealed_via != WarpRevealedVia.CORP_SHARE:
+            try:
+                from src.models.region import Region
+
+                player = db.query(Player).filter(Player.id == player_id).first()
+                is_nexus_warp = False
+                if player is not None and player.home_region_id is not None:
+                    home_region = db.query(Region).filter(
+                        Region.id == player.home_region_id
+                    ).first()
+                    if home_region is not None and home_region.nexus_warp_sector is not None:
+                        is_nexus_warp = home_region.nexus_warp_sector in (
+                            tunnel.origin_sector.sector_id if tunnel.origin_sector else None,
+                            tunnel.destination_sector.sector_id if tunnel.destination_sector else None,
+                        )
+                reveal_desc = (
+                    "That's the Nexus connection, captain — this warp leads to "
+                    "the Central Nexus."
+                    if is_nexus_warp else
+                    f"New warp revealed via {revealed_via.value}. Logged it to your map."
+                )
+                from src.services.aria_narration_service import (
+                    dispatch_narration_push,
+                    get_aria_narration_service,
+                    resolve_assistance_level,
+                )
+                narration_line = get_aria_narration_service().record_event(
+                    "P-A5",
+                    player_id,
+                    assistance_level=resolve_assistance_level(db, player_id),
+                    dedupe_key=str(tunnel.id),
+                    context={"reveal_desc": reveal_desc},
+                )
+                if narration_line is not None and narration_line.delivered_immediately and player is not None:
+                    dispatch_narration_push(player, narration_line)
+            except Exception as e:
+                logger.error("ARIA narration hook failed (P-A5): %s", e)
     elif row.visibility_state == WarpVisibilityState.HIDDEN:
         # Promote hidden -> revealed; never downgrade traversed.
         row.visibility_state = WarpVisibilityState.REVEALED
@@ -524,6 +569,71 @@ class MovementService:
             except Exception:
                 pass
 
+    def _roll_hull_condition_failure(self, player: Player, result: Dict[str, Any]) -> None:
+        """Per-jump hull-condition band failure (WO-BUILD-HULL-FAILURE-TIER-DICE-ROLL).
+
+        Distinct from ``_roll_mechanical_failure`` (MAINTENANCE_SYSTEM upgrade
+        degrade at 2%/jump). This roll consumes the performance-band
+        ``failure`` / ``failure_tier`` values and applies FailureType effects
+        (MINOR sensors offline / MAJOR immobilized / CATASTROPHIC destroy-or-1%).
+
+        Best-effort: never strand an already-committed move. Catastrophic
+        destruction commits via ShipService.destroy_ship (cause=hull_failure).
+        """
+        try:
+            ship = player.current_ship
+            if not ship:
+                return
+
+            from src.services.maintenance_service import apply_hull_condition_failure_roll
+            outcome = apply_hull_condition_failure_roll(ship)
+            if not outcome:
+                return
+
+            if outcome.get("needs_destroy"):
+                from src.services.ship_service import ShipService
+                ShipService(self.db).destroy_ship(ship, cause="hull_failure")
+                self.db.commit()
+                result["hull_failure"] = {
+                    "failure_type": outcome.get("failure_type"),
+                    "effect": "destroyed",
+                    "message": (
+                        "Catastrophic hull failure — the ship was destroyed. "
+                        "If you ejected, you are in an Escape Pod."
+                    ),
+                }
+                return
+
+            self.db.commit()
+            effect = outcome.get("effect")
+            ftype = outcome.get("failure_type")
+            messages = {
+                "sensors_offline": (
+                    f"Minor systems failure ({ftype}): sensors offline until repaired"
+                ),
+                "immobilized": (
+                    f"Major systems failure ({ftype}): ship immobilized until repaired "
+                    "at a shipyard"
+                ),
+                "hull_critical": (
+                    f"Catastrophic hull failure ({ftype}): hull integrity critical "
+                    f"({outcome.get('condition')}%) — seek emergency repair"
+                ),
+            }
+            result["hull_failure"] = {
+                "failure_type": ftype,
+                "effect": effect,
+                "condition": outcome.get("condition"),
+                "message": messages.get(effect, f"Hull failure: {ftype}"),
+            }
+        except Exception as e:
+            logger.error("Hull-condition failure roll failed during movement: %s", e)
+            try:
+                self.db.rollback()
+            except Exception:
+                pass
+
+
     # Scanner-array detection model (WO-AY). After a SUCCESSFUL move, a
     # best-effort sweep finds planets within the scanner_array's
     # detection_range_sectors (JUMPS) of the destination that have an
@@ -599,6 +709,108 @@ class MovementService:
         ):
             return False
         return True
+
+    def _roll_contraband_transit_scan(
+        self,
+        player: Player,
+        origin_sector_id: Optional[int],
+        destination_sector_id: int,
+        result: Dict[str, Any],
+    ) -> None:
+        """Customs scan on arrival when the hold is hot (WO-K2).
+
+        The black-market brief always had TWO detection sites — "sell into, or
+        TRANSIT OUT OF, a higher-security sector" (black-market.md:18) and
+        "detection also invocable on sector egress from movement_service.py"
+        (:47). Only the sell site was built; this is the other one. The roll fires
+        exactly when contraband is aboard AND the destination's security_level
+        exceeds the origin's, and is rate-limited per destination sector by the
+        [OPEN-9] cooldown. ``contraband_service`` owns all of that policy — this
+        method owns only the transaction.
+
+        TRANSACTION CONTRACT — this is the FIRST hook on the movement path that
+        moves money and cargo, so it deliberately does NOT copy the read-only
+        best-effort shape of ``_sweep_scanner_detection``. It copies
+        ``_roll_mechanical_failure``, which is the existing precedent for a
+        MUTATING hook here:
+
+        * ``_execute_movement`` has already committed by the time we run, so the
+          scan gets its OWN commit — without it the confiscation and the fine
+          would be flushed and then dropped.
+        * The service computes the entire outcome and applies every mutation
+          before returning, so there is no partial-bust window: this method sees
+          either a fully-formed outcome to commit or an exception to roll back.
+          A rollback here discards the fine, the confiscation AND the cooldown
+          anchor together — the roll is simply never spent, which is the correct
+          failure mode (it can't cost a player cargo without also recording that
+          the scan happened).
+        * Nothing raises out of here. A scan hiccup must never strand a move that
+          is already durable, and must never be reported to the player as a
+          failed jump — the jump succeeded.
+        """
+        try:
+            # Lazy import, matching every other service hook on this path
+            # (ShipUpgradeService / TowService / HangarService) — keeps
+            # movement_service free of a load-time edge onto the trading stack.
+            from src.services.contraband_service import ContrabandService
+
+            outcome = ContrabandService(self.db).scan_in_transit(
+                player=player,
+                ship_id=player.current_ship_id,
+                origin_sector_id=origin_sector_id,
+                destination_sector_id=destination_sector_id,
+            )
+
+            if not outcome.get("scanned") and not outcome.get("locked"):
+                # Gated out before any lock was taken — the overwhelmingly common
+                # case (clean hold, not a tighter-security crossing, or inside the
+                # cooldown). Only SELECTs ran, exactly like the read-only sweep
+                # above leaves behind, so there is NOTHING to end here.
+                #
+                # Do NOT rollback() on this path. It is the caller's session, and
+                # rollback expires every ORM instance the request is still using —
+                # routes/player.py:653 reads `player.turns` as a default argument
+                # on every move, immediately after this hook, and an earlier
+                # revision that rolled back here failed the core-loop playthrough
+                # with ObjectDeletedError (2026-08-03).
+                return
+
+            # Past this point a lock was acquired, so the transaction must be
+            # ended to release it — with commit(), not rollback(). Both release
+            # the lock, but commit is the operation this request path already
+            # survives every single move (_execute_movement commits mid-request
+            # and the route reads `player` afterwards). When the scan was declined
+            # after locking there is simply nothing staged, and committing an
+            # empty transaction is a no-op that releases cleanly.
+            self.db.commit()
+            if not outcome.get("scanned"):
+                return
+
+            if outcome.get("detected"):
+                # Surface ONLY on a real bust — the move's existing return
+                # contract is otherwise untouched, and a clean pass must stay
+                # invisible (telling a smuggler "you were scanned and got away"
+                # would leak the security topology the roll is scored on).
+                result["contraband_scan"] = {
+                    "detected": True,
+                    "commodity": outcome.get("commodity"),
+                    "confiscated_units": outcome.get("confiscated_units"),
+                    "confiscated_value": outcome.get("confiscated_value"),
+                    "fine": outcome.get("fine"),
+                    "heat": outcome.get("heat"),
+                    "remaining_credits": outcome.get("remaining_credits"),
+                    "message": (
+                        "Customs interdiction: your illegal cargo was seized and "
+                        f"you were fined {outcome.get('fine', 0):,} credits"
+                    ),
+                }
+        except Exception as e:
+            logger.error("Contraband transit scan failed during movement: %s", e)
+            # Never poison the (already-committed) move.
+            try:
+                self.db.rollback()
+            except Exception:
+                pass
 
     def _sweep_scanner_detection(self, player: Player, destination_sector_id: int) -> None:
         """Best-effort scanner-array detection sweep after a SUCCESSFUL move (WO-AY).
@@ -825,6 +1037,17 @@ class MovementService:
         if not player.current_ship:
             return {"success": False, "message": "No active ship selected", "turn_cost": 0}
 
+        # Hull-condition MAJOR failure immobilizes until shipyard repair
+        # (WO-BUILD-HULL-FAILURE-TIER-DICE-ROLL / ships.md Failure types).
+        from src.services.maintenance_service import ship_is_immobilized
+        if ship_is_immobilized(player.current_ship):
+            return {
+                "success": False,
+                "message": "Ship immobilized by major systems failure — repair at a shipyard before moving",
+                "turn_cost": 0,
+                "error_code": "SHIP_IMMOBILIZED",
+            }
+
         # A Warp Jumper harmonizing into a gate focus is frozen in place
         # (ADR-0029 / ADR-0036). Reject movement before any turn charge so a
         # mid-build hull can't fly off mid-harmonization. 0 turn cost.
@@ -883,6 +1106,16 @@ class MovementService:
         nexus_gate_rejection = self._check_nexus_subscription_gate(player, destination_sector_id)
         if nexus_gate_rejection is not None:
             return nexus_gate_rejection
+
+        # ADR-0054 X-D1: suspended-region stakeholder-gated ingress. Runs
+        # immediately after the Nexus subscription gate, same rationale —
+        # every movement path (player-gate / direct-warp / natural-tunnel)
+        # funnels through this one call site before any of the three
+        # branches below can execute a move. See
+        # _check_region_ingress_gate's docstring for the full rule.
+        region_ingress_rejection = self._check_region_ingress_gate(player, destination_sector_id)
+        if region_ingress_rejection is not None:
+            return region_ingress_rejection
 
         # Tractor tow (WO-AF; ships.md:354-357): if THIS ship is actively towing
         # another, the hauler pays its full move cost PLUS a tow surcharge. The
@@ -943,7 +1176,15 @@ class MovementService:
             # WO-AY: a successful gate jump is a real arrival — sweep for
             # scanner-array detections (best-effort; only on real success).
             if result.get("success"):
+                self._roll_mechanical_failure(player, result)
+                self._roll_hull_condition_failure(player, result)
                 self._sweep_scanner_detection(player, destination_sector_id)
+                # WO-K2: a player-built gate is still a border crossing — customs
+                # scan the hold. Wired on ALL THREE success paths so a smuggler
+                # can't pick a transport mode to route around the check.
+                self._roll_contraband_transit_scan(
+                    player, current_sector_id, destination_sector_id, result
+                )
             return result
 
         # Check if direct warp exists
@@ -971,8 +1212,13 @@ class MovementService:
             # mechanical failure (best-effort; only fires on a real move success).
             if result.get("success"):
                 self._roll_mechanical_failure(player, result)
+                self._roll_hull_condition_failure(player, result)
                 # WO-AY: same success path — sweep for scanner-array detections.
                 self._sweep_scanner_detection(player, destination_sector_id)
+                # WO-K2: customs scan on a direct warp (see the gate branch).
+                self._roll_contraband_transit_scan(
+                    player, current_sector_id, destination_sector_id, result
+                )
             return result
 
         # Check if warp tunnel exists
@@ -1006,8 +1252,13 @@ class MovementService:
             # mechanical failure (best-effort; only fires on a real move success).
             if result.get("success"):
                 self._roll_mechanical_failure(player, result)
+                self._roll_hull_condition_failure(player, result)
                 # WO-AY: same success path — sweep for scanner-array detections.
                 self._sweep_scanner_detection(player, destination_sector_id)
+                # WO-K2: customs scan on a natural warp tunnel (see the gate branch).
+                self._roll_contraband_transit_scan(
+                    player, current_sector_id, destination_sector_id, result
+                )
             return result
 
         # If we get here, no valid path was found
@@ -1017,7 +1268,7 @@ class MovementService:
         self, player: Player, destination_sector_id: int,
     ) -> Optional[Dict[str, Any]]:
         """
-        Auth fix (b), Max-approved 2026-07-10: ADR-0043 / SYSTEMS/region-
+        Auth fix (b), human-approved 2026-07-10: ADR-0043 / SYSTEMS/region-
         lifecycle.md:655 — "The Galactic Citizen subscription gate is
         enforced at traversal, not at the warp's existence: every region
         carries the warp regardless of subscription tier, and the cross-
@@ -1050,7 +1301,7 @@ class MovementService:
         allowed" for its own, different gate — the closest textual analog
         available, and the only directionally-safe reading. Flagged for
         DECISIONS in case an intentional bidirectional (or Nexus-side) gate
-        is what Max actually wants.
+        is what human actually wants.
 
         [NO-CANON] Scope, flagged not silently resolved: this gates the
         TRAVERSAL endpoint only, per the WO's explicit scope. It does NOT
@@ -1091,6 +1342,78 @@ class MovementService:
                 "turn_cost": 0,
             }
         return None
+
+    def _check_region_ingress_gate(
+        self, player: Player, destination_sector_id: int,
+    ) -> Optional[Dict[str, Any]]:
+        """ADR-0054 X-D1 / SYSTEMS/region-lifecycle.md -- while a region is
+        ``suspended`` or ``grace``, cross-region traversal LANDING in it is
+        stakeholder-gated: allowed for the region's owner, allowed for a
+        stakeholder (owns a planet/station/captured holding/warp-gate
+        endpoint in the region, or has a ship currently sitting in one of
+        its sectors — see ``region_lifecycle_service.is_region_
+        stakeholder``), rejected otherwise with
+        ``ERR_REGION_NEW_RESIDENTS_BLOCKED``. Outbound (leaving a
+        suspended/grace region) is always allowed — this only fires when
+        the destination region is the one gated, never the origin.
+
+        Fires only on genuine CROSS-region ingress: an in-region move
+        (origin region == destination region) is never gated here, even if
+        that region happens to be suspended/grace — same-region movement
+        isn't "new commitments," it's a resident continuing to play in
+        their own region.
+
+        Post-takeover-commit case (ADR-0054's third allowed case, "a
+        takeover claimant after the takeover transaction commits"): NOT
+        special-cased here. A takeover flips ``Region.status`` to ACTIVE
+        as part of the SAME committed transaction, so by the time any
+        traversal request reaches this check (necessarily a later, separate
+        request) the destination region's status already reads ACTIVE and
+        this gate never fires for it — the case resolves itself via the
+        existing ``status not in (SUSPENDED, GRACE)`` early-return below,
+        exactly as the ADR's own text anticipates ("this case may already
+        resolve itself naturally").
+
+        Returns a rejection dict (matching every other early-exit in
+        ``move_player_to_sector``) if the player must be blocked, else
+        ``None`` to let the move proceed unchanged.
+        """
+        from src.models.region import Region, RegionStatus
+        from src.services.region_lifecycle_service import (
+            ERR_REGION_NEW_RESIDENTS_BLOCKED,
+            is_region_stakeholder,
+        )
+
+        destination_sector = self.db.query(Sector).filter(
+            Sector.sector_id == destination_sector_id
+        ).first()
+        if destination_sector is None or destination_sector.region_id is None:
+            return None  # unknown/unattributed destination -- nothing to gate
+
+        destination_region = self.db.query(Region).filter(
+            Region.id == destination_sector.region_id
+        ).first()
+        if destination_region is None:
+            return None
+
+        if destination_region.status not in (RegionStatus.SUSPENDED, RegionStatus.GRACE):
+            return None  # not in the gated window -- no check at all
+
+        if player.current_region_id == destination_region.id:
+            return None  # in-region move, not cross-region ingress
+
+        if destination_region.owner_id is not None and destination_region.owner_id == player.user_id:
+            return None  # the region's own owner is always allowed in
+
+        if is_region_stakeholder(self.db, player.id, destination_region.id):
+            return None
+
+        return {
+            "success": False,
+            "message": ERR_REGION_NEW_RESIDENTS_BLOCKED,
+            "error": ERR_REGION_NEW_RESIDENTS_BLOCKED,
+            "turn_cost": 0,
+        }
 
     def get_available_moves(self, player_id: uuid.UUID) -> Dict[str, Any]:
         """
@@ -1332,7 +1655,7 @@ class MovementService:
     # turn_cost, can_afford} for every neighbor at ZERO cost -- this action
     # is the PAID enrichment above that baseline, never a duplicate of it.
     #
-    # THE SCALING LADDER (Max-approved 2026-07-10 off a 3-rail investigation
+    # THE SCALING LADDER (human-approved 2026-07-10 off a 3-rail investigation
     # -- WO-PROG-SECTOR-SCAN-1). Every magnitude below is [NO-CANON],
     # flagged for DECISIONS: canon confirms the feature and its 2-turn cost
     # only, not these tiers/thresholds.
@@ -1380,7 +1703,7 @@ class MovementService:
     #   (the tree is designed to grow by appending rows -- zero migration
     #   risk) WITHOUT reusing the reserved survey node.
     #
-    # Stateless + ephemeral by design (Max-approved): a passive-fill
+    # Stateless + ephemeral by design (human-approved): a passive-fill
     # enhancement, not a permanent per-player discovery -- no persistence
     # table; the payload is computed fresh on every call and never stored.
     # Fuzzy-disclosure discipline is a HARD constraint (mirrors the quantum
@@ -2082,9 +2405,9 @@ class MovementService:
         return max(1, base_cost)
 
     # Hull damage one armored mine deals to a hostile ship entering the sector.
-    # Proposed in ADR-0083 (pending Max bless); deterrent-scale, non-lethal
-    # (hull is floored at 1.0 so a minefield cripples but does not destroy —
-    # lethal mines / destruction-on-zero is a documented future refinement).
+    # Ratified in ADR-0083 (Accepted); deterrent-scale, non-lethal (hull is
+    # floored at 1.0 so a minefield cripples but does not destroy — lethal
+    # mines / destruction-on-zero is a documented future refinement).
     MINE_DETONATION_DAMAGE = 200.0
 
     def _detonate_sector_mines(self, player: Player, sector: Sector) -> None:
@@ -2129,6 +2452,100 @@ class MovementService:
             f"Mine detonated on player {player.id} entering sector {sector.sector_id}: "
             f"-{self.MINE_DETONATION_DAMAGE} hull (now {combat['hull']}), {remaining} mine(s) remain"
         )
+
+    def _attach_limpet_trackers(self, player: Player, sector: Sector) -> None:
+        """Attach one hostile limpet mine in `sector` to the entering ship.
+
+        Mirrors ``_detonate_sector_mines``'s structure exactly, but limpet
+        mines carry no damage — they attach a tracker (stored on
+        ``Ship.combat['limpet_trackers']``) that later movement calls
+        ``_dispatch_limpet_signals`` to report back to the owner. Same-team
+        entrants and the field's own owner are never tracked. One limpet is
+        consumed per hostile entry.
+        """
+        defenses = sector.defenses or {}
+        limpet_count = int(defenses.get("limpet_mines", 0) or 0)
+        owner_id = defenses.get("limpet_owner_id")
+        if limpet_count <= 0 or not owner_id or str(owner_id) == str(player.id):
+            return
+
+        owner_team = defenses.get("limpet_team_id")
+        entrant_team = str(player.team_id) if player.team_id else None
+        if owner_team and entrant_team and owner_team == entrant_team:
+            return  # friendly minefield — same team
+
+        if not player.current_ship:
+            return
+
+        owner_player = self.db.query(Player).filter(Player.id == owner_id).first()
+        if not owner_player or not owner_player.user_id:
+            return
+
+        combat = dict(player.current_ship.combat or {})
+        trackers = list(combat.get("limpet_trackers", []) or [])
+        trackers.append({
+            "owner_player_id": str(owner_player.id),
+            "owner_user_id": str(owner_player.user_id),
+            "attached_at": datetime.now(UTC).isoformat(),
+        })
+        combat["limpet_trackers"] = trackers
+        player.current_ship.combat = combat
+        flag_modified(player.current_ship, "combat")
+
+        new_def = dict(defenses)
+        remaining = limpet_count - 1
+        new_def["limpet_mines"] = remaining
+        if remaining <= 0:
+            new_def["limpet_mines"] = 0
+            new_def["limpet_owner_id"] = None
+            new_def["limpet_team_id"] = None
+        sector.defenses = new_def
+        flag_modified(sector, "defenses")
+
+        logger.info(
+            f"Limpet mine attached to player {player.id} entering sector {sector.sector_id}: "
+            f"{remaining} limpet(s) remain"
+        )
+
+    def _dispatch_limpet_signals(self, player: Player, sector_id: int) -> None:
+        """Schedule a best-effort WS 'limpet signal' push to each tracker owner
+        on ``player.current_ship`` reporting the tracked ship's new sector.
+
+        Mirrors ``_dispatch_hostile_detected``: import inside the function,
+        grab the running loop, schedule with ``loop.create_task`` so it runs
+        after the move's transaction commits and yields, never blocking the
+        sync move, and swallow any failure so a quiet socket can never break
+        the move."""
+        if not player.current_ship:
+            return
+        combat = player.current_ship.combat or {}
+        trackers = combat.get("limpet_trackers", []) or []
+        if not trackers:
+            return
+
+        try:
+            import asyncio
+            from src.services.websocket_service import connection_manager
+
+            loop = asyncio.get_running_loop()
+            for tracker in trackers:
+                owner_user_id = tracker.get("owner_user_id")
+                if not owner_user_id:
+                    continue
+                loop.create_task(connection_manager.send_personal_message(
+                    str(owner_user_id),
+                    {
+                        "type": "limpet_signal",
+                        "tracked_player_id": str(player.id),
+                        "tracked_ship_id": str(player.current_ship.id),
+                        "sector_id": sector_id,
+                    },
+                ))
+        except Exception:
+            logger.debug(
+                "Skipped limpet-signal WS notice (no loop or socket)",
+                exc_info=True,
+            )
 
     def _execute_movement(self, player: Player, destination_sector_id: int, turn_cost: int) -> Dict[str, Any]:
         """Execute a player's movement to a destination sector."""
@@ -2206,6 +2623,23 @@ class MovementService:
             self._detonate_sector_mines(player, destination_sector)
         except Exception as e:
             logger.error("Mine detonation hook failed: %s", e)
+
+        # Limpet tracker attach: hostile limpet mines in the destination attach
+        # a tracker to the entering ship instead of dealing damage (mirrors the
+        # armored-mine hook above). Best-effort — a hook failure must never
+        # strand the move; it rides the move's own commit below.
+        try:
+            self._attach_limpet_trackers(player, destination_sector)
+        except Exception as e:
+            logger.error("Limpet tracker attach hook failed: %s", e)
+
+        # Limpet signal dispatch: report this ship's new sector to any tracker
+        # owners, on every move (not just moves into a minefield). Best-effort,
+        # scheduled after the position update above.
+        try:
+            self._dispatch_limpet_signals(player, destination_sector_id)
+        except Exception as e:
+            logger.error("Limpet signal dispatch hook failed: %s", e)
 
         # Consume turns
         spend_turns(player, turn_cost)
@@ -2349,27 +2783,57 @@ class MovementService:
         # method's single commit below.
         try:
             from src.services.special_formation_service import flip_formation_discovery
-            flip_formation_discovery(self.db, player, destination_sector)
+            with self.db.begin_nested():
+                flip_formation_discovery(self.db, player, destination_sector)
         except Exception as e:
             logger.error("Special-formation discovery hook failed during movement: %s", e)
+
+        # Galaxy-wide sector first-discoverer (Sector.discovered_by_id — 2026-08-04
+        # orchestrator ruling on exploration.void_walker: wire it "for real" at
+        # every arrival layer, not just quantum-jumps, since the column itself is
+        # galaxy-wide-first-discovery, not jump-specific. Normal warp arrival does
+        # NOT feed the void_jumps medal counter (that's quantum_service.jump()-only
+        # by the medal's own definition) — this call exists purely to keep the
+        # column meaningful for ordinary movement too. Best-effort, flush-only.
+        try:
+            from src.services.discovery_service import mark_sector_discovered
+            with self.db.begin_nested():
+                mark_sector_discovered(self.db, destination_sector, player.id)
+        except Exception as e:
+            logger.error("Sector first-discoverer hook failed during movement: %s", e)
 
         # Exploration medal dispatch hook (ADR-0028 / medals lane). The
         # ARIAExplorationMap table above is the canonical unique-sector visit
         # record — one row per (player, sector) — so its DISTINCT-sector count
         # for this player IS the player's sectors_visited statistic. We dispatch
         # here, AFTER the visit row is added/incremented but BEFORE this method's
-        # single commit, so the medal-award SAVEPOINT folds into the same commit
-        # exactly like the combat medal hook. Best-effort: a medal hiccup must
-        # never strand the move (mirrors the ARIA hooks above). The medals-lane
+        # single commit. ``_count_unique_sectors_visited`` flushes the pending
+        # visit row first, then the actual award is wrapped in its own
+        # begin_nested() SAVEPOINT (2026-08-05, WO-FIX-MOVEMENT-HOOK-SAVEPOINTS
+        # — a prior version of this comment claimed the savepoint "folds into
+        # the same commit" but no savepoint actually wrapped this call; that
+        # was a documentation/implementation mismatch, fixed here alongside
+        # the missing savepoint itself). Best-effort: a medal hiccup must
+        # never strand the move (mirrors the ARIA hook above). The medals-lane
         # hook is idempotent (UNIQUE(player_id, medal_id) + threshold gating), so
         # it no-ops on every move except the one that first crosses 500 sectors —
         # never re-awards.
         try:
-            _dispatch_exploration_medals(
-                self.db,
-                player,
-                {"sectors_visited": self._count_unique_sectors_visited(player.id)},
-            )
+            # sectors_discovered (Pathfinder, threshold 1 -- "personally
+            # discovering your first sector") reuses the EXACT same counter
+            # as sectors_visited (Cartographer, threshold 1000): the
+            # ARIAExplorationMap row count IS both statistics at different
+            # thresholds -- "discovered" and "visited" both mean "distinct
+            # sectors this player has ever entered" (WO-BUILD-MEDAL-AUTO-
+            # AWARD-BATCH, exploration domain, verify-first: no separate
+            # discovery-vs-visit distinction exists in the schema).
+            unique_sectors = self._count_unique_sectors_visited(player.id)
+            with self.db.begin_nested():
+                _dispatch_exploration_medals(
+                    self.db,
+                    player,
+                    {"sectors_visited": unique_sectors, "sectors_discovered": unique_sectors},
+                )
         except Exception as e:
             logger.error("Exploration medal dispatch hook failed during movement: %s", e)
 
@@ -2545,19 +3009,23 @@ class MovementService:
         # Check for faction patrols (Wanted-status detection --
         # WO-RT-PATROL-ENCOUNTER, sector-presence.md "NPC faction
         # patrols"). Canon's pseudocode reads sector.defenses['patrol_ships']
-        # as a list of squad dicts, but that key is ALREADY a live SCALAR
-        # INT elsewhere in this codebase -- station siege-defense fire
-        # power (combat_service.py _resolve_port_combat), admin's
-        # security_level rollup, and MILITARY_ZONE seeding
-        # (nexus_generation_service.py / bang_import_service.py) all
-        # read/write it as an int; nexus_generation_service.py even
-        # comments "patrol_ships MUST be a SCALAR INT, never a [list]".
-        # The already-shipped police/pirate squad writer
-        # (npc_spawn_service.py) hit this exact conflict already and
-        # deliberately lands squad rows under a SEPARATE dedicated key --
-        # POLICE_PATROL_DEFENSES_KEY = "police_patrol_ships" -- flagging
-        # the divergence there rather than silently overloading
-        # patrol_ships. This leg follows that precedent.
+        # as a list of squad dicts on Sector.defenses. VERIFY-FIRST
+        # correction: the "patrol_ships MUST be a SCALAR INT" sites
+        # (combat_service.py _resolve_port_combat, admin's security_level
+        # rollup, nexus_generation_service.py / bang_import_service.py
+        # MILITARY_ZONE seeding) all read/write ``Station.defenses``, a
+        # DIFFERENT model's JSONB blob (per-station garrison count) --
+        # they never collide with ``Sector.defenses.patrol_ships`` (list,
+        # sector.py default ``[]``) at runtime; the two are independent
+        # fields on unrelated models sharing a key name. This leg (and the
+        # already-shipped police/pirate squad writer in
+        # npc_spawn_service.py) still uses dedicated
+        # POLICE_PATROL_DEFENSES_KEY = "police_patrol_ships" /
+        # pirate_patrol_ships keys rather than canon's unified
+        # patrol_ships list -- that split is now the shipped mechanism the
+        # ADR-0042 dispatch engine below is built against; docs corrected
+        # to match (police-forces.md, jsonb-schema.md, sector-presence.md)
+        # rather than rewriting this engine to canon's original shape.
         #
         # NO-CANON / PARKED (flagged to the orchestrator, not silently
         # invented): the doc's pseudocode also has this leg call
@@ -2623,7 +3091,7 @@ class MovementService:
                 # once here is the correct shape, not just a safe one.
                 self._maybe_dispatch_police_engagement(player, sector)
 
-        # WO-CMB-NPC-INITIATED-1 lane C (Max ruling, 2026-07-10) — pirate
+        # WO-CMB-NPC-INITIATED-1 lane C (human ruling, 2026-07-10) — pirate
         # trigger. VERIFY-FIRST found this leg's police_patrol_ships block
         # (immediately above) is the SAME deferral this WO closes: its own
         # comment says auto-firing combat here would override the

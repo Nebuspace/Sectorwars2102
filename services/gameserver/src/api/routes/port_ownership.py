@@ -73,6 +73,32 @@ class DockingFeeRequest(BaseModel):
     enabled: bool = True
 
 
+class DefensePolicyRequest(BaseModel):
+    # WO-STATION-DEFENSE-POLICY-LEVERS — stored in Station.ownership JSONB.
+    docking_access: Literal["open", "faction", "whitelist", "hostile_deny"] = "open"
+    hostility_list: list[str] = Field(default_factory=list)
+    punitive_fee_mult: float = Field(1.0, ge=1.0, le=5.0)
+    defender_posture: str = "passive"
+    drone_allocation_pct: int = Field(100, ge=0, le=100)
+    # v1: must be 0; service rejects >0 (patrol deferred).
+    patrol_radius: int = Field(0, ge=0)
+
+
+class CounterTradeRequest(BaseModel):
+    # Synthetic absorb volume (credits of trade); cost = volume * CREDITS_PER_VOLUME.
+    defense_volume: int = Field(..., ge=1, le=500_000)
+
+
+class ShareInviteRequest(BaseModel):
+    # WO-SYNDICATE-CO-OWNERSHIP: primary invites invitee to pct of station (1-99).
+    invitee_player_id: str
+    pct: int = Field(..., ge=1, le=99)
+
+
+class ShareInviteActionRequest(BaseModel):
+    invite_id: str
+
+
 class ServiceChargeRequest(BaseModel):
     # Canon service charge: 0.8x-2.0x of standard.
     multiplier: float = Field(..., ge=0.8, le=2.0)
@@ -374,6 +400,229 @@ async def set_docking_fee(
     state = "on" if request.enabled else "off"
     return {
         "message": f"Docking fee at {station.name} set to {request.amount:,} cr ({state})",
+        **result,
+    }
+
+
+@router.get("/stations/{station_id}/defense-policy")
+async def get_defense_policy(
+    station_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player),
+):
+    """Return the station's defense_policy (owner only — includes hostility_list)."""
+    station = _get_station_or_404(db, station_id)
+    if station.owner_id != current_player.id:
+        raise HTTPException(status_code=403, detail="Only the station owner can do that")
+    policy = port_ownership_service.get_defense_policy(station)
+    return {
+        "station_id": str(station.id),
+        "defense_policy": policy,
+    }
+
+
+@router.post("/stations/{station_id}/defense-policy")
+async def set_defense_policy(
+    station_id: str,
+    request: DefensePolicyRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player),
+):
+    """Set the station's defense_policy levers (owner only). patrol_radius must
+    be 0 in v1 — patrol is deferred."""
+    station = _get_station_or_404(db, station_id)
+    try:
+        result = port_ownership_service.set_defense_policy(
+            db,
+            station,
+            current_player,
+            request.model_dump(),
+        )
+        db.commit()
+    except PortOwnershipError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return {
+        "message": (
+            f"Defense policy at {station.name} updated "
+            f"(access={result['defense_policy']['docking_access']})"
+        ),
+        **result,
+    }
+
+
+@router.get("/stations/{station_id}/takeover/defense")
+async def get_takeover_defense(
+    station_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player),
+):
+    """Owner-only: active takeover defense_counters + current tax_rate."""
+    station = _get_station_or_404(db, station_id)
+    try:
+        result = port_ownership_service.list_defense_counters(
+            db, station, current_player
+        )
+        db.commit()
+    except PortOwnershipError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return result
+
+
+@router.post("/stations/{station_id}/takeover/defense/tariff-cut")
+async def activate_tariff_cut(
+    station_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player),
+):
+    """Owner counter: temporarily halve tax_rate during building|eligible."""
+    station = _get_station_or_404(db, station_id)
+    try:
+        result = port_ownership_service.activate_tariff_cut(
+            db, station, current_player
+        )
+        db.commit()
+    except PortOwnershipError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return {
+        "message": (
+            f"Tariff cut at {station.name}: "
+            f"{result['prior_tax_rate']:.0%} → {result['tax_rate']:.0%}"
+        ),
+        **result,
+    }
+
+
+@router.post("/stations/{station_id}/takeover/defense/counter-trade")
+async def activate_counter_trade(
+    station_id: str,
+    request: CounterTradeRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player),
+):
+    """Owner counter: credit-funded synthetic volume absorb (no MarketTransaction)."""
+    station = _get_station_or_404(db, station_id)
+    try:
+        result = port_ownership_service.activate_counter_trade(
+            db, station, current_player, request.defense_volume
+        )
+        db.commit()
+    except PortOwnershipError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return {
+        "message": (
+            f"Counter-trade absorb {result['defense_volume']:,} at {station.name} "
+            f"(cost {result['cost']:,} cr)"
+        ),
+        **result,
+    }
+
+
+@router.get("/stations/{station_id}/syndicate")
+async def get_syndicate_status(
+    station_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player),
+):
+    """Co-ownership stake ledger + pending invites (API-only delivery)."""
+    station = _get_station_or_404(db, station_id)
+    try:
+        result = port_ownership_service.get_syndicate_status(
+            db, station, current_player
+        )
+        db.commit()
+    except PortOwnershipError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return result
+
+
+@router.post("/stations/{station_id}/syndicate/invite")
+async def issue_share_invite(
+    station_id: str,
+    request: ShareInviteRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player),
+):
+    """Primary issues a share invite (≤99%, pending+accepted cap enforced)."""
+    station = _get_station_or_404(db, station_id)
+    try:
+        invitee_id = _uuid.UUID(request.invitee_player_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invitee_player_id must be a UUID")
+    try:
+        result = port_ownership_service.issue_share_invite(
+            db, station, current_player, invitee_id, request.pct
+        )
+        db.commit()
+    except PortOwnershipError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return {
+        "message": (
+            f"Share invite {request.pct}% issued at {station.name}"
+        ),
+        **result,
+    }
+
+
+@router.post("/stations/{station_id}/syndicate/accept")
+async def accept_share_invite(
+    station_id: str,
+    request: ShareInviteActionRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player),
+):
+    """Invitee accepts: 1% acquisition_cost fee from treasury; mode→syndicate."""
+    station = _get_station_or_404(db, station_id)
+    try:
+        result = port_ownership_service.accept_share_invite(
+            db, station, current_player, request.invite_id
+        )
+        db.commit()
+    except PortOwnershipError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return {
+        "message": (
+            f"Share invite accepted at {station.name} "
+            f"(fee {result['conversion_fee']:,} cr)"
+        ),
+        **result,
+    }
+
+
+@router.post("/stations/{station_id}/syndicate/decline")
+async def decline_share_invite(
+    station_id: str,
+    request: ShareInviteActionRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player),
+):
+    """Invitee declines a pending share invite."""
+    station = _get_station_or_404(db, station_id)
+    try:
+        result = port_ownership_service.decline_share_invite(
+            db, station, current_player, request.invite_id
+        )
+        db.commit()
+    except PortOwnershipError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return {
+        "message": f"Share invite declined at {station.name}",
         **result,
     }
 

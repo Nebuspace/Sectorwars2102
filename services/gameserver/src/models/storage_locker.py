@@ -21,19 +21,13 @@ heist mechanics land, no destructive migration is needed; at most an
 additive enum member if the eventual tuning adds a state this brief
 didn't anticipate (never a column change).
 
-[NO-CANON, flag for review] money-field type: the assigning WO named
-`Player.credits` (Integer) as the type to match. This model instead
-follows `Contract`'s own convention -- `payment`/`penalty`/
-`escrow_amount`/`partial_fulfilled_payout`/`insurance_premium_paid` are
-ALL `Numeric(19, 2)`, zero Integer money columns anywhere on that table
-(confirmed via alembic/versions/1aab831e9008_add_contracts_table.py).
-`rent_rate`/`accrued_fee` here are contract-adjacent economics in the
-exact same category, and canon's own WO-STORE-FEE-ACCRUAL description
-explicitly calls for "ROUND_HALF_UP" rounding (decimal-precision
-language) plus S2's tier multipliers are non-integer (~2.5x / ~5x) --
-Numeric(19, 2) is the right precedent to match, not Player.credits'
-whole-integer wallet-balance convention. Flagged for review, not
-silently decided.
+[RULED 2026-08-07 — DECISION `storage-locker-money-field-type`]: keep
+`Numeric(19, 2)` for `rent_rate` / `accrued_fee` (and any future locker
+money columns). Matches `Contract`'s money columns (`payment`/`penalty`/
+`escrow_amount`/…) and ROUND_HALF_UP + non-integer S2 tier multipliers
+(~2.5×/~5×). `Player.credits` staying Integer is a wallet-boundary
+convention, not a schema-wide money-column rule — settle into the wallet
+with explicit rounding at the boundary. No migration.
 """
 import enum
 import uuid

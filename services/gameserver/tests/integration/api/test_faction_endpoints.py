@@ -4,9 +4,7 @@ Test script for faction system endpoints.
 """
 
 import requests
-import json
 import sys
-from datetime import datetime
 
 # Base URL for the API (using container hostname)
 BASE_URL = "http://gameserver:8080/api/v1"

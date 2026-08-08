@@ -22,14 +22,18 @@ between them on their own.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, UTC
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy.sql import operators
 
 from src.models.galaxy import Galaxy
+from src.models.planet import Planet
 from src.models.region import Region, RegionStatus
+from src.models.sector import Sector
+from src.models.station import Station
 from src.services import region_lifecycle_service
+from src.services.realtime_outbox import RealtimeOutbox
 from src.services.scheduler import economy_governance_sweeps
 from src.services.scheduler._common import _REGION_LIFECYCLE_STATE_KEY
 from src.services.scheduler.economy_governance_sweeps import (
@@ -46,13 +50,15 @@ _NOW = datetime(2026, 6, 15, 12, 0, tzinfo=UTC)
 class FakeRegionRow:
     def __init__(self, *, region_id=None, name="Test Region",
                  status=RegionStatus.SUSPENDED, suspended_at=None,
-                 terminated_at=None, scheduled_hard_delete_at=None):
+                 terminated_at=None, scheduled_hard_delete_at=None,
+                 cleanup_completed_at=None):
         self.id = region_id or uuid.uuid4()
         self.name = name
         self.status = status
         self.suspended_at = suspended_at
         self.terminated_at = terminated_at
         self.scheduled_hard_delete_at = scheduled_hard_delete_at
+        self.cleanup_completed_at = cleanup_completed_at
 
 
 class _FakeResult:
@@ -68,6 +74,9 @@ def _condition_matches(row, condition) -> bool:
         return actual == condition.right.value
     if op is operators.is_not:
         return actual is not None
+    if op is operators.is_:
+        right = getattr(condition.right, "value", None)
+        return actual is right
     if op is operators.le:
         return actual is not None and actual <= condition.right.value
     raise AssertionError(f"unhandled operator {op!r} on column {column!r}")
@@ -89,9 +98,32 @@ class _FakeRegionReadQuery:
     def all(self):
         self._session.queries += 1
         return [
-            (r.id, r.name) for r in self._store
+            r for r in self._store
             if all(_condition_matches(r, c) for c in self._conditions)
         ]
+
+    def first(self):
+        matches = self.all()
+        return matches[0] if matches else None
+
+
+class _FakeEmptyQuery:
+    """dispatch_terminated_cleanup's `db.query(Planet).filter(...).all()`
+    per-region planet scan -- no planet fixtures are exercised by this
+    module's tests, so this always yields an empty set."""
+
+    def __init__(self, session):
+        self._session = session
+
+    def filter(self, *conditions):
+        return self
+
+    def join(self, *args, **kwargs):
+        return self
+
+    def all(self):
+        self._session.queries += 1
+        return []
 
 
 class _FakeGalaxyQuery:
@@ -134,6 +166,12 @@ class FakeRegionLifecycleSession:
             return _FakeRegionReadQuery(self.regions, self)
         if owner is Galaxy:
             return _FakeGalaxyQuery(self.galaxy, self)
+        if owner is Planet:
+            return _FakeEmptyQuery(self)
+        if owner is Station:
+            return _FakeEmptyQuery(self)
+        if owner is Sector:
+            return _FakeEmptyQuery(self)
         raise AssertionError(f"unexpected query owner {owner!r}")
 
     def execute(self, stmt):
@@ -305,6 +343,120 @@ class TestAdvanceToTerminated:
 
 
 # --------------------------------------------------------------------------- #
+# dispatch_terminated_cleanup -- cascade without false-complete stamp
+# --------------------------------------------------------------------------- #
+
+class TestDispatchTerminatedCleanup_feat:
+    def test_eligible_region_dispatches_cascade_without_stamping(self, monkeypatch) -> None:
+        """Station termination is still discovery-only: do NOT stamp
+        cleanup_completed_at (WO-ESCALATE-CYCLE26-DESIGN-FLAGS)."""
+        region = FakeRegionRow(
+            status=RegionStatus.TERMINATED,
+            scheduled_hard_delete_at=_NOW - timedelta(hours=1),
+        )
+        session = FakeRegionLifecycleSession(regions=[region])
+        station_calls = []
+        gate_calls = []
+        monkeypatch.setattr(
+            region_lifecycle_service, "dispatch_station_termination",
+            lambda db, region_id: station_calls.append(region_id) or {"station_relocation_eligible": 0},
+        )
+        monkeypatch.setattr(
+            region_lifecycle_service, "cascade_region_gate_teardown",
+            lambda db, region_id: gate_calls.append(region_id) or {"gates_destroyed": 0},
+        )
+
+        result = region_lifecycle_service.dispatch_terminated_cleanup(session, now=_NOW)
+
+        assert result["cleanup_eligible"] == 1
+        assert isinstance(result["_outbox"], RealtimeOutbox)
+        assert region.status == RegionStatus.TERMINATED  # cleanup doesn't change status
+        assert region.cleanup_completed_at is None  # deferred until stations are real
+        assert station_calls == [region.id]  # cascade dispatched for the right region
+        assert gate_calls == [region.id]  # ADR-0052 SK38 gate teardown dispatched for the right region
+
+    def test_already_cleaned_up_region_excluded(self, monkeypatch) -> None:
+        """The idempotency guard: a region already stamped is never
+        re-dispatched, even if still past its hard-delete date."""
+        region = FakeRegionRow(
+            status=RegionStatus.TERMINATED,
+            scheduled_hard_delete_at=_NOW - timedelta(hours=1),
+            cleanup_completed_at=_NOW - timedelta(minutes=5),
+        )
+        session = FakeRegionLifecycleSession(regions=[region])
+        station_calls = []
+        monkeypatch.setattr(
+            region_lifecycle_service, "dispatch_station_termination",
+            lambda db, region_id: station_calls.append(region_id) or {"station_relocation_eligible": 0},
+        )
+
+        result = region_lifecycle_service.dispatch_terminated_cleanup(session, now=_NOW)
+
+        assert result["cleanup_eligible"] == 0
+        assert isinstance(result["_outbox"], RealtimeOutbox)
+        assert station_calls == []
+
+    def test_not_yet_due_region_excluded(self, monkeypatch) -> None:
+        region = FakeRegionRow(
+            status=RegionStatus.TERMINATED,
+            scheduled_hard_delete_at=_NOW + timedelta(hours=1),
+        )
+        session = FakeRegionLifecycleSession(regions=[region])
+        monkeypatch.setattr(
+            region_lifecycle_service, "dispatch_station_termination",
+            lambda db, region_id: {"station_relocation_eligible": 0},
+        )
+
+        result = region_lifecycle_service.dispatch_terminated_cleanup(session, now=_NOW)
+
+        assert result["cleanup_eligible"] == 0
+        assert isinstance(result["_outbox"], RealtimeOutbox)
+        assert region.cleanup_completed_at is None
+
+    def test_non_terminated_region_never_counted(self, monkeypatch) -> None:
+        region = FakeRegionRow(
+            status=RegionStatus.GRACE,
+            scheduled_hard_delete_at=_NOW - timedelta(days=100),  # nonsensical but defensive
+        )
+        session = FakeRegionLifecycleSession(regions=[region])
+        monkeypatch.setattr(
+            region_lifecycle_service, "dispatch_station_termination",
+            lambda db, region_id: {"station_relocation_eligible": 0},
+        )
+
+        result = region_lifecycle_service.dispatch_terminated_cleanup(session, now=_NOW)
+
+        assert result["cleanup_eligible"] == 0
+        assert isinstance(result["_outbox"], RealtimeOutbox)
+
+    def test_uncompensated_region_redispatches_daily(self, monkeypatch) -> None:
+        """Without cleanup_completed_at, eligible regions re-enter each tick;
+        planet/gate idempotency (termination_compensated_at / COLLAPSED)
+        prevents double-payout — this only asserts the region stays eligible."""
+        region = FakeRegionRow(
+            status=RegionStatus.TERMINATED,
+            scheduled_hard_delete_at=_NOW - timedelta(hours=1),
+            cleanup_completed_at=None,
+        )
+        session = FakeRegionLifecycleSession(regions=[region])
+        station_calls = []
+        monkeypatch.setattr(
+            region_lifecycle_service, "dispatch_station_termination",
+            lambda db, region_id: station_calls.append(region_id) or {"station_relocation_eligible": 0},
+        )
+        monkeypatch.setattr(
+            region_lifecycle_service, "cascade_region_gate_teardown",
+            lambda db, region_id: {"gates_destroyed": 0},
+        )
+
+        region_lifecycle_service.dispatch_terminated_cleanup(session, now=_NOW)
+        region_lifecycle_service.dispatch_terminated_cleanup(session, now=_NOW)
+
+        assert len(station_calls) == 2
+        assert region.cleanup_completed_at is None
+
+
+# --------------------------------------------------------------------------- #
 # dispatch_terminated_cleanup -- discovery only, never writes
 # --------------------------------------------------------------------------- #
 
@@ -318,7 +470,8 @@ class TestDispatchTerminatedCleanup:
 
         result = region_lifecycle_service.dispatch_terminated_cleanup(session, now=_NOW)
 
-        assert result == {"cleanup_eligible": 1}
+        assert result["cleanup_eligible"] == 1
+        assert isinstance(result["_outbox"], RealtimeOutbox)
         assert region.status == RegionStatus.TERMINATED  # untouched
         assert session.executes == 0  # read-only -- no UPDATE issued
 
@@ -331,7 +484,8 @@ class TestDispatchTerminatedCleanup:
 
         result = region_lifecycle_service.dispatch_terminated_cleanup(session, now=_NOW)
 
-        assert result == {"cleanup_eligible": 0}
+        assert result["cleanup_eligible"] == 0
+        assert isinstance(result["_outbox"], RealtimeOutbox)
 
     def test_non_terminated_region_never_counted(self) -> None:
         region = FakeRegionRow(
@@ -342,7 +496,8 @@ class TestDispatchTerminatedCleanup:
 
         result = region_lifecycle_service.dispatch_terminated_cleanup(session, now=_NOW)
 
-        assert result == {"cleanup_eligible": 0}
+        assert result["cleanup_eligible"] == 0
+        assert isinstance(result["_outbox"], RealtimeOutbox)
 
 
 # --------------------------------------------------------------------------- #
@@ -377,6 +532,11 @@ class TestRegionLifecycleAdvanceGated:
         assert grace_candidate.status == RegionStatus.GRACE
         assert terminate_candidate.status == RegionStatus.TERMINATED
         assert galaxy.state[_REGION_LIFECYCLE_STATE_KEY] == self.day
+        # ADR-0054 X-V1: the cleanup cascade's outbox propagates all the
+        # way up through this gated wrapper -- the Phase-7 caller (economy_
+        # governance_sweeps._run_governance_sweep_sync) needs it here to
+        # flush post-commit / discard on rollback.
+        assert isinstance(result["_outbox"], RealtimeOutbox)
 
     def test_overdue_region_catches_up_through_both_transitions_in_one_pass(self) -> None:
         """A region suspended 40 days ago that the cron never got to

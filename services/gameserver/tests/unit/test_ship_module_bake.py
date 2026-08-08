@@ -217,12 +217,72 @@ def test_install_rejects_incompatible_hull(service):
 
 
 def test_equipment_family_module_install_blocked(service):
-    """An equipment-family module (lander/harvester/mining/tractor) is BLOCKED
-    from install while its consumer wiring is deferred — it would be runtime-inert
-    if fitted, so install rejects (no pay-for-nothing) and flags consumer_inert.
-    The block fires right after the catalog lookup, before any charge."""
+    """An equipment-family module still pending consumer wiring (mining — see
+    _EQUIPMENT_FAMILY_DEFERRED) is BLOCKED from install: it would be
+    runtime-inert if fitted, so install rejects (no pay-for-nothing) and flags
+    consumer_inert. The block fires right after the catalog lookup, before any
+    charge. LIGHT_FREIGHTER is not compatible with "mining" — a NotImplemented
+    tier/hull is fine here since the deferred-guard fires before the hull
+    compatibility check."""
     svc, ship, player = service.svc, service.ship, service.player
-    res = svc.install_module(ship.id, player.id, 0, "lander", 1)
+    res = svc.install_module(ship.id, player.id, 0, "mining", 1)
     assert res["success"] is False, res
     assert res.get("consumer_inert") is True
     assert "not yet installable" in res["message"].lower() or "coming soon" in res["message"].lower()
+
+
+def test_lander_module_installs_and_wires_landing_bonus(service):
+    """WO-BUILD-LANDER-MINING-TRACTOR-CONSUMER-WIRING: lander is no longer
+    deferred — it installs (LIGHT_FREIGHTER is compatible) and its baked
+    landing_bonus surfaces through get_combined_effects()."""
+    svc, ship, player = service.svc, service.ship, service.player
+    res = svc.install_module(ship.id, player.id, 0, "lander", 1)
+    assert res["success"] is True, res
+    assert "consumer_inert" not in res
+
+    module_bonus = ShipUpgradeService.MODULE_DEFINITIONS[("lander", 1)]["effects"]["landing_bonus"]
+    assert ship.modules["_baked"]["landing_bonus"] == module_bonus
+    assert ShipUpgradeService.get_combined_effects(ship)["landing_bonus"] == module_bonus
+
+    # No landing_bonus at all before install.
+    fresh = _ship()
+    assert "landing_bonus" not in ShipUpgradeService.get_combined_effects(fresh)
+
+
+def test_tractor_module_installs_and_wires_presence_flags(service):
+    """tractor is no longer deferred — installing it (a class-locked "combat"
+    slot; slot 0 in this fixture is unlocked so it qualifies) surfaces
+    tow_capable + weapon_mode through get_combined_effects()."""
+    svc, ship, player = service.svc, service.ship, service.player
+    ship.type = ShipType.CARGO_HAULER  # tractor is not compatible with LIGHT_FREIGHTER
+    service.spec.type = ShipType.CARGO_HAULER
+    res = svc.install_module(ship.id, player.id, 0, "tractor", 1)
+    assert res["success"] is True, res
+    assert "consumer_inert" not in res
+
+    effects = ShipUpgradeService.get_combined_effects(ship)
+    assert effects["tow_capable"] is True
+    assert effects["weapon_mode"] == "tractor"
+
+    # Removing it drops the presence flags again.
+    res2 = svc.remove_module(ship.id, player.id, slot_index=0)
+    assert res2["success"], res2
+    effects_after = ShipUpgradeService.get_combined_effects(ship)
+    assert "tow_capable" not in effects_after
+    assert "weapon_mode" not in effects_after
+
+
+def test_combined_effects_never_double_counts_lander(service):
+    """A ship with BOTH a legacy equipment_slots planetary_lander AND an
+    installed lattice lander module must get the MAX of the two landing_bonus
+    values, never their sum (see get_combined_effects docstring)."""
+    svc, ship, player = service.svc, service.ship, service.player
+    ship.equipment_slots = {"planetary_lander": {"effects": {"landing_bonus": 1.25}}}
+
+    res = svc.install_module(ship.id, player.id, 0, "lander", 1)
+    assert res["success"], res
+    module_bonus = ShipUpgradeService.MODULE_DEFINITIONS[("lander", 1)]["effects"]["landing_bonus"]
+
+    combined = ShipUpgradeService.get_combined_effects(ship)["landing_bonus"]
+    assert combined == max(1.25, module_bonus)
+    assert combined != 1.25 + module_bonus

@@ -22,8 +22,26 @@ from src.models.player import Player
 from src.models.user import User
 from src.models.planet import Planet, player_planets
 from src.models.sector import Sector
+from src.services.multi_account_service import blocks_vote
 
 logger = logging.getLogger(__name__)
+
+
+def _dispatch_first_citizen_medal(sync_db, player_id) -> None:
+    """Fire diplomatic.first_citizen after a governance vote is flushed.
+
+    Sync twin for AsyncSession callers via ``await db.run_sync(...)``.
+    Defensive: getattr-resolved, failures logged and swallowed — a medal
+    hiccup must never roll back a recorded vote.
+    """
+    try:
+        import src.services.medal_service as _medal_module
+
+        hook = getattr(_medal_module, "check_and_award_first_citizen_medal", None)
+        if callable(hook):
+            hook(sync_db, player_id)
+    except Exception as e:
+        logger.error("First-citizen medal dispatch hook failed: %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -39,16 +57,15 @@ QUORUM_PCT_DEFAULT = Decimal("0.33")
 QUORUM_PCT_MIN = Decimal("0.25")
 QUORUM_PCT_MAX = Decimal("0.60")
 
-# ADR-0056 N-V3 / Max D5 (region-citizenship-onramp): a citizen cannot VOTE
+# ADR-0056 N-V3 / human D5 (region-citizenship-onramp): a citizen cannot VOTE
 # until their ACCOUNT is at least this old. Citizenship/presence is granted
 # immediately; the franchise is what waits. This is the anti-alt-ring fence for
-# the invite-link onramp (sized for the "spin up alts for two weeks" horizon) —
-# the only ADR-0056 vote gate built today. The companion gates (personal_rep ≥
-# neutral; not multi_account_flag.blocks_vote) are NOT wired here:
+# the invite-link onramp (sized for the "spin up alts for two weeks" horizon).
+# Companion gates:
+#   - not multi_account_flag.blocks_vote — WIRED via multi_account_service
+#     (HARD-flagged → blocked; same participation_weight seam beacons use).
 #   - personal_rep ≥ neutral is a no-op at the default (new players start at
-#     score 0 = Neutral), so it adds zero anti-abuse value alone — follow-up.
-#   - multi_account_flag is ENTIRELY UNBUILT (no column/model/service). See the
-#     TODO in _is_account_vote_eligible — do NOT fake it.
+#     score 0 = Neutral), so it adds zero anti-abuse value alone — deferred.
 # Account age is measured from User.created_at (the account, not the player game
 # record). Migration-backfilled citizens (create_default_memberships) carry
 # their real historical creation dates, which predate any 60-day window, so they
@@ -994,7 +1011,7 @@ class RegionalGovernanceService:
     # umbrella — a player who has put down a planet in region R has a tangible
     # stake there and is enrolled in R's voter roll as a citizen. The literal
     # "colony ⇒ citizenship" trigger is filed Pending in sw2102-docs/DECISIONS.md
-    # (the precise tier + voting_power are Max-gated canon); this builds the
+    # (the precise tier + voting_power are human-gated canon); this builds the
     # unambiguous kernel: ≥1 owned colony whose sector is in R ⇒ citizen in R.
     # -----------------------------------------------------------------
 
@@ -1206,8 +1223,8 @@ class RegionalGovernanceService:
         db: AsyncSession,
         player_id: uuid.UUID,
     ) -> bool:
-        """True iff this player's ACCOUNT is at least VOTE_ACCOUNT_AGE_MIN old —
-        the ADR-0056 N-V3 / Max-D5 anti-alt-ring vote gate.
+        """True iff this player's ACCOUNT is at least VOTE_ACCOUNT_AGE_MIN old
+        AND not blocked by ADR-0056 N-V3 ``multi_account_flag.blocks_vote``.
 
         Joins Player -> User and compares now() against User.created_at (the
         account-creation timestamp; the User row is created before the Player
@@ -1215,15 +1232,11 @@ class RegionalGovernanceService:
         only governs the FRANCHISE. Returns False (ineligible) if the account
         cannot be resolved (defence-in-depth: an orphaned player should never
         silently acquire a vote). Migration-backfilled citizens predate any
-        60-day window, so they always pass.
+        60-day window, so they always pass the age half.
 
-        TODO(multi-account): ADR-0056 N-V3 also specifies a
-        not-multi_account_flag.blocks_vote gate and a personal_rep ≥ neutral
-        gate. multi_account_flag is entirely unbuilt (no column/model/service);
-        do NOT fake it — when the MultiAccountDetectionService /
-        participation_weight machinery ships, AND its check in here. personal_rep
-        ≥ neutral is a no-op at the default-0 (Neutral) starting score, so it
-        adds no anti-abuse value alone and is deferred as a follow-up.
+        ``blocks_vote`` is the shared ``participation_weight`` seam
+        (multi_account_service): HARD-flagged → blocked. personal_rep ≥
+        neutral remains deferred (no-op at default-0 Neutral starting score).
         """
         created_at = await db.scalar(
             select(User.created_at)
@@ -1240,7 +1253,13 @@ class RegionalGovernanceService:
         # as UTC so the subtraction never raises a naive/aware TypeError.
         if created_at.tzinfo is None:
             created_at = created_at.replace(tzinfo=timezone.utc)
-        return (datetime.now(timezone.utc) - created_at) >= VOTE_ACCOUNT_AGE_MIN
+        if (datetime.now(timezone.utc) - created_at) < VOTE_ACCOUNT_AGE_MIN:
+            return False
+        # AsyncSession → sync participation_weight / blocks_vote via run_sync
+        # (same bridge drone_service uses for turn_service).
+        if await db.run_sync(blocks_vote, player_id):
+            return False
+        return True
 
     @staticmethod
     async def _age_eligible_player_ids(
@@ -1284,7 +1303,7 @@ class RegionalGovernanceService:
         - ownership of ≥1 colony in the region (PATH A), regardless of whether
           the membership row has been upgraded yet.
 
-        Then the ADR-0056 N-V3 / Max-D5 60-day ACCOUNT-AGE gate is applied to the
+        Then the ADR-0056 N-V3 / human-D5 60-day ACCOUNT-AGE gate is applied to the
         union: an under-age citizen is on the roll for presence but cannot vote,
         so must not inflate the quorum denominator (cast_election_vote /
         cast_policy_vote reject them at the same threshold). Migration-backfilled
@@ -1360,7 +1379,7 @@ class RegionalGovernanceService:
             return {"ok": False, "code": "ERR_NOT_A_MEMBER"}
         if not membership.can_vote:
             return {"ok": False, "code": "ERR_NOT_ELIGIBLE"}
-        # ADR-0056 N-V3 / Max-D5: a citizen cannot vote until their account is
+        # ADR-0056 N-V3 / human-D5: a citizen cannot vote until their account is
         # ≥ 60 days old (anti-alt-ring fence). Citizenship/presence was granted
         # immediately; the franchise waits. Backfilled citizens predate the
         # window and pass.
@@ -1404,6 +1423,13 @@ class RegionalGovernanceService:
             cast_at=now,
         )
         db.add(vote)
+        # Flush so the first-citizen COUNT includes this vote; medal hook is
+        # best-effort and must never block recording the vote itself.
+        try:
+            await db.flush()
+            await db.run_sync(_dispatch_first_citizen_medal, voter.id)
+        except Exception as e:
+            logger.error("First-citizen medal pre-commit hook failed: %s", e)
         try:
             await db.commit()
         except IntegrityError:
@@ -1545,7 +1571,7 @@ class RegionalGovernanceService:
             return {"ok": False, "code": "ERR_NOT_A_MEMBER"}
         if not membership.can_vote:
             return {"ok": False, "code": "ERR_NOT_ELIGIBLE"}
-        # ADR-0056 N-V3 / Max-D5 60-day account-age vote gate (checked before the
+        # ADR-0056 N-V3 / human-D5 60-day account-age vote gate (checked before the
         # row lock so an ineligible voter never holds the policy lock). Mirrors
         # cast_election_vote.
         if not await RegionalGovernanceService._is_account_vote_eligible(
@@ -1612,6 +1638,13 @@ class RegionalGovernanceService:
             weight=membership.voting_power,
             created_at=now,
         ))
+        # Flush so the first-citizen COUNT includes this vote; medal hook is
+        # best-effort and must never block recording the vote itself.
+        try:
+            await db.flush()
+            await db.run_sync(_dispatch_first_citizen_medal, voter.id)
+        except Exception as e:
+            logger.error("First-citizen medal pre-commit hook failed: %s", e)
         try:
             await db.commit()
         except IntegrityError:

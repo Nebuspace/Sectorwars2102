@@ -25,7 +25,7 @@ be required to wire that up.
 """
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 
 # --- assistance-level gating --------------------------------------------
-# [NO-CANON -- provisional pending Max's 3-vs-4-level vocab ruling]
+# [NO-CANON -- provisional pending human's 3-vs-4-level vocab ruling]
 # ADR-0068 / aria-companion.md:212 specs a 4-level vocab (minimal / quiet /
 # standard / full) where `quiet` additionally skips P-I* rows on top of
 # what `minimal` skips. The LIVE column this kernel actually reads --
@@ -47,14 +47,16 @@ logger = logging.getLogger(__name__)
 # (minimal / medium / full), directly conflicting with :212's 4-level
 # gating table in the same doc.
 #
-# Per dispatch: this kernel implements the CURRENTLY-LIVE 3-level vocab --
-# `minimal` skips all P-A* (atmospheric) rows; `medium` and `full` fire
-# everything this kernel knows about (P-I* rows aren't in this WO's 5
-# buildable rows, so the `quiet` distinction has no observable effect yet
-# either way). If Max ratifies the 4-level vocab, `quiet` needs adding to
-# the live column + API pattern, and this gate needs a second tier once a
-# P-I* row is built.
-ASSISTANCE_LEVELS_SUPPRESSING_ATMOSPHERIC = {"minimal"}
+# 4-level vocab ratified 2026-08-04 (human, per ADR-0068): `minimal` skips
+# all P-A* (atmospheric); `quiet` skips P-A* AND P-I* (interactive);
+# `standard` and `full` fire everything. `quiet` is strictly MORE
+# suppressive than `minimal` despite sitting "between" minimal and
+# standard in the vocab's literal ordering -- that's the ratified
+# semantics, not a naming inconsistency. No P-I* row exists in the
+# registry yet, so the second tier is currently inert but correct for
+# when one is built.
+ASSISTANCE_LEVELS_SUPPRESSING_ATMOSPHERIC = {"minimal", "quiet"}
+ASSISTANCE_LEVELS_SUPPRESSING_INTERACTIVE = {"quiet"}
 
 
 # Priority classes per aria-companion.md:238 ("P-F* critical/standard >
@@ -123,6 +125,26 @@ REGISTRY: Dict[str, NarrationEventDef] = {
             suppression_scope="ever",
         ),
         NarrationEventDef(
+            event_id="P-A5",
+            trigger="Player personally reveals a latent warp tunnel for the first time "
+                     "(scan / traversal_attempt / aria_inference — not corp_share)",
+            template="{reveal_desc}",
+            priority_rank=PRIORITY_P_A,
+            suppression_scope="ever",
+        ),
+        NarrationEventDef(
+            event_id="P-F9",
+            trigger="A citadel upgrade in progress is auto-cancelled because a required "
+                     "defensive prerequisite building/shield went offline mid-upgrade "
+                     "(ADR-0059 N-F3, citadel_service.handle_prerequisite_loss)",
+            template=(
+                "Your {cancelled_upgrade} upgrade was cancelled — {lost_building} is "
+                "offline. Rebuild it to resume the upgrade."
+            ),
+            priority_rank=PRIORITY_P_F,
+            suppression_scope="session",
+        ),
+        NarrationEventDef(
             event_id="P-A3",
             trigger="Player.team_id transitions from null to non-null",
             template=(
@@ -182,7 +204,7 @@ class AriaNarrationService:
         event_id: str,
         player_id: Any,
         *,
-        assistance_level: str = "medium",
+        assistance_level: str = "standard",
         session_token: Optional[Any] = None,
         dedupe_key: Optional[Any] = None,
         context: Optional[Dict[str, Any]] = None,
@@ -206,6 +228,12 @@ class AriaNarrationService:
         if (
             definition.priority_rank == PRIORITY_P_A
             and assistance_level in ASSISTANCE_LEVELS_SUPPRESSING_ATMOSPHERIC
+        ):
+            return None
+
+        if (
+            definition.priority_rank == PRIORITY_P_I
+            and assistance_level in ASSISTANCE_LEVELS_SUPPRESSING_INTERACTIVE
         ):
             return None
 
@@ -339,9 +367,9 @@ def get_aria_narration_service() -> AriaNarrationService:
 
 
 def resolve_assistance_level(db: Session, player_id: Any) -> str:
-    """Sync read of the live 3-level ``PlayerTradingProfile
-    .ai_assistance_level`` column (see the NO-CANON note above). Defaults
-    to the column's own 'medium' default when no profile row exists yet
+    """Sync read of the live 4-level ``PlayerTradingProfile
+    .ai_assistance_level`` column (ratified 2026-08-04, ADR-0068). Defaults
+    to the column's own 'standard' default when no profile row exists yet
     (profiles are created lazily elsewhere, e.g. the /ai/profile GET in
     src/api/routes/ai.py). Never raises.
 
@@ -369,7 +397,7 @@ def resolve_assistance_level(db: Session, player_id: Any) -> str:
             return profile.ai_assistance_level
     except Exception as e:
         logger.debug("aria_narration: assistance-level lookup failed: %s", e)
-    return "medium"
+    return "standard"
 
 
 def dispatch_narration_push(player: Any, line: NarrationLine) -> None:

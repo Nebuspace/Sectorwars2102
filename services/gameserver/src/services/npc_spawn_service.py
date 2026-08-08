@@ -20,7 +20,7 @@ docs are explicitly Design-only):
     Sentinel-Captains on Sentinel Interdictors). Pirate enforcers are
     held back for a later slice; lords are held back because the BANG
     snapshot's 13 lords contradict canon ADR-0047's "Stronghold-tier
-    only, 1-2 per region" (conflict flagged to Max).
+    only, 1-2 per region" (conflict flagged to human).
   - Static NPCs: no movement, no schedules, no NPC-initiated combat,
     no respawn (Loop B), no NPCDeathLog, no bounty hooks. The one
     reputation hook in v1 lives in combat_service.attack_npc_ship
@@ -59,6 +59,7 @@ REGION_ORDER: Tuple[str, ...] = ("terran_space", "player_owned", "central_nexus"
 
 PIRATE_CAPTAIN_KIND = "pirate_captain"
 PIRATE_CAPTAIN_TITLE = "Pirate Captain"
+PIRATE_LORD_TITLE = "Pirate Lord"  # ADR-0063 N-I1 / npc-scheduler.md hop-cap class
 MERCHANT_CAPTAIN_KIND = "merchant_captain"
 
 # TRADER roster tunables. Canon is silent on both (flagged for
@@ -162,14 +163,27 @@ TRADER_NAME_POOL: Tuple[str, ...] = (
 )
 
 PIRATE_PATROL_DEFENSES_KEY = "pirate_patrol_ships"
-# Police squads land under their own defenses key. Canon-divergence note:
-# police-forces.md "Patrol-squad row coherence" says the existing
-# ``defenses.patrol_ships`` shape "is extended", but patrol_ships is
-# already shape-conflicted in code — admin.py reads it as an INT while
-# sector.py defaults it to a list — so landing dict squad rows there
-# would break admin pages. A dedicated key mirrors the ADR-0047
-# pirate_patrol_ships precedent instead; divergence FLAGGED for the docs
-# repo, not silently resolved.
+# Police squads land under their own defenses key, NOT the canon-documented
+# unified ``Sector.defenses.patrol_ships`` list (police-forces.md
+# "Patrol-squad row coherence", DATA_MODELS/jsonb-schema.md
+# "Sector.defenses"). VERIFY-FIRST correction (this key predates the
+# correction, hence the mismatch): the previously-cited "shape conflict"
+# with admin.py's int read never actually existed — admin.py's
+# ``defenses.get("patrol_ships", 0)`` (src/api/routes/admin.py) reads
+# ``Station.defenses``, a DIFFERENT model's JSONB blob (per-station
+# garrison count, DATA_MODELS/jsonb-schema.md "Station.defenses"), not
+# ``Sector.defenses`` — the two never collide at runtime; ``Sector.defenses
+# .patrol_ships`` (list, sector.py default ``[]``) and ``Station.defenses
+# .patrol_ships`` (int, station.py default ``0``) are independent fields
+# that happen to share a key name across unrelated models. Real reason for
+# the split keys: dedicated ``pirate_patrol_ships`` / ``police_patrol_ships``
+# lists (mirroring the ADR-0047 precedent) instead of canon's single
+# ``patrol_ships`` list are now the shipped mechanism — movement_service.py
+# and npc_engagement_service.py's ADR-0042 dispatch/pursuit engine are built
+# against these two keys, not the unified one. Docs corrected to match
+# (police-forces.md, jsonb-schema.md, sector-presence.md); code left as-is —
+# unifying onto canon's single key would require rewriting the shipped
+# encounter/dispatch engine, out of scope for a doc-vs-code reconciliation.
 POLICE_PATROL_DEFENSES_KEY = "police_patrol_ships"
 PATROL_DEFENSES_KEYS: Tuple[str, ...] = (
     PIRATE_PATROL_DEFENSES_KEY,
@@ -185,8 +199,9 @@ KIA_RESPAWN_COOLDOWN_HOURS = 7 * 24
 
 # ADR-0063 N-D2: respawn-permitted archetypes return as the SAME
 # identity after a 15-minute cooldown (career and reputation persist).
-# Canon grants this to "most named pirates, some trader archetypes";
-# v1 grants it to pirates — traders join in the trader slice.
+# DECISION `npc-respawn-cooldown-archetype-scope` (2026-08-07): narrow
+# canon to HOSTILE_RAIDER-only — this frozenset is the ratified scope
+# (not a temporary v1 subset awaiting trader expansion).
 RESPAWN_COOLDOWN_MINUTES = 15
 RESPAWN_PERMITTED_ARCHETYPES = frozenset({NPCArchetype.HOSTILE_RAIDER})
 
@@ -443,6 +458,13 @@ def _presence_entry(npc: NPCCharacter, ship: Ship) -> Dict[str, Any]:
     _update_player_presence write, plus ``is_npc: true`` so consumers can
     distinguish NPCs (the player_id key carries the NPCCharacter id, which
     will NOT resolve against the players table)."""
+    # Local import: presence_classification imports LAWFUL_TARGET_THRESHOLD
+    # from this module at its own top level, so importing it back up here
+    # must stay function-scoped to avoid a circular top-level import.
+    from src.services import presence_classification
+
+    archetype_name = npc.archetype.name if npc.archetype else None
+
     return {
         "player_id": str(npc.id),
         # Canon renders title before name (DATA_MODELS/npcs.md).
@@ -455,8 +477,17 @@ def _presence_entry(npc: NPCCharacter, ship: Ship) -> Dict[str, Any]:
         "is_npc": True,
         # Authoritative archetype (so the client colors law/raider/trader
         # without guessing from the ship name) + the trader scruples axis.
-        "archetype": npc.archetype.name if npc.archetype else None,
+        "archetype": archetype_name,
         "notoriety": npc.notoriety,
+        # Write-time mirror of the fair-game classification (WO-API-PHASE2
+        # Lane B6) — same defense-in-depth as archetype above; re-derived
+        # from the LIVE notoriety/archetype on every REST read by
+        # enrich_presence_with_live_pose, this is only the freshness
+        # guarantee for a consumer reading players_present raw. Archetype-
+        # first: pirates/police spawn with notoriety=None (it's exclusively
+        # the trader scruples axis), so npc_hostile needs the archetype to
+        # ever call a HOSTILE_RAIDER fair game.
+        "hostile": presence_classification.npc_hostile(npc.notoriety, archetype_name),
         # Live schedule fields — windshield/SSV motion reads these so contacts
         # don't all freeze as identical SLEEP glyphs until a later enrich pass.
         "activity": (
@@ -480,9 +511,6 @@ def _ensure_federation_faction(db: Session) -> Faction:
     guarantees at least the Federation row exists when police spawn. An
     existing FEDERATION-typed row (however named) is left untouched.
 
-    The Galactic Concord (Sentinel force) is NOT seeded: its CONCORD
-    FactionType is Design-only (police-forces.md "Faction registration")
-    and adding the enum value is out of scope for this slice.
     """
     faction = (
         db.query(Faction)
@@ -502,6 +530,40 @@ def _ensure_federation_faction(db: Session) -> Faction:
         db.add(faction)
         db.flush()
         logger.info("Seeded Terran Federation faction row (%s)", faction.id)
+    return faction
+
+
+def _ensure_concord_faction(db: Session) -> Faction:
+    """Get-or-create the Galactic Concord faction row, idempotent by
+    faction_type.
+
+    Canon (police-forces.md § Faction registration): the Concord ``Faction``
+    row itself is canon to seed — operator-managed, not a player-targetable
+    allyable faction. The Sentinel-kill reputation hook (−200) needs this
+    row or ``apply_faction_rep_delta`` silently drops the delta.
+    """
+    faction = (
+        db.query(Faction)
+        .filter(Faction.faction_type == FactionType.CONCORD)
+        .first()
+    )
+    if faction is None:
+        faction = Faction(
+            name="Galactic Concord",
+            faction_type=FactionType.CONCORD,
+            description=(
+                "Operator-managed hub authority that staffs the Nexus "
+                "Sentinel Corps. Not a player-targetable allyable faction — "
+                "negative standing only (no positive reputation triggers)."
+            ),
+            aggression_level=5,
+            diplomacy_stance="neutral",
+            color_primary="#4A5568",
+            color_secondary="#E2E8F0",
+        )
+        db.add(faction)
+        db.flush()
+        logger.info("Seeded Galactic Concord faction row (%s)", faction.id)
     return faction
 
 
@@ -575,10 +637,10 @@ def materialize_from_bang(db: Session, galaxy: Galaxy) -> Dict[str, Any]:
         )
         return stats
 
-    # The Marshal-kill reputation hook (combat_service) targets the
-    # Terran Federation faction row — guarantee it exists before any
-    # LAW_ENFORCEMENT NPC can be spawned (and therefore killed).
+    # Marshal-kill → Federation; Sentinel-kill → Concord. Guarantee both
+    # rows exist before any LAW_ENFORCEMENT NPC can be spawned (and killed).
     _ensure_federation_faction(db)
+    _ensure_concord_faction(db)
 
     # One spec fetch per distinct hull across all spawnable kinds.
     hull_types = {cfg.ship_type for cfg in KIND_CONFIG.values()}
@@ -1374,6 +1436,7 @@ def handle_npc_ship_destroyed(
                 with db.begin_nested():
                     db.add(PirateKillLog(
                         region_id=holding.region_id,
+                        region_id_snapshot=holding.region_id,
                         holding_id=holding.id,
                         tier=holding.tier,
                         kill_weight=tier_kill_weight.get(holding.tier, 1),
@@ -1409,6 +1472,7 @@ def handle_npc_ship_destroyed(
             killed_by_player_id=killed_by_player_id,
             sector_id=sector_id,
             home_region_id=npc.home_region_id,
+            region_id_snapshot=npc.home_region_id,
             combat_log_id=combat_log_id,
             destruction_cause=destruction_cause,
             killed_at=now,

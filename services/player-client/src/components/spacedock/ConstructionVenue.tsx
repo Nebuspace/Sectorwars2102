@@ -70,6 +70,8 @@ interface ConstructionReservation {
   ship_name?: string | null;
   total_cost?: number;
   credits_paid?: number;
+  // Server-computed advisory (mirrors cancel()'s authoritative cancel_refund() at commit time).
+  estimated_refund?: number;
   queue_bonus_credit: number;
   paused?: boolean;
   needs?: string[];
@@ -1521,8 +1523,9 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
         const cancelMilestones = normalizeMilestones(cancelFor.milestones);
         const hullPaid = cancelMilestones.some(m => m.name === 'hull_complete' && m.paid);
         const creditsPaid = cancelFor.credits_paid ?? null;
-        const refundFraction = hullPaid ? 0.7 : 0.5;
-        const estRefund = creditsPaid !== null ? Math.floor(creditsPaid * refundFraction) : null;
+        // Server-computed (status_payload's estimated_refund) — advisory only, the
+        // authoritative refund is recomputed server-side at cancel-commit time.
+        const estRefund = cancelFor.estimated_refund ?? null;
         return (
         <div
           className="ship-confirm-overlay"
@@ -1542,7 +1545,7 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
               <li>Slip rent already paid is not returned.</li>
               <li>The slip is released back to the dock.</li>
             </ul>
-            {creditsPaid !== null && estRefund !== null && (
+            {creditsPaid !== null && (
               <div className="confirm-cost-rows">
                 <div className="confirm-cost-row">
                   <span>Credits paid so far</span>
@@ -1550,7 +1553,7 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
                 </div>
                 <div className="confirm-cost-row balance">
                   <span>Estimated refund ({hullPaid ? '70%' : '50%'})</span>
-                  <span>{formatCredits(estRefund)}</span>
+                  <span>{estRefund !== null ? formatCredits(estRefund) : '—'}</span>
                 </div>
               </div>
             )}

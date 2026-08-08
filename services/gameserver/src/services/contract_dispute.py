@@ -150,6 +150,9 @@ def _tier1_cargo_manifest_match(contract: Any) -> bool:
     -- until a real per-contract delivery-event log exists for a future
     WO to wire here. Exercised by a monkeypatch-to-True test proving the
     seam is genuinely consulted, not decorative."""
+    # NOT-YET-BUILT (WO-CONTRACT-INSURANCE-ARBITRATION-SCOPE): no
+    # Cargo.logs / per-contract delivery-event model exists — do not invent
+    # one here. Always False until a future WO wires real evidence.
     return False
 
 
@@ -196,6 +199,9 @@ def _tier1_issuer_unilateral_cancellation(contract: Any) -> bool:
     leave this trace. Exercised by a monkeypatch-to-True test proving
     both the branch AND its settlement math are correct even though
     unreachable in production today."""
+    # NOT-YET-BUILT (WO-CONTRACT-INSURANCE-ARBITRATION-SCOPE): no
+    # issuer-cancel audit trail that can reach EXPIRED — structurally
+    # unreachable today. Always False until a future WO adds that trail.
     return False
 
 
@@ -206,6 +212,9 @@ def _ei3_both_parties_dispute(contract: Any) -> bool:
     build has no issuer-side filing path at all (no route, no service
     function), so a contract can never carry two independent dispute
     filings to compare. Always returns False."""
+    # NOT-YET-BUILT (WO-CONTRACT-INSURANCE-ARBITRATION-SCOPE): no
+    # issuer-side dispute filing path — both-parties E-I3 can never fire.
+    # Always False until a future WO adds issuer filing.
     return False
 
 
@@ -363,20 +372,23 @@ def file_dispute(
     vs. documented no-op seams in this codebase today) and settles per
     contracts.md:398-400 on the first match. If NONE match, the contract
     stays DISPUTED with escrow frozen (already flipped at filing) and
-    `escalated_to_admin` is set per the OR of the three ADR-0062 E-I3
-    criteria (`_ei3_both_parties_dispute` / `_ei3_evidence_trail_
-    incomplete` / `_ei3_high_value`) -- landing in the `(status,
-    dispute_filed_at)`-indexed Tier-2 queue for `resolve_dispute` (owned
-    by the admin route, impl-admin-ui's lane) to pick up later.
+    `escalated_to_admin` is ALWAYS set True (contracts.md:402 —
+    unresolvable cases escalate to Tier 2; WO-CONTRACT-INSURANCE-
+    ARBITRATION-SCOPE closed the limbo where only ADR-0062 E-I3 OR
+    gated the flag and left low-value filings invisible to the admin
+    queue). E-I3 helpers (`_ei3_both_parties_dispute` /
+    `_ei3_evidence_trail_incomplete` / `_ei3_high_value`) remain as
+    reason/metadata stamped into `dispute_notes` when any fire — not as
+    a gate. Lands in the Tier-2 admin queue for `resolve_dispute`.
 
-    WO-CONTRACT-2b-HOLD-ESCROW (Max R, option C): "ESCROW" IN EVERY
+    WO-CONTRACT-2b-HOLD-ESCROW (human R, option C): "ESCROW" IN EVERY
     SETTLEMENT BELOW IS NOW REAL AGAIN. Previously this codebase's own
     `sweep_expired_accepted_contracts` refunded a PLAYER-issuer's escrow
     IMMEDIATELY at expiry, so any dispute filed afterward could only draw
     an issuer-funded payout from whatever the issuer's CURRENT wallet
     happened to still hold (`_bounded_transfer`, now deleted) -- hollow if
     they'd already spent it, an ordinary non-adversarial sequence, not an
-    attack. Max ruled this out: escrow now stays `HELD` through the entire
+    attack. human ruled this out: escrow now stays `HELD` through the entire
     48h dispute window; every "escrow -> X" settlement below draws from
     the REAL, held `contract.escrow_amount` via `_settle_dispute_escrow`
     (contract_escrow_core.py -- see its own docstring for the whole-credit
@@ -479,11 +491,22 @@ def file_dispute(
         _guarded_transition(db, contract, ContractStatus.DISPUTED, ContractStatus.CANCELLED)
         insurance_refund = _apply_dispute_insurance_refund(contract, acceptor, now)
     else:
-        contract.escalated_to_admin = (
-            _ei3_both_parties_dispute(contract)
-            or _ei3_evidence_trail_incomplete(db, contract)
-            or _ei3_high_value(contract)
-        )
+        # contracts.md:402 — ALL unresolvable Tier-1 cases escalate to
+        # Tier 2. Do NOT gate on E-I3 alone (that left payment<=100k /
+        # station-present filings stuck DISPUTED with escalated=False,
+        # invisible to GET /admin/contracts/disputes). E-I3 is metadata.
+        ei3_tags: list[str] = []
+        if _ei3_both_parties_dispute(contract):
+            ei3_tags.append("both_parties")
+        if _ei3_evidence_trail_incomplete(db, contract):
+            ei3_tags.append("evidence_incomplete")
+        if _ei3_high_value(contract):
+            ei3_tags.append("high_value")
+        contract.escalated_to_admin = True
+        if ei3_tags:
+            tag = f"[E-I3: {', '.join(ei3_tags)}]"
+            existing = contract.dispute_notes or ""
+            contract.dispute_notes = f"{existing}\n{tag}".strip() if existing else tag
         # status stays DISPUTED, escrow stays DISPUTED (frozen) -- lands
         # in the Tier-2 queue for resolve_dispute.
 
@@ -591,7 +614,7 @@ def resolve_dispute(
     exception with ZERO mutation, never a half-applied settlement sitting
     in the session waiting to be accidentally flushed later.
 
-    WO-CONTRACT-2b-HOLD-ESCROW (Max R, option C): see `file_dispute`'s own
+    WO-CONTRACT-2b-HOLD-ESCROW (human R, option C): see `file_dispute`'s own
     docstring for the full escrow-model change -- it applies IDENTICALLY
     here. Every "Escrow -> X" settlement below draws from the REAL, HELD
     `contract.escrow_amount` via `_settle_dispute_escrow` (contract_

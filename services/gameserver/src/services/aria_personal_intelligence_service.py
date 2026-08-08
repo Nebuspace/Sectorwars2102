@@ -15,12 +15,10 @@ OWASP Security Implementation:
 
 import json
 import hashlib
-import hmac
 import heapq
 import math
 from typing import Dict, List, Any, Optional, Tuple, Set
 from datetime import datetime, timedelta, UTC
-from decimal import Decimal
 import statistics
 import numpy as np
 from collections import defaultdict, deque
@@ -29,14 +27,13 @@ from cryptography.fernet import Fernet
 import base64
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, or_, func, update
-from sqlalchemy.orm import selectinload, Session
+from sqlalchemy import select, and_, func
+from sqlalchemy.orm import Session
 
 from src.models.player import Player
-from src.models.sector import Sector, sector_warps
+from src.models.sector import sector_warps
 from src.models.station import Station
 from src.models.warp_tunnel import WarpTunnel, WarpTunnelStatus
-from src.models.market_transaction import MarketTransaction
 from src.models.aria_personal_intelligence import (
     ARIAPersonalMemory, ARIAMarketIntelligence, ARIAExplorationMap,
     ARIAQuantumCache, ARIASecurityLog,
@@ -48,7 +45,6 @@ from src.models.aria_personal_intelligence import (
 # ADR-0038). No longer imported here; see models/aria_personal_intelligence.py's
 # own deprecation note on the class.
 from src.core.config import settings
-from src.core.security import get_password_hash
 from src.core.game_time import scaled_elapsed
 
 logger = logging.getLogger(__name__)
@@ -801,7 +797,6 @@ class ARIAPersonalIntelligenceService:
         buy_resource/sell_resource's "must be docked" + "must be in the
         same sector" checks).
         """
-        from src.models.player import Player
 
         stmt = select(Player).where(Player.id == player_id)
         result = await db.execute(stmt)
@@ -821,7 +816,6 @@ class ARIAPersonalIntelligenceService:
         callers (WO-ARIA-MARKET-OBS) -- same Player.is_docked +
         current_sector_id-vs-station.sector_id check, same bug-fix
         rationale as the async version above."""
-        from src.models.player import Player
 
         player = db.query(Player).filter(Player.id == player_id).first()
         if player is None or not player.is_docked:
@@ -1497,46 +1491,16 @@ class ARIAPersonalIntelligenceService:
 
         return profitable_paths
     
-    async def _get_quantum_cache(self, player_id: str, cache_key: str,
-                               db: AsyncSession) -> Optional[Dict[str, Any]]:
-        """Get cached quantum calculation"""
-        stmt = select(ARIAQuantumCache).where(
-            and_(
-                ARIAQuantumCache.player_id == player_id,
-                ARIAQuantumCache.cache_key == cache_key,
-                ARIAQuantumCache.expires_at > datetime.now(UTC)
-            )
-        )
-        result = await db.execute(stmt)
-        cache_entry = result.scalar_one_or_none()
-        
-        if cache_entry:
-            cache_entry.hit_count += 1
-            await db.commit()
-            return cache_entry.ghost_results
-        
-        return None
-    
-    async def _cache_quantum_result(self, player_id: str, cache_key: str,
-                                  result: Dict[str, Any], db: AsyncSession):
-        """Cache quantum calculation result"""
-        # Calculate expiry based on market volatility
-        # More volatile = shorter cache
-        expiry = datetime.now(UTC) + timedelta(minutes=15)
-        
-        cache_entry = ARIAQuantumCache(
-            player_id=player_id,
-            cache_key=cache_key,
-            commodity=result.get("commodity", "UNKNOWN"),
-            quantum_states=[],  # Would store actual states
-            ghost_results=result,
-            expected_value=result.get("expected_cost", result.get("expected_revenue", 0)),
-            confidence_interval=[0, 0],  # Would calculate
-            expires_at=expiry
-        )
-        
-        db.add(cache_entry)
-        await db.commit()
+    # _get_quantum_cache / _cache_quantum_result (the original ghost-trade
+    # quantum-calculation cache read/write pair) removed 2026-08-04 —
+    # zero callers anywhere in the codebase (grep-confirmed). The table
+    # (ARIAQuantumCache) is still live via the repurposed observation-log
+    # aggregate cache (_cache_aggregates_sync / its read counterpart).
+    # NOT NULL columns quantum_states / expected_value / confidence_interval
+    # are filled with empty/zero placeholders on INSERT only — the read path
+    # returns entry.ghost_results (the real recommendation bundle) and never
+    # serializes those legacy columns to any API response
+    # (WO-CLEANUP-ARIA-INTELLIGENCE-DUMMY-DATA-VERIFY).
     
     # =============================================================================
     # CONSCIOUSNESS & RELATIONSHIP TRACKING
@@ -1643,7 +1607,6 @@ class ARIAPersonalIntelligenceService:
         Decay relationship score based on days of inactivity.
         -1 point per day inactive, minimum 0.
         """
-        from src.models.player import Player
 
         stmt = select(Player).where(Player.id == player_id)
         result = await db.execute(stmt)
@@ -1852,10 +1815,11 @@ class ARIAPersonalIntelligenceService:
         WO-ARIA-PROGRESSION consolidation: this is now the SINGLE source of
         truth, replacing the four duplicated inline threshold blocks
         (movement_service.py, combat_service.py, trading.py buy + sell) AND
-        the two now-removed redundant siblings (update_consciousness_level /
-        update_relationship_score, both zero-caller dead code before this
-        WO). See update_consciousness_and_relationship_sync for the
-        sync-Session twin the three sync call sites use.
+        the two removed redundant siblings (update_consciousness_level /
+        update_relationship_score — deleted; zero callers confirmed again
+        2026-08-04, WO-CLEANUP-UPDATE-RELATIONSHIP-SCORE-DEAD-FUNCTION). See
+        update_consciousness_and_relationship_sync for the sync-Session twin
+        the three sync call sites use.
 
         Per call: +1 aria_total_interactions, +1 aria_relationship_score
         (capped 100) -- aria-companion.md:139 "Rises +1 per significant
@@ -1882,7 +1846,6 @@ class ARIAPersonalIntelligenceService:
         dispatch report for the full proof and a dedicated falsifying test.
         The threshold NUMBERS themselves (10/30/75/150) are unchanged.
         """
-        from src.models.player import Player
 
         stmt = select(Player).where(Player.id == player_id)
         result = await db.execute(stmt)
@@ -1924,7 +1887,25 @@ class ARIAPersonalIntelligenceService:
                 .scalar()
             ) or 0
 
-            return self._apply_consciousness_and_relationship(player, total_memories)
+            result = self._apply_consciousness_and_relationship(player, total_memories)
+
+            # Medal dispatch hook (ADR-0028 / medals lane): special.arias_favor
+            # (aria_consciousness >= 5). Best-effort — resolved by getattr (the
+            # medals lane may be absent) and any failure is logged and
+            # swallowed, a medal hiccup must never break ARIA progression.
+            # Uses THIS sync twin specifically (not the async method above) so
+            # the dispatch runs on a plain sync Session — see WO-BUILD-MEDAL-
+            # AUTO-AWARD-BATCH's diplomatic.first_citizen note for why an
+            # AsyncSession-only earn-event is a real blocker for this pattern.
+            try:
+                import src.services.medal_service as _medal_module
+                hook = getattr(_medal_module, "check_and_award_aria_medals", None)
+                if callable(hook):
+                    hook(db, player.id, player.aria_consciousness_level)
+            except Exception as e:
+                logger.error("ARIA medal dispatch hook failed: %s", e)
+
+            return result
         except Exception as e:
             logger.warning(
                 "update_consciousness_and_relationship_sync failed for player %s: %s",
@@ -2022,7 +2003,6 @@ class ARIAPersonalIntelligenceService:
 
         Returns a list of 1-3 recommendation strings (in English).
         """
-        from src.models.player import Player
 
         stmt = select(Player).where(Player.id == player_id)
         result = await db.execute(stmt)
@@ -2185,7 +2165,6 @@ class ARIAPersonalIntelligenceService:
         interaction count, memory breakdown, next-level requirements, and
         progress percentage toward the next tier.
         """
-        from src.models.player import Player
 
         stmt = select(Player).where(Player.id == player_id)
         result = await db.execute(stmt)
@@ -2345,6 +2324,18 @@ class ARIAPersonalIntelligenceService:
                 else:
                     outcome = ObservationOutcome.loss
 
+            region_snap = trade_result.get("region_id_snapshot")
+            if region_snap is None:
+                try:
+                    from src.models.station import Station
+                    st = (
+                        db.query(Station)
+                        .filter(Station.id == trade_result["source_station_id"])
+                        .first()
+                    )
+                    region_snap = getattr(st, "region_id", None) if st else None
+                except Exception:
+                    region_snap = None
             observation = ARIATradingObservation(
                 player_id=player_id,
                 trade_id=trade_result.get("trade_id"),
@@ -2354,6 +2345,7 @@ class ARIAPersonalIntelligenceService:
                 dest_station_id=trade_result.get("dest_station_id"),
                 source_sector_id=trade_result.get("source_sector_id"),
                 dest_sector_id=trade_result.get("dest_sector_id"),
+                region_id_snapshot=region_snap,
                 quantity=trade_result["quantity"],
                 unit_price=trade_result["unit_price"],
                 total_credits=trade_result["total_credits"],
@@ -2606,10 +2598,10 @@ class ARIAPersonalIntelligenceService:
                 commodity=self._AGGREGATE_CACHE_SCOPE_COMMODITY,
                 station_id=None,
                 sector_id=None,
-                quantum_states=[],  # unused for this repurposed cache use
+                quantum_states=[],  # NOT NULL placeholder — never returned to clients
                 ghost_results=bundle,
-                expected_value=0.0,  # unused for this repurposed cache use
-                confidence_interval=[0, 0],  # unused for this repurposed cache use
+                expected_value=0.0,  # NOT NULL placeholder — never returned to clients
+                confidence_interval=[0, 0],  # NOT NULL placeholder — never returned to clients
                 expires_at=expires_at,
             ))
 

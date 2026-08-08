@@ -2,7 +2,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
 
-from fastapi import Depends, Header, HTTPException, Query, status
+from fastapi import Depends, Header, HTTPException, Query, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from jwt import PyJWTError as JWTError
 from sqlalchemy.orm import Session
@@ -71,16 +71,22 @@ async def get_current_active_user(
 
 
 async def get_current_admin_user(
+    request: Request,
     current_user: User = Depends(get_current_user),
 ) -> User:
     """
     Dependency to ensure the user is an admin.
+
+    Also populates ``request.state.user_id`` for per-admin rate-limit keying
+    and audit logging. Behavior-preserving: identity already authenticated
+    above; this only mirrors it onto request state (DEC admin-rate-limit-tiers-p7-scope).
     """
     if not current_user.is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized for admin access"
         )
+    request.state.user_id = str(current_user.id)
     return current_user
 
 # Aliases for get_current_admin_user to match naming convention in admin routes

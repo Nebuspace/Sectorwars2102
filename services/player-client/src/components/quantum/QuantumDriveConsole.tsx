@@ -46,6 +46,9 @@ const RESONANCE_LEVELS: Record<QuantumScanResult['resonance'], number> = {
   bright: 4,
 };
 
+// Fallbacks only — quantumStatus's scan_turn_cost/jump_turn_cost/
+// jump_tow_surcharge (WO-API-PHASE2) are the source of truth once linked;
+// these cover the brief pre-link window and an older server build.
 const SCAN_TURN_COST = 5;
 const JUMP_TURN_COST = 50;
 
@@ -199,6 +202,14 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
   const extendedLocked = sensorLevel < 3;
   const isNebula = currentSector?.type?.toUpperCase() === 'NEBULA';
 
+  // WO-API-PHASE2 Lane B5 — server-surfaced costs, honestly including the
+  // +5 flat tow surcharge (BUG-1: a towing pilot's real jump cost is base
+  // + surcharge, not the flat base the client used to hardcode).
+  const scanTurnCost = quantumStatus?.scan_turn_cost ?? SCAN_TURN_COST;
+  const jumpTurnCost = quantumStatus?.jump_turn_cost ?? JUMP_TURN_COST;
+  const jumpTowSurcharge = quantumStatus?.jump_tow_surcharge ?? 0;
+  const totalJumpCost = jumpTurnCost + jumpTowSurcharge;
+
   const bearing: QuantumBearing = { yaw_deg: yaw, pitch_deg: pitch, range_band: rangeBand };
 
   // --- Disable reasons (first match wins; null = ready) ---
@@ -206,7 +217,7 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
     !statusReady ? 'LINKING DRIVE…'
     : isScanning ? 'SCANNING…'
     : scanCooldownLeft > 0 ? `RECHARGE ${formatCountdown(scanCooldownLeft)}`
-    : turns < SCAN_TURN_COST ? 'INSUFFICIENT TURNS'
+    : turns < scanTurnCost ? 'INSUFFICIENT TURNS'
     : rangeBand === 'far' && shards < 1 ? 'NO QUANTUM SHARD (FAR BAND)'
     : null;
 
@@ -216,7 +227,7 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
     : isDocked ? 'DRIVE OFFLINE WHILE DOCKED'
     : jumpCooldownLeft > 0 ? `COOLDOWN ${formatCountdown(jumpCooldownLeft)}`
     : charges < 1 ? 'NO QUANTUM CHARGE'
-    : turns < JUMP_TURN_COST ? 'INSUFFICIENT TURNS'
+    : turns < totalJumpCost ? 'INSUFFICIENT TURNS'
     : quantumStatus && !quantumStatus.can_jump ? 'DRIVE NOT READY'
     : null;
 
@@ -470,7 +481,7 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
             {scanBlockReason || 'ECHO SCAN'}
             {!scanBlockReason && (
               <span className="qd-cost-tag">
-                {rangeBand === 'far' ? <><TurnsIcon /> {SCAN_TURN_COST} + 1 SHARD</> : <><TurnsIcon /> {SCAN_TURN_COST}</>}
+                {rangeBand === 'far' ? <><TurnsIcon /> {scanTurnCost} + 1 SHARD</> : <><TurnsIcon /> {scanTurnCost}</>}
               </span>
             )}
           </button>
@@ -555,7 +566,12 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
             disabled={!!jumpBlockReason || jumpPhase === 'outcome'}
           >
             {jumpBlockReason || 'JUMP COMMIT'}
-            {!jumpBlockReason && <span className="qd-cost-tag">1 CHARGE + <TurnsIcon /> {JUMP_TURN_COST}</span>}
+            {!jumpBlockReason && (
+              <span className="qd-cost-tag">
+                1 CHARGE + <TurnsIcon /> {jumpTurnCost}
+                {jumpTowSurcharge > 0 ? <> +{jumpTowSurcharge} TOW</> : null}
+              </span>
+            )}
           </button>
         ) : (
           <div className="qd-confirm-row">

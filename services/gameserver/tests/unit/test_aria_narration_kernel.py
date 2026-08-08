@@ -74,13 +74,14 @@ def test_zero_llm_imports():
 # --------------------------------------------------------------------- #
 
 def test_registry_covers_exactly_the_five_buildable_rows():
-    assert set(REGISTRY.keys()) == {"P-F1", "P-F7", "P-F8", "P-A2", "P-A3"}
+    assert set(REGISTRY.keys()) == {"P-F1", "P-F7", "P-F8", "P-F9", "P-A2", "P-A3", "P-A5"}
     assert REGISTRY["P-F1"].suppression_scope == "session"
-    for event_id in ("P-F7", "P-F8", "P-A2", "P-A3"):
+    assert REGISTRY["P-F9"].suppression_scope == "session"
+    for event_id in ("P-F7", "P-F8", "P-A2", "P-A3", "P-A5"):
         assert REGISTRY[event_id].suppression_scope == "ever"
-    for event_id in ("P-F1", "P-F7", "P-F8"):
+    for event_id in ("P-F1", "P-F7", "P-F8", "P-F9"):
         assert REGISTRY[event_id].priority_rank == PRIORITY_P_F
-    for event_id in ("P-A2", "P-A3"):
+    for event_id in ("P-A2", "P-A3", "P-A5"):
         assert REGISTRY[event_id].priority_rank == PRIORITY_P_A
 
 
@@ -422,12 +423,15 @@ def test_resolve_assistance_level_reads_the_profile_column():
     assert resolve_assistance_level(_FakeSession([profile]), player_id) == "full"
 
 
-def test_resolve_assistance_level_defaults_to_medium_when_no_profile():
-    assert resolve_assistance_level(_FakeSession([]), uuid.uuid4()) == "medium"
+def test_resolve_assistance_level_defaults_to_standard_when_no_profile():
+    """ADR-0068 (ratified 2026-08-04): 4-level vocab (minimal/quiet/standard/
+    full) replaces the old 3-level minimal/medium/full -- 'standard' is now
+    the no-profile default, not 'medium'."""
+    assert resolve_assistance_level(_FakeSession([]), uuid.uuid4()) == "standard"
 
 
-def test_resolve_assistance_level_defaults_to_medium_on_error():
-    assert resolve_assistance_level(_RaisingSession(), uuid.uuid4()) == "medium"
+def test_resolve_assistance_level_defaults_to_standard_on_error():
+    assert resolve_assistance_level(_RaisingSession(), uuid.uuid4()) == "standard"
 
 
 # --------------------------------------------------------------------- #

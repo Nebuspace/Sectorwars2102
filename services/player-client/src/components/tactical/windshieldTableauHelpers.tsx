@@ -42,6 +42,18 @@ import {
 // services/gameserver/src/api/routes/sectors.py's get_sector_contents).
 // ---------------------------------------------------------------------------
 
+/** Sector.message_beacons JSONB denorm entry (message-beacons.md:91-100),
+ *  passed through SectorContentsResponse.message_beacons verbatim. */
+export interface MessageBeaconSummary {
+  id: string;
+  deployer_nickname: string;
+  deployed_at: string | null;
+  preview: string;
+  expiry: string | null;
+  state?: string;
+  signal?: string;
+}
+
 export interface StaticSystem {
   star: { kind: string; label: string; color: string } | null;
   nebula: { hue: number; density: number } | null;
@@ -49,6 +61,7 @@ export interface StaticSystem {
   debris: { inner_au: number; outer_au: number; hue: number } | null;
   bodies: SystemBody[];
   stations: SystemStation[];
+  messageBeacons: MessageBeaconSummary[];
 }
 
 export const POPUP_W = 232;
@@ -64,7 +77,7 @@ export const DOCK_APPROACH_STANDOFF_EM = 3.5;
  *  em, the same canonical-%-space convention DOCK_RANGE_EM uses) a ship
  *  contact must be before TACTICAL TARGET's menu offers ENGAGE instead of
  *  APPROACH. PLACEHOLDER — a small multiple of DOCK_RANGE_EM as a sensible
- *  starting number; a Max-tunable dial once playtested, same convention as
+ *  starting number; a human-tunable dial once playtested, same convention as
  *  DOCK_LAND_PROXIMITY_RANGE_EM.
  *
  *  WO-API-A1: POST /combat/engage is now SERVER-authoritative on this same
@@ -101,6 +114,14 @@ export const TRAVEL_HALT_BRAKE_MS = 1600;
 export const TRAVEL_HALT_COAST_FRAC = 0.38;
 /** Mid-course redirect: RCS turn while the path arcs onto the new bearing. */
 export const TRAVEL_REDIRECT_TURN_MS = 1600;
+/**
+ * One-frame deferral before committing the arc-waypoint `left`/`top` on a
+ * mid-course redirect. Lets React paint `redirect-turn` (heading/RCS) at the
+ * still-running live glide end-target first; a synchronous waypoint write in
+ * the same click turn can coalesce with the later burn retarget and read as a
+ * teleport (WO-FIX-TRAVELTO-REDIRECT-POSITION-JUMP-ORDERING).
+ */
+export const TRAVEL_REDIRECT_PAINT_MS = 32;
 
 export type TravelPhase =
   | 'idle'
@@ -252,7 +273,7 @@ export function stationApproachPoint(
   };
 }
 
-/** FIX C revise (Max: right-click must be MENU-mediated, not direct-travel —
+/** FIX C revise (human: right-click must be MENU-mediated, not direct-travel —
  *  corrects the earlier direct-travel cut): a small floating menu, sized for
  *  a single "Travel To" action button, not the 232px info card `.ssv-popup`
  *  is sized for. */
@@ -297,7 +318,7 @@ export const STATION_FOOTPRINT_EM_HEIGHT_MAX = 5;
  *  comment cites the same convention). */
 export const DEFAULT_REM_PX = 16;
 
-/** canonical-%-space (Max ruling): the client computes every ISP %-space
+/** canonical-%-space (human ruling): the client computes every ISP %-space
  *  POSITION from this FIXED reference band — identical to the server's own
  *  SectorLayout geometry by construction, at every real viewport/uiscale —
  *  never from `bandBox` (this component's own live `getBoundingClientRect`/
@@ -325,6 +346,7 @@ export function toStaticSystem(data: any): StaticSystem {
     debris: d.debris ?? null,
     bodies: Array.isArray(d.bodies) ? d.bodies : [],
     stations: Array.isArray(d.stations) ? d.stations : [],
+    messageBeacons: Array.isArray(d.message_beacons) ? d.message_beacons : [],
   };
 }
 

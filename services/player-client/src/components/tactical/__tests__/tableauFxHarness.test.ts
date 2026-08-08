@@ -24,7 +24,7 @@ describe('pctToPx', () => {
 
 describe('createTableauFxHarness', () => {
   let container: HTMLElement;
-  let disconnect: ReturnType<typeof vi.fn>;
+  let disconnect: ReturnType<typeof vi.fn<() => void>>;
   let rafSpy: ReturnType<typeof vi.spyOn>;
   /** Captured so a test can simulate the ResizeObserver actually firing
    *  (the mock never observes real layout). */

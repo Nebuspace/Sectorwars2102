@@ -414,10 +414,10 @@ class MessageService:
         """Flag a message for moderation"""
         
         message = db.query(Message).filter(Message.id == message_id).first()
-        
-        if not message:
+
+        if not message or not message.is_visible_to(flagged_by):
             return False
-        
+
         message.flagged = True
         message.flagged_reason = reason
 

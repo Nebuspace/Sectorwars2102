@@ -106,6 +106,8 @@ export interface Station {
   type: string;
   status: string;
   sector_id: number;
+  /** From GET /sectors/{id}/stations — null when NPC/unowned. */
+  owner_id?: string | null;
   owner?: any;
   services: Record<string, any>;
   faction_affiliation?: string;
@@ -183,6 +185,15 @@ export interface StationSlips {
   occupants_bumpable_count: number;
 }
 
+/** Payload from undock 403 ERR_STATION_TRACTOR_LOCK (station-protection Guarantee #2). */
+export interface TractorLockInfo {
+  station_id: string;
+  ship_id: string;
+  tractor_strength: string;
+  reason: string;
+  break_attempt_cost: string;
+}
+
 // --- Quantum drive (Warp Jumper) ---
 export interface QuantumStatus {
   quantum_shards: number;
@@ -193,6 +204,12 @@ export interface QuantumStatus {
   can_jump: boolean;
   is_warp_jumper: boolean;
   sensor_level: number;
+  // WO-API-PHASE2 Lane B5 -- optional: an older server build (or a cached
+  // response) won't have these yet, so the client falls back to its own
+  // hardcoded constants rather than rendering NaN/undefined.
+  scan_turn_cost?: number;
+  jump_turn_cost?: number;
+  jump_tow_surcharge?: number;
 }
 
 export interface QuantumBearing {
@@ -327,6 +344,9 @@ interface GameContextType {
   undockFromStation: () => Promise<any>;
   getStationSlips: (stationId: string) => Promise<StationSlips | null>;
   bumpDockOccupant: (stationId: string, occupantPlayerId: string) => Promise<any>;
+  /** Set when undock returns ERR_STATION_TRACTOR_LOCK (WO-WIRE-TRACTOR-LOCK-SURRENDER-UI). */
+  tractorLock: TractorLockInfo | null;
+  clearTractorLock: () => void;
   marketInfo: MarketInfo | null;
   getMarketInfo: (stationId: string) => Promise<void>;
   buyResource: (stationId: string, resourceType: string, quantity: number) => Promise<any>;
@@ -466,6 +486,8 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   
   // Market
   const [marketInfo, setMarketInfo] = useState<MarketInfo | null>(null);
+  // Station anti-theft tractor lock (undock 403 ERR_STATION_TRACTOR_LOCK)
+  const [tractorLock, setTractorLock] = useState<TractorLockInfo | null>(null);
 
   // Player-to-player hails (COMMS mailbox)
   const [inboxMessages, setInboxMessages] = useState<PlayerMessage[]>([]);
@@ -885,15 +907,38 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       const response = await api.post('/api/v1/trading/undock');
 
       // Update player state after undocking
+      setTractorLock(null);
       await refreshPlayerState();
 
       return response.data;
     } catch (error: any) {
       console.error('Error undocking from station:', error);
-      setError(error.response?.data?.message || 'Failed to undock from station');
+      const detail = error.response?.data?.detail;
+      if (
+        detail &&
+        typeof detail === 'object' &&
+        detail.error === 'ERR_STATION_TRACTOR_LOCK'
+      ) {
+        setTractorLock({
+          station_id: String(detail.station_id ?? ''),
+          ship_id: String(detail.ship_id ?? ''),
+          tractor_strength: String(detail.tractor_strength ?? ''),
+          reason: String(detail.reason ?? ''),
+          break_attempt_cost: String(detail.break_attempt_cost ?? ''),
+        });
+        setError('Tractor lock engaged — choose Break free or Surrender.');
+      } else {
+        setError(
+          (typeof detail === 'string' ? detail : null) ||
+            error.response?.data?.message ||
+            'Failed to undock from station'
+        );
+      }
       throw error;
     }
   };
+
+  const clearTractorLock = () => setTractorLock(null);
 
   // Get market info for a port
   // Note: This intentionally does NOT set global isLoading to avoid re-render cascades
@@ -1669,6 +1714,56 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     return unsubscribe;
   }, [user]);
 
+  // Live bounty lifecycle push (WO-BOUNTY-REALTIME-EVENTS). Server already
+  // emits bounty_updated post-commit; this keeps StatusBar bounty_total and
+  // credits in lockstep when the current player is the placer, target, or
+  // collector — without polling. playerIdRef avoids stale-closure misses
+  // when the subscription outlives a playerState identity change.
+  const playerIdRef = useRef<string | null>(null);
+  playerIdRef.current = playerState?.id ?? null;
+
+  useEffect(() => {
+    if (!user) return;
+
+    const unsubscribe = websocketService.onBountyUpdated((message) => {
+      const me = playerIdRef.current;
+      if (!me) return;
+      const involved = [message.target_id, message.placed_by, message.collected_by]
+        .filter((id): id is string => id != null && id !== '')
+        .map(String);
+      if (involved.includes(me)) {
+        void refreshPlayerState();
+      }
+    });
+
+    return unsubscribe;
+  }, [user]);
+
+  // Authoritative turn-pool push (WO-WIRE-WS-TURN-POOL-UNCONSUMED). Server
+  // already emits turn_pool_updated on lazy regen / welcome_back; patch HUD
+  // turns in place — no toast (WelcomeBackToast.wsNoOp), no full refetch.
+  useEffect(() => {
+    if (!user) return;
+
+    const unsubscribe = websocketService.onTurnPoolUpdated((message) => {
+      if (typeof message.turns !== 'number') return;
+      const me = playerIdRef.current;
+      if (message.player_id && me && String(message.player_id) !== me) return;
+      setPlayerState((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          turns: message.turns as number,
+          ...(typeof message.max_turns === 'number'
+            ? { max_turns: message.max_turns }
+            : {}),
+        };
+      });
+    });
+
+    return unsubscribe;
+  }, [user]);
+
   // Hyperspace echo scan along a bearing (spends turns; far band spends a shard)
   const quantumScan = async (payload: QuantumBearing): Promise<QuantumScanResult> => {
     if (!user || !playerState) throw new Error('Not authenticated');
@@ -1798,6 +1893,8 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     undockFromStation,
     getStationSlips,
     bumpDockOccupant,
+    tractorLock,
+    clearTractorLock,
     marketInfo,
     getMarketInfo,
     buyResource,

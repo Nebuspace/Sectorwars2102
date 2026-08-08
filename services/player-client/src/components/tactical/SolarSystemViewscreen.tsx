@@ -261,6 +261,12 @@ export type HitMeta =
   | { kind: 'wreck'; wreckId: string; shipType: string; cause: string; suspect: boolean }
   /** SCAN layer (#7): a special_formations anomaly, gated behind the SCAN toggle. */
   | { kind: 'formation'; formationId: string; name?: string | null; type?: string | null; discovered: boolean }
+  /** A message beacon (message-beacons.md) present in the sector — always
+   *  visible, not gated behind SCAN (canon: "any player arriving...sees
+   *  them"). Read-only summary card; full read/salvage/recharge/report
+   *  actions live on the deployer's My Beacons screen, mirroring the
+   *  wreck popup's own read-only-info + separate-action-page convention. */
+  | { kind: 'beacon'; beaconId: string; deployerNickname: string; preview: string; deployedAt: string | null; state?: string }
   /** Right-click on open space — synthetic target for the context menu only;
    *  never produced by hitTest, never passed to openPopupFor. */
   | { kind: 'empty' };
@@ -271,7 +277,7 @@ export interface HitTarget {
   x: number;
   y: number;
   r: number;
-  kind: 'star' | 'planet' | 'station' | 'procedural' | 'ship' | 'wreck' | 'formation' | 'empty';
+  kind: 'star' | 'planet' | 'station' | 'procedural' | 'ship' | 'wreck' | 'formation' | 'beacon' | 'empty';
   id?: string;
   name: string;
   lines: string[];
@@ -406,7 +412,7 @@ const FONT = '10px "Courier New", monospace';
 const SQUASH = 0.35;
 
 // Pacing knobs — calm but ALIVE. Decoupled so planets visibly orbit the sun
-// while moons/ships stay unhurried (Max: planet orbit was "slightly too slow").
+// while moons/ships stay unhurried (human: planet orbit was "slightly too slow").
 // Ambient cadence — starfield parallax, station blink, hazard pulse — keeps its
 // own timing; these scale "the rotation/motion" only.
 const ORBIT_SCALE = 0.85;  // planets + stations orbiting the star (perceptible)
@@ -1279,6 +1285,54 @@ function easeToward(
   };
 }
 
+/** The player marker's in-flight Travel-Here glide: a straight leg from
+ *  screen point `from` to `to`, started at `startMs`. Null = parked. */
+export interface SelfTravel {
+  from: { x: number; y: number };
+  to: { x: number; y: number };
+  startMs: number;
+}
+
+/** One frame's resolved self-marker anchor + heading, plus whether the glide
+ *  finished on THIS call (so the caller commits the parked base/heading into
+ *  its refs). Pure + exported so the CRUISE→PARK transition (WO-SOLAR-
+ *  MOVEMENT fix below) is unit-testable without a canvas/RAF harness. */
+export interface SelfMarkerResolution {
+  base: { x: number; y: number };
+  /** Heading to draw this frame, or null (caller falls back to the ambient
+   *  idle-drift angle — only ever true before the FIRST Travel-Here). */
+  heading: number | null;
+  justParked: boolean;
+}
+
+/** Resolves the player marker's screen anchor + heading for one frame,
+ *  mirroring the NPC dockCycle's CRUISE→DWELL discipline (see below): while
+ *  a Travel-Here leg is in flight, ease the position via smoothstep-over-
+ *  clock (`easeToward`) and hold the heading at the constant leg direction;
+ *  once arrived, FREEZE both at the parked values.
+ *
+ *  Bug this fixes (WO-SOLAR-MOVEMENT, human live-driving report): the previous
+ *  code let the heading fall back to shipPos()'s wall-clock idle-drift angle
+ *  the instant a glide finished. That angle has nothing to do with the leg
+ *  just flown — it snapped to whatever the ambient bob formula produced at
+ *  that exact millisecond, which read as the marker "reorienting backwards
+ *  and firing its jet in place" right after arrival. Freezing `heading` at
+ *  the leg's direction (like dockCycle's DWELL phase holds its approach
+ *  angle) removes that discontinuity — the marker settles pointed the way
+ *  it arrived, with no separate in-place retrograde flip. */
+export function resolveSelfMarker(
+  travel: SelfTravel | null,
+  parkedBase: { x: number; y: number },
+  parkedHeading: number | null,
+  durMs: number,
+  now: number
+): SelfMarkerResolution {
+  if (!travel) return { base: parkedBase, heading: parkedHeading, justParked: false };
+  const { pt, done } = easeToward(travel.from, travel.to, travel.startMs, durMs, now);
+  const heading = Math.atan2(travel.to.y - travel.from.y, travel.to.x - travel.from.x);
+  return { base: pt, heading, justParked: done };
+}
+
 type ShipMotion = { x: number; y: number; angle: number; docked: boolean };
 type DockPoint = { x: number; y: number; kind: string };
 
@@ -1555,7 +1609,7 @@ export function drawScene(
   // (Computed before the nebula band below — #1 anchors the nebula/hazard/
   // radiation arcs to this same starX/starY/rxMax orbital plane.)
   const anchorRng = splitmix32(sectorId * 2654435761 + 97);
-  // Star anchored just right of centre (Max: "move the sun right so we can see
+  // Star anchored just right of centre (human: "move the sun right so we can see
   // more of the rotation") — centring the primary lets the FULL orbital ellipse
   // fall on-screen instead of the left arc clipping the cap. Small seeded
   // jitter keeps systems from sharing one fixed skeleton.
@@ -3057,7 +3111,7 @@ function buildLandedCache(
       const warmth = mRng();
       // Blend star color (sc) into the baseline pale-gray moon tint. Weights are
       // intentionally light so moons never go wildly colored — JUDGMENT CALL for
-      // Max: increase sc blend coefficients (0.30 / 0.22 / 0.28) for stronger effect.
+      // human: increase sc blend coefficients (0.30 / 0.22 / 0.28) for stronger effect.
       const tintR = Math.min(240, Math.round(160 + sc.r * 0.30 + warmth * 22));
       const tintG = Math.min(238, Math.round(155 + sc.g * 0.22 + (1 - warmth) * 10));
       const tintB = Math.min(238, Math.round(170 + sc.b * 0.28 - warmth * 15));
@@ -3166,8 +3220,8 @@ function buildLandedCache(
       // DIAGONAL TILT (item 6): foreground swells (f > 0.4) get a seeded tilt so
       // their crests are angled rather than perfectly horizontal — they read as waves
       // rolling in at an angle to the shore. Horizon swells (f < 0.4) stay flat
-      // (correct for distant water). Max tilt of ±0.10 gives a ~6° angle per crest.
-      // JUDGMENT CALL for Max: increase 0.10 for steeper approach angles.
+      // (correct for distant water). human tilt of ±0.10 gives a ~6° angle per crest.
+      // JUDGMENT CALL for human: increase 0.10 for steeper approach angles.
       const swellTilt = f > 0.4
         ? (wRng() - 0.5) * 0.10 * ((f - 0.4) / 0.6)  // grows with depth into scene
         : (wRng() * 0.001);                             // near-zero for horizon swells
@@ -3919,7 +3973,7 @@ export function drawLandedScene(
   //      horizon warmth, giving sunrise/sunset a visible extra bloom layer.
   //      The star color (sc) shifts the hue: red/orange stars deepen toward red,
   //      blue/white stars give a cooler magenta-pink near the horizon.
-  //      JUDGMENT CALL for Max: band height (0.28 factor) and max alpha (0.52)
+  //      JUDGMENT CALL for human: band height (0.28 factor) and max alpha (0.52)
   //      — increase both for a more dramatic sunrise, reduce for subtlety.
   if (dc.warm > 0.04) {
     const bandH = horizonY * (0.22 + dc.warm * 0.28);  // taller band at peak twilight
@@ -4230,7 +4284,7 @@ export function drawLandedScene(
     //     Each swash sweeps toward the centre in a curved arc, building a crest then
     //     bursting into foam at the break point — giving the "side-on beach" read.
     //     Reduced-motion (t=0): skip (these are pure animation, no static value).
-    //     JUDGMENT CALL for Max:
+    //     JUDGMENT CALL for human:
     //       • swashCount (3) — more swashes for rougher seas
     //       • swashPeriod (5.5s) — cycle time per swash; increase for slower waves
     //       • maxAlpha (0.52) — peak opacity of the break arc
@@ -5981,7 +6035,7 @@ function drawLandedMoons(
     // sunAlt -0.12 (twilight, moon still near-full brightness) to +0.30
     // (sun well up, moon faded to a faint ~0.15 remnant).
     //   • JUDGMENT CALL: the 0.12/0.30 band and 0.15 daytime floor are tunable
-    //     for Max — widen the band for a slower fade, raise the floor for a
+    //     for human — widen the band for a slower fade, raise the floor for a
     //     more visible daytime ghost-moon.
     const sunAltNorm = Math.max(0, Math.min(1, (dc.sunAlt + 0.12) / 0.42)); // 0 at -0.12, 1 at +0.30
     const sunAltSmooth = sunAltNorm * sunAltNorm * (3 - 2 * sunAltNorm);   // smoothstep
@@ -5991,7 +6045,7 @@ function drawLandedMoons(
     // Two halo passes: an inner bloom (starting from the disc centre, not the edge)
     // that scales with night darkness, plus the existing outer atmospheric ring.
     //   • nightGlow multiplier: 1.0 at full day → 3.0 at pitch night — JUDGMENT
-    //     CALL for Max: increase the 2.0 coefficient for a more dramatic night halo.
+    //     CALL for human: increase the 2.0 coefficient for a more dramatic night halo.
     const nightGlow = 1.0 + (1 - dc.bright) * 2.0;
     ctx.save();
     // Inner bloom (NEW): originates from the moon's centre for a luminous glow-core.
@@ -7761,7 +7815,7 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
       cancelAnimationFrame(rafId);
       vistaStartRef.current = null;
     };
-  }, [scene, reducedMotion]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [scene, reducedMotion]);
 
   // ---------------------------------------------------------------------------
 
@@ -7804,7 +7858,13 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
   // (right-click → Travel). PURELY DECORATIVE — no real intrasystem position/
   // maneuver model; see drawScene's selfMarker param + travelMarkerTo below.
   const selfBaseRef = useRef<{ x: number; y: number }>({ x: -1, y: -1 });
-  const selfTravelRef = useRef<{ from: { x: number; y: number }; to: { x: number; y: number }; startMs: number } | null>(null);
+  const selfTravelRef = useRef<SelfTravel | null>(null);
+  // Parked heading (WO-SOLAR-MOVEMENT): frozen at the last leg's direction
+  // once a Travel-Here glide finishes, so rest never reverts to shipPos()'s
+  // wall-clock idle-drift angle — see resolveSelfMarker's doc comment. Null
+  // until the first Travel-Here (falls back to the idle-drift angle, same
+  // as pre-fix behavior, until the marker has ever actually traveled).
+  const selfHeadingRef = useRef<number | null>(null);
 
   // Orbital closeup: when set, the windshield zooms to a single planet. The
   // body snapshot + the clicked screen geometry (fromX/Y/R) are captured on
@@ -7921,20 +7981,18 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
     if (selfBaseRef.current.x < 0) {
       selfBaseRef.current = { x: selfPlace.baseX, y: selfPlace.baseY };
     }
-    let selfBase = selfBaseRef.current;
-    let travelAngle: number | null = null;
-    const travel = selfTravelRef.current;
-    if (travel) {
-      const { pt, done } = easeToward(travel.from, travel.to, travel.startMs, 900, Date.now());
-      selfBase = pt;
-      travelAngle = Math.atan2(travel.to.y - travel.from.y, travel.to.x - travel.from.x);
-      if (done) {
-        selfBaseRef.current = travel.to;
-        selfTravelRef.current = null;
-      }
+    const resolved = resolveSelfMarker(
+      selfTravelRef.current, selfBaseRef.current, selfHeadingRef.current, 900, Date.now()
+    );
+    if (resolved.justParked) {
+      // Commit the parked base + heading (WO-SOLAR-MOVEMENT) so rest reads
+      // from these frozen values instead of shipPos()'s idle-drift angle.
+      selfBaseRef.current = resolved.base;
+      selfHeadingRef.current = resolved.heading;
+      selfTravelRef.current = null;
     }
-    const selfMotion = shipPos({ ...selfPlace, baseX: selfBase.x, baseY: selfBase.y }, w, h, t);
-    const selfMarker = { x: selfMotion.x, y: selfMotion.y, angle: travelAngle ?? selfMotion.angle };
+    const selfMotion = shipPos({ ...selfPlace, baseX: resolved.base.x, baseY: resolved.base.y }, w, h, t);
+    const selfMarker = { x: selfMotion.x, y: selfMotion.y, angle: resolved.heading ?? selfMotion.angle };
 
     drawScene(
       ctx, w, h, sectorId, systemRef.current, t,
@@ -7989,6 +8047,7 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
     // continuity the game has no model for).
     selfBaseRef.current = { x: -1, y: -1 };
     selfTravelRef.current = null;
+    selfHeadingRef.current = null;
   }, [sectorId, scene]);
 
   // ---- Detect ships entering/leaving the sector → warp-in / warp-out streaks ----

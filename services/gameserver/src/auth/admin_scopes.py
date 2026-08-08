@@ -1,6 +1,6 @@
-"""Admin scope catalog — RBAC Phase A1 (ADR-0058 A-F2) + Max-ruled expansion.
+"""Admin scope catalog — RBAC Phase A1 (ADR-0058 A-F2) + human-ruled expansion.
 
-ADR-0058's 19 platform scopes are VERBATIM.  Operational scopes (Max-ruled
+ADR-0058's 19 platform scopes are VERBATIM.  Operational scopes (human-ruled
 19→26 expansion) plus Phase E ``admin.audit.review`` (26→27) are listed below.
 GRANTS live as AdminScopeGrant rows;
 
@@ -49,7 +49,7 @@ SCOPES_REVOKE = "admin.scopes.revoke"
 AUDIT_VIEW = "admin.audit.view"
 AUDIT_REVIEW = "admin.audit.review"
 
-# Operational (Max-ruled catalog expansion 19→26 — see
+# Operational (human-ruled catalog expansion 19→26 — see
 # audit/design-briefs/rbac-scope-expansion-2026-07-17.md).
 GALAXY_MANAGE = "admin.galaxy.manage"
 PLAYERS_ADJUST_CREDITS = "admin.players.adjust_credits"
@@ -58,6 +58,10 @@ COMBAT_INTERVENE = "admin.combat.intervene"
 ECONOMY_INTERVENE = "admin.economy.intervene"
 SECURITY_ACT = "admin.security.act"
 DISPUTES_RESOLVE = "admin.disputes.resolve"
+
+# System / monitoring (WO gameserver-CI-fix, 2026-07-19 — closes the
+# require_admin tripwire's last hit: GET /status/database/detailed).
+SYSTEM_HEALTH_VIEW = "admin.system.health_view"
 
 # ---------------------------------------------------------------------------
 # Derived sets
@@ -92,6 +96,7 @@ ALL_SCOPES: frozenset[str] = frozenset(
         ECONOMY_INTERVENE,
         SECURITY_ACT,
         DISPUTES_RESOLVE,
+        SYSTEM_HEALTH_VIEW,
     }
 )
 
@@ -157,6 +162,10 @@ SCOPE_DESCRIPTIONS: dict[str, str] = {
     ECONOMY_INTERVENE: "Intervene in economy and market operations.",
     SECURITY_ACT: "Take security enforcement actions (e.g., blocks, alerts).",
     DISPUTES_RESOLVE: "Resolve contract disputes and escrow outcomes.",
+    SYSTEM_HEALTH_VIEW: (
+        "View system/database health introspection (host, connection-pool "
+        "status, DB size, table/connection counts)."
+    ),
 }
 
 assert set(SCOPE_DESCRIPTIONS.keys()) == ALL_SCOPES

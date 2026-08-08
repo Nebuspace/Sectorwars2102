@@ -40,7 +40,6 @@ _WHOLE_ADMIN_MODULES: frozenset[str] = frozenset(
 # Mixed player+admin modules — classify per-endpoint via independent signals.
 _MIXED_ADMIN_MODULES: frozenset[str] = frozenset(
     {
-        "src.api.routes.mfa",
         "src.api.routes.translation",
         "src.api.routes.first_login",
         "src.api.routes.ranking",
@@ -106,7 +105,6 @@ def _endpoint_signals_admin(route: APIRoute) -> bool:
       - endpoint name starts with ``admin_`` / ``debug_`` (admin debug)
       - signature param named admin / admin_user / current_admin
       - docstring contains ``admin only`` / ``admin-only``
-      - MFA management surface (everything except login ``check_mfa_code``)
     """
     path = getattr(route, "path", "") or ""
     if "/admin" in path:
@@ -117,11 +115,6 @@ def _endpoint_signals_admin(route: APIRoute) -> bool:
         return False
 
     name = getattr(endpoint, "__name__", "") or ""
-    mod = getattr(endpoint, "__module__", "") or ""
-
-    # Historical admin-MFA surface; login check stays player-auth.
-    if mod == "src.api.routes.mfa" and name != "check_mfa_code":
-        return True
 
     if name.startswith("admin_") or name.startswith("debug_"):
         return True
