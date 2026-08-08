@@ -838,15 +838,6 @@ def can_place_gated(structures: dict, kind: str, x: int, y: int,
     return can_place(structures, kind, x, y)
 
 
-def assert_research_for_kind(kind: str, researched: Optional[Set[str]]) -> None:
-    """Raise ValueError if the player's research does not gate-UP to BUILD ``kind``; no-op when
-    satisfied (gate met or ungated). The raise mirrors place()'s ValueError-on-invalid contract so a
-    placement caller can guard with this before calling place()."""
-    ok, reason = research_satisfied_for_kind(kind, researched)
-    if not ok:
-        raise ValueError(f"cannot place {kind}: {reason}")
-
-
 # ---------------------------------------------------------------------------
 # derive_citadel_level (K1b-1 → CRT-1 cutover, human-ruled 2026-06-21). Pure read of the
 # placed/powered/populated grid that reproduces the CITADEL_LEVELS ladder.
