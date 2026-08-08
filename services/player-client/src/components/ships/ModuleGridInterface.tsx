@@ -16,7 +16,7 @@ import './module-grid-interface.css';
 // route serves the legacy UpgradeType hull catalog, not these modules), so the
 // installable catalog is encoded CLIENT-SIDE below, mirroring the gameserver's
 // ship_upgrade_service._MODULE_FAMILIES 1:1 (classes, base costs, hull gates,
-// the 3 deferred equipment families: lander/mining/tractor). Cost per tier is computed with the same
+// the deferred mining family; lander/tractor are live). Cost per tier is computed with the same
 // curve the server uses (base × MODULE_TIER_COST_MULT^(tier-1)) so the price
 // shown == the price the server charges; the server remains the source of truth
 // and rejects anything the client mis-derives.
@@ -113,14 +113,16 @@ const MODULE_FAMILIES: ModuleFamily[] = [
   { cls: 'harvester', name: 'Quantum Harvester Module', icon: '⚡', baseCost: 50000, slotClass: null,
     compatibleShips: ['SCOUT_SHIP', 'FAST_COURIER', 'DEFENDER', 'WARP_JUMPER'],
     description: 'Harvests quantum particles for passive income.' },
-  // --- deferred equipment families: listed, install server-blocked ("coming soon") ---
-  { cls: 'lander', name: 'Planetary Lander Module', icon: '🛬', baseCost: 20000, deferred: true, slotClass: null,
+  // Live after WO-BUILD-LANDER-MINING-TRACTOR-CONSUMER-WIRING (server install +
+  // effects live). Client deferred flags flipped WO-WIRE-LANDER-TRACTOR-CATALOG-UNLOCK.
+  { cls: 'lander', name: 'Planetary Lander Module', icon: '🛬', baseCost: 20000, slotClass: null,
     compatibleShips: ['COLONY_SHIP', 'LIGHT_FREIGHTER', 'CARGO_HAULER'],
     description: 'Improves planet-landing interaction.' },
+  // mining STAYS deferred — server still consumer_inert (see ship_upgrade_service).
   { cls: 'mining', name: 'Mining Laser Module', icon: '⛏️', baseCost: 35000, deferred: true, slotClass: null,
     compatibleShips: ['CARGO_HAULER', 'COLONY_SHIP', 'DEFENDER'],
     description: 'Enables direct asteroid mining.' },
-  { cls: 'tractor', name: 'Tractor Beam Module', icon: '🧲', baseCost: 40000, deferred: true, slotClass: 'combat',
+  { cls: 'tractor', name: 'Tractor Beam Module', icon: '🧲', baseCost: 40000, slotClass: 'combat',
     compatibleShips: ['CARGO_HAULER', 'DEFENDER', 'CARRIER', 'WARP_JUMPER'],
     description: 'Dual-use tractor: combat escape-denial (no damage) + ship-tow rig.' },
 ];

@@ -747,10 +747,8 @@ export const shipUpgradeAPI = {
     apiRequest(`/api/v1/ships/${shipId}/modules`),
 
   // installModule → { success, module, supercharged, cost_paid, remaining_credits,
-  //                   updated_stats, [consumer_inert] }. The deferred equipment
-  //   families (lander/mining/tractor) return success:false +
-  //   consumer_inert:true with a "not yet installable" message — surfaced as
-  //   "coming soon" in the catalog so they never reach this call.
+  //                   updated_stats, [consumer_inert] }. Mining remains deferred
+  //   (consumer_inert); lander/tractor are live (WO-WIRE-LANDER-TRACTOR-CATALOG-UNLOCK).
   //   harvester is live (residual 2): install succeeds; passive_income from _baked.
   installModule: (shipId: string, slotIndex: number, moduleClass: string, tier: number) =>
     apiRequest(`/api/v1/ships/${shipId}/modules/install`, {
