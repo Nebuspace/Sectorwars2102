@@ -429,6 +429,4 @@ class AdminWebSocketService {
 // Create singleton instance
 export const websocketService = new AdminWebSocketService();
 
-// For backward compatibility
-export const webSocketService = websocketService;
 export default websocketService;
