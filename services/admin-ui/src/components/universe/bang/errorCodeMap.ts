@@ -8,7 +8,7 @@
  * always has something actionable on screen.
  */
 
-export const BANG_ERROR_CODES: Record<string, string> = {
+const BANG_ERROR_CODES: Record<string, string> = {
   // Topology / connectivity
   'B-010': 'admin.bang.errors.isolatedSector',
   'B-020': 'admin.bang.errors.maxWarpsExceeded',
@@ -37,7 +37,7 @@ export const BANG_ERROR_CODES: Record<string, string> = {
 };
 
 /** Warning category → CSS class suffix (color-coded in the log panel). */
-export const WARNING_CATEGORY_CLASS: Record<string, string> = {
+const WARNING_CATEGORY_CLASS: Record<string, string> = {
   TOPOLOGY_RESCUE: 'topology-rescue',
   EMISSION_UNDERTARGET: 'emission-undertarget',
   EMISSION_OVERTARGET: 'emission-overtarget',

@@ -126,6 +126,25 @@ class FleetService:
         speeds = [m.ship.current_speed for m in fleet.members if m.ship]
         fleet.average_speed = sum(speeds) / len(speeds) if speeds else 0.0
 
+        # Derive fleet.sector_id from the flagship's live ship position
+        # (fleet-tactics.md:71,81 — the flagship is the fleet's single
+        # position anchor; fleets have no travel-as-a-unit mechanic of their
+        # own). Ship.sector_id is the Integer sector_number; Fleet.sector_id
+        # is the Sector UUID — same resolution move_fleet used before it was
+        # retired as dead/superseded code. Best-effort: no flagship or an
+        # unresolvable sector leaves the prior value untouched rather than
+        # clobbering a known-good position with an unknown one.
+        flagship = next(
+            (m for m in fleet.members if (m.role or "") == FleetRole.FLAGSHIP.value and m.ship),
+            None,
+        )
+        if flagship is not None:
+            sector = self.db.query(Sector).filter(
+                Sector.sector_id == flagship.ship.sector_id
+            ).first()
+            if sector is not None:
+                fleet.sector_id = sector.id
+
     def _compute_coordination_bonus(self, fleet: Fleet) -> float:
         """
         Compute the static multi-ship coordination bonus for a fleet.
@@ -448,32 +467,6 @@ class FleetService:
 
         return fleet
 
-    def move_fleet(self, fleet_id: UUID, sector_id: UUID) -> Fleet:
-        """Move an entire fleet to a new sector."""
-        fleet = self.db.query(Fleet).filter(Fleet.id == fleet_id).first()
-        if not fleet:
-            raise ValueError(f"Fleet {fleet_id} not found")
-
-        if fleet.status == FleetStatus.IN_BATTLE.value:
-            raise ValueError("Cannot move fleet during battle")
-
-        # Validate sector
-        sector = self.db.query(Sector).filter(Sector.id == sector_id).first()
-        if not sector:
-            raise ValueError(f"Sector {sector_id} not found")
-
-        # Move all member ships — Ship.sector_id is an Integer (sector_number)
-        for member in fleet.members:
-            if member.ship:
-                member.ship.sector_id = sector.sector_id
-
-        fleet.sector_id = sector_id
-        self.db.commit()
-        self.db.refresh(fleet)
-
-        logger.info(f"Moved fleet {fleet_id} to sector {sector_id}")
-        return fleet
-
     def disband_fleet(self, fleet_id: UUID) -> bool:
         """Disband a fleet."""
         # Lock the fleet row before checking status (WO-FLEET-ROUND-INTEGRITY
@@ -602,10 +595,7 @@ class FleetService:
         if not player:
             raise ValueError(f"Player {player_id} not found")
 
-        # The fleet is "docked" when its paying member is docked at a station
-        # that sits in the fleet's sector. Fleet.sector_id is a Station/Sector
-        # UUID; Station.sector_id is the integer sector number, so we resolve
-        # the docked station and verify it is the fleet's location.
+        # The fleet is "docked" when its paying member is docked at a station.
         if not player.is_docked or player.current_port_id is None:
             raise ValueError("You must be docked at a station to resupply the fleet")
 
@@ -616,16 +606,13 @@ class FleetService:
         if not station:
             raise ValueError("Docked station not found")
 
-        # Verify the fleet is at this dock. The fleet tracks a Sector UUID
-        # (Fleet.sector_id → sectors.id); the station carries that same UUID in
-        # sector_uuid. If the fleet has no sector recorded we fall back to the
-        # player's integer sector vs the station's integer sector_id.
-        fleet_at_station = False
-        if fleet.sector_id is not None and station.sector_uuid is not None:
-            fleet_at_station = fleet.sector_id == station.sector_uuid
-        else:
-            fleet_at_station = player.current_sector_id == station.sector_id
-        if not fleet_at_station:
+        # Verify the fleet is at this dock. Deliberately checks the paying
+        # player's own live position (already read fresh above, under lock)
+        # rather than Fleet.sector_id: that column is a best-effort display
+        # value derived from the flagship on roster-change events (see
+        # _recalculate_fleet_stats) and can go stale between events, which
+        # this credit-charging gate should never trust.
+        if player.current_sector_id != station.sector_id:
             raise ValueError("The fleet is not docked at your station")
 
         # Friendly-port gate (fleet-tactics.md:63 — resupply requires a

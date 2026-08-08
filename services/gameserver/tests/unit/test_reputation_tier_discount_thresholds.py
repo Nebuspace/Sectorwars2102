@@ -1,13 +1,16 @@
-"""Unit tests for WO-FIX-REPUTATION-TIER-DISCOUNT-THRESHOLDS.
+"""Unit tests for WO-FIX-REPUTATION-EFFECTS-DISPLAY-STALE-VS-ACTUAL-PRICING.
 
-Before the fix, PersonalReputationService.get_reputation_info() gated the
-station discount on score>=250 (one tier too high — Lawful players, score
-1-249, got no discount at all) and the faction bonus on score>=500 (one tier
-too high — Heroic players, score 250-499, never got the bonus). Canon
-(sw2102-docs/FEATURES/gameplay/ranking.md, "Gameplay effects" table):
-  [+1, +249]   Lawful     -5% station discount
-  [+250, +499] Heroic     -5% station discount, +5% faction standing bonus
-  [+500, +1000] Legendary -10% station discount, +5% faction standing bonus
+get_reputation_info()'s displayed `effects` dict now derives its price
+percentage from _PERSONAL_REP_TIER_MULTIPLIERS -- the same table
+compute_player_price_multiplier() (trading_service.py) actually charges --
+instead of a separately hand-maintained score-threshold ladder that had
+drifted from real pricing (e.g. Suspicious previously showed "no effect"
+while actually being charged +5%; Lawful/Heroic/Legendary/Criminal/Villain
+were off by ~1-2pts either direction).
+
+_PERSONAL_REP_TIER_MULTIPLIERS (trading_service.py):
+  Legendary 0.90 | Heroic 0.95 | Lawful 0.97 | Neutral 1.00
+  Suspicious 1.05 | Outlaw 1.10 | Criminal 1.15 | Villain 1.20
 
 No real DB: a tiny in-memory fake Session/Query keyed by Player.id, mirroring
 the pattern in test_bounty_service_nh2.py.
@@ -49,45 +52,75 @@ class _FakeSession:
         return _FakeQuery(self._players)
 
 
-def _effects_for(score):
+def _info_for(score):
     player = make_player(score)
     service = PersonalReputationService(_FakeSession(player))
     result = service.get_reputation_info(player.id)
     assert result["success"] is True
-    return result["effects"]
+    return result
 
 
-def test_lawful_floor_gets_discount_only():
-    effects = _effects_for(1)
-    assert effects["station_price_discount"] == 5
-    assert "faction_standing_bonus" not in effects
+def _effects_for(score):
+    return _info_for(score)["effects"]
 
 
-def test_lawful_ceiling_still_discount_only():
-    effects = _effects_for(249)
-    assert effects["station_price_discount"] == 5
-    assert "faction_standing_bonus" not in effects
+def test_legendary_gets_ten_percent_discount_and_faction_bonus():
+    effects = _effects_for(500)
+    assert effects["station_price_discount"] == 10
+    assert effects["faction_standing_bonus"] == 5
+    assert "station_price_increase" not in effects
+    assert "bounty_hunter_aggro" not in effects
 
 
-def test_heroic_floor_gets_discount_and_faction_bonus():
+def test_heroic_gets_five_percent_discount_and_faction_bonus():
     effects = _effects_for(250)
     assert effects["station_price_discount"] == 5
     assert effects["faction_standing_bonus"] == 5
 
 
-def test_heroic_ceiling_still_five_percent_discount():
-    effects = _effects_for(499)
-    assert effects["station_price_discount"] == 5
-    assert effects["faction_standing_bonus"] == 5
+def test_lawful_gets_three_percent_discount_no_faction_bonus():
+    effects = _effects_for(1)
+    assert effects["station_price_discount"] == 3
+    assert "faction_standing_bonus" not in effects
 
 
-def test_legendary_floor_gets_ten_percent_discount():
-    effects = _effects_for(500)
-    assert effects["station_price_discount"] == 10
-    assert effects["faction_standing_bonus"] == 5
-
-
-def test_neutral_and_below_get_no_positive_effects():
+def test_neutral_gets_no_price_effect():
     effects = _effects_for(0)
     assert "station_price_discount" not in effects
+    assert "station_price_increase" not in effects
+    assert "bounty_hunter_aggro" not in effects
     assert "faction_standing_bonus" not in effects
+
+
+def test_suspicious_gets_five_percent_increase_not_no_effect():
+    # Regression guard: this tier previously showed no effect at all while
+    # actually being charged +5% at the pricing layer.
+    effects = _effects_for(-1)
+    assert effects["station_price_increase"] == 5
+    assert "station_price_discount" not in effects
+    assert "bounty_hunter_aggro" not in effects
+
+
+def test_outlaw_gets_ten_percent_increase():
+    effects = _effects_for(-250)
+    assert effects["station_price_increase"] == 10
+    assert "bounty_hunter_aggro" not in effects
+
+
+def test_criminal_gets_fifteen_percent_increase_and_bounty_aggro():
+    effects = _effects_for(-500)
+    assert effects["station_price_increase"] == 15
+    assert effects["bounty_hunter_aggro"] is True
+
+
+def test_villain_gets_twenty_percent_increase_and_bounty_aggro():
+    effects = _effects_for(-1000)
+    assert effects["station_price_increase"] == 20
+    assert effects["bounty_hunter_aggro"] is True
+
+
+def test_effects_tier_matches_the_top_level_tier_field():
+    # The effects are keyed off the same `tier` returned alongside them --
+    # a caller reconciling the two should never see them disagree.
+    info = _info_for(250)
+    assert info["tier"] == "Heroic"

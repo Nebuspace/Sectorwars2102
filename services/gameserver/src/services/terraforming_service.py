@@ -522,24 +522,6 @@ class TerraformingService:
             self.db.refresh(planet)
         return changed
 
-    def complete_terraforming(self, planet_id: UUID) -> Dict[str, Any]:
-        """
-        Public method to force-complete terraforming on a planet.
-
-        Typically called internally when target is reached, but can
-        be invoked directly for admin/testing purposes.
-        """
-        planet = self.db.query(Planet).filter(Planet.id == planet_id).first()
-        if not planet:
-            raise ValueError("Planet not found")
-
-        if not planet.terraforming_active:
-            raise ValueError("No active terraforming project on this planet")
-
-        result = self._complete_terraforming(planet)
-        self.db.commit()
-        return result
-
     # --- Public helpers ---
 
     @staticmethod
