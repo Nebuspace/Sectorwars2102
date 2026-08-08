@@ -306,6 +306,9 @@ def report_stolen(
         "ship_id": str(ship.id),
         "stolen_status": True,
         "stolen_reported_at": now.isoformat(),
+        # WR10: server-authoritative deadline so the client never has to
+        # duplicate STOLEN_RETRACT_GRACE (24h) to render a countdown ticker.
+        "retract_grace_expires_at": (now + STOLEN_RETRACT_GRACE).isoformat(),
         "recovery_mode": mode,
         "bounty_id": bounty_ref,
         "cancelled_transfer_claim": cancelled_transfer_claim_id is not None,
