@@ -21,7 +21,7 @@ from src.models.expedition import Expedition
 from src.models.planet import Planet
 from src.models.player import Player
 from src.models.ship import Ship
-from src.services import expedition_service
+from src.services import expedition_service, first_login_service
 from src.services.expedition_service import ExpeditionError
 
 logger = logging.getLogger(__name__)
@@ -75,8 +75,12 @@ async def launch_expedition(
     (non-demo) expeditions."""
     planet = _get_owned_planet(db, request.planet_id)
     ship = _get_owned_ship(db, player, request.ship_id) if request.ship_id else None
+    # ADR-0091 M38: a first-colony player's expedition on their designated
+    # starter planet is forced-success/guaranteed-good/cost-waived. {} on
+    # every other planet or after colony #1, so this is a no-op merge there.
+    overrides = first_login_service.get_first_colony_expedition_overrides(db, player, planet)
     try:
-        expedition = expedition_service.roll_expedition(db, player, planet, ship)
+        expedition = expedition_service.roll_expedition(db, player, planet, ship, **overrides)
         db.commit()
         return _serialize(expedition)
     except ExpeditionError as e:
