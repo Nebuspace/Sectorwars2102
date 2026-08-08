@@ -1240,33 +1240,28 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   // planetary ops console surfaces failures inline. Mutations that move
   // credits refresh player state so the header credits stay authoritative.
 
-  // Citadel info — GET /planets/{id}/citadel (owner-only; 400 otherwise).
-  // Returns {citadel_level, citadel_name, max_population, safe_storage,
-  // safe_credits, drone_capacity, is_upgrading, upgrade_remaining_seconds?,
-  // next_level: {level, name, upgrade_cost, upgrade_hours, resource_cost, ...} | null}
+  // Citadel info — WO-WIRE-CITADEL-GET-UPGRADE: citadelAPI.getInfo (same URL).
   const getCitadelInfo = async (planetId: string) => {
     if (!user) throw new Error('Not authenticated');
 
     try {
-      const response = await api.get(`/api/v1/planets/${planetId}/citadel`);
-      return response.data;
+      return await citadelAPI.getInfo(planetId);
     } catch (error: any) {
       console.error('Error getting citadel info:', error);
       throw error;
     }
   };
 
-  // Start a citadel upgrade — POST /planets/{id}/citadel/upgrade.
-  // Level 0→1 (Outpost) is free and instant; higher levels deduct credits
-  // and planet resources and run on a timer (CitadelService.start_upgrade).
+  // Start a citadel upgrade — citadelAPI.upgrade (same URL). Level 0→1
+  // (Outpost) is free and instant; higher levels deduct credits and planet
+  // resources and run on a timer (CitadelService.start_upgrade).
   const upgradeCitadel = async (planetId: string) => {
     if (!user || !playerState) throw new Error('Not authenticated');
 
     try {
-      const response = await api.post(`/api/v1/planets/${planetId}/citadel/upgrade`);
-      // Upgrades from level 1+ deduct player credits
+      const data = await citadelAPI.upgrade(planetId);
       await refreshPlayerState();
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error upgrading citadel:', error);
       throw error;
