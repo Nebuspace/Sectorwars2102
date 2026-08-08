@@ -135,9 +135,10 @@ def backfill_initial_registrations(db: Session) -> int:
     (mirrors the before_insert listener's generator, since pre-existing
     rows never went through it). Returns the number of ships backfilled.
 
-    Not wired to any route or scheduler by this WO (schema-only scope) --
-    invoke manually (e.g. a one-off admin script) when ready to run it
-    against existing data.
+    Wired at POST /admin/ships/registry/backfill (admin_comprehensive.py's
+    admin_backfill_ship_registry, SHIPS_MANAGE-scoped) -- verified
+    2026-08-08, "not wired" here was stale. Idempotent, so admins can
+    invoke it more than once safely.
     """
     already_registered_ship_ids = {
         row.ship_id
