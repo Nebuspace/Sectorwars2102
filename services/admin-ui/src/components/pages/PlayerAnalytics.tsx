@@ -5,6 +5,7 @@ import PlayerDetailEditor from '../admin/PlayerDetailEditor';
 import BulkOperationPanel from '../admin/BulkOperationPanel';
 import PlayerAssetManager from '../admin/PlayerAssetManager';
 import EmergencyOperationsPanel from '../admin/EmergencyOperationsPanel';
+import RankingLeaderboardPanel from './RankingLeaderboardPanel';
 import { api } from '../../utils/auth';
 import {
   PlayerModel,
@@ -276,6 +277,9 @@ const PlayerAnalytics: React.FC = () => {
       />
       
       <div className="page-content">
+        {/* WO-WIRE-ADMIN-RANKING-LEADERBOARD: admin GET /ranking/leaderboard */}
+        <RankingLeaderboardPanel />
+
         {/* Error Display */}
         {state.errors.length > 0 && (
           <div className="alert alert-error mb-6">
