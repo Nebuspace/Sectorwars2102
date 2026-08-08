@@ -1155,20 +1155,18 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  // Upgrade planet building
+  // Upgrade planet building — WO-WIRE-PLANETARY-UPGRADE-BUILDING:
+  // planetaryAPI.upgradeBuilding (same URL; still refresh state + explore).
   const upgradePlanetBuilding = async (planetId: string, buildingType: string, targetLevel: number) => {
     if (!user || !playerState) return;
 
     setError(null);
 
     try {
-      const response = await api.post(`/api/v1/planets/${planetId}/buildings/upgrade`, {
-        buildingType,
-        targetLevel
-      });
+      const data = await planetaryAPI.upgradeBuilding(planetId, buildingType, targetLevel);
       await refreshPlayerState();
       await exploreCurrentLocation();
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error upgrading building:', error);
       setError(error.response?.data?.detail || 'Failed to upgrade building');
