@@ -140,6 +140,24 @@
   min-width: 160px;
 }
 
+/* WO-WIRE-CONTRACTS-GET-BY-ID — row main is a detail-refresh control */
+button.cb-row-main-as-button {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+
+button.cb-row-main-as-button:disabled {
+  cursor: wait;
+  opacity: 0.75;
+}
+
 .cb-commodity {
   color: #fff;
   font-weight: 600;
