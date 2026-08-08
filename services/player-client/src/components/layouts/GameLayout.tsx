@@ -14,6 +14,7 @@ import { ariaFeed } from '../mfd/ariaFeedStore';
 import { subscribeTeleprinterPanelRequest } from '../../services/teleprinterBus';
 import MedalToast from '../ranking/MedalToast';
 import MedalUnviewedSplash from '../ranking/MedalUnviewedSplash';
+import TractorLockPrompt from '../station/TractorLockPrompt';
 import PriorityHailConsumer from '../comms/PriorityHailConsumer';
 import WelcomeBackToast from '../auth/WelcomeBackToast';
 import NpcCombatBanner from '../combat/NpcCombatBanner';
@@ -394,6 +395,9 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
       {/* Offline-earned medal splash (WO-WIRE-MEDALS-UNVIEWED-SPLASH): one-shot
           GET /medals/unviewed on mount; clear-on-view is server-side. */}
       <MedalUnviewedSplash />
+      {/* Station anti-theft tractor lock (WO-WIRE-TRACTOR-LOCK-SURRENDER-UI):
+          Break free / Surrender when undock returns ERR_STATION_TRACTOR_LOCK. */}
+      <TractorLockPrompt />
       {/* Priority-driven hail surfaces (WO-B6): the in-game notification toast
           stack (normal/high messages + other WS toasts) and the urgent
           action-interrupting modal — per messaging.md "Priority levels". */}
