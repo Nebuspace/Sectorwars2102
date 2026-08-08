@@ -89,3 +89,18 @@
 .medal-toast-close:hover {
   color: #ffe27a;
 }
+
+/* Offline-queue splash — sit below the realtime toast slot if both ever overlap. */
+.medal-toast--unviewed {
+  top: 200px;
+}
+
+.medal-toast-unviewed-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.medal-toast-unviewed-list .medal-toast-name {
+  margin-top: 2px;
+}
