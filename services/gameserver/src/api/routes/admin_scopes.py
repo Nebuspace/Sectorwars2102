@@ -1,6 +1,6 @@
 """Admin scope grant/revoke API — RBAC Phase B (ADR-0058).
 
-Sole path to admin-hood after Max's 2026-07-17 ruling: RETIRE
+Sole path to admin-hood after human's 2026-07-17 ruling: RETIRE
 ``POST /users/admin``; minting capability = inserting AdminScopeGrant rows
 gated on ``admin.scopes.grant`` / ``admin.scopes.revoke``.  Every mutation
 self-logs to AdminActionLog (acting admin cannot suppress the write).

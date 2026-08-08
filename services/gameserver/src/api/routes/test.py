@@ -35,7 +35,7 @@ async def check_admin_exists(
     """
     Check if an admin user with the given username exists.
     This endpoint is for testing purposes only. Requires scopes.grant
-    (create-admin = grant-only per Max ruling; not PLAYERS_VIEW).
+    (create-admin = grant-only per human ruling; not PLAYERS_VIEW).
     """
     if not settings.TESTING and not settings.DEVELOPMENT_MODE:
         raise HTTPException(

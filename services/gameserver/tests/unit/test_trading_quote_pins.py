@@ -220,7 +220,7 @@ class TestSharedTotalsHelpers:
 
 
 class TestPriceBandInvariantSurvivesTax:
-    """trading.md's "Price-stacking order" section (canon, blessed by Max
+    """trading.md's "Price-stacking order" section (canon, blessed by human
     2026-06-14, `.version-tag[data-version=release]`) makes the commodity
     [min, max] band an absolute clamp on the modifier-stacked PER-UNIT
     price -- rank/faction/personal/tariff/lever, clamped last. It does not

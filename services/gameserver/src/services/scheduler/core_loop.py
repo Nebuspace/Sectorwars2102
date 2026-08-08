@@ -475,7 +475,7 @@ async def _npc_scheduler_main_loop() -> None:
                 logger.exception("NPC scheduler: weekly decay crashed (loop continues)")
 
         # Economy faucet (WEEKLY) — galactic-citizen subscription perk ONLY.
-        # Max's 2026-06-20 split moved the rep stipend to the DAILY sweep below;
+        # human's 2026-06-20 split moved the rep stipend to the DAILY sweep below;
         # this weekly path now pays only the paid citizen perk. Same coarse
         # pre-filter / durable-anchor pattern as the weekly decay; intentionally
         # on a separate cadence (20 min) to avoid colliding with the decay wake.
@@ -546,7 +546,7 @@ async def _npc_scheduler_main_loop() -> None:
 
         # Daily rep-stipend faucet — credit each player who logged in THIS UTC
         # day their per-reputation-tier stipend, once per day (idle day = 0).
-        # Max's 2026-06-20 split moved the rep stipend off the weekly faucet onto
+        # human's 2026-06-20 split moved the rep stipend off the weekly faucet onto
         # this DAILY, active-gated cadence. Coarse elapsed pre-filter (35 min) so
         # we don't scan players every 60s; the once-per-day-per-player guarantee
         # + restart-proofing come from the durable per-player UTC-date anchor in

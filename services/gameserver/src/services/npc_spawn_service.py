@@ -20,7 +20,7 @@ docs are explicitly Design-only):
     Sentinel-Captains on Sentinel Interdictors). Pirate enforcers are
     held back for a later slice; lords are held back because the BANG
     snapshot's 13 lords contradict canon ADR-0047's "Stronghold-tier
-    only, 1-2 per region" (conflict flagged to Max).
+    only, 1-2 per region" (conflict flagged to human).
   - Static NPCs: no movement, no schedules, no NPC-initiated combat,
     no respawn (Loop B), no NPCDeathLog, no bounty hooks. The one
     reputation hook in v1 lives in combat_service.attack_npc_ship

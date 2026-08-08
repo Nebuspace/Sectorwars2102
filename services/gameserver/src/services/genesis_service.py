@@ -45,7 +45,7 @@ def _dispatch_exploration_medals(db: Session, player: Player, context: Dict[str,
         logger.error("Exploration medal dispatch hook failed: %s", e)
 
 # --- Genesis deploy restrictions (ADR-0088, ratified 2026-06-16) ------------
-# Federation reputation gate. ADR-0088 said "level >= 8"; Max set the bar at the
+# Federation reputation gate. ADR-0088 said "level >= 8"; human set the bar at the
 # Heroic tier (personal_reputation >= 250) so it is reachable through normal play
 # rather than the near-unreachable top tier (Legendary >= 500). personal_reputation
 # is THE Federation-standing scalar (ADR-0084); the per-faction ReputationLevel

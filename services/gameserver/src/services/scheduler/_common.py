@@ -321,7 +321,7 @@ IDLE_INCOME_CHECK_SECONDS = int(
 # cargo['_capacity_bonus_percent'] is kept apart from cargo commodity keys.
 _PASSIVE_INCOME_ANCHOR_KEY = "_passive_income_last_utc_date"
 
-# Daily rep-stipend faucet pre-filter. Max's 2026-06-20 ruling SPLIT the old
+# Daily rep-stipend faucet pre-filter. human's 2026-06-20 ruling SPLIT the old
 # weekly economy faucet: the galactic-citizen subscription perk stays WEEKLY
 # (run_weekly_faucet_sync, above), but the reputation-tier stipend moved to this
 # DAILY, ACTIVE-GATED sweep — each player who logged in THAT UTC day receives a
@@ -458,7 +458,7 @@ STATION_RECOVERY_CHECK_SECONDS = int(
 # Offset to 55m so it does not share a wake with the other coarse probes
 # (decay 15m / faucet 20m / snapshot 25m / idle 30m / stipend 35m / bounty 40m /
 # port-costs 45m / station-recovery 50m). The 90-day inactivity / 7-day grace /
-# 7-day tenure numbers are Max-APPROVED (PL4b); only this background sweep
+# 7-day tenure numbers are human-APPROVED (PL4b); only this background sweep
 # cadence is operational.
 RECLAIM_FLAG_CHECK_SECONDS = int(
     os.environ.get("RECLAIM_FLAG_CHECK_SECONDS", str(55 * 60))
@@ -1064,7 +1064,7 @@ LOOP_A_WATERMARK_STATE_KEY = "loop_a_watermark"
 LOOP_B_WATERMARK_STATE_KEY = "loop_b_watermark"
 LOOP_C_WATERMARK_STATE_KEY = "loop_c_watermark"
 
-# CANON (ratified by Max 2026-08-02, was NO-CANON 2026-07-16): bounds how
+# CANON (ratified by human 2026-08-02, was NO-CANON 2026-07-16): bounds how
 # many missed Loop-A cadence intervals a single restart-wake will
 # synchronously replay. At LOOP_A_SECONDS = 60 this caps one wake at 24
 # ticks == 24 minutes of replayed patrol movement.

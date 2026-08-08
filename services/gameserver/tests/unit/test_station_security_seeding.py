@@ -177,7 +177,7 @@ class TestLawlessClusters:
 class TestOrdinaryPortDefault:
     """Ordinary CLASS_1-11 NPC port (in ANY region, not just player-owned)
     that isn't a named anchor or in a lawless cluster: **ratified
-    2026-08-04 (Max)** per-class gradient (station-protection.md,
+    2026-08-04 (human)** per-class gradient (station-protection.md,
     _derive_station_security_tier's own docstring) -- CLASS_1-6 (basic/
     mid-tier trading) -> basic, CLASS_7-11 (premium/refining/Tech
     Specialist) -> standard. Replaced the original WO-STN-SEC-1 uniform

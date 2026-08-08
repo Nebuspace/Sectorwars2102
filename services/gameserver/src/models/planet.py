@@ -165,7 +165,7 @@ class Planet(Base):
     # Shape: {"mode": "public|team_only|private|whitelist|denylist",
     #         "whitelist": [player_uuid,...], "denylist": [player_uuid,...]}.
     # Enforced at land-time only (mode changes apply to subsequent landings; no
-    # eviction of ships already on-planet). tax_rate is a SEPARATE, Max-gated axis.
+    # eviction of ships already on-planet). tax_rate is a SEPARATE, human-gated axis.
     landing_rights = Column(JSONB, nullable=True)
     description = Column(String, nullable=True)
 

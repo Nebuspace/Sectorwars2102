@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 
 # --- assistance-level gating --------------------------------------------
-# [NO-CANON -- provisional pending Max's 3-vs-4-level vocab ruling]
+# [NO-CANON -- provisional pending human's 3-vs-4-level vocab ruling]
 # ADR-0068 / aria-companion.md:212 specs a 4-level vocab (minimal / quiet /
 # standard / full) where `quiet` additionally skips P-I* rows on top of
 # what `minimal` skips. The LIVE column this kernel actually reads --
@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 # (minimal / medium / full), directly conflicting with :212's 4-level
 # gating table in the same doc.
 #
-# 4-level vocab ratified 2026-08-04 (Max, per ADR-0068): `minimal` skips
+# 4-level vocab ratified 2026-08-04 (human, per ADR-0068): `minimal` skips
 # all P-A* (atmospheric); `quiet` skips P-A* AND P-I* (interactive);
 # `standard` and `full` fire everything. `quiet` is strictly MORE
 # suppressive than `minimal` despite sitting "between" minimal and

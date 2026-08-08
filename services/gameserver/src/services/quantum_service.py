@@ -959,7 +959,7 @@ def harvest_nebula(db: Session, player_id: uuid.UUID) -> Dict[str, Any]:
     and arms the 2h cooldown (canonical, scaled via scaled_deadline the same
     way scan/jump compute theirs).
 
-    KERNEL SCOPE: the per-sector soft-cap depletion (Max-gated) is deferred —
+    KERNEL SCOPE: the per-sector soft-cap depletion (human-gated) is deferred —
     not implemented here. FLUSH-ONLY: the route owns db.commit().
 
     Returns the harvest outcome dict; raises QuantumError with a stable reason

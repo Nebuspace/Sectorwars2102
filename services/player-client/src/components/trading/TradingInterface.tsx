@@ -714,7 +714,7 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
       // For buying: limited by credits, cargo space, and port inventory
       // (the station charges sell_price when the player buys, PLUS the
       // station tariff — divide by the tariff-inclusive unit cost so the
-      // Max button never picks a quantity the server would reject)
+      // human button never picks a quantity the server would reject)
       const taxRate = marketInfo.port.tax_rate ?? 0;
       const affordableQuantity = Math.floor(playerState.credits / (resource.sell_price * (1 + taxRate)));
       const currentCargo = getCargoUsed();

@@ -420,7 +420,7 @@ MEDAL_CATALOG: Dict[str, Dict[str, Any]] = {
         # is admin-grant-safe and group-collision-proof. PARKED — UNWIRED: NO-CANON
         # (no Special/Hidden doc entry defines it) and no supporting "dark-territory /
         # lost-world discovery" game system exists. No dispatcher; no invented
-        # criterion. Admin-grant-only until canon defines it. Routed to Max.
+        # criterion. Admin-grant-only until canon defines it. Routed to human.
         "dark_territory_discovery", 1, "ghost_static", "ghost_in_the_static",
         effect=None,  # pure prestige — cosmetic-only.
     ),

@@ -565,7 +565,7 @@ class CitadelService:
         next_level = current_level + 1
         next_info = CITADEL_LEVELS[next_level]
 
-        # CRT-1 SIZE-GATE (Max-ruled 2026-06-21): a planet's grid can only physically pack the
+        # CRT-1 SIZE-GATE (human-ruled 2026-06-21): a planet's grid can only physically pack the
         # key-building footprint up to max_citadel_level_for_size(size). Reject an upgrade beyond
         # that ceiling BEFORE charging credits/resources or starting the timer — otherwise the
         # authoritative settle() derive would just refuse to confirm the new level and the player
@@ -898,7 +898,7 @@ class CitadelService:
             current_level = getattr(planet, "citadel_level", 0) or 0
             new_level = current_level + 1
 
-            # CRT-1 PLACE→DERIVE→CACHE (Max-ruled 2026-06-21): instead of writing the scalar
+            # CRT-1 PLACE→DERIVE→CACHE (human-ruled 2026-06-21): instead of writing the scalar
             # citadel_level directly, PLACE the new tier's key buildings on the grid, then DERIVE the
             # level back from the grid and CACHE it on the scalar column. derive_citadel_level is the
             # faithful inverse of the ladder, so on a size-packable planet the cached level == new_level
@@ -1761,7 +1761,7 @@ class CitadelService:
                 ),
             }
 
-        # --- Max count check (operational + in-progress reserve the slots) ---
+        # --- human count check (operational + in-progress reserve the slots) ---
         max_at_level = 0
         for lvl in sorted(spec["max_count"]):
             if current_level >= lvl:

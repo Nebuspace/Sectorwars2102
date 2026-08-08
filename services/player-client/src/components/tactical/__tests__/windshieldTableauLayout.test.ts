@@ -460,7 +460,7 @@ describe('headingDeg', () => {
     expect(headingDeg({ xPct: 0, yPct: 0 }, { xPct: 0, yPct: 10 })).toBeCloseTo(90);
   });
 
-  // ---- FIX B (Max live-playtest): aspect-correct the heading so the ship
+  // ---- FIX B (human live-playtest): aspect-correct the heading so the ship
   // faces its ACTUAL visual travel direction. %-deltas are % of DIFFERENT
   // axes (width vs height) -- on the ~4.3:1 wide-short flight band, atan2 on
   // the raw %s over-steepens the angle (points too vertical).
@@ -513,7 +513,7 @@ describe('nebulaArcs / debrisArc', () => {
   });
 });
 
-// ---- T1-A (Max live-playtest): every body/station must stay in-band -------
+// ---- T1-A (human live-playtest): every body/station must stay in-band -------
 
 describe('safeOrbitRadii / orbitalPosition(safeRadii) — T1-A in-band invariant', () => {
   // A representative WIDE-SHORT band, computed from the real flight-mode
@@ -651,7 +651,7 @@ describe('safeOrbitRadii / orbitalPosition(safeRadii) — T1-A in-band invariant
   });
 });
 
-// ---- T0-1 (Max live-catch, sector 1): bodies must stay DISTINCT, not just
+// ---- T0-1 (human live-catch, sector 1): bodies must stay DISTINCT, not just
 // in-band -- the hole T1-A's own review missed. All-left-hemisphere-phase
 // data collapsed onto the far-left-anchored star's own xPct regardless of
 // orbit_au (leftPctPerAu~=0 by construction there); fixed by making X
@@ -661,7 +661,7 @@ describe('T0-1 — bodies stay DISTINCT and SPREAD, not just in-band (sector-1 l
   const FLIGHT_BAND: BandGeometry = { widthPx: 1440, heightPx: 334.7, remPx: 18.09 };
   const PLANET_EM = 2.6; // mirrors WindshieldTableau.tsx's own PLANET_FOOTPRINT_EM_MAX
 
-  // Max's own live repro, verbatim: sector 1, all 6 bodies at cos(phase)<0
+  // human's own live repro, verbatim: sector 1, all 6 bodies at cos(phase)<0
   // (118deg/119deg/251deg/228deg/160deg/135deg are all in the left
   // hemisphere) -- the exact input that piled onto the star pre-fix.
   const SECTOR_1_BODIES: SystemBody[] = [

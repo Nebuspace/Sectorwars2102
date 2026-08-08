@@ -357,7 +357,7 @@ async def claim_planet(
             detail="Planet is not accessible from your current location"
         )
 
-    # Server-gated proximity (Max, 2026-07-17: "a claim that lands is a
+    # Server-gated proximity (human, 2026-07-17: "a claim that lands is a
     # landing" -- claim auto-lands the player on success, so it gets the
     # SAME gate /planets/land and /trading/dock already enforce, not a
     # separate copy. See intrasystem_movement_service.assert_dock_land_
@@ -594,7 +594,7 @@ async def claim_planet(
     # planetary_lander throughput bonus (WO-AL).
     # Canon (FEATURES/gameplay/ship-systems.md:136) marks landing_bonus as
     # 📐 Design-only: "multiplier on planet-side production / colonist
-    # throughput". Orchestrator ANCHOR (Max's proxy, DECISIONS Pending):
+    # throughput". Orchestrator ANCHOR (human's proxy, DECISIONS Pending):
     # interpret it as a LANDING-action throughput efficiency — a
     # planetary_lander-equipped ship lands ~25% MORE colonists per unit of
     # cargo at the deposit. It stays OUT of the continuous production tick.
@@ -749,7 +749,7 @@ async def claim_planet(
     # Per-sector faction influence (WO-G10 / ADR-0021): founding a colony
     # extends the influence of the player's DOMINANT-reputation faction over
     # this sector by +3%. The WRITE half only — the read-side taxonomy /
-    # patrol-spawn effects are Max-gated and intentionally not invoked here.
+    # patrol-spawn effects are human-gated and intentionally not invoked here.
     # The dominant faction is the player's highest *positive* personal
     # reputation (there is no dedicated dominant-faction column). The influence
     # table keys on the sector UUID (sectors.id); planet.sector_uuid is that FK

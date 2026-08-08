@@ -496,7 +496,7 @@ async def hard_delete_galaxy(
         description="Must match the galaxy's exact name to authorise deletion.",
     ),
 ) -> Response:
-    """Hard-delete a galaxy (and everything cascaded). Per Max, no archive.
+    """Hard-delete a galaxy (and everything cascaded). Per human, no archive.
 
     Important: Galaxy ↔ Region is not a FK relationship in this schema —
     Galaxy.bang_snapshot["regions"][rt]["region_id"] is the only link.

@@ -5,7 +5,7 @@ WO-CLEANUP-ORPHANED-PG-ENUM-TYPES. Three Postgres enum types
 zero backing columns anywhere in the current schema or migration
 history (grep-verified: zero hits for any of the three names across
 src/models/ and alembic/versions/). Dropping them is destructive DDL
-(DROP TYPE), not additive-only — standing safety list requires Max
+(DROP TYPE), not additive-only — standing safety list requires human
 sign-off before the statements may run.
 
 ENFORCEMENT (not docstring-only): ``upgrade()`` is a no-op unless
@@ -14,7 +14,7 @@ ENFORCEMENT (not docstring-only): ``upgrade()`` is a no-op unless
 stage) therefore stamps this revision without dropping anything.
 
 If this revision is already stamped without the env flag, do NOT rely on
-re-running it after Max GO — land a NEW tip migration that performs the
+re-running it after human GO — land a NEW tip migration that performs the
 DROP TYPE statements (Alembic will not re-execute this revision).
 
 Revision ID: d8b4231fd582
@@ -43,7 +43,7 @@ def upgrade() -> None:
     if os.environ.get(_ALLOW_ENV, "").strip() not in ("1", "true", "TRUE", "yes"):
         logger.warning(
             "Skipping DROP TYPE for orphan enums (failure_type/upgrade_type/"
-            "insurance_type): set %s=1 after Max sign-off to apply, or land a "
+            "insurance_type): set %s=1 after human sign-off to apply, or land a "
             "new tip migration if this revision is already stamped. "
             "(WO-CLEANUP-ORPHAN-PG-ENUM-TYPES)",
             _ALLOW_ENV,

@@ -1,6 +1,6 @@
 """P2P trade anti-RMT helpers (ADR-0089 § Ratified parameters — PINNED).
 
-Launch starting values ratified Max 2026-06-28. Do not invent alternate numbers.
+Launch starting values ratified human 2026-06-28. Do not invent alternate numbers.
 """
 
 from __future__ import annotations

@@ -56,7 +56,7 @@ async def confirm_beacon_abuse(
 ):
     """Confirm flagged beacon as abusive: dock deployer trust, remove row.
 
-    Does not auto-suspend / time-ban (Max-gated). False reports use
+    Does not auto-suspend / time-ban (human-gated). False reports use
     clear-flag instead.
     """
     try:

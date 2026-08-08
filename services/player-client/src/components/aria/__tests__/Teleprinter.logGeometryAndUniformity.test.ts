@@ -1,4 +1,4 @@
-// ---- WO-UI-MAX-BATCH-1 REVISE (Max #22-24) — static source-level proof for
+// ---- WO-UI-MAX-BATCH-1 REVISE (human #22-24) — static source-level proof for
 // the two claims jsdom can't see (this repo's default vitest `css: false`
 // means an imported stylesheet's computed style is never applied to jsdom —
 // see WindshieldTableau.test.tsx's own `.ssv-popup-title` precedent, same

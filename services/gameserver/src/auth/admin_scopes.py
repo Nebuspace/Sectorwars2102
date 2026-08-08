@@ -1,6 +1,6 @@
-"""Admin scope catalog — RBAC Phase A1 (ADR-0058 A-F2) + Max-ruled expansion.
+"""Admin scope catalog — RBAC Phase A1 (ADR-0058 A-F2) + human-ruled expansion.
 
-ADR-0058's 19 platform scopes are VERBATIM.  Operational scopes (Max-ruled
+ADR-0058's 19 platform scopes are VERBATIM.  Operational scopes (human-ruled
 19→26 expansion) plus Phase E ``admin.audit.review`` (26→27) are listed below.
 GRANTS live as AdminScopeGrant rows;
 
@@ -49,7 +49,7 @@ SCOPES_REVOKE = "admin.scopes.revoke"
 AUDIT_VIEW = "admin.audit.view"
 AUDIT_REVIEW = "admin.audit.review"
 
-# Operational (Max-ruled catalog expansion 19→26 — see
+# Operational (human-ruled catalog expansion 19→26 — see
 # audit/design-briefs/rbac-scope-expansion-2026-07-17.md).
 GALAXY_MANAGE = "admin.galaxy.manage"
 PLAYERS_ADJUST_CREDITS = "admin.players.adjust_credits"

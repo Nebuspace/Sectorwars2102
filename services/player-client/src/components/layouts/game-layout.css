@@ -85,7 +85,7 @@ div.game-container {
    permanently inert — these class-selector equivalents are what actually
    apply. Higher specificity (0,3,0 — two classes + a descendant) than
    cockpit-shell.css's base `.band { height: var(--band-h-flight) }`
-   (0,1,0 -- 18.5em as of WO-UI-MAX-BATCH-1's Max-ruled override, was
+   (0,1,0 -- 18.5em as of WO-UI-MAX-BATCH-1's human-ruled override, was
    15.5em) so they win regardless of import/cascade order. */
 .game-container.mode-station .band {
   height: 8.5em;
@@ -95,19 +95,19 @@ div.game-container {
   height: 16em;
 }
 
-/* PANEL BAND CORRECTION (WO-UI-MAX-BATCH-1, Max's authoritative ruling
+/* PANEL BAND CORRECTION (WO-UI-MAX-BATCH-1, human's authoritative ruling
    #11/12) — SUPERSEDES WO-UI0-VERTICAL-COMPOSITION's own "MID-PANEL
    BAND-SHRINK HOOK", which billed panel mode a flat 3em tithe off
    `.band`'s rest height (artifact parity, cockpit-redesign-v10-
    RATIFIED.html L306-318: `.stage[data-aria="2"] .band { height:12.5em }`
    — flight 15.5em→12.5em, station 8.5em→5.5em, surface 16em→13em, via
    `.game-container.tp-mid-panel .band` + two mode-scoped 4-class
-   compounds). Max's correction: "THE BAND PAYS NOTHING" — PANEL mode
+   compounds). human's correction: "THE BAND PAYS NOTHING" — PANEL mode
    ("squishes the LOWER PANELS downward", ~4 ARIA lines + input) must
    leave `.band`'s rect at EXACTLY its per-mode rest height whether the
    teleprinter is in TICKER or PANEL form; the ENTIRE cost of PANEL's
    growth must land on `.lower`'s `1fr` row instead. Re-confirmed live
-   under WO-UI-MAX-BATCH-1 REVISE (Max #22-24, the TWO INDEPENDENT
+   under WO-UI-MAX-BATCH-1 REVISE (human #22-24, the TWO INDEPENDENT
    TOGGLES rebuild, teleprinter.css's own header) — PANEL's own growth
    mechanic is UNCHANGED by that REVISE, only the toggle that drives it
    (`bodyPanel`, was `teleprinterDisplayMode==='mid-panel'`) was renamed.
@@ -124,11 +124,11 @@ div.game-container {
    log + input, stacked above it), THEN hands 100% of whatever height
    remains to the lone `1fr` track. This is exactly the
    PRE-WO-UI0-VERTICAL-COMPOSITION behavior that WO's own comment (now
-   removed) documented as the "bug" it was fixing — Max's ruling here is
+   removed) documented as the "bug" it was fixing — human's ruling here is
    that behavior was actually the intended design; the artifact's own
    flat-tithe demo was not. */
 
-/* LOG OVERLAY GEOMETRY (WO-UI-MAX-BATCH-1 REVISE, Max #22-24 bullet 2 —
+/* LOG OVERLAY GEOMETRY (WO-UI-MAX-BATCH-1 REVISE, human #22-24 bullet 2 —
    "LOG covers the ENTIRE band, top of band → the teleprinter row") —
    `--tp-log-h` is the single source of truth teleprinter.css's
    `.teleprinter.tp-log-open .telelog { height: var(--tp-log-h) }` rule
@@ -149,7 +149,7 @@ div.game-container {
 .game-container {
   --tp-log-h: 18.5em; /* flight rest height — mirrors cockpit-shell.css's
                           `.band { height: var(--band-h-flight) }`, 18.5em
-                          as of this same REVISE (Max-ruled override,
+                          as of this same REVISE (human-ruled override,
                           cockpit-shell.css's own comment). */
 }
 

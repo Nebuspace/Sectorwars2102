@@ -266,7 +266,7 @@ describe('WindshieldTableau', () => {
     expect(objTags).toContain('TEST ANOMALY');
   });
 
-  // ---- FIX A (Max live-playtest): decorative bodies show their REAL corpus
+  // ---- FIX A (human live-playtest): decorative bodies show their REAL corpus
   // name (celestial_service.py's own name_for_body -- serialized on EVERY
   // body slot, real or decorative), not a fabricated `PROCEDURAL-N-idx`
   // designation that discarded it.
@@ -306,7 +306,7 @@ describe('WindshieldTableau', () => {
     expect(anom?.className).toContain('anom');
   });
 
-  it('renders a moon child-orbit layer for a body with moons>0, and none for moons=0 (Max refinement 5a)', async () => {
+  it('renders a moon child-orbit layer for a body with moons>0, and none for moons=0 (human refinement 5a)', async () => {
     await mount();
     const [realPlanetBtn, proceduralPlanetBtn] = Array.from(container.querySelectorAll('.pl'));
     expect(realPlanetBtn.querySelectorAll('.moon-orbit').length).toBe(2);
@@ -333,7 +333,7 @@ describe('WindshieldTableau', () => {
     expect(lefts[1] - lefts[0]).toBeGreaterThan(0.32); // > MOON_DOT_MAX_EM
   });
 
-  // ---- T1-A (Max live-playtest): a body clipping off the band's bottom
+  // ---- T1-A (human live-playtest): a body clipping off the band's bottom
   // edge, "PROCEDURAL-21-6" hugging the top edge — bodies/stations must stay
   // fully inside the band's [0,100]%x[0,100]% rect. windshieldTableauLayout
   // .test.ts already exhaustively sweeps the pure math; this proves the
@@ -639,7 +639,7 @@ describe('WindshieldTableau', () => {
     expect(onRequestDock).toHaveBeenCalledWith('station-1');
   });
 
-  it('renders the FULL station name in the popup title even when it is long — no ellipsis clamp (WO-TABLEAU-TUNE #25, Max #25)', async () => {
+  it('renders the FULL station name in the popup title even when it is long — no ellipsis clamp (WO-TABLEAU-TUNE #25, human #25)', async () => {
     const longStationName = 'Trade Hub Capelworks Expansion Complex';
     mockContents({ ...TEST_SYSTEM, stations: [{ ...TEST_STATION, name: longStationName }] });
     await mount();
@@ -652,7 +652,7 @@ describe('WindshieldTableau', () => {
     expect(title.textContent?.endsWith('...')).toBe(false);
   });
 
-  it('renders the FULL real-planet name in the popup title even when it is long — no ellipsis clamp (WO-TABLEAU-TUNE #25, Max #25)', async () => {
+  it('renders the FULL real-planet name in the popup title even when it is long — no ellipsis clamp (WO-TABLEAU-TUNE #25, human #25)', async () => {
     const longPlanetName = 'Frostholm Deep Colony Reclamation Site';
     mockContents({ ...TEST_SYSTEM, bodies: [{ ...REAL_PLANET, name: longPlanetName }] });
     await mount();
@@ -807,7 +807,7 @@ describe('WindshieldTableau', () => {
     vi.useRealTimers();
   });
 
-  // ---- FIX B (Max live-playtest): ship heading is aspect-corrected to the
+  // ---- FIX B (human live-playtest): ship heading is aspect-corrected to the
   // REAL measured band px dims (this file's own mocked containerRef rect,
   // 800x400 -> bandAspect=0.5), not the raw %-space angle.
   it('ship heading is aspect-corrected to the measured band px dims, not the raw %-space angle', async () => {
@@ -850,7 +850,7 @@ describe('WindshieldTableau', () => {
     }
   });
 
-  // ---- FIX C revise (Max correction: right-click must be MENU-mediated,
+  // ---- FIX C revise (human correction: right-click must be MENU-mediated,
   // not direct-travel -- the earlier direct-travel cut is superseded).
   // right-click (contextmenu) anywhere opens a small "Travel To" menu at
   // the click point; the ship does NOT move until that item is explicitly
@@ -1036,7 +1036,7 @@ describe('WindshieldTableau', () => {
     expect(ship.className).toContain('burning');
   });
 
-  it('seeds the ship at the last-docked station\'s position on a fresh mount (Max refinement 5b: undock emerges at the host)', async () => {
+  it('seeds the ship at the last-docked station\'s position on a fresh mount (human refinement 5b: undock emerges at the host)', async () => {
     await mount({ lastDockedStationId: 'station-1' });
     const ship = container.querySelector('.shipmk') as HTMLElement;
     const station = container.querySelector('.obj') as HTMLElement;
@@ -1297,7 +1297,7 @@ describe('WindshieldTableau', () => {
     await act(async () => { flightCapture!.approach('planet-real-1'); });
     await act(async () => { vi.advanceTimersByTime(1000); }); // accelerating toward planet
 
-    // Two redirects back-to-back with no frame yield between them (Max repro).
+    // Two redirects back-to-back with no frame yield between them (human repro).
     await act(async () => {
       flightCapture!.approach('station-1');
       flightCapture!.approach('planet-real-1');
@@ -1368,7 +1368,7 @@ describe('WindshieldTableau', () => {
     expect(flightCapture?.targetId).toBeNull();
   });
 
-  // ---- T0-2 (Max: "your pick, knock it out" — orbit-line view): every
+  // ---- T0-2 (human: "your pick, knock it out" — orbit-line view): every
   // planet/station/wreck rides its own real orbit ellipse, REPLACING the
   // old generic decorativeRings. Body POSITIONING (T0-1's fan/rank fix) is
   // completely untouched -- the ellipse is derived FROM the position.
@@ -1435,7 +1435,7 @@ describe('WindshieldTableau', () => {
   });
 });
 
-// ---- WO-TABLEAU-TUNE (Max #25): source-level guard against the ellipsis
+// ---- WO-TABLEAU-TUNE (human #25): source-level guard against the ellipsis
 // clamp regressing. The DOM textContent assertions above prove there is no
 // JS-level string truncation, but they can't see a CSS text-overflow clamp
 // (jsdom doesn't apply the imported stylesheet's computed style) — so this

@@ -32,7 +32,7 @@
      cockpit.css cascade, 1440x900, 15 rows): `.mbody` was already
      correctly bounded and internally scrolling pre-fix -- this makes the
      LIST itself (not the shared `.mbody` all three deck-monitors share)
-     the visible scroll boundary Max is asking for. */
+     the visible scroll boundary human is asking for. */
   max-height: 100%;
   overflow-y: auto;
 }

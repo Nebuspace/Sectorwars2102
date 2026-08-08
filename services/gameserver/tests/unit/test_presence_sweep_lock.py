@@ -508,7 +508,7 @@ class TestPresenceSweepLockedRefetch:
 
 @pytest.mark.unit
 class TestPresenceSweepHeal:
-    """P0-FIX-SWEEP-HEAL (Max two-seat repro, 2026-07-16): reconciles MISSING
+    """P0-FIX-SWEEP-HEAL (human two-seat repro, 2026-07-16): reconciles MISSING
     or pose-less HUMAN presence entries from Player.current_sector_id, in
     ADDITION to (never instead of) the removal pass above -- a completely
     separate candidate set and lock key (Sector.sector_id, not Sector.id),
@@ -719,7 +719,7 @@ class TestPresenceSweepHeal:
 
 @pytest.mark.unit
 class TestHealQueryRealSQLAlchemyCoercion:
-    """2026-07-16 live crash (Max, direct invocation on the deployed host):
+    """2026-07-16 live crash (human, direct invocation on the deployed host):
     ``sqlalchemy.exc.ArgumentError: Column expression, FROM clause, or other
     columns clause element expected, got <property object ...>`` at
     coercions.py:696 -- ``_heal_missing_or_poseless_presence_sync``'s
@@ -836,7 +836,7 @@ class TestHealQueryRealSQLAlchemyCoercion:
 class TestHealPhaseExceptionIsolation:
     """2026-07-16 crash-fix DoD hardening (hub-added): 'a crash in ANY
     phase must never leave prune-applied-heal-skipped' -- the exact live
-    incident (17:28/17:5x, Max direct invocation): the removal/prune pass
+    incident (17:28/17:5x, human direct invocation): the removal/prune pass
     committed its per-sector work, THEN the heal candidate query crashed
     UNCAUGHT, aborting the whole `_run_presence_sweep_sync` call with no
     logged result for that tick.

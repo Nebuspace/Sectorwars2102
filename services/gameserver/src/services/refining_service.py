@@ -32,7 +32,7 @@ the 24h queue Quantum Crystal refining left deferred), so
 ``start_lumen_refine``/``collect_lumen_refine`` build that timer for real
 rather than shipping an instant kernel. NOTE: refining instant-vs-timer
 scarcity was one of the 3 ESCALATE design calls in the
-iteration-2026-06-28-digest.md; a pending Max ruling may supersede this
+iteration-2026-06-28-digest.md; a pending human ruling may supersede this
 12h-timer build.
 """
 import logging

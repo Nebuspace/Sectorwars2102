@@ -627,7 +627,7 @@ class TestTypeClassification:
         assert db.added[0].contract_type == ContractType.EXPRESS_DELIVERY
 
     def test_stock_deficit_reclassifies_as_bulk_procurement(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """WO-CONTRACT-4-BULK (Max-corrected direction, 2026-07-17): an
+        """WO-CONTRACT-4-BULK (human-corrected direction, 2026-07-17): an
         origin genuinely SHORT on live stock -- not one with a surplus --
         reclassifies. See BULK_PROCUREMENT_DEFICIT_THRESHOLD's own comment.
         MIN_CONTRACT_QUANTITY itself is the lowest reachable `available`

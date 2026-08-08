@@ -2853,7 +2853,7 @@ class BangImportService:
         )
         services = _build_default_services(is_spacedock)
         # WO-BO / ADR-0079: derive the archetype-driven trader personality from
-        # the station class at creation (Max #7: personality generated at creation
+        # the station class at creation (human #7: personality generated at creation
         # + persistent). Single source of truth: core/trader_personalities.py.
         from src.core.trader_personalities import build_personality_for_class
         trader_personality = build_personality_for_class(station_class.value)

@@ -69,7 +69,7 @@ const barrenBodyLabel = (kind: string): { name: string; note: string } => ({
 });
 
 /** SOLAR SYSTEM[SYSTEM]'s hazard-as-rows (WO-UI-MAX-BATCH-1 item 8, revised
- *  by Max #21: terse rows here, the numeric breakdown moved to its own
+ *  by human #21: terse rows here, the numeric breakdown moved to its own
  *  HAZARD tab below). Named rows come from the sector's own TYPE — a real,
  *  narrow enum (models/sector.py's SectorSpecialType) — using ITS OWN code
  *  comments as the note text (not invented flavor; c.f. HazardAnalysisCard
@@ -818,7 +818,7 @@ const GameDashboardInner: React.FC = () => {
   const [navChartMode, setNavChartMode] = useState<'2d' | '3d'>('2d');
 
   // SOLAR SYSTEM monitor mode (WO-UI2-DECK-RECONCILE, §05: [SYSTEM ·
-  // SALVAGE · SIGNALS]; 4th page HAZARD added WO-UI-MAX-BATCH-1 Max #21):
+  // SALVAGE · SIGNALS]; 4th page HAZARD added WO-UI-MAX-BATCH-1 human #21):
   // SYSTEM (the dense sensor-row list — bodies/stations/formations/wrecks,
   // hazards appearing only as terse un-numbered rows), SALVAGE (wreck rows),
   // SIGNALS (discovered formations), HAZARD (the numeric deep-dive — hazard
@@ -975,7 +975,7 @@ const GameDashboardInner: React.FC = () => {
   // moved.
   const [scanActive, setScanActive] = useState(false);
 
-  // Uninhabitable-body declutter filter (T1-B, Max ruling): DEFAULT OFF —
+  // Uninhabitable-body declutter filter (T1-B, human ruling): DEFAULT OFF —
   // every decorative body shows by default, matching every other sensor
   // toggle's honest-by-default convention. Scoped to the SAME decorative
   // (`real:false`) bodies `solarStatic.bodies` already carries and
@@ -1222,7 +1222,7 @@ const GameDashboardInner: React.FC = () => {
       : null
   ), [playerState?.is_landed, playerState?.current_planet_id, planetsInSector]);
 
-  // WO-UI2-WINDSHIELD-TABLEAU (Max refinement 5b): "undock emerges at the
+  // WO-UI2-WINDSHIELD-TABLEAU (human refinement 5b): "undock emerges at the
   // host's position" — a ref that survives the landed/docked→flight unmount
   // boundary (GameDashboard itself never unmounts across that transition,
   // unlike WindshieldTableau which remounts fresh each time) so the
@@ -1669,7 +1669,7 @@ const GameDashboardInner: React.FC = () => {
   // the server enforces BOTH (planets.py:1005-1009 citadel + :1010 habitability; settle
   // clamps to min). NOT maxColonists/effectiveMaxColonists (habitability-scaled
   // DISPLAY value, not enforced) and NOT maxPopulation alone (misses the citadel
-  // cap). Using baseMaxColonists alone over-filled the Max preset → server 400 when
+  // cap). Using baseMaxColonists alone over-filled the human preset → server 400 when
   // habitability was the binding cap. (WO-LANDED-VITALS-FIX)
   const colonistHardCap = Math.min(
     Number(landedPlanetDetail?.baseMaxColonists ?? Infinity),
@@ -1686,7 +1686,7 @@ const GameDashboardInner: React.FC = () => {
     if (transferModal === 'disembark') {
       let max = shipColonists;
       // Clamp to colonistHardCap (the lower of citadel & habitability caps) so the
-      // Max preset, the "Room to add" readout, and the server all agree.
+      // human preset, the "Room to add" readout, and the server all agree.
       if (Number.isFinite(colonistHardCap) && typeof landedPlanetDetail?.colonists === 'number') {
         max = Math.min(max, Math.max(0, colonistHardCap - landedPlanetDetail.colonists));
       }
@@ -1963,7 +1963,7 @@ const GameDashboardInner: React.FC = () => {
       : null
   ), [playerState?.is_docked, playerState?.current_port_id, stationsInSector]);
 
-  // WO-UI2-WINDSHIELD-TABLEAU (Max refinement 5b) — see the matching
+  // WO-UI2-WINDSHIELD-TABLEAU (human refinement 5b) — see the matching
   // lastLandedPlanetIdRef comment above; same idiom, the docked host.
   const lastDockedStationIdRef = useRef<string | null>(null);
   if (dockedStation?.id) lastDockedStationIdRef.current = dockedStation.id;
@@ -2677,7 +2677,7 @@ const GameDashboardInner: React.FC = () => {
               </HudChip>
 
               {/* Surface corner control — LIFT OFF, an absolute corner cluster
-                  OVER the vista (Max + Orchestrator placement decision) so it
+                  OVER the vista (human + Orchestrator placement decision) so it
                   never pushes/overlaps the surface viewport. The MINIMIZE
                   SURFACE button + the green landed-min-bar it used to reveal
                   are DELETED (WO-UI5-RETIREMENT+GLASS): GameDashboard never
@@ -2738,7 +2738,7 @@ const GameDashboardInner: React.FC = () => {
             <>
               {/* Space viewport - edge to edge. WO-UI2-WINDSHIELD-TABLEAU:
                   the flight-mode windshield-band scene is now the static DOM
-                  tableau (Max, live-playtest #4), not SolarSystemViewscreen's
+                  tableau (human, live-playtest #4), not SolarSystemViewscreen's
                   canvas orrery — SolarSystemViewscreen itself is untouched
                   and still owns the 'docked'/'landed' mounts below. See
                   WindshieldTableau.tsx's file header for the verify-first
@@ -2814,7 +2814,7 @@ const GameDashboardInner: React.FC = () => {
                   2026-07-13 as fragile). Renders nothing when region_type is
                   absent (e.g. a player with no region) rather than a guess.
 
-                  WO-HUD-SHIPTYPE (sector-move, Max ruled 2026-07-19): sector
+                  WO-HUD-SHIPTYPE (sector-move, human ruled 2026-07-19): sector
                   identity moves down HERE from the status bar's
                   LocationDropdown trigger -- "not in both, entirely down"
                   (that trigger is now icon-only; LocationDropdown.tsx,
@@ -3369,7 +3369,7 @@ const GameDashboardInner: React.FC = () => {
 
                             // SAFE tab body — the UNIFIED citadel-safe vault: the
                             // single cr-equivalent cap bar, CREDIT deposit/withdraw
-                            // (with 25/50/75/Max presets), per-commodity store/take,
+                            // (with 25/50/75/human presets), per-commodity store/take,
                             // and the auto-deposit sweep toggle. One vault, one cap
                             // (credits + commodities). Requires citadel level >= 1.
                             const safeTabBody = (
@@ -3667,7 +3667,7 @@ const GameDashboardInner: React.FC = () => {
 
               {/* CENTER MONITOR: Solar System (formerly "Planetary Systems",
                   §05 [SYSTEM · SALVAGE · SIGNALS · HAZARD], WO-UI2-DECK-
-                  RECONCILE, HAZARD added WO-UI-MAX-BATCH-1 Max #21) */}
+                  RECONCILE, HAZARD added WO-UI-MAX-BATCH-1 human #21) */}
               <div className="mon system-monitor">
                 {/* WO-UI0-SHELL-TRANSPLANT (Leaf L3): header now shows only
                     the title + the live sector name as its sub-status; the
@@ -3676,9 +3676,9 @@ const GameDashboardInner: React.FC = () => {
                 <div className="mhead">
                   <span className="mtitle">SOLAR SYSTEM</span>
                   {/* Sector name (e.g. "Terra") removed from the header —
-                      Max 2026-07-14: title alone; the locrow already shows
+                      human 2026-07-14: title alone; the locrow already shows
                       where you are. */}
-                  {/* Uninhabitable-body filter (T1-B, Max ruling): DEFAULT
+                  {/* Uninhabitable-body filter (T1-B, human ruling): DEFAULT
                       OFF — every decorative body visible until toggled ON.
                       Lives in the header (not a content row) so it persists
                       across SYSTEM/SALVAGE/SIGNALS/HAZARD, mirroring the
@@ -3903,7 +3903,7 @@ const GameDashboardInner: React.FC = () => {
                         </div>
                       ))}
                       {/* Hazards as terse, un-numbered object rows (WO-UI-
-                          MAX-BATCH-1 item 8, revised Max #21): the numeric
+                          MAX-BATCH-1 item 8, revised human #21): the numeric
                           hazard_level/radiation_level/NO-TRANSIT breakdown
                           moved OFF this page entirely, onto its own HAZARD
                           tab below — never a %-block or a bare number here. */}
@@ -3929,7 +3929,7 @@ const GameDashboardInner: React.FC = () => {
                       <div className="empty-state">No signals or formations charted in this sector</div>
                     )
                   ) : (
-                    /* HAZARD — the numeric deep-dive (WO-UI-MAX-BATCH-1 Max
+                    /* HAZARD — the numeric deep-dive (WO-UI-MAX-BATCH-1 human
                        #21): hazard_level/radiation_level bars + NO-TRANSIT
                        badges + description, relocated verbatim off SYSTEM's
                        old `.system-hazard-fold` (same currentSector fields

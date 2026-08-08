@@ -105,7 +105,7 @@ class FormationResponse(BaseModel):
 
 class FormationInvestigateRewardResponse(BaseModel):
     """The reward granted by investigating a formation. [NO-CANON]: the reward
-    magnitude is a proposed conservative value pending Max's canon ruling."""
+    magnitude is a proposed conservative value pending human's canon ruling."""
     credits: int = 0
 
 class FormationInvestigateDetailResponse(BaseModel):
@@ -123,7 +123,7 @@ class FormationInvestigateResponse(BaseModel):
     formation: FormationInvestigateDetailResponse
     reward: FormationInvestigateRewardResponse
     credits_remaining: int
-    # False once DECISIONS.md anomaly-investigate-reward ratified (Max 2026-06-22).
+    # False once DECISIONS.md anomaly-investigate-reward ratified (human 2026-06-22).
     reward_is_no_canon: bool = False
 
 

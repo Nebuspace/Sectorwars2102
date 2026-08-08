@@ -448,7 +448,7 @@ class WebSocketService {
       // firing must not resurrect the dead session's socket.
       if (!this.shouldReconnect) return;
       this.reconnectAttempts++;
-      this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30000); // Max 30 seconds
+      this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30000); // human 30 seconds
       // openSocket() (not connect()) so the backoff counter is preserved and
       // the latest token is used.
       this.openSocket();
