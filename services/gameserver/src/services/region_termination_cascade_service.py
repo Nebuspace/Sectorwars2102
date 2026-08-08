@@ -39,7 +39,7 @@ ADR-0050 ties pre-pay to a specific asset.
 """
 import logging
 import uuid
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
@@ -52,6 +52,7 @@ from src.models.station import Station
 from src.services import central_bank_service as bank
 from src.services.audit_service import AuditAction, AuditService
 from src.services.citadel_service import CitadelService
+from src.services.realtime_outbox import RealtimeOutbox
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +92,7 @@ def _mint_genesis_compensation(db: Session, owner_id: uuid.UUID, device_type: Ge
 
 def process_planet_termination(
     db: Session, planet: Planet, now: Optional[datetime] = None,
+    outbox: Optional[RealtimeOutbox] = None,
 ) -> Dict[str, Any]:
     """ADR-0050 "Player-owned planet" disposition, planet-safe-transport +
     Genesis-compensation slice only (see module docstring for the full-scope
@@ -101,6 +103,15 @@ def process_planet_termination(
     logged and returned early, mirroring warp_gate_service.
     cascade_region_gate_teardown's own orphaned-owner handling (point 4 of
     its docstring: WARNed, never raised, region terminates regardless).
+
+    ``outbox`` (ADR-0054 X-V1) queues a ``region.planet_terminated``
+    personal event for the owner instead of emitting directly -- the caller
+    (``dispatch_terminated_cleanup`` -> Phase 7 of the governance sweep)
+    flushes it ONLY after that phase's own ``db.commit()`` succeeds, so a
+    rollback (e.g. Genesis mint or Bank deposit failing mid-cascade) never
+    leaves a ghost "your planet was terminated" notification for data that
+    was never persisted. ``outbox=None`` (e.g. a direct unit-test call) is
+    a no-op -- queuing is best-effort instrumentation, never load-bearing.
     """
     now = now or datetime.now(UTC)
     audit = AuditService(db)
@@ -136,7 +147,19 @@ def process_planet_termination(
         planet.termination_compensated_at = now
         return result
 
-    owner = db.query(Player).filter(Player.id == planet.owner_id).first()
+    # ADR-0054 X-I2: lock the owner's Player row before any wallet read/
+    # compute/mutate below (Genesis credit compensation debits/credits
+    # owner.credits directly further down) -- serializes this cascade
+    # against any concurrent player action (trade, ARIA dialogue, etc.)
+    # touching the same wallet. This is the first read of this Player row
+    # in this function/session, so a plain .with_for_update() (no
+    # .populate_existing() needed) is sufficient.
+    owner = (
+        db.query(Player)
+        .filter(Player.id == planet.owner_id)
+        .with_for_update()
+        .first()
+    )
     if owner is None:
         logger.warning(
             "region_termination_cascade: planet %s owner_id %s has no Player "
@@ -254,6 +277,21 @@ def process_planet_termination(
         genesis_credit_compensation, len(genesis_ids), forfeited_credits,
         forfeited_commodities,
     )
+    if outbox is not None:
+        outbox.queue_personal(
+            "region.planet_terminated",
+            {
+                "planet_id": str(planet.id),
+                "region_id": str(planet.region_id) if planet.region_id else None,
+                "bank_credits": surviving_credits,
+                "bank_commodities": surviving_commodities_kept,
+                "forfeited_credits": forfeited_credits,
+                "forfeited_commodities": forfeited_commodities,
+                "genesis_devices_minted": len(genesis_ids),
+                "genesis_credit_compensation": genesis_credit_compensation,
+            },
+            owner.user_id,
+        )
     return result
 
 

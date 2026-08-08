@@ -26,7 +26,7 @@ import random
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
@@ -791,6 +791,25 @@ def write_contract_generation_batch(
             penalty=spec.penalty,
             acceptance_fee_pct=Decimal("2.0"),
             escrow_amount=Decimal("0"),
+            # WO-FIX-NPC-CONTRACT-INSURANCE-ALWAYS-WORTHLESS: a player
+            # posting their OWN contract funds `insurance_pool_reserve`
+            # out of pocket at post time (contracts.md's own worked
+            # example: payment=500, insurance_pool_reserve=50 -- a 10%
+            # ratio); an NPC issuer has no wallet to draw that from, but
+            # `contract_insurance.insure()` never gates on `issuer_type`
+            # (an acceptor CAN buy insurance on an NPC contract), and
+            # `apply_claim_offset` is bounded to whatever this column
+            # holds. Leaving it at the column's bare `default=0` silently
+            # made every NPC-contract insurance purchase a paid-for
+            # no-op claim offset (`min(n, 0) == 0`, always). Fund it at
+            # the same 10%-of-payment ratio canon's own example uses, so
+            # an insured NPC contract has a real, non-zero offset pool --
+            # NPC `escrow_amount` stays 0 per this column's own docstring
+            # (that column tracks player-issuer-funded escrow, not the
+            # insurance pool, and is orthogonal to it).
+            insurance_pool_reserve=(spec.payment * Decimal("0.10")).quantize(
+                Decimal("1"), rounding=ROUND_HALF_UP,
+            ),
             faction_id=spec.faction_id,
             # WO-CONTRACT-3-NPCGEN-TYPES: only hazardous_transport specs
             # carry a non-None reputation_penalty (see the classification

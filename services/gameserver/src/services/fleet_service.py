@@ -23,6 +23,7 @@ from src.models.player import Player
 from src.models.team import Team
 from src.models.treasury_transaction import TreasuryTransaction
 from src.models.sector import Sector
+from src.services.port_friendliness_service import check_friendly_port
 
 if TYPE_CHECKING:
     # Forward-ref-only imports for type annotations — resolved at runtime via
@@ -626,6 +627,21 @@ class FleetService:
             fleet_at_station = player.current_sector_id == station.sector_id
         if not fleet_at_station:
             raise ValueError("The fleet is not docked at your station")
+
+        # Friendly-port gate (fleet-tactics.md:63 — resupply requires a
+        # friendly station). Reuses the exact same reputation convention as
+        # ship_upgrades.check_friendly_port (NEUTRAL+ standing with the
+        # station's controlling faction; a faction-less/unaffiliated station
+        # is always friendly — insurance-factionless-port-gate, reused here
+        # unmodified). Shared via port_friendliness_service rather than
+        # importing ship_upgrades directly: that module lives in api/routes,
+        # and a services-layer file importing FROM a routes file would be a
+        # backwards (routes -> services -> routes) dependency.
+        friendly, unfriendly_reason = check_friendly_port(self.db, player_id, station)
+        if not friendly:
+            raise ValueError(
+                f"Cannot resupply the fleet at a hostile station: {unfriendly_reason}"
+            )
 
         current_supply = fleet.supply_level if fleet.supply_level is not None else self.SUPPLY_MAX
 

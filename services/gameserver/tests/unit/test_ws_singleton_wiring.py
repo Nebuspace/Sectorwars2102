@@ -178,6 +178,13 @@ async def test_flag_message_broadcasts_to_admins():
     message_obj = SimpleNamespace(
         id=message_id, content="spam spam spam", sender_id=uuid4(),
         flagged=False, flagged_reason=None,
+        # This test asserts the flag SUCCEEDS (admin broadcast fires), so
+        # the fixture must report flagged_by as a participant --
+        # is_visible_to is real code, not test-doubled, on message_service
+        # (WO-FIX-MESSAGE-FLAG-NO-PARTICIPANT-CHECK); a bare SimpleNamespace
+        # has no such method, so it's stubbed here to return True for the
+        # flagging player specifically.
+        is_visible_to=lambda player_id: player_id == flagged_by,
     )
     flagging_player_obj = SimpleNamespace(username="ratbone")
 

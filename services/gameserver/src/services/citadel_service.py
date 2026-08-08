@@ -33,6 +33,8 @@ DEFENSE_BUILDINGS = {
         "cost": 500000,
         "build_hours": 168,
         "effects": {"sector_range": 2, "damage_per_round": 500},
+        # credits-only per defense.md's 2026-08-04 correction (citadels.md's own
+        # "code-wins" callout) — no ``materials`` entry, matches shipped code.
     },
     "turret_network": {
         "name": "Automated Turret Network",
@@ -41,6 +43,8 @@ DEFENSE_BUILDINGS = {
         "cost": 150000,
         "build_hours": 72,
         "effects": {"anti_drone_kills_per_round": 3},
+        # defense.md §"Automated turret network": "150,000 cr + 8,000 equipment".
+        "materials": {"equipment": 8000},
     },
     "scanner_array": {
         "name": "Long-Range Scanner Array",
@@ -49,6 +53,8 @@ DEFENSE_BUILDINGS = {
         "cost": 75000,
         "build_hours": 48,
         "effects": {"detection_range_sectors": 2},
+        # defense.md §"Scanner array": "75,000 cr + 10,000 equipment".
+        "materials": {"equipment": 10000},
     },
     # CRT WO-K0-3: the two formerly Design-only DEFENSE_BUILDINGS, now cashed into
     # reality. Each is RESEARCH-GATED — placeable through THIS existing flow only
@@ -90,6 +96,13 @@ DEFENSE_BUILDINGS = {
             },
         },
         "research_node": "t.defense.railgun.1",
+        # defense.md §"Fixed rail gun batteries": "150,000 cr + 20,000 ore + 10,000
+        # equipment per battery" — SEC-DEFBUILD-MATERIALS: was catalogued (this
+        # comment block) but never actually charged; build_defense_building only
+        # deducted credits. Fixed alongside the same gap on every other defense
+        # building below. ``ore`` maps to the ``Planet.fuel_ore`` stockpile column
+        # (planet-domain name; ``fuel_ore`` -> ``ore`` is the cargo-domain alias).
+        "materials": {"fuel_ore": 20000, "equipment": 10000},
     },
     # planetary_defense_grid (defense.md §"Defense grid"): citadel L3+; 200,000 cr
     # + 15,000 equipment; 96h; a DRONE-DAMAGE MODIFIER (+15% drone damage &
@@ -117,6 +130,13 @@ DEFENSE_BUILDINGS = {
         # unkeyed fallback to spec["cost"] is only correct here because count=1
         # (L1) IS spec["cost"] (200k).  Any count not keyed falls back to 200k.
         "tier_costs": {2: 300000},               # L2 (2nd unit): 300k cr (defense.md)
+        # L1 (count=1): 15,000 equipment (defense.md §"Defense grid": "200,000 cr +
+        # 15,000 equipment"). L2 (count=2, 300k cr): canon states credits only for
+        # the upgrade ("Upgradable to L2 ... for 300k cr") — no equipment listed, so
+        # count=2 is intentionally absent from ``tier_materials`` (falls back to {}
+        # below, not to the L1 ``materials`` — see build_defense_building's lookup).
+        "materials": {"equipment": 15000},       # L1 (count=1) fallback
+        "tier_materials": {2: {}},               # L2 (2nd unit): credits-only
         "build_hours": 96,                       # per-unit build time (L1 and L2)
         "effects": {
             # L1 (count=1): +15% drone damage and accuracy.
@@ -149,11 +169,16 @@ DEFENSE_BUILDINGS = {
         "max_count": {3: 1, 4: 2, 5: 3},
         "cost": 100000,
         "build_hours": 48,
+        # defense.md §"Mine fields": "100,000 cr + 10,000 equipment per minefield" —
+        # SEC-DEFBUILD-MATERIALS: now actually charged by build_defense_building
+        # (mirrors the ``effects.equipment_cost`` metadata below, which stays for
+        # admin_colonization.py's existing reader; this is the enforcement copy).
+        "materials": {"equipment": 10000},
         "effects": {
             "weapon_kind": "proximity_mine",
             "mines_per_field": 20,
-            # Equipment material requirement recorded as catalog metadata
-            # (build_defense_building charges credits only, like rail_gun).
+            # Equipment material requirement recorded as catalog metadata (also
+            # read by admin_colonization.py's genesis seeding path).
             "equipment_cost": 10000,
             # WO-P5-planets-minefield-wiring: canon raw per-mine-impact damage
             # (defense.md §"Mine fields": "deal 500-1,500 hull damage per mine
@@ -403,6 +428,44 @@ def citadel_passive_defense_rating(planet) -> int:
     if delta <= 0:
         return base
     return base + int(0.5 * delta)
+
+
+# ---------------------------------------------------------------------------
+# SEC-DEFBUILD-MATERIALS helpers — free functions (not CitadelService methods)
+# to keep build_defense_building's own cyclomatic complexity from compounding
+# every time a new gate is added to it (C901). Mirror planet_grid.py's
+# module-level ``_charge_materials`` shape.
+# ---------------------------------------------------------------------------
+def _defense_building_materials(spec: Dict[str, Any], count_to_be: int) -> Dict[str, int]:
+    """The material cost for the unit about to be built. ``tier_materials``
+    (mirroring ``tier_costs``) overrides the flat ``materials`` for a given
+    unit count; a tiered unit with no entry (e.g. planetary_defense_grid's L2,
+    credits-only per canon) charges nothing, NOT the lower tier's amount."""
+    return spec.get("tier_materials", {}).get(count_to_be, spec.get("materials", {})) or {}
+
+
+def _missing_material(planet: "Planet", materials: Dict[str, int]):
+    """None if ``planet`` can afford every material in ``materials``, else the
+    first shortfall as ``(material, required, available)``. Dict iteration
+    order decides which shortfall is reported when several are short."""
+    for material, required in materials.items():
+        need = int(required or 0)
+        if need <= 0:
+            continue
+        have = getattr(planet, material, None)
+        if not isinstance(have, int) or have < need:
+            return material, need, int(have or 0)
+    return None
+
+
+def _charge_defense_materials(planet: "Planet", materials: Dict[str, int]) -> None:
+    """Debit ``planet``'s stockpile columns by ``materials``. Caller has already
+    confirmed affordability via ``_missing_material`` — this never raises for
+    an insufficient balance, it just subtracts."""
+    for material, required in materials.items():
+        need = int(required or 0)
+        if need > 0:
+            setattr(planet, material, int(getattr(planet, material)) - need)
 
 
 class CitadelService:
@@ -1635,10 +1698,12 @@ class CitadelService:
         player_id: uuid.UUID,
         building_type: str,
     ) -> Dict[str, Any]:
-        """Construct a defense building on a planet, gated by citadel level and credits.
+        """Construct a defense building on a planet, gated by citadel level, research,
+        credits, and per-planet materials (SEC-DEFBUILD-MATERIALS).
 
-        Validates the building type, citadel prerequisites, max count, and player funds
-        before recording the building and deducting credits.
+        Validates the building type, research-node gate, citadel prerequisites, max
+        count, and player funds/planet materials before recording the building and
+        deducting credits + materials.
         """
         # --- Validate building type ---
         if building_type not in DEFENSE_BUILDINGS:
@@ -1725,6 +1790,23 @@ class CitadelService:
         count_to_be = current_count + queued_count + 1
         unit_cost = spec.get("tier_costs", {}).get(count_to_be, spec["cost"])
 
+        # --- Material cost (SEC-DEFBUILD-MATERIALS) ---
+        # Mirrors planet_grid.py's place_building: the per-planet MATERIALS canon
+        # requires alongside credits were catalogued in DEFENSE_BUILDINGS but never
+        # charged — a free-material construction gap. Checked against the
+        # already-locked ``planet`` row (locked at function entry) BEFORE the
+        # player-credit lock, so an unaffordable build fails without touching
+        # credits at all. See ``_defense_building_materials``/``_missing_material``.
+        unit_materials = _defense_building_materials(spec, count_to_be)
+
+        shortfall = _missing_material(planet, unit_materials)
+        if shortfall:
+            material, need, have = shortfall
+            return {
+                "success": False,
+                "message": f"Insufficient {material}. Need {need:,}, have {have:,}.",
+            }
+
         # --- Lock player for credit deduction ---
         player = self.db.query(Player).filter(Player.id == player_id).populate_existing().with_for_update().first()
         if not player:
@@ -1738,8 +1820,9 @@ class CitadelService:
                 ),
             }
 
-        # --- Execute construction: deduct credits and enqueue a timed build ---
+        # --- Execute construction: deduct credits + materials, enqueue a timed build ---
         player.credits -= unit_cost
+        _charge_defense_materials(planet, unit_materials)
 
         complete_at = now + timedelta(hours=spec["build_hours"])
         queue.append({
@@ -1775,6 +1858,7 @@ class CitadelService:
             "operational_count": current_count,
             "max_count": max_at_level,
             "credits_deducted": unit_cost,
+            "materials_deducted": dict(unit_materials or {}),
             "player_credits": player.credits,
             "build_hours": spec["build_hours"],
             "effects": spec["effects"],
