@@ -453,6 +453,9 @@ class NexusGenerationService:
         )
         # FRONTIER_OUTPOST scatters nebula sectors (more nebula on the edge).
         nebula_chance = 0.15 if is_frontier else 0.0
+        # Audit-27 #1 / generation.md: ANOMALY ~1–2% of generated sectors
+        # (midpoint 1.5%). Never the starter; never overrides NEBULA.
+        anomaly_chance = 0.015
 
         batch_sectors = []
         batch_ports = []
@@ -528,6 +531,14 @@ class NexusGenerationService:
             if is_frontier and sector_num != 1 and random.random() < nebula_chance:
                 sector_data["type"] = SectorType.NEBULA
                 stats["nebula_sectors"] += 1
+            # ANOMALY scatter (all cluster types): only when type still unset
+            # (defaults STANDARD). NEVER the starter; never overrides NEBULA.
+            elif (
+                sector_num != 1
+                and "type" not in sector_data
+                and random.random() < anomaly_chance
+            ):
+                sector_data["type"] = SectorType.ANOMALY
 
             batch_sectors.append(sector_data)
             stats["sectors"] += 1

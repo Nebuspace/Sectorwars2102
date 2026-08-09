@@ -133,6 +133,22 @@ class FormationInvestigateResponse(BaseModel):
     reward_is_no_canon: bool = False
 
 
+class AnomalyInvestigateDetailResponse(BaseModel):
+    """The investigated ANOMALY sector's disclosed details."""
+    sector_id: int
+    name: str
+    type: str
+    is_investigated: bool
+
+
+class AnomalyInvestigateResponse(BaseModel):
+    """Payload returned on a successful POST /player/sectors/{id}/investigate-anomaly."""
+    sector: AnomalyInvestigateDetailResponse
+    reward: FormationInvestigateRewardResponse
+    credits_remaining: int
+    reward_is_no_canon: bool = False
+
+
 def _mining_laser_level(ship) -> int | None:
     """The installed Mining Laser ladder level from
     ``equipment_slots["mining_laser"]["level"]`` (WO-UI-FIELDS), or ``None`` when
@@ -167,6 +183,9 @@ class SectorResponse(BaseModel):
     # Special formations present in this sector (anchor or interior). Identity
     # disclosed only after discovery; see FormationResponse (WO-CA).
     special_formations: List[FormationResponse] = []
+    # Audit-27 #1: whether this SectorType.ANOMALY's one-time investigate
+    # reward has been claimed (False for non-ANOMALY / uninvestigated).
+    anomaly_investigated: bool = False
 
 class MoveResponse(BaseModel):
     success: bool
@@ -552,6 +571,7 @@ async def get_current_sector(
         is_formation_investigated,
         is_formation_known_to_player,
     )
+    from src.services.anomaly_service import is_anomaly_investigated
     flip_formation_discovery(db, player, sector)
     db.commit()  # persist the discovery flip (mirrors /system)
 
@@ -586,7 +606,8 @@ async def get_current_sector(
         x_coord=sector.x_coord,
         y_coord=sector.y_coord,
         z_coord=sector.z_coord,
-        special_formations=formation_responses
+        special_formations=formation_responses,
+        anomaly_investigated=is_anomaly_investigated(sector),
     )
 
 @router.post("/formations/{formation_id}/investigate", response_model=FormationInvestigateResponse)
@@ -629,6 +650,50 @@ async def investigate_formation_route(
         credits_remaining=payload["credits_remaining"],
         reward_is_no_canon=payload["reward_is_no_canon"],
     )
+
+
+@router.post(
+    "/sectors/{sector_id}/investigate-anomaly",
+    response_model=AnomalyInvestigateResponse,
+)
+async def investigate_anomaly_route(
+    sector_id: int,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Investigate a SectorType.ANOMALY sector the player currently occupies.
+
+    404 if the sector is missing, not ANOMALY, or the player is not present
+    (collapsed so clients cannot probe). 409 if already investigated (one-time
+    reward). On success: marks investigated, grants 250 credits (hub ruling
+    Audit-27 #1 (c) — formation common tier).
+    """
+    from src.services.anomaly_service import (
+        investigate_anomaly,
+        AnomalyNotFoundError,
+        AnomalyAlreadyInvestigatedError,
+    )
+
+    try:
+        payload = investigate_anomaly(db, player, sector_id)
+    except AnomalyNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Anomaly sector not found or not present.",
+        )
+    except AnomalyAlreadyInvestigatedError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Anomaly has already been investigated.",
+        )
+
+    return AnomalyInvestigateResponse(
+        sector=AnomalyInvestigateDetailResponse(**payload["sector"]),
+        reward=FormationInvestigateRewardResponse(**payload["reward"]),
+        credits_remaining=payload["credits_remaining"],
+        reward_is_no_canon=payload["reward_is_no_canon"],
+    )
+
 
 @router.post("/move/{sector_id}", response_model=MoveResponse)
 async def move_to_sector(

@@ -2652,6 +2652,18 @@ class BangImportService:
             if bias_force_nebula and not nebula:
                 sector_type = SectorType.NEBULA
 
+            # Audit-27 #1 / generation.md: ANOMALY ~1–2% (midpoint 1.5%).
+            # Deterministic per-(seed, sid) so bang re-imports stay stable;
+            # isolated RNG so GX1 bias roll sequences are unchanged.
+            # Never starter; never overrides NEBULA (or any non-STANDARD type).
+            if (
+                not is_starter_sector
+                and sector_type == SectorType.STANDARD
+            ):
+                anomaly_rng = random.Random(f"anomaly:{universe.seed}:{sid}")
+                if anomaly_rng.random() < 0.015:
+                    sector_type = SectorType.ANOMALY
+
             special_features: List[str] = []
             if sid in special_location_by_sector:
                 special_features.append(
