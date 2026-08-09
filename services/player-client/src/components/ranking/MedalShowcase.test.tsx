@@ -16,8 +16,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 const mockGetMedals = vi.fn();
 
 vi.mock('../../services/api', () => ({
-  rankingAPI: {
-    getMedals: (...a: unknown[]) => mockGetMedals(...a),
+  medalsAPI: {
+    getMe: (...a: unknown[]) => mockGetMedals(...a),
   },
 }));
 

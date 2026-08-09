@@ -1,13 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { useAuth } from './AuthContext';
-import apiClient from '../services/apiClient';
-
-// Shared axios instance: attaches the access token from localStorage and
-// transparently refreshes it on 401 with single-flight deduplication
-// (see services/apiClient.ts). Its baseURL resolves to VITE_API_URL or
-// window.location.origin, preserving the Vite-proxy semantics this context
-// previously set up with its own axios.create.
-const api = apiClient;
+import { firstLoginAPI } from '../services/api';
 
 // Types for first login state
 export interface FirstLoginSession {
@@ -163,8 +156,6 @@ export const FirstLoginProvider: React.FC<{ children: ReactNode }> = ({ children
   const [exchangeId, setExchangeId] = useState<string | null>(null);
   const [dialogueOutcome, setDialogueOutcome] = useState<DialogueAnalysis['outcome'] | null>(null);
   
-  // Use the shared apiClient instance imported at the top of the file
-  
   // Rate limiting state
   const [lastCheckTime, setLastCheckTime] = useState<number>(0);
   const [lastSessionTime, setLastSessionTime] = useState<number>(0);
@@ -191,12 +182,12 @@ export const FirstLoginProvider: React.FC<{ children: ReactNode }> = ({ children
     setError(null);
 
     try {
-      const response = await api.get('/api/v1/first-login/status');
-      const requiresFirst = (response.data as any).requires_first_login;
+      const data = (await firstLoginAPI.getStatus()) as any;
+      const requiresFirst = data.requires_first_login;
       setRequiresFirstLogin(requiresFirst);
 
       // If first login is required and there's an active session, load it
-      if (requiresFirst && (response.data as any).session_id) {
+      if (requiresFirst && data.session_id) {
         await startSession();
       }
 
@@ -223,8 +214,7 @@ export const FirstLoginProvider: React.FC<{ children: ReactNode }> = ({ children
     setError(null);
 
     try {
-      const response = await api.post('/api/v1/first-login/session');
-      const data = response.data as any;
+      const data = (await firstLoginAPI.startSession()) as any;
 
       setSession(data as FirstLoginSession);
       setCurrentPrompt(data.npc_prompt);
@@ -254,16 +244,17 @@ export const FirstLoginProvider: React.FC<{ children: ReactNode }> = ({ children
       }
     } catch (error: any) {
       console.error('Error starting first login session:', error);
+      const status = error?.status ?? error?.response?.status;
       
       // Handle specific error types
-      if (error.response?.status === 429) {
+      if (status === 429) {
         setError('Too many requests. Please wait a moment.');
         // Retry after a longer delay for rate limiting
         setTimeout(() => {
           startSession();
         }, 10000); // 10 seconds
         return;
-      } else if (error.response?.status === 500) {
+      } else if (status === 500) {
         setError('Server error. Please try again in a few moments.');
       } else {
         setError('Failed to start first login session.');
@@ -284,15 +275,15 @@ export const FirstLoginProvider: React.FC<{ children: ReactNode }> = ({ children
         dialogue_response: response
       };
 
-      const result = await api.post('/api/v1/first-login/claim-ship', payload);
+      const data = (await firstLoginAPI.claimShip(payload)) as any;
 
-      setSession(result.data);
+      setSession(data);
 
       // Check if this is an immediate outcome (e.g., Escape Pod auto-approval)
-      if (result.data.current_step === 'completion' && result.data.outcome) {
+      if (data.current_step === 'completion' && data.outcome) {
 
         // Set the outcome directly
-        setDialogueOutcome(result.data.outcome);
+        setDialogueOutcome(data.outcome);
 
         // Update dialogue history with approval message and any analysis scores
         setDialogueHistory(prev => [
@@ -300,14 +291,14 @@ export const FirstLoginProvider: React.FC<{ children: ReactNode }> = ({ children
           {
             npc: '',
             player: response,
-            consistency: clampScore(result.data.analysis?.consistency),
-            confidence: clampScore(result.data.analysis?.confidence),
-            persuasiveness: clampScore(result.data.analysis?.persuasiveness),
+            consistency: clampScore(data.analysis?.consistency),
+            confidence: clampScore(data.analysis?.confidence),
+            persuasiveness: clampScore(data.analysis?.persuasiveness),
           },
-          { npc: result.data.npc_prompt, player: '' }
+          { npc: data.npc_prompt, player: '' }
         ]);
 
-        setCurrentPrompt(result.data.npc_prompt);
+        setCurrentPrompt(data.npc_prompt);
       } else {
         // Normal flow: received a question for interrogation
         // Update dialogue history with any analysis scores
@@ -316,26 +307,28 @@ export const FirstLoginProvider: React.FC<{ children: ReactNode }> = ({ children
           {
             npc: '',
             player: response,
-            consistency: clampScore(result.data.analysis?.consistency),
-            confidence: clampScore(result.data.analysis?.confidence),
-            persuasiveness: clampScore(result.data.analysis?.persuasiveness),
+            consistency: clampScore(data.analysis?.consistency),
+            confidence: clampScore(data.analysis?.confidence),
+            persuasiveness: clampScore(data.analysis?.persuasiveness),
           },
-          { npc: result.data.npc_prompt, player: '' }
+          { npc: data.npc_prompt, player: '' }
         ]);
 
         // Set new prompt and exchange ID
-        setCurrentPrompt(result.data.npc_prompt);
-        setExchangeId(result.data.exchange_id || null);
+        setCurrentPrompt(data.npc_prompt);
+        setExchangeId(data.exchange_id || null);
       }
     } catch (error: any) {
-      console.error('FirstLogin: Error claiming ship:', error.response?.status, error.response?.data?.detail || error.message);
+      const status = error?.status ?? error?.response?.status;
+      const detail = error?.data?.detail ?? error?.response?.data?.detail;
+      console.error('FirstLogin: Error claiming ship:', status, detail || error.message);
       
       // More specific error messages
-      if (error.response?.status === 401) {
+      if (status === 401) {
         setError('Authentication failed. Please log in again.');
-      } else if (error.response?.status === 400) {
-        setError(error.response?.data?.detail || 'Invalid ship selection or response.');
-      } else if (error.response?.status === 500) {
+      } else if (status === 400) {
+        setError(detail || 'Invalid ship selection or response.');
+      } else if (status === 500) {
         setError('Server error. Please try again later.');
       } else if (error.code === 'ERR_NETWORK') {
         setError('Network error. Please check your connection.');
@@ -357,9 +350,7 @@ export const FirstLoginProvider: React.FC<{ children: ReactNode }> = ({ children
         throw new Error('No active dialogue exchange.');
       }
 
-      const result = await api.post(`/api/v1/first-login/dialogue/${exchangeId}`, {
-        response
-      });
+      const data = (await firstLoginAPI.submitDialogue(exchangeId, response)) as DialogueAnalysis;
 
       // Update dialogue history with player response and analysis scores
       setDialogueHistory(prev => [
@@ -367,25 +358,25 @@ export const FirstLoginProvider: React.FC<{ children: ReactNode }> = ({ children
         {
           ...prev[prev.length - 1],
           player: response,
-          consistency: result.data.analysis?.consistency,
-          confidence: result.data.analysis?.confidence,
-          persuasiveness: result.data.analysis?.persuasiveness,
+          consistency: data.analysis?.consistency,
+          confidence: data.analysis?.confidence,
+          persuasiveness: data.analysis?.persuasiveness,
         }
       ]);
 
       // If there's a next question, add it to history and update state
-      if (result.data.next_question) {
+      if (data.next_question) {
         setDialogueHistory(prev => [
           ...prev,
-          { npc: result.data.next_question, player: '' }
+          { npc: data.next_question!, player: '' }
         ]);
-        setCurrentPrompt(result.data.next_question);
-        setExchangeId(result.data.next_exchange_id || null);
+        setCurrentPrompt(data.next_question);
+        setExchangeId(data.next_exchange_id || null);
       }
 
       // If this is the final response, store the outcome
-      if (result.data.is_final && result.data.outcome) {
-        const outcome = result.data.outcome;
+      if (data.is_final && data.outcome) {
+        const outcome = data.outcome;
 
         setDialogueOutcome(outcome);
 
@@ -399,7 +390,7 @@ export const FirstLoginProvider: React.FC<{ children: ReactNode }> = ({ children
         setCurrentPrompt(outcome.guard_response);
       }
 
-      return result.data;
+      return data;
     } catch (error) {
       console.error('[FirstLogin:Error] Dialogue submission failed:', error);
       setError('Failed to submit dialogue response.');
@@ -422,12 +413,12 @@ export const FirstLoginProvider: React.FC<{ children: ReactNode }> = ({ children
       const body = verdict
         ? { nickname_confirmed: verdict.confirmed, nickname_override: verdict.override }
         : undefined;
-      const result = await api.post('/api/v1/first-login/complete', body);
+      const data = (await firstLoginAPI.complete(body)) as CompleteFirstLoginResult;
 
       // First login is now complete
       setRequiresFirstLogin(false);
 
-      return result.data;
+      return data;
     } catch (error: any) {
       // WO-PUX-FLOGIN-IDEMPOTENT: the server's idempotency guard returns
       // HTTP 400 "First login already completed" when an earlier /complete
@@ -436,8 +427,11 @@ export const FirstLoginProvider: React.FC<{ children: ReactNode }> = ({ children
       // error so the caller can recover (re-check status, proceed) instead
       // of dead-ending the player. Leave `error` state untouched here so a
       // recoverable condition never renders as a failure.
-      const detail = error?.response?.data?.detail;
-      if (error?.response?.status === 400 && typeof detail === 'string' && /already completed/i.test(detail)) {
+      // Supports both apiRequest-shaped errors (.status/.data) and raw axios
+      // (.response) from older test harnesses / passthrough rejects.
+      const status = error?.status ?? error?.response?.status;
+      const detail = error?.data?.detail ?? error?.response?.data?.detail;
+      if (status === 400 && typeof detail === 'string' && /already completed/i.test(detail)) {
         console.warn('[FirstLogin] /complete reported already-completed; caller should recover via status re-check.');
         throw new FirstLoginAlreadyCompletedError();
       }
@@ -464,7 +458,7 @@ export const FirstLoginProvider: React.FC<{ children: ReactNode }> = ({ children
       setError(null);
       
       // Try to reset server-side session
-      await api.delete('/api/v1/first-login/session');
+      await firstLoginAPI.resetSession();
     } catch {
       // Server cleanup is non-critical
       // Don't show error to user as this is just a cleanup attempt

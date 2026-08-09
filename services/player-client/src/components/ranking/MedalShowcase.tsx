@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { rankingAPI } from '../../services/api';
+import { medalsAPI } from '../../services/api';
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import './ranking.css';
 
@@ -64,7 +64,7 @@ const MedalShowcase: React.FC = () => {
   const fetchMedals = useCallback(async (showInitialSpinner: boolean) => {
     try {
       if (showInitialSpinner) setLoading(true);
-      const data = await rankingAPI.getMedals();
+      const data = await medalsAPI.getMe();
       setMedalData(data);
       setError(null);
     } catch (err: any) {
