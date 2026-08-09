@@ -429,13 +429,17 @@ async def health_check():
 # Setup error handling
 setup_error_handling(app)
 
-# Setup security middleware (rate limiting, input validation, security headers, audit logging)
+# Setup security middleware (rate limiting, input validation, security headers, audit logging).
+# Fail CLOSED: a boot-time exception here means the app would otherwise start
+# unprotected with no rate limiting, input validation, or audit logging. Log
+# the cause loudly and refuse to boot rather than silently degrade.
 try:
     from src.api.middleware.security import setup_security_middleware
     setup_security_middleware(app)
     logger.info("Security middleware registered successfully")
 except Exception as e:
-    logger.warning(f"Failed to register security middleware: {e}")
+    logger.critical(f"Failed to register security middleware, refusing to boot: {e}")
+    raise
 
 if __name__ == "__main__":
     import uvicorn
