@@ -650,6 +650,21 @@ export const playerAPI = {
 
   scanLatentTunnels: () =>
     apiRequest('/api/v1/player/scan-latent-tunnels', { method: 'POST' }),
+
+  /** One-time reward for a discovered special formation (WO-UI-ANOMALY). */
+  investigateFormation: (formationId: string) =>
+    apiRequest(`/api/v1/player/formations/${formationId}/investigate`, {
+      method: 'POST',
+    }),
+};
+
+/** Asteroid-field mining harvest (WO-UI-MINING). */
+export const miningAPI = {
+  harvest: (shipId: string) =>
+    apiRequest('/api/v1/mining/harvest', {
+      method: 'POST',
+      body: JSON.stringify({ ship_id: shipId }),
+    }),
 };
 
 /** First-login gate / onboarding session (GameContext + FirstLoginContext). */

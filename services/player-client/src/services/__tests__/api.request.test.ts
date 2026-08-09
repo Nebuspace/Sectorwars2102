@@ -19,7 +19,7 @@ vi.mock('../apiClient', () => ({
 }));
 
 import apiClient from '../apiClient';
-import { combatAPI, greyStatusAPI, navAPI, shipRegistryAPI, tradeAPI } from '../api';
+import { combatAPI, greyStatusAPI, miningAPI, navAPI, playerAPI, shipRegistryAPI, tradeAPI } from '../api';
 
 const get = apiClient.get as ReturnType<typeof vi.fn>;
 const post = apiClient.post as ReturnType<typeof vi.fn>;
@@ -205,6 +205,31 @@ describe('apiRequest via trade/combat/grey wrappers', () => {
     expect(post).toHaveBeenCalledWith(
       '/api/v1/nav/plot',
       JSON.stringify({ target_sector_id: 42, objective: 'min_time' }),
+      jsonHeaders,
+    );
+  });
+
+  it('miningAPI.harvest POSTs ship_id', async () => {
+    post.mockResolvedValue({ data: { status: 'in_progress', harvest_id: 'h1' } });
+    await expect(miningAPI.harvest('ship-9')).resolves.toEqual({
+      status: 'in_progress',
+      harvest_id: 'h1',
+    });
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/mining/harvest',
+      JSON.stringify({ ship_id: 'ship-9' }),
+      jsonHeaders,
+    );
+  });
+
+  it('playerAPI.investigateFormation POSTs the formation id path', async () => {
+    post.mockResolvedValue({ data: { reward_credits: 50 } });
+    await expect(playerAPI.investigateFormation('f-1')).resolves.toEqual({
+      reward_credits: 50,
+    });
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/player/formations/f-1/investigate',
+      undefined,
       jsonHeaders,
     );
   });
