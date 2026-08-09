@@ -710,6 +710,19 @@ export const citadelAPI = {
       method: 'POST',
       body: JSON.stringify({ enabled }),
     }),
+
+  // Defense buildings unlockable at the planet's current citadel level
+  // (CitadelService.get_available_buildings).
+  getAvailableBuildings: (planetId: string) =>
+    apiRequest(`/api/v1/planets/${planetId}/buildings/available`),
+
+  // Construct a defense building — body key is camelCase buildingType
+  // (ConstructBuildingRequest / CitadelService.build_defense_building).
+  constructBuilding: (planetId: string, buildingType: string) =>
+    apiRequest(`/api/v1/planets/${planetId}/buildings/construct`, {
+      method: 'POST',
+      body: JSON.stringify({ buildingType }),
+    }),
 };
 
 // Planet Grid APIs (CRT-2) — the authoritative citadel grid the player manages.
