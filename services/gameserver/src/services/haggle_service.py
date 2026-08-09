@@ -105,7 +105,7 @@ PERSONAL_BAND_DISLIKED = 1.05
 PERSONAL_BAND_TRUSTED = 0.95
 
 # Point 7: re-entry cooldown after a non-reject close. ADR-0079 says "draft 5 min"
-# — confirmed at 5 min (NO-CANON micro-confirm, flagged to the orchestrator).
+# — confirmed at 5 min (ratified 2026-08-09, DECISIONS.md no-canon-magnitudes-batch-remainder).
 REENTRY_COOLDOWN_SECONDS = 5 * 60
 
 # Per-player haggle MEMORY horizon. human ruled (sw2102-docs/DECISIONS.md
@@ -130,15 +130,18 @@ ORANGE_CAT_BAND_FACTOR = 0.85
 # ── Trust accrual (human #7 step D) ────────────────────────────────────────────
 # trust_level lives on the [-1000, 1000] scale (jsonb-schema). Successful trades
 # raise it, failed haggling (a REJECT close) erodes it; high trust eases the band.
-# Magnitudes are NO-CANON micro-numbers (jsonb-schema only says "accumulated via
-# repeated successful trades, eroded by failed haggling"); chosen conservative so
-# the [-1000,1000] band takes ~tens of interactions to traverse. Flagged.
+# Magnitudes ratified 2026-08-09 (DECISIONS.md no-canon-magnitudes-batch-remainder,
+# as-is): jsonb-schema only said "accumulated via repeated successful trades,
+# eroded by failed haggling"; chosen conservative so the [-1000,1000] band takes
+# ~tens of interactions to traverse.
 TRUST_ON_ACCEPT = 15
 TRUST_ON_TIMEOUT = 3                 # a 4-round non-reject close still ends amicably
 TRUST_ON_REJECT = -10
 # High trust eases the band. Maps trust in [-1000, 1000] linearly to a band
 # multiplier in [TRUST_EASE_MAX (distrust → harder) .. TRUST_EASE_MIN (trust →
-# easier)]. Endpoints NO-CANON (jsonb only says "high trust eases difficulty").
+# easier)]. Endpoints ratified 2026-08-09 (DECISIONS.md
+# no-canon-magnitudes-batch-remainder, as-is; jsonb only said "high trust eases
+# difficulty").
 TRUST_BAND_AT_MIN_TRUST = 1.05       # trust -1000 → +5% harder
 TRUST_BAND_AT_MAX_TRUST = 0.95       # trust +1000 → -5% easier
 
@@ -315,8 +318,9 @@ def _lerp_by_value(value: int, at_min: float, at_max: float) -> float:
 
 
 def _orange_cat_band_factor(db: Session, player: Player) -> float:
-    """Orange-Cat Society leniency (NO-CANON, proposed ×0.95). Returns 1.0 if the
-    player does not hold the badge. Defensive → neutral on any lookup failure."""
+    """Orange-Cat Society leniency (FINAL, medal-effects-spec.md:251 — see
+    ORANGE_CAT_BAND_FACTOR above). Returns 1.0 if the player does not hold the
+    badge. Defensive → neutral on any lookup failure."""
     try:
         from src.models.medal import PlayerMedal
 
