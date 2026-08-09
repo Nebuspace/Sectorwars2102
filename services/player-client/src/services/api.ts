@@ -265,6 +265,13 @@ export const planetaryAPI = {
       body: JSON.stringify({ name }),
     }),
 
+  /** Preferred rename path (ADR-0073) — POST /planets/{id}/name. */
+  setName: (planetId: string, name: string) =>
+    apiRequest(`/api/v1/planets/${planetId}/name`, {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
+
   // Embark/disembark colonists between ship cargo and planet population.
   transferColonists: (
     planetId: string,
@@ -1217,6 +1224,14 @@ export const sectorAPI = {
   getPlanets: (sectorId: number) => apiRequest(`/api/v1/sectors/${sectorId}/planets`),
   getStations: (sectorId: number) => apiRequest(`/api/v1/sectors/${sectorId}/stations`),
 
+  /** Live sector contents — ships, planets, ports, etc. */
+  getContents: (sectorId: number) =>
+    apiRequest(`/api/v1/sectors/${sectorId}/contents`),
+
+  /** Celestial system snapshot (star / decorative bodies) for SolarSystemViewscreen. */
+  getSystem: (sectorId: number) =>
+    apiRequest(`/api/v1/sectors/${sectorId}/system`),
+
   // List salvageable wrecks in a sector (numeric, cockpit-native sector id —
   // the server resolves it to the sector's UUID internally).
   sectorWrecks: (sectorId: number): Promise<SectorWreck[]> =>
@@ -1233,6 +1248,25 @@ export const sectorAPI = {
         quantity === undefined ? { wreck_id: wreckId } : { wreck_id: wreckId, quantity }
       ),
     }),
+};
+
+/** Intrasystem helm — windshield pose / burn / halt. */
+export const helmAPI = {
+  getPose: () => apiRequest('/api/v1/helm/intrasystem/pose'),
+
+  burn: (payload: {
+    x_pct: number;
+    y_pct: number;
+    target_kind: string;
+    target_id: string | null;
+  }) =>
+    apiRequest('/api/v1/helm/intrasystem/burn', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  halt: () =>
+    apiRequest('/api/v1/helm/intrasystem/halt', { method: 'POST' }),
 };
 
 // Export all APIs
@@ -1694,6 +1728,9 @@ export const tradeAPI = {
 export const quantumAPI = {
   getStatus: () => apiRequest('/api/v1/quantum/status'),
 
+  /** Astrogation chart for Warp Jumper (ADR-0030 Phase 1). */
+  getMinimap: () => apiRequest('/api/v1/quantum/minimap'),
+
   scan: (payload: Record<string, unknown>) =>
     apiRequest('/api/v1/quantum/scan', {
       method: 'POST',
@@ -1716,6 +1753,40 @@ export const quantumAPI = {
     apiRequest('/api/v1/quantum/harvest', {
       method: 'POST',
       body: JSON.stringify({}),
+    }),
+};
+
+/** Gatewright Guild — warp-gate construction pipeline. */
+export const warpGatesAPI = {
+  listMine: () => apiRequest('/api/v1/warp-gates/mine'),
+
+  listSector: (sectorId: number) =>
+    apiRequest(`/api/v1/warp-gates/sector/${sectorId}`),
+
+  deployBeacon: (destinationSectorId: number) =>
+    apiRequest('/api/v1/warp-gates/deploy-beacon', {
+      method: 'POST',
+      body: JSON.stringify({ destination_sector_id: destinationSectorId }),
+    }),
+
+  anchorFocus: (beaconId: string, accessMode: string) =>
+    apiRequest('/api/v1/warp-gates/anchor-focus', {
+      method: 'POST',
+      body: JSON.stringify({ beacon_id: beaconId, access_mode: accessMode }),
+    }),
+
+  cancel: (id: string) =>
+    apiRequest(`/api/v1/warp-gates/${id}/cancel`, { method: 'POST' }),
+
+  stageMaterials: (siteId: string, materials: Record<string, number>) =>
+    apiRequest(`/api/v1/warp-gates/${siteId}/stage-materials`, {
+      method: 'POST',
+      body: JSON.stringify(materials),
+    }),
+
+  advanceConstruction: (siteId: string) =>
+    apiRequest(`/api/v1/warp-gates/${siteId}/advance-construction`, {
+      method: 'POST',
     }),
 };
 
@@ -1834,6 +1905,8 @@ export const gameAPI = {
   storage: storageAPI,
   trade: tradeAPI,
   quantum: quantumAPI,
+  warpGates: warpGatesAPI,
+  helm: helmAPI,
   portOwnership: portOwnershipAPI,
   beacon: beaconAPI,
 };

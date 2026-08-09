@@ -43,7 +43,7 @@ vi.mock('../../../services/api', () => ({
     // not under test here, resolved empty so the mount doesn't reject.
     getThreat: vi.fn().mockResolvedValue([]),
   },
-  sectorAPI: { sectorWrecks: vi.fn().mockResolvedValue([]) },
+  sectorAPI: { sectorWrecks: vi.fn().mockResolvedValue([]), getContents: vi.fn().mockResolvedValue({ star: null, bodies: [] }), },
 }));
 
 vi.mock('react-router-dom', () => ({

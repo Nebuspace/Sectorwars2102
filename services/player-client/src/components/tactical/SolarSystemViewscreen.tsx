@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import apiClient from '../../services/apiClient';
+import { planetaryAPI, sectorAPI } from '../../services/api';
 import SectorViewport from './SectorViewport';
 import './solar-system-viewscreen.css';
 import VistaCanvas from '../../vista/react';
@@ -7892,17 +7892,17 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
     setRenameBusy(true);
     setRenameError(null);
     try {
-      await apiClient.post(`/api/v1/planets/${orb.planetId}/name`, { name: value });
+      await planetaryAPI.setName(orb.planetId, value);
       // Reflect the new name immediately in the closeup HUD.
       setOrbit((prev) => (prev ? { ...prev, name: value } : prev));
       // Refresh the system snapshot so the system view + label update too.
-      apiClient.get(`/api/v1/sectors/${sectorId}/system`)
-        .then((res) => { systemRef.current = res.data as SystemSnapshot; setSystem(res.data as SystemSnapshot); })
+      sectorAPI.getSystem(sectorId)
+        .then((data) => { systemRef.current = data as SystemSnapshot; setSystem(data as SystemSnapshot); })
         .catch(() => {});
       setRenameOpen(false);
       setRenameDraft('');
     } catch (e: any) {
-      setRenameError(e?.response?.data?.detail || 'Rename failed');
+      setRenameError(e?.response?.data?.detail || e?.message || 'Rename failed');
     } finally {
       setRenameBusy(false);
     }
@@ -8017,12 +8017,12 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
     if (scene !== 'flight' && scene !== 'landed') {
       return;
     }
-    apiClient
-      .get(`/api/v1/sectors/${sectorId}/system`)
-      .then((res) => {
+    sectorAPI
+      .getSystem(sectorId)
+      .then((data) => {
         if (cancelled) return;
-        systemRef.current = res.data as SystemSnapshot;
-        setSystem(res.data as SystemSnapshot);
+        systemRef.current = data as SystemSnapshot;
+        setSystem(data as SystemSnapshot);
       })
       .catch((err) => {
         if (cancelled) return;

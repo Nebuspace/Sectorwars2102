@@ -12,7 +12,7 @@ import ServicesVenue from './ServicesVenue';
 import MiningVenue from './MiningVenue';
 import GamblingVenue from './GamblingVenue';
 import { getStationClassInfo } from '../common/stationIdentity';
-import { shipAPI } from '../../services/api';
+import { shipAPI, registryAPI } from '../../services/api';
 import { formatCredits } from '../../utils/formatters';
 import './spacedock.css';
 
@@ -1380,43 +1380,31 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
   };
 
   // Shadow-broker registry lookup: pays 50,000 cr to reveal another player's
-  // non-clandestine holdings. Raw fetch (like the genesis/gambling calls) so the
-  // auth token rides along. The server is authoritative on whether/when it
-  // charges (404 unknown name = no charge; empty list = no charge).
+  // non-clandestine holdings. Routed through registryAPI.lookup (services/api.ts)
+  // rather than a raw fetch — apiRequest/apiClient already attaches the auth
+  // token via an axios interceptor and gets JWT refresh-on-401 for free, unlike
+  // the genesis/gambling raw fetches (which have no apiRequest-based wrapper at
+  // all and genuinely need the raw-fetch pattern). The server is authoritative
+  // on whether/when it charges (404 unknown name = no charge; empty list = no
+  // charge).
   const handleRegistryLookup = async () => {
     const name = registryQueryName.trim();
     if (!name) {
       setRegistryError('Enter a player name to query.');
       return;
     }
-    const token = getToken();
     try {
       setRegistryLoading(true);
       setRegistryError(null);
       setRegistryResults(null);
-      const response = await fetch(`${getApiBaseUrl()}/api/v1/registry/lookup`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({ playerName: name })
-      });
-      if (!response.ok) {
-        let detail = `Lookup failed (${response.status})`;
-        try {
-          const errBody = await response.json();
-          if (errBody && (typeof errBody.detail === 'string' || errBody.message)) {
-            detail = errBody.detail || errBody.message;
-          }
-        } catch { /* non-JSON error body — keep the generic message */ }
-        if (response.status === 404) detail = `No pilot named "${name}" on record.`;
-        throw new Error(detail);
-      }
-      const data = await response.json();
+      const data = await registryAPI.lookup(name);
       setRegistryResults(Array.isArray(data?.planets) ? data.planets : []);
     } catch (err) {
-      setRegistryError(err instanceof Error ? err.message : 'Lookup failed.');
+      const status = (err as any)?.status;
+      const detail = status === 404
+        ? `No pilot named "${name}" on record.`
+        : err instanceof Error ? err.message : 'Lookup failed.';
+      setRegistryError(detail);
     } finally {
       setRegistryLoading(false);
     }

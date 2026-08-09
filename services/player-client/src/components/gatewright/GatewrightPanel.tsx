@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import apiClient from '../../services/apiClient';
+import { quantumAPI, warpGatesAPI } from '../../services/api';
 import { useGame } from '../../contexts/GameContext';
 import { TurnsIcon } from '../icons/TurnsIcon';
 import './gatewright-panel.css';
@@ -139,11 +139,11 @@ const RIBBON_STEPS = [
 
 // --- Helpers ---
 
-// Pull the backend's verbatim detail string out of an axios error
+// Pull the backend's verbatim detail (axios or apiRequest error shapes).
 const errDetail = (e: unknown, fallback: string): string => {
   if (e && typeof e === 'object') {
     const resp = (e as { response?: { data?: unknown } }).response;
-    const data = resp?.data;
+    const data = resp?.data ?? (e as { data?: unknown }).data;
     if (data && typeof data === 'object') {
       const detail = (data as Record<string, unknown>).detail;
       if (typeof detail === 'string' && detail) return detail;
@@ -291,8 +291,7 @@ const GatewrightPanel: React.FC<GatewrightPanelProps> = ({ onClose }) => {
   const fetchProjects = useCallback(async () => {
     setProjectsLoading(true);
     try {
-      const response = await apiClient.get('/api/v1/warp-gates/mine');
-      const data: unknown = response.data;
+      const data: unknown = await warpGatesAPI.listMine();
       const list =
         data && typeof data === 'object' && Array.isArray((data as Record<string, unknown>).projects)
           ? ((data as { projects: GateProject[] }).projects)
@@ -310,8 +309,7 @@ const GatewrightPanel: React.FC<GatewrightPanelProps> = ({ onClose }) => {
   const fetchSector = useCallback(async (sectorId: number) => {
     setSectorLoading(true);
     try {
-      const response = await apiClient.get(`/api/v1/warp-gates/sector/${sectorId}`);
-      const data: unknown = response.data;
+      const data: unknown = await warpGatesAPI.listSector(sectorId);
       const body = data && typeof data === 'object' ? (data as Record<string, unknown>) : {};
       setSectorGates(Array.isArray(body.gates) ? (body.gates as SectorGateEntry[]) : []);
       setSectorBeacons(Array.isArray(body.beacons) ? (body.beacons as SectorBeaconEntry[]) : []);
@@ -326,8 +324,8 @@ const GatewrightPanel: React.FC<GatewrightPanelProps> = ({ onClose }) => {
 
   const fetchQuantumStatus = useCallback(async () => {
     try {
-      const response = await apiClient.get('/api/v1/quantum/status');
-      setQuantumStatus(response.data as QuantumStatus);
+      const data = await quantumAPI.getStatus();
+      setQuantumStatus(data as QuantumStatus);
     } catch (e) {
       // Non-fatal: crystal counts render as unknown
       console.error('Gatewright quantum status error:', e);
@@ -405,9 +403,7 @@ const GatewrightPanel: React.FC<GatewrightPanelProps> = ({ onClose }) => {
     setDeployError(null);
     setDeployNotice(null);
     try {
-      await apiClient.post('/api/v1/warp-gates/deploy-beacon', {
-        destination_sector_id: destSector,
-      });
+      await warpGatesAPI.deployBeacon(destSector);
       setDeployArmed(false);
       setDeployNotice(
         `Beacon deployed — fly the Jumper to sector ${destSector} and anchor the focus before the invulnerability window (see the project countdown) closes.`
@@ -429,10 +425,7 @@ const GatewrightPanel: React.FC<GatewrightPanelProps> = ({ onClose }) => {
       return next;
     });
     try {
-      await apiClient.post('/api/v1/warp-gates/anchor-focus', {
-        beacon_id: beaconId,
-        access_mode: anchorAccessMode,
-      });
+      await warpGatesAPI.anchorFocus(beaconId, anchorAccessMode);
       setArmedAnchorId(null);
       setAnchorAccessMode('PUBLIC');
       await refreshAll();
@@ -456,7 +449,7 @@ const GatewrightPanel: React.FC<GatewrightPanelProps> = ({ onClose }) => {
       return next;
     });
     try {
-      await apiClient.post(`/api/v1/warp-gates/${cancelId}/cancel`);
+      await warpGatesAPI.cancel(cancelId);
       setArmedCancelId(null);
       await refreshAll();
     } catch (e) {
@@ -479,9 +472,7 @@ const GatewrightPanel: React.FC<GatewrightPanelProps> = ({ onClose }) => {
       return next;
     });
     try {
-      await apiClient.post(`/api/v1/warp-gates/${site.site_id}/stage-materials`, {
-        [commodity]: amount,
-      });
+      await warpGatesAPI.stageMaterials(site.site_id, { [commodity]: amount });
       setStageAmounts((prev) => ({ ...prev, [key]: '' }));
       await refreshAll();
     } catch (e) {
@@ -503,7 +494,7 @@ const GatewrightPanel: React.FC<GatewrightPanelProps> = ({ onClose }) => {
       return next;
     });
     try {
-      await apiClient.post(`/api/v1/warp-gates/${site.site_id}/advance-construction`);
+      await warpGatesAPI.advanceConstruction(site.site_id);
       setArmedAdvanceSiteId(null);
       await refreshAll();
     } catch (e) {

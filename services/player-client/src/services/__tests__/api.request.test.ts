@@ -19,7 +19,7 @@ vi.mock('../apiClient', () => ({
 }));
 
 import apiClient from '../apiClient';
-import { combatAPI, greyStatusAPI, miningAPI, navAPI, playerAPI, shipRegistryAPI, tradeAPI } from '../api';
+import { combatAPI, greyStatusAPI, miningAPI, navAPI, playerAPI, sectorAPI, shipRegistryAPI, tradeAPI } from '../api';
 
 const get = apiClient.get as ReturnType<typeof vi.fn>;
 const post = apiClient.post as ReturnType<typeof vi.fn>;
@@ -232,5 +232,14 @@ describe('apiRequest via trade/combat/grey wrappers', () => {
       undefined,
       jsonHeaders,
     );
+  });
+
+  it('sectorAPI.getContents GETs the sector contents path', async () => {
+    get.mockResolvedValue({ data: { star: { label: 'Sol' }, bodies: [] } });
+    await expect(sectorAPI.getContents(100)).resolves.toEqual({
+      star: { label: 'Sol' },
+      bodies: [],
+    });
+    expect(get).toHaveBeenCalledWith('/api/v1/sectors/100/contents', jsonHeaders);
   });
 });

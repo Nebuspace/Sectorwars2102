@@ -37,18 +37,25 @@ import type { SpecialFormationSummary } from '../../../contexts/GameContext';
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 // ---------------------------------------------------------------------------
-// apiClient mock — the component's only network dependency (system snapshot
-// fetch + a rename POST unused by this suite).
+// sectorAPI / planetaryAPI mock — system snapshot fetch + rename POST
 // ---------------------------------------------------------------------------
 
-const mockGet = vi.fn();
-const mockPost = vi.fn();
-vi.mock('../../../services/apiClient', () => ({
-  default: {
-    get: (...args: unknown[]) => mockGet(...args),
-    post: (...args: unknown[]) => mockPost(...args),
-  },
-}));
+const mockGetSystem = vi.fn();
+const mockSetName = vi.fn();
+vi.mock('../../../services/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../services/api')>();
+  return {
+    ...actual,
+    sectorAPI: {
+      ...actual.sectorAPI,
+      getSystem: (...args: unknown[]) => mockGetSystem(...args),
+    },
+    planetaryAPI: {
+      ...actual.planetaryAPI,
+      setName: (...args: unknown[]) => mockSetName(...args),
+    },
+  };
+});
 
 import SolarSystemViewscreen from '../SolarSystemViewscreen';
 
@@ -194,9 +201,9 @@ describe('SolarSystemViewscreen — interaction wiring (full mount)', () => {
   let root: ReturnType<typeof createRoot>;
 
   beforeEach(() => {
-    mockGet.mockReset();
-    mockPost.mockReset();
-    mockGet.mockResolvedValue({ data: TEST_SYSTEM });
+    mockGetSystem.mockReset();
+    mockSetName.mockReset();
+    mockGetSystem.mockResolvedValue(TEST_SYSTEM);
 
     // reducedMotion=true pins drawScene's `t` at 0 in the live component
     // (drawNowRef: `const t = reducedMotionRef.current ? 0 : Date.now()/1000`)
@@ -384,11 +391,9 @@ describe('SolarSystemViewscreen — interaction wiring (full mount)', () => {
   });
 
   it('mounts and draws without throwing on an empty/malformed system payload (bodies/stations missing)', async () => {
-    mockGet.mockResolvedValue({
-      data: {
-        sector_id: SECTOR_ID, sector_type: 'normal', star: null, nebula: null, belt: null,
-        bodies: undefined, stations: undefined
-      }
+    mockGetSystem.mockResolvedValue({
+      sector_id: SECTOR_ID, sector_type: 'normal', star: null, nebula: null, belt: null,
+      bodies: undefined, stations: undefined
     });
     // A synchronous throw inside the effect/draw path would propagate out of
     // this act() call and fail the test -- the assertions below are belt-
@@ -405,12 +410,10 @@ describe('SolarSystemViewscreen — interaction wiring (full mount)', () => {
   // `system?.bodies` being falsy (isolates this test's target branch from the
   // sibling `!landedPlanetId` short-circuit, which is untouched by this fix).
   it('mounts scene="landed" without throwing when system.bodies is absent (the landedCtx guard holds)', async () => {
-    mockGet.mockResolvedValue({
-      data: {
-        sector_id: SECTOR_ID, sector_type: 'normal',
-        star: { kind: 'G_YELLOW', label: 'Test Star', color: '#ffdd88' },
-        nebula: null, belt: null, bodies: undefined, stations: undefined
-      }
+    mockGetSystem.mockResolvedValue({
+      sector_id: SECTOR_ID, sector_type: 'normal',
+      star: { kind: 'G_YELLOW', label: 'Test Star', color: '#ffdd88' },
+      nebula: null, belt: null, bodies: undefined, stations: undefined
     });
     await mount({
       scene: 'landed',
