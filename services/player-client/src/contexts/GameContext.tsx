@@ -1275,25 +1275,25 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  // Defense buildings a planet's citadel level unlocks — GET
-  // /planets/{id}/buildings/available (CitadelService.get_available_buildings).
+  // Defense buildings a planet's citadel level unlocks —
+  // WO-WIRE-CITADEL-DEFENSE-BUILDINGS: citadelAPI.getAvailableBuildings.
   const getDefenseBuildings = async (planetId: string) => {
     try {
-      const response = await api.get(`/api/v1/planets/${planetId}/buildings/available`);
-      return response.data;
+      return await citadelAPI.getAvailableBuildings(planetId);
     } catch (error: any) {
       console.error('Error getting defense buildings:', error);
       return null;
     }
   };
 
-  // Construct a defense building — POST /planets/{id}/buildings/construct.
+  // Construct a defense building — citadelAPI.constructBuilding (same URL;
+  // still refresh player state).
   const buildDefenseBuilding = async (planetId: string, buildingType: string) => {
     if (!user || !playerState) throw new Error('Not authenticated');
     try {
-      const response = await api.post(`/api/v1/planets/${planetId}/buildings/construct`, { buildingType });
+      const data = await citadelAPI.constructBuilding(planetId, buildingType);
       await refreshPlayerState();
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error constructing defense building:', error);
       throw error;
