@@ -1,6 +1,9 @@
 /**
  * api.ts apiRequest error shaping + money/combat/trade wrappers
  * (WO-TESTCOV-PLAYER-API-CLIENT).
+ *
+ * apiRequest prefers verb helpers (get/post/put/delete); .request is only
+ * used when a timeout is set. Mocks must match that axios surface.
  */
 import { AxiosError } from 'axios';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -8,13 +11,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../apiClient', () => ({
   default: {
     request: vi.fn(),
+    get: vi.fn(),
+    post: vi.fn(),
+    put: vi.fn(),
+    delete: vi.fn(),
   },
 }));
 
 import apiClient from '../apiClient';
 import { combatAPI, greyStatusAPI, shipRegistryAPI, tradeAPI } from '../api';
 
-const request = apiClient.request as ReturnType<typeof vi.fn>;
+const get = apiClient.get as ReturnType<typeof vi.fn>;
+const post = apiClient.post as ReturnType<typeof vi.fn>;
 
 function axiosHttpError(status: number, data: unknown): AxiosError {
   return new AxiosError(
@@ -32,67 +40,66 @@ function axiosHttpError(status: number, data: unknown): AxiosError {
   );
 }
 
+const jsonHeaders = expect.objectContaining({
+  headers: expect.objectContaining({ 'Content-Type': 'application/json' }),
+});
+
 describe('apiRequest via trade/combat/grey wrappers', () => {
   beforeEach(() => {
-    request.mockReset();
+    get.mockReset();
+    post.mockReset();
   });
 
   it('tradeAPI.initiate POSTs target_player_id and returns body', async () => {
-    request.mockResolvedValue({ data: { id: 'sess-1' } });
+    post.mockResolvedValue({ data: { id: 'sess-1' } });
     const out = await tradeAPI.initiate('player-9');
     expect(out).toEqual({ id: 'sess-1' });
-    expect(request).toHaveBeenCalledWith(
-      expect.objectContaining({
-        url: '/api/v1/trade/initiate',
-        method: 'POST',
-        data: JSON.stringify({ target_player_id: 'player-9' }),
-      }),
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/trade/initiate',
+      JSON.stringify({ target_player_id: 'player-9' }),
+      jsonHeaders,
     );
   });
 
   it('tradeAPI.offer defaults empty offer fields', async () => {
-    request.mockResolvedValue({ data: { ok: true } });
+    post.mockResolvedValue({ data: { ok: true } });
     await tradeAPI.offer('s1', { credits: 50 });
-    expect(request).toHaveBeenCalledWith(
-      expect.objectContaining({
-        url: '/api/v1/trade/s1/offer',
-        method: 'POST',
-        data: JSON.stringify({
-          credits: 50,
-          commodities: {},
-          ship_id: null,
-          ships: [],
-        }),
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/trade/s1/offer',
+      JSON.stringify({
+        credits: 50,
+        commodities: {},
+        ship_id: null,
+        ships: [],
       }),
+      jsonHeaders,
     );
   });
 
   it('combatAPI.engage posts targetType/targetId', async () => {
-    request.mockResolvedValue({ data: { combatId: 'c1' } });
+    post.mockResolvedValue({ data: { combatId: 'c1' } });
     await expect(combatAPI.engage('port', 'port-1')).resolves.toEqual({
       combatId: 'c1',
     });
-    expect(request).toHaveBeenCalledWith(
-      expect.objectContaining({
-        url: '/api/v1/combat/engage',
-        method: 'POST',
-        data: JSON.stringify({ targetType: 'port', targetId: 'port-1' }),
-      }),
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/combat/engage',
+      JSON.stringify({ targetType: 'port', targetId: 'port-1' }),
+      jsonHeaders,
     );
   });
 
   it('surfaces string detail from FastAPI errors', async () => {
-    request.mockRejectedValue(axiosHttpError(400, { detail: 'not enough credits' }));
+    post.mockRejectedValue(axiosHttpError(400, { detail: 'not enough credits' }));
     await expect(greyStatusAPI.clearFine()).rejects.toThrow('not enough credits');
   });
 
   it('surfaces message when detail is absent', async () => {
-    request.mockRejectedValue(axiosHttpError(500, { message: 'backend blew up' }));
+    get.mockRejectedValue(axiosHttpError(500, { message: 'backend blew up' }));
     await expect(tradeAPI.get('x')).rejects.toThrow('backend blew up');
   });
 
   it('attaches structured detail.errors/code/regions on thrown Error', async () => {
-    request.mockRejectedValue(
+    get.mockRejectedValue(
       axiosHttpError(400, {
         detail: {
           code: 'ERR_AMBIGUOUS_REGION_OWNER',
@@ -118,80 +125,70 @@ describe('apiRequest via trade/combat/grey wrappers', () => {
   });
 
   it('falls back to API Error: <status> when body has no message', async () => {
-    request.mockRejectedValue(axiosHttpError(503, {}));
+    get.mockRejectedValue(axiosHttpError(503, {}));
     await expect(combatAPI.getStatus('c9')).rejects.toThrow('API Error: 503');
   });
 
   it('rethrows non-response axios failures unchanged', async () => {
     const net = new AxiosError('Network Error');
-    request.mockRejectedValue(net);
+    get.mockRejectedValue(net);
     await expect(tradeAPI.getOpen()).rejects.toBe(net);
   });
 
   it('rethrows non-axios errors unchanged', async () => {
     const boom = new Error('adapter exploded');
-    request.mockRejectedValue(boom);
+    post.mockRejectedValue(boom);
     await expect(tradeAPI.accept('s')).rejects.toBe(boom);
   });
 
   it('shipRegistryAPI.eject POSTs with no body and no ship_id', async () => {
-    request.mockResolvedValue({ data: { ejected_ship_id: 'ship-1', turns_spent: 1 } });
+    post.mockResolvedValue({ data: { ejected_ship_id: 'ship-1', turns_spent: 1 } });
     const out = await shipRegistryAPI.eject();
     expect(out).toEqual({ ejected_ship_id: 'ship-1', turns_spent: 1 });
-    expect(request).toHaveBeenCalledWith(
-      expect.objectContaining({
-        url: '/api/v1/players/me/eject',
-        method: 'POST',
-        data: undefined,
-      }),
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/players/me/eject',
+      undefined,
+      jsonHeaders,
     );
   });
 
   it('shipRegistryAPI.board omits pin from the body when not supplied', async () => {
-    request.mockResolvedValue({ data: { boarded: true, state: 'owner_aboard' } });
+    post.mockResolvedValue({ data: { boarded: true, state: 'owner_aboard' } });
     await shipRegistryAPI.board('ship-2');
-    expect(request).toHaveBeenCalledWith(
-      expect.objectContaining({
-        url: '/api/v1/ships/ship-2/board',
-        method: 'POST',
-        data: JSON.stringify({}),
-      }),
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/ships/ship-2/board',
+      JSON.stringify({}),
+      jsonHeaders,
     );
   });
 
   it('shipRegistryAPI.board includes the pin when supplied', async () => {
-    request.mockResolvedValue({ data: { boarded: true, state: 'borrowed' } });
+    post.mockResolvedValue({ data: { boarded: true, state: 'borrowed' } });
     await shipRegistryAPI.board('ship-2', 'ABC123');
-    expect(request).toHaveBeenCalledWith(
-      expect.objectContaining({
-        url: '/api/v1/ships/ship-2/board',
-        method: 'POST',
-        data: JSON.stringify({ pin: 'ABC123' }),
-      }),
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/ships/ship-2/board',
+      JSON.stringify({ pin: 'ABC123' }),
+      jsonHeaders,
     );
   });
 
   it('shipRegistryAPI.setPin POSTs the new pin', async () => {
-    request.mockResolvedValue({ data: { ship_id: 'ship-2', hatch_pin_code: 'NEWPIN1' } });
+    post.mockResolvedValue({ data: { ship_id: 'ship-2', hatch_pin_code: 'NEWPIN1' } });
     await shipRegistryAPI.setPin('ship-2', 'NEWPIN1');
-    expect(request).toHaveBeenCalledWith(
-      expect.objectContaining({
-        url: '/api/v1/ships/ship-2/set-pin',
-        method: 'POST',
-        data: JSON.stringify({ pin: 'NEWPIN1' }),
-      }),
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/ships/ship-2/set-pin',
+      JSON.stringify({ pin: 'NEWPIN1' }),
+      jsonHeaders,
     );
   });
 
   it('shipRegistryAPI.requestPinReset POSTs port_id and pin', async () => {
-    request.mockResolvedValue({ data: { ship_id: 'ship-2', effective_at: '2026-01-01T01:00:00Z' } });
+    post.mockResolvedValue({ data: { ship_id: 'ship-2', effective_at: '2026-01-01T01:00:00Z' } });
     await shipRegistryAPI.requestPinReset('ship-2', 'port-9', 'NEWPIN1');
-    expect(request).toHaveBeenCalledWith(
-      expect.objectContaining({
-        url: '/api/v1/ships/ship-2/request-pin-reset',
-        method: 'POST',
-        data: JSON.stringify({ port_id: 'port-9', pin: 'NEWPIN1' }),
-      }),
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/ships/ship-2/request-pin-reset',
+      JSON.stringify({ port_id: 'port-9', pin: 'NEWPIN1' }),
+      jsonHeaders,
     );
   });
 });

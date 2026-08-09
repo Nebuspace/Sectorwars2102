@@ -8,21 +8,46 @@ import apiClient from './apiClient';
 // centralized JWT refresh-on-401 behavior. The external contract is
 // unchanged: returns the parsed response body, throws
 // Error(detail || `API Error: <status>`) on failure.
+type ApiRequestOptions = RequestInit & { timeout?: number };
+
 async function apiRequest(
   endpoint: string,
-  options: RequestInit = {}
+  options: ApiRequestOptions = {}
 ): Promise<any> {
+  const method = ((options.method || 'GET') as string).toUpperCase();
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(options.headers as Record<string, string>),
+  };
   try {
-    const response = await apiClient.request({
-      url: endpoint,
-      method: (options.method || 'GET') as string,
-      // Call sites pass pre-stringified JSON bodies; forward as-is.
-      data: options.body,
-      headers: {
-        'Content-Type': 'application/json',
-        ...(options.headers as Record<string, string>)
-      }
-    });
+    // Prefer verb-specific axios helpers so tests that mock apiClient.get/post
+    // (the dominant GameContext harness pattern) still intercept wrapper traffic.
+    // Use .request only when a non-default timeout is required (e.g. move).
+    let response;
+    if (options.timeout != null) {
+      response = await apiClient.request({
+        url: endpoint,
+        method,
+        data: options.body,
+        timeout: options.timeout,
+        headers,
+      });
+    } else if (method === 'GET') {
+      response = await apiClient.get(endpoint, { headers });
+    } else if (method === 'POST') {
+      response = await apiClient.post(endpoint, options.body, { headers });
+    } else if (method === 'PUT') {
+      response = await apiClient.put(endpoint, options.body, { headers });
+    } else if (method === 'DELETE') {
+      response = await apiClient.delete(endpoint, { headers });
+    } else {
+      response = await apiClient.request({
+        url: endpoint,
+        method,
+        data: options.body,
+        headers,
+      });
+    }
     return response.data;
   } catch (error) {
     if (isAxiosError(error) && error.response) {
@@ -598,7 +623,33 @@ export const shipAPI = {
   // shape. Delegates to the correct purchase endpoint so any lingering caller
   // works instead of 404-ing. `upgradeType` is the UpgradeType enum value.
   installUpgrade: (shipId: string, upgradeType: string) =>
-    shipUpgradeAPI.purchaseUpgrade(shipId, upgradeType)
+    shipUpgradeAPI.purchaseUpgrade(shipId, upgradeType),
+
+  // Make `shipId` the player's currently-piloted hull.
+  setActive: (shipId: string) =>
+    apiRequest(`/api/v1/ships/${shipId}/set-active`, { method: 'POST' }),
+};
+
+/** Cockpit player state / navigation (distinct from shipAPI maintenance). */
+export const playerAPI = {
+  getState: () => apiRequest('/api/v1/player/state'),
+
+  getCurrentSector: () => apiRequest('/api/v1/player/current-sector'),
+
+  getShips: () => apiRequest('/api/v1/player/ships'),
+
+  getAvailableMoves: () => apiRequest('/api/v1/player/available-moves'),
+
+  // Hard ceiling so a stuck FOR UPDATE / wedged gameserver cannot leave
+  // the cockpit in "warp bubble forever" with no sector change.
+  move: (sectorId: number) =>
+    apiRequest(`/api/v1/player/move/${sectorId}`, {
+      method: 'POST',
+      timeout: 20000,
+    }),
+
+  scanLatentTunnels: () =>
+    apiRequest('/api/v1/player/scan-latent-tunnels', { method: 'POST' }),
 };
 
 /** Ship registry behaviors (SYSTEMS/ship-registry.md) — stolen / abandon / claim / transfer. */
@@ -1634,6 +1685,7 @@ export const gameAPI = {
   faction: factionAPI,
   message: messageAPI,
   ship: shipAPI,
+  player: playerAPI,
   ranking: rankingAPI,
   bounty: bountyAPI,
   citadel: citadelAPI,
