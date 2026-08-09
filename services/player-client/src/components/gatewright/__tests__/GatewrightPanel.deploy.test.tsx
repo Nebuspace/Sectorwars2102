@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /**
  * GatewrightPanel — deploy-beacon money path (WO-TESTCOV-PLAYER-GATEWRIGHT-DEPLOY).
- * DEPLOY BEACON → CONFIRM DEPLOY → POST /api/v1/warp-gates/deploy-beacon.
+ * DEPLOY BEACON → CONFIRM DEPLOY → warpGatesAPI.deployBeacon.
  */
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -9,14 +9,45 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const { mockGet, mockPost } = vi.hoisted(() => ({
-  mockGet: vi.fn(),
-  mockPost: vi.fn(),
+const {
+  mockListMine,
+  mockListSector,
+  mockGetQuantum,
+  mockDeployBeacon,
+  mockAnchorFocus,
+  mockCancel,
+  mockStageMaterials,
+  mockAdvanceConstruction,
+} = vi.hoisted(() => ({
+  mockListMine: vi.fn(),
+  mockListSector: vi.fn(),
+  mockGetQuantum: vi.fn(),
+  mockDeployBeacon: vi.fn(),
+  mockAnchorFocus: vi.fn(),
+  mockCancel: vi.fn(),
+  mockStageMaterials: vi.fn(),
+  mockAdvanceConstruction: vi.fn(),
 }));
 
-vi.mock('../../../services/apiClient', () => ({
-  default: { get: mockGet, post: mockPost },
-}));
+vi.mock('../../../services/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../services/api')>();
+  return {
+    ...actual,
+    warpGatesAPI: {
+      listMine: (...args: unknown[]) => mockListMine(...args),
+      listSector: (...args: unknown[]) => mockListSector(...args),
+      deployBeacon: (...args: unknown[]) => mockDeployBeacon(...args),
+      anchorFocus: (...args: unknown[]) => mockAnchorFocus(...args),
+      cancel: (...args: unknown[]) => mockCancel(...args),
+      stageMaterials: (...args: unknown[]) => mockStageMaterials(...args),
+      advanceConstruction: (...args: unknown[]) => mockAdvanceConstruction(...args),
+    },
+    quantumAPI: {
+      ...actual.quantumAPI,
+      getStatus: (...args: unknown[]) => mockGetQuantum(...args),
+    },
+  };
+});
 
 vi.mock('../../../contexts/GameContext', () => ({
   useGame: () => ({
@@ -37,26 +68,15 @@ import GatewrightPanel from '../GatewrightPanel';
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 function installGetHandler() {
-  mockGet.mockImplementation(async (url: string) => {
-    if (url.includes('/warp-gates/mine')) {
-      return { data: { projects: [] } };
-    }
-    if (url.includes('/warp-gates/sector/')) {
-      return { data: { gates: [], beacons: [] } };
-    }
-    if (url.includes('/quantum/status')) {
-      return {
-        data: {
-          quantum_shards: 0,
-          quantum_crystals: 1,
-          quantum_charges: 0,
-          can_jump: true,
-          is_warp_jumper: true,
-          sensor_level: 1,
-        },
-      };
-    }
-    throw new Error(`unexpected GET ${url}`);
+  mockListMine.mockResolvedValue({ projects: [] });
+  mockListSector.mockResolvedValue({ gates: [], beacons: [] });
+  mockGetQuantum.mockResolvedValue({
+    quantum_shards: 0,
+    quantum_crystals: 1,
+    quantum_charges: 0,
+    can_jump: true,
+    is_warp_jumper: true,
+    sensor_level: 1,
   });
 }
 
@@ -65,10 +85,16 @@ describe('GatewrightPanel — deploy-beacon money path', () => {
   let root: ReturnType<typeof createRoot>;
 
   beforeEach(() => {
-    mockGet.mockReset();
-    mockPost.mockReset();
+    mockListMine.mockReset();
+    mockListSector.mockReset();
+    mockGetQuantum.mockReset();
+    mockDeployBeacon.mockReset();
+    mockAnchorFocus.mockReset();
+    mockCancel.mockReset();
+    mockStageMaterials.mockReset();
+    mockAdvanceConstruction.mockReset();
     installGetHandler();
-    mockPost.mockResolvedValue({ data: {} });
+    mockDeployBeacon.mockResolvedValue({});
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -120,13 +146,10 @@ describe('GatewrightPanel — deploy-beacon money path', () => {
     });
 
     await vi.waitFor(() => {
-      expect(mockPost).toHaveBeenCalledWith('/api/v1/warp-gates/deploy-beacon', {
-        destination_sector_id: expect.any(Number),
-      });
+      expect(mockDeployBeacon).toHaveBeenCalledWith(expect.any(Number));
     });
 
-    const call = mockPost.mock.calls.find((c) => c[0] === '/api/v1/warp-gates/deploy-beacon');
-    expect(call?.[1]).toEqual({ destination_sector_id: expect.any(Number) });
-    expect((call?.[1] as { destination_sector_id: number }).destination_sector_id).toBeGreaterThanOrEqual(1);
+    const dest = mockDeployBeacon.mock.calls[0]?.[0] as number;
+    expect(dest).toBeGreaterThanOrEqual(1);
   });
 });
