@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { useAuth } from './AuthContext';
 import apiClient from '../services/apiClient';
-import { sectorAPI, messageAPI, planetaryAPI, citadelAPI } from '../services/api';
+import { sectorAPI, messageAPI, planetaryAPI, citadelAPI, expeditionAPI } from '../services/api';
 import websocketService from '../services/websocket';
 import { ariaFeed } from '../components/mfd/ariaFeedStore';
 
@@ -1008,14 +1008,16 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
   
-  // Claim an unclaimed planet (and automatically land on it)
+  // Claim an unclaimed planet (and automatically land on it).
+  // WO-WIRE-PLANET-CLAIM-SETTLE: expeditionAPI.settle (same URL — the claim
+  // route hosts the ADR-0091 CAS settle resolver).
   const claimPlanet = async (planetId: string) => {
     if (!user || !playerState) return;
 
     setError(null);
 
     try {
-      const response = await api.post(`/api/v1/planets/${planetId}/claim`);
+      const data = await expeditionAPI.settle(planetId);
 
       // Update player state after claiming (player is auto-landed).
       // Claiming spends credits and settles colonists from the ship's
@@ -1024,7 +1026,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       await loadShips();
       await exploreCurrentLocation();
 
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error claiming planet:', error);
       // 400 (requirements not met) and 403 (protected population hub) are
