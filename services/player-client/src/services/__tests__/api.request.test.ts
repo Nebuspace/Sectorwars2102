@@ -19,7 +19,7 @@ vi.mock('../apiClient', () => ({
 }));
 
 import apiClient from '../apiClient';
-import { combatAPI, greyStatusAPI, shipRegistryAPI, tradeAPI } from '../api';
+import { combatAPI, greyStatusAPI, navAPI, shipRegistryAPI, tradeAPI } from '../api';
 
 const get = apiClient.get as ReturnType<typeof vi.fn>;
 const post = apiClient.post as ReturnType<typeof vi.fn>;
@@ -188,6 +188,23 @@ describe('apiRequest via trade/combat/grey wrappers', () => {
     expect(post).toHaveBeenCalledWith(
       '/api/v1/ships/ship-2/request-pin-reset',
       JSON.stringify({ port_id: 'port-9', pin: 'NEWPIN1' }),
+      jsonHeaders,
+    );
+  });
+
+  it('navAPI.plot POSTs target_sector_id with default min_time objective', async () => {
+    const plot = {
+      success: true as const,
+      reachable: true as const,
+      target_sector_id: 42,
+      hops: [],
+      total_turns: 0,
+    };
+    post.mockResolvedValue({ data: plot });
+    await expect(navAPI.plot(42)).resolves.toEqual(plot);
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/nav/plot',
+      JSON.stringify({ target_sector_id: 42, objective: 'min_time' }),
       jsonHeaders,
     );
   });
