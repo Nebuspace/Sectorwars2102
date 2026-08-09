@@ -5,7 +5,7 @@
  * Render-only addition that reuses the existing handleCancel/armedCancelId
  * plumbing already exercised by the HARMONIZING "CANCEL ANCHOR" flow — this
  * pins the new BEACON_DEPLOYED branch: arming fires no network call, confirm
- * fires exactly one POST to the existing cancel route, a server 400 (the
+ * fires exactly one cancel via warpGatesAPI.cancel, a server 400 (the
  * harmonizing-bound guard) renders inline without hiding the card or the
  * button, a successful cancel removes the project once CANCELLED comes back
  * on refetch, and the pre-existing HARMONIZING card is untouched (no
@@ -15,11 +15,45 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const { mockGet, mockPost } = vi.hoisted(() => ({ mockGet: vi.fn(), mockPost: vi.fn() }));
-
-vi.mock('../../../services/apiClient', () => ({
-  default: { get: mockGet, post: mockPost },
+const {
+  mockListMine,
+  mockListSector,
+  mockGetQuantum,
+  mockDeployBeacon,
+  mockAnchorFocus,
+  mockCancel,
+  mockStageMaterials,
+  mockAdvanceConstruction,
+} = vi.hoisted(() => ({
+  mockListMine: vi.fn(),
+  mockListSector: vi.fn(),
+  mockGetQuantum: vi.fn(),
+  mockDeployBeacon: vi.fn(),
+  mockAnchorFocus: vi.fn(),
+  mockCancel: vi.fn(),
+  mockStageMaterials: vi.fn(),
+  mockAdvanceConstruction: vi.fn(),
 }));
+
+vi.mock('../../../services/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../services/api')>();
+  return {
+    ...actual,
+    warpGatesAPI: {
+      listMine: (...args: unknown[]) => mockListMine(...args),
+      listSector: (...args: unknown[]) => mockListSector(...args),
+      deployBeacon: (...args: unknown[]) => mockDeployBeacon(...args),
+      anchorFocus: (...args: unknown[]) => mockAnchorFocus(...args),
+      cancel: (...args: unknown[]) => mockCancel(...args),
+      stageMaterials: (...args: unknown[]) => mockStageMaterials(...args),
+      advanceConstruction: (...args: unknown[]) => mockAdvanceConstruction(...args),
+    },
+    quantumAPI: {
+      ...actual.quantumAPI,
+      getStatus: (...args: unknown[]) => mockGetQuantum(...args),
+    },
+  };
+});
 
 vi.mock('../../../contexts/GameContext', () => ({
   useGame: () => ({
@@ -63,30 +97,21 @@ const HARMONIZING_PROJECT = {
   created_at: new Date().toISOString(),
 };
 
-// Installs a GET dispatcher; `getProjects` is read at call time so a test can
+// Installs GET dispatchers; `getProjects` is read at call time so a test can
 // mutate the underlying list (e.g. after a mocked cancel) and the next /mine
 // poll picks up the change.
 function installGetHandler(getProjects: () => unknown[]) {
-  mockGet.mockImplementation((url: string) => {
-    if (url.includes('/warp-gates/mine')) {
-      return Promise.resolve({ data: { projects: getProjects() } });
-    }
-    if (url.includes('/warp-gates/sector/')) {
-      return Promise.resolve({ data: { gates: [], beacons: [] } });
-    }
-    if (url.includes('/quantum/status')) {
-      return Promise.resolve({
-        data: {
-          quantum_shards: 0,
-          quantum_crystals: 0,
-          quantum_charges: 0,
-          can_jump: true,
-          is_warp_jumper: true,
-          sensor_level: 1,
-        },
-      });
-    }
-    return Promise.reject(new Error(`unexpected GET ${url}`));
+  mockListMine.mockImplementation(() =>
+    Promise.resolve({ projects: getProjects() }),
+  );
+  mockListSector.mockResolvedValue({ gates: [], beacons: [] });
+  mockGetQuantum.mockResolvedValue({
+    quantum_shards: 0,
+    quantum_crystals: 0,
+    quantum_charges: 0,
+    can_jump: true,
+    is_warp_jumper: true,
+    sensor_level: 1,
   });
 }
 
@@ -95,8 +120,14 @@ describe('GatewrightPanel — beacon abandon affordance', () => {
   let root: ReturnType<typeof createRoot>;
 
   beforeEach(() => {
-    mockGet.mockReset();
-    mockPost.mockReset();
+    mockListMine.mockReset();
+    mockListSector.mockReset();
+    mockGetQuantum.mockReset();
+    mockDeployBeacon.mockReset();
+    mockAnchorFocus.mockReset();
+    mockCancel.mockReset();
+    mockStageMaterials.mockReset();
+    mockAdvanceConstruction.mockReset();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -133,12 +164,12 @@ describe('GatewrightPanel — beacon abandon affordance', () => {
     await flush();
 
     expect(container.querySelector('[data-testid="abandon-beacon"]')).toBeTruthy();
-    expect(mockPost).not.toHaveBeenCalled();
+    expect(mockCancel).not.toHaveBeenCalled();
   });
 
   it('arms with zero network calls, then confirm fires exactly one cancel POST', async () => {
     installGetHandler(() => [DEPLOYED_PROJECT]);
-    mockPost.mockResolvedValue({ data: {} });
+    mockCancel.mockResolvedValue({});
 
     await act(async () => {
       root.render(<GatewrightPanel />);
@@ -147,7 +178,7 @@ describe('GatewrightPanel — beacon abandon affordance', () => {
 
     const abandonBtn = container.querySelector('[data-testid="abandon-beacon"]') as HTMLButtonElement;
     await click(abandonBtn);
-    expect(mockPost).not.toHaveBeenCalled();
+    expect(mockCancel).not.toHaveBeenCalled();
 
     const confirmBtn = container.querySelector('[data-testid="confirm-abandon-beacon"]') as HTMLButtonElement;
     expect(confirmBtn).toBeTruthy();
@@ -156,8 +187,8 @@ describe('GatewrightPanel — beacon abandon affordance', () => {
     await click(confirmBtn);
     await flush();
 
-    expect(mockPost).toHaveBeenCalledTimes(1);
-    expect(mockPost).toHaveBeenCalledWith('/api/v1/warp-gates/beacon-1/cancel');
+    expect(mockCancel).toHaveBeenCalledTimes(1);
+    expect(mockCancel).toHaveBeenCalledWith('beacon-1');
   });
 
   it('keep/back disarms with zero requests', async () => {
@@ -179,12 +210,12 @@ describe('GatewrightPanel — beacon abandon affordance', () => {
 
     expect(container.querySelector('[data-testid="confirm-abandon-beacon"]')).toBeNull();
     expect(container.querySelector('[data-testid="abandon-beacon"]')).toBeTruthy();
-    expect(mockPost).not.toHaveBeenCalled();
+    expect(mockCancel).not.toHaveBeenCalled();
   });
 
   it('renders the harmonizing-bound 400 detail inline and keeps the card + button', async () => {
     installGetHandler(() => [DEPLOYED_PROJECT]);
-    mockPost.mockRejectedValue({
+    mockCancel.mockRejectedValue({
       response: { data: { detail: 'Cancel the harmonizing gate first before abandoning this beacon.' } },
     });
 
@@ -207,9 +238,9 @@ describe('GatewrightPanel — beacon abandon affordance', () => {
   it('removes the project from the ledger once a successful cancel refetches CANCELLED', async () => {
     let projects: unknown[] = [DEPLOYED_PROJECT];
     installGetHandler(() => projects);
-    mockPost.mockImplementation(() => {
+    mockCancel.mockImplementation(() => {
       projects = [{ ...DEPLOYED_PROJECT, phase: 'CANCELLED' }];
-      return Promise.resolve({ data: {} });
+      return Promise.resolve({});
     });
 
     await act(async () => {

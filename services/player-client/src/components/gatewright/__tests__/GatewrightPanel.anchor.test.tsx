@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /**
  * GatewrightPanel — anchor-focus money path (WO-TESTCOV-PLAYER-GATEWRIGHT-ANCHOR).
- * ANCHOR FOCUS → COMMIT → POST /api/v1/warp-gates/anchor-focus (Phase 3 credits/turns spend).
+ * ANCHOR FOCUS → COMMIT → warpGatesAPI.anchorFocus (Phase 3 credits/turns spend).
  */
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -9,14 +9,45 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const { mockGet, mockPost } = vi.hoisted(() => ({
-  mockGet: vi.fn(),
-  mockPost: vi.fn(),
+const {
+  mockListMine,
+  mockListSector,
+  mockGetQuantum,
+  mockDeployBeacon,
+  mockAnchorFocus,
+  mockCancel,
+  mockStageMaterials,
+  mockAdvanceConstruction,
+} = vi.hoisted(() => ({
+  mockListMine: vi.fn(),
+  mockListSector: vi.fn(),
+  mockGetQuantum: vi.fn(),
+  mockDeployBeacon: vi.fn(),
+  mockAnchorFocus: vi.fn(),
+  mockCancel: vi.fn(),
+  mockStageMaterials: vi.fn(),
+  mockAdvanceConstruction: vi.fn(),
 }));
 
-vi.mock('../../../services/apiClient', () => ({
-  default: { get: mockGet, post: mockPost },
-}));
+vi.mock('../../../services/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../services/api')>();
+  return {
+    ...actual,
+    warpGatesAPI: {
+      listMine: (...args: unknown[]) => mockListMine(...args),
+      listSector: (...args: unknown[]) => mockListSector(...args),
+      deployBeacon: (...args: unknown[]) => mockDeployBeacon(...args),
+      anchorFocus: (...args: unknown[]) => mockAnchorFocus(...args),
+      cancel: (...args: unknown[]) => mockCancel(...args),
+      stageMaterials: (...args: unknown[]) => mockStageMaterials(...args),
+      advanceConstruction: (...args: unknown[]) => mockAdvanceConstruction(...args),
+    },
+    quantumAPI: {
+      ...actual.quantumAPI,
+      getStatus: (...args: unknown[]) => mockGetQuantum(...args),
+    },
+  };
+});
 
 vi.mock('../../../contexts/GameContext', () => ({
   useGame: () => ({
@@ -58,26 +89,15 @@ const ANCHOR_READY_PROJECT = {
 };
 
 function installGetHandler() {
-  mockGet.mockImplementation(async (url: string) => {
-    if (url.includes('/warp-gates/mine')) {
-      return { data: { projects: [ANCHOR_READY_PROJECT] } };
-    }
-    if (url.includes('/warp-gates/sector/')) {
-      return { data: { gates: [], beacons: [] } };
-    }
-    if (url.includes('/quantum/status')) {
-      return {
-        data: {
-          quantum_shards: 0,
-          quantum_crystals: 0,
-          quantum_charges: 0,
-          can_jump: true,
-          is_warp_jumper: true,
-          sensor_level: 1,
-        },
-      };
-    }
-    throw new Error(`unexpected GET ${url}`);
+  mockListMine.mockResolvedValue({ projects: [ANCHOR_READY_PROJECT] });
+  mockListSector.mockResolvedValue({ gates: [], beacons: [] });
+  mockGetQuantum.mockResolvedValue({
+    quantum_shards: 0,
+    quantum_crystals: 0,
+    quantum_charges: 0,
+    can_jump: true,
+    is_warp_jumper: true,
+    sensor_level: 1,
   });
 }
 
@@ -86,10 +106,16 @@ describe('GatewrightPanel — anchor-focus money path', () => {
   let root: ReturnType<typeof createRoot>;
 
   beforeEach(() => {
-    mockGet.mockReset();
-    mockPost.mockReset();
+    mockListMine.mockReset();
+    mockListSector.mockReset();
+    mockGetQuantum.mockReset();
+    mockDeployBeacon.mockReset();
+    mockAnchorFocus.mockReset();
+    mockCancel.mockReset();
+    mockStageMaterials.mockReset();
+    mockAdvanceConstruction.mockReset();
     installGetHandler();
-    mockPost.mockResolvedValue({ data: {} });
+    mockAnchorFocus.mockResolvedValue({});
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -140,10 +166,7 @@ describe('GatewrightPanel — anchor-focus money path', () => {
     });
 
     await vi.waitFor(() => {
-      expect(mockPost).toHaveBeenCalledWith('/api/v1/warp-gates/anchor-focus', {
-        beacon_id: 'beacon-1',
-        access_mode: 'PUBLIC',
-      });
+      expect(mockAnchorFocus).toHaveBeenCalledWith('beacon-1', 'PUBLIC');
     });
   });
 });

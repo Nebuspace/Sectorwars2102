@@ -54,7 +54,7 @@ vi.mock('../../../services/api', () => ({
     getChart: vi.fn().mockResolvedValue({ sectors: [], edges: [], frontier: [] }),
     getThreat: vi.fn().mockResolvedValue([]),
   },
-  sectorAPI: { sectorWrecks: (...a: unknown[]) => mockSectorWrecks(...a) },
+  sectorAPI: { sectorWrecks: (...a: unknown[]) => mockSectorWrecks(...a), getContents: vi.fn().mockResolvedValue({ star: null, bodies: [] }), },
 }));
 
 vi.mock('react-router-dom', () => ({

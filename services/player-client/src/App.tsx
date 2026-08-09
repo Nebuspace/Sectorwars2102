@@ -19,8 +19,6 @@ import OAuthCallback from './components/auth/OAuthCallback'
 import LandingPage from './components/landing/LandingPage'
 import GameShellRoute from './components/layouts/GameShellRoute'
 import GameDashboard from './components/pages/GameDashboard'
-import DebugPage from './components/pages/DebugPage'
-import TestAuthPage from './components/pages/TestAuthPage'
 import { FirstLoginContainer } from './components/first-login'
 // WO-UI5-RETIREMENT+GLASS: the 9 other /game/* page components RouteRail's
 // nav keys used to route to (map/player/settings/planets/combat/team/
@@ -49,6 +47,13 @@ const LabShell    = import.meta.env.DEV ? lazy(() => import('./components/layout
 // bleauLayer registration effect for the two fixed instances of this bug).
 // Same DEV-gated dead-code-elimination pattern as the Vista lab routes above.
 const TableauFreezeRepro = import.meta.env.DEV ? lazy(() => import('./components/tactical/lab/TableauFreezeRepro')) : null;
+// Audit-27 item 6 — DebugPage dumps localStorage tokens + auth internals;
+// TestAuthPage is a raw auth-flow harness. The backend already env-gates
+// the matching API routes, but the page components themselves shouldn't
+// ship in the prod bundle at all. Same DEV-gated dead-code-elimination
+// pattern as the Vista lab routes above.
+const DebugPage    = import.meta.env.DEV ? lazy(() => import('./components/pages/DebugPage'))    : null;
+const TestAuthPage = import.meta.env.DEV ? lazy(() => import('./components/pages/TestAuthPage')) : null;
 
 interface ApiResponse {
   message?: string;
@@ -265,8 +270,12 @@ function App() {
               <FirstLoginProvider>
                 <Routes>
               <Route path="/oauth-callback" element={<OAuthCallback />} />
-              <Route path="/debug" element={<DebugPage />} />
-              <Route path="/test-auth" element={<TestAuthPage />} />
+              {import.meta.env.DEV && DebugPage && (
+                <Route path="/debug" element={<Suspense fallback={<div>Loading…</div>}><DebugPage /></Suspense>} />
+              )}
+              {import.meta.env.DEV && TestAuthPage && (
+                <Route path="/test-auth" element={<Suspense fallback={<div>Loading…</div>}><TestAuthPage /></Suspense>} />
+              )}
               {/* WO-UI0-PERSISTENT-SHELL lane A — all /game/* pages nest under ONE
                   layout route so GameShellRoute -> GameLayout mounts once and
                   survives navigation between them (only the Outlet slot swaps).

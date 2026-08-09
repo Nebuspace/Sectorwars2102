@@ -16,16 +16,28 @@
  * + act(), no RTL in this project. QuantumBearingViewport is stubbed to a
  * no-op (its own canvas/ResizeObserver/rAF machinery is irrelevant here —
  * the cost-tag and block-reason text under test live in this component,
- * not its child), and apiClient is stubbed since is_warp_jumper=true fires
+ * not its child), and quantumAPI.getMinimap is stubbed since is_warp_jumper=true fires
  * the minimap fetch on mount.
  */
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-vi.mock('../../services/apiClient', () => ({
-  default: { get: vi.fn().mockResolvedValue({ data: { origin_sector_id: 1, spacing: 1, complete_radius_spacings: 25, sectors: [] } }) },
-}));
+vi.mock('../../services/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/api')>();
+  return {
+    ...actual,
+    quantumAPI: {
+      ...actual.quantumAPI,
+      getMinimap: vi.fn().mockResolvedValue({
+        origin_sector_id: 1,
+        spacing: 1,
+        complete_radius_spacings: 25,
+        sectors: [],
+      }),
+    },
+  };
+});
 
 vi.mock('./QuantumBearingViewport', () => ({
   default: () => null,
