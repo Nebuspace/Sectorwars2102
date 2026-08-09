@@ -228,6 +228,18 @@ interface WebSocketContextType {
     timestamp: string | null;
   } | null;
 
+  // Limpet mine tracking (movement_service._dispatch_limpet_signals): bumps
+  // once per inbound `limpet_signal` frame, sent to a limpet mine's owner on
+  // every move of the ship it's tracking. Pure plumbing — no toast (fires on
+  // every tracked move, not a one-off event) — a future tracker-panel UI can
+  // watch the signal for the tracked ship's last-known sector.
+  limpetSignalEventSignal: number;
+  lastLimpetSignal: {
+    tracked_player_id: string | null;
+    tracked_ship_id: string | null;
+    sector_id: number | null;
+  } | null;
+
   // Connection management
   connect: () => void;
   disconnect: () => void;
@@ -374,6 +386,12 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
     total_collected: number | null;
     refund: number | null;
     timestamp: string | null;
+  } | null>(null);
+  const [limpetSignalEventSignal, setLimpetSignalEventSignal] = useState(0);
+  const [lastLimpetSignal, setLastLimpetSignal] = useState<{
+    tracked_player_id: string | null;
+    tracked_ship_id: string | null;
+    sector_id: number | null;
   } | null>(null);
 
   // Keep track of cleanup functions
@@ -972,6 +990,17 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           break;
         }
 
+        case 'limpet_signal': {
+          // See limpetSignalEventSignal field doc. Stash + bump only.
+          setLastLimpetSignal({
+            tracked_player_id: message.tracked_player_id != null ? String(message.tracked_player_id) : null,
+            tracked_ship_id: message.tracked_ship_id != null ? String(message.tracked_ship_id) : null,
+            sector_id: typeof message.sector_id === 'number' ? message.sector_id : null,
+          });
+          setLimpetSignalEventSignal(prev => prev + 1);
+          break;
+        }
+
         case 'admin_broadcast':
           addNotification({
             title: message.title || 'System Message',
@@ -1105,6 +1134,10 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
     // Bounty lifecycle (bounty_updated — WO-BOUNTY-REALTIME-EVENTS)
     bountyEventSignal,
     lastBountyUpdated,
+
+    // Limpet mine tracking (limpet_signal)
+    limpetSignalEventSignal,
+    lastLimpetSignal,
 
     // Connection management
     connect,
