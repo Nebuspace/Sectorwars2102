@@ -1,13 +1,16 @@
 """Ship Registry behavioral routes -- report-stolen / retract-stolen-report /
-abandon / claim / transfer-claim.
+abandon / claim / transfer-claim / eject / board / salvage-break.
 
 Canon: SYSTEMS/ship-registry.md "Reporting a ship stolen", "Abandonment",
-"Legal ownership transfer". WO-FIX-SHIP-REGISTRY-BEHAVIORAL-ROUTES shipped
-report/retract-stolen. WO-FIX-SHIP-REGISTRY-TRANSFER-SALVAGE-TRADE-ABANDON
-added abandon/claim. WO-BUILD-SHIP-REGISTRY-CONTESTED-TRANSFER-SALVAGE-CLAIM
-adds transfer-claim (file) / transfer-claim/approve here. Trade (peer-to-peer
-sale) is ADR-0089's ship-bundle trade session (src/api/routes/player_trade.py)
--- not duplicated here, see ship_registry_service's module docstring.
+"Legal ownership transfer", "Eject and board", "Salvage break".
+WO-FIX-SHIP-REGISTRY-BEHAVIORAL-ROUTES shipped report/retract-stolen.
+WO-FIX-SHIP-REGISTRY-TRANSFER-SALVAGE-TRADE-ABANDON added abandon/claim.
+WO-BUILD-SHIP-REGISTRY-CONTESTED-TRANSFER-SALVAGE-CLAIM adds transfer-claim
+(file) / transfer-claim/approve here. WO-BUILD-SHIP-EJECT-BOARD-ROUTES adds
+the salvage-break route (eject/board/set-pin/request-pin-reset were already
+shipped by an earlier pass). Trade (peer-to-peer sale) is ADR-0089's
+ship-bundle trade session (src/api/routes/player_trade.py) -- not duplicated
+here, see ship_registry_service's module docstring.
 
 Business logic lives in src.services.ship_registry_service -- this file is
 routing + locking + HTTP-shape translation only.
@@ -18,6 +21,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from src.core.database import get_db
@@ -37,6 +41,7 @@ from src.services.ship_registry_service import (
     request_pin_reset,
     retract_stolen_report,
     set_pin,
+    start_salvage_break,
 )
 
 logger = logging.getLogger(__name__)
@@ -75,6 +80,9 @@ _CONFLICT_CODES = {
     "ERR_SHIP_LOCKED",
     "ERR_NOT_CURRENT_PILOT",
     "ERR_PIN_RESET_ALREADY_PENDING",
+    "ERR_SALVAGE_BREAK_IN_PROGRESS",
+    "ERR_SHIP_NOT_DRIFTING",
+    "ERR_ESCAPE_POD_CANNOT_BE_SALVAGED",
 }
 
 
@@ -318,6 +326,47 @@ async def board_ship_route(
     logger.info(
         "Ship %s boarded by %s (state=%s, turns_spent=%s, now_wanted=%s)",
         ship_id, player.id, result["state"], result["turns_spent"], result["now_wanted"],
+    )
+    return result
+
+
+@router.post("/{ship_id}/salvage-break")
+async def salvage_break_route(
+    ship_id: str,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Force-enter a pin-locked, Drifting ``ship_id`` (ship-registry.md
+    "Salvage break", ADR-0049 SK14). ``with_for_update(nowait=True)`` --
+    a concurrent request that can't acquire the row lock fails immediately
+    (409, no ETA available) rather than queuing; the far more common
+    already-in-progress case is caught at the application level inside
+    ``start_salvage_break`` with the in-progress salvager id + ETA."""
+    try:
+        ship = db.query(Ship).filter(Ship.id == ship_id).with_for_update(nowait=True).first()
+    except OperationalError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "ERR_SALVAGE_BREAK_IN_PROGRESS",
+                "message": "This ship's row is locked by a concurrent request; try again shortly.",
+            },
+        )
+    if ship is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ship not found.")
+
+    try:
+        result = start_salvage_break(db, ship=ship, salvager=player)
+    except ShipRegistryError as exc:
+        db.rollback()
+        _raise_for(exc)
+        return  # pragma: no cover -- _raise_for always raises
+
+    db.commit()
+    logger.info(
+        "Salvage break started on ship %s by %s (completes_at=%s)",
+        ship_id, player.id, result["completes_at"],
     )
     return result
 

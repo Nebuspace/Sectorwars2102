@@ -58,6 +58,24 @@ TRANSFER_CLAIM_DISPUTE_WINDOW = timedelta(hours=24)
 # themselves before being locked out."
 PIN_RESET_DELAY = timedelta(hours=1)
 
+# ship-registry.md "Salvage break" duration table, keyed by ShipType.
+# ESCAPE_POD is deliberately absent -- "n/a -- escape pods cannot be
+# salvage-broken" is enforced as an explicit rejection in start_salvage_break,
+# not a duration lookup. NPC-only hulls (never player-Drifting) fall back to
+# the 4h mid-tier via .get() below rather than KeyError.
+SALVAGE_BREAK_DURATIONS = {
+    ShipType.SCOUT_SHIP: timedelta(hours=1),
+    ShipType.FAST_COURIER: timedelta(hours=1),
+    ShipType.CITIZEN_CLIPPER: timedelta(hours=1),  # FAST_COURIER re-skin
+    ShipType.LIGHT_FREIGHTER: timedelta(hours=1),
+    ShipType.CARGO_HAULER: timedelta(hours=4),
+    ShipType.DEFENDER: timedelta(hours=4),
+    ShipType.COLONY_SHIP: timedelta(hours=4),
+    ShipType.CARRIER: timedelta(hours=12),
+    ShipType.WARP_JUMPER: timedelta(hours=12),
+}
+SALVAGE_BREAK_DEFAULT_DURATION = timedelta(hours=4)
+
 # 50% of the ship's last appraised value (ship-registry.md "Reporting a ship
 # stolen" effects #5). ``Ship.purchase_value`` is this codebase's existing
 # "last appraised value" field (ship_service._calculate_insurance_payout
@@ -848,16 +866,12 @@ def eject_ship(db: Session, *, player: Player) -> dict:
 def board_ship(db: Session, *, ship: Ship, boarder: Player, pin: Optional[str] = None) -> dict:
     """Board ``ship`` (ship-registry.md "Eject and board" + "Hatch pin
     lock"). Eligibility: the registered owner always qualifies (no pin); a
-    matching ``pin`` qualifies anyone (regular Borrow). A pin-less attempt on
-    a locked, non-owned ship is rejected 409 -- canon's own stated behavior
-    for "no pin and ship still locked". The salvage-break bypass (a
-    completed break clears ``hatch_pin_code``, opening the ship to anyone in
-    the sector) stays dormant pending its own WO -- canon itself tags the
-    break operation "📐 Design-only -- not in code today" -- so this
-    function never needs to special-case it: a cleared pin already satisfies
-    ``pin_matches`` the moment that mechanic ships (``pin=""`` would not
-    match a NULL/empty ``hatch_pin_code`` here, so the future WO's own
-    eligibility write is the actual unlock, not this function).
+    matching ``pin`` qualifies anyone (regular Borrow); a ship with
+    ``hatch_pin_code IS NULL`` (post-salvage-break, ``_complete_salvage_
+    break`` cleared it) is open to anyone in the sector -- canon's "eligible
+    to anyone in the sector" bypass. A pin-less attempt on a locked,
+    non-owned ship is rejected 409 -- canon's own stated behavior for "no
+    pin and ship still locked".
 
     Boarding a ``stolen_status`` ship immediately enters Wanted Status --
     already ``sync_current_pilot``'s existing behavior via
@@ -881,7 +895,11 @@ def board_ship(db: Session, *, ship: Ship, boarder: Player, pin: Optional[str] =
 
     is_owner = ship.registered_owner_id == boarder.id
     pin_matches = bool(pin) and bool(ship.hatch_pin_code) and pin == ship.hatch_pin_code
-    if not (is_owner or pin_matches):
+    # Post-salvage-break bypass (ship-registry.md "Eject and board"
+    # "Eligibility"): a completed break clears hatch_pin_code to NULL,
+    # opening a Drifting ship to anyone in the sector.
+    salvage_broken_open = ship.current_pilot_id is None and ship.hatch_pin_code is None
+    if not (is_owner or pin_matches or salvage_broken_open):
         raise ShipRegistryError(
             "ERR_SHIP_LOCKED",
             "This ship's hatch is locked. You need the pin (or a completed salvage break) to board it.",
@@ -1012,3 +1030,106 @@ def _apply_pending_pin_reset(ship: Ship) -> None:
     ship.hatch_pin_code = ship.pending_hatch_pin_code
     ship.pending_hatch_pin_code = None
     ship.pending_hatch_pin_effective_at = None
+
+
+def start_salvage_break(db: Session, *, ship: Ship, salvager: Player) -> dict:
+    """A stranger without the pin force-enters a Drifting ``ship`` via a
+    salvage break (ship-registry.md "Salvage break"). Caller must already
+    hold a ``with_for_update(nowait=True)`` lock on ``ship`` (ADR-0049 SK14)
+    -- a concurrent request that can't acquire that lock is a DB-level
+    ``OperationalError``, translated by the route to the same
+    ERR_SALVAGE_BREAK_IN_PROGRESS this function raises at the application
+    level for the far more common case: a prior request already committed
+    an in-progress break on this row.
+
+    Deliberately rejects a re-call by the SAME salvager too (not just a
+    different one) -- canon's own pseudocode would silently restart the
+    timer on a duplicate call, which reads as a UI-double-click footgun;
+    treating any already-in-progress break as a flat conflict, regardless
+    of who owns it, is simpler and matches "no queue, no silent
+    serialization."
+
+    Raises ``ShipRegistryError`` with a stable code on any rejection.
+    Flushes but does not commit -- the route owns the commit."""
+    if ship.type == ShipType.ESCAPE_POD:
+        raise ShipRegistryError(
+            "ERR_ESCAPE_POD_CANNOT_BE_SALVAGED", "Escape pods cannot be salvage-broken.",
+        )
+    if ship.is_destroyed:
+        raise ShipRegistryError("ERR_SHIP_DESTROYED", "This ship has been destroyed.")
+    if ship.status == ShipStatus.HARMONIZING:
+        raise ShipRegistryError(
+            "ERR_SHIP_HARMONIZING",
+            "This ship is harmonizing into a warp gate focus and cannot be salvage-broken.",
+        )
+    if ship.current_pilot_id is not None:
+        raise ShipRegistryError(
+            "ERR_SHIP_NOT_DRIFTING", "This ship is currently piloted; it is not Drifting.",
+        )
+    if ship.sector_id != salvager.current_sector_id:
+        raise ShipRegistryError(
+            "ERR_DIFFERENT_SECTOR",
+            f"This ship is in sector {ship.sector_id}; travel there to salvage-break it.",
+        )
+    if ship.salvage_break_in_progress_by_id is not None:
+        duration = SALVAGE_BREAK_DURATIONS.get(ship.type, SALVAGE_BREAK_DEFAULT_DURATION)
+        completes_at = ship.salvage_break_started_at + duration
+        raise ShipRegistryError(
+            "ERR_SALVAGE_BREAK_IN_PROGRESS",
+            f"A salvage break is already in progress on this ship "
+            f"(by {ship.salvage_break_in_progress_by_id}, ETA {completes_at.isoformat()}).",
+        )
+
+    now = datetime.now(timezone.utc)
+    ship.salvage_break_in_progress_by_id = salvager.id
+    ship.salvage_break_started_at = now
+    db.flush()
+
+    duration = SALVAGE_BREAK_DURATIONS.get(ship.type, SALVAGE_BREAK_DEFAULT_DURATION)
+    return {
+        "ship_id": str(ship.id),
+        "started_at": now.isoformat(),
+        "duration_seconds": int(duration.total_seconds()),
+        "completes_at": (now + duration).isoformat(),
+    }
+
+
+def _complete_salvage_break(ship: Ship) -> None:
+    """Shared apply path for the salvage-break watchdog sweep (scheduler/
+    economy_sweeps.py). Caller must already hold the row lock on ``ship``
+    and have re-verified the break is still in progress and due. Clears
+    ``hatch_pin_code`` (ship-registry.md "Salvage break" step 8: "the ship
+    is now unlocked... the lock clears") and both in-progress columns.
+    Idempotently covers both the on-time watchdog fire and a late/"stuck
+    lock" catch-up sweep -- a break completed late still ends in exactly
+    the same correct state as one completed on time, so no separate
+    forced-clear-without-unlocking path is needed. No commit/flush here --
+    the sweep owns the transaction boundary."""
+    ship.hatch_pin_code = None
+    ship.salvage_break_in_progress_by_id = None
+    ship.salvage_break_started_at = None
+
+
+def cancel_salvage_break_for_salvager(db: Session, salvager_id: UUID, *, reason: str) -> None:
+    """Interruption hook (ship-registry.md "Salvage break" steps 4-5):
+    sector-leave or combat cancels any salvage break THIS player has in
+    progress as the salvager -- the lock clears and the timer resets to
+    zero ("a new salvager can start a fresh break"). Best-effort by
+    contract: callers wrap this in try/except so a hiccup here never
+    breaks movement or combat. No commit/flush here -- the caller owns the
+    transaction boundary (mirrors every other best-effort dispatch hook in
+    this codebase, e.g. team_war_service.record_pvp_kill's call site)."""
+    ship = (
+        db.query(Ship)
+        .filter(Ship.salvage_break_in_progress_by_id == salvager_id)
+        .with_for_update()
+        .first()
+    )
+    if ship is None:
+        return
+    ship.salvage_break_in_progress_by_id = None
+    ship.salvage_break_started_at = None
+    db.flush()
+    logger.info(
+        "Salvage break on ship %s cancelled (%s) -- salvager %s", ship.id, reason, salvager_id,
+    )

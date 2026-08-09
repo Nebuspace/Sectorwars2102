@@ -4,10 +4,12 @@
 Ruling context: these two routes were the missing piece keeping the
 canonical Drift/Borrow registry states structurally unreachable -- the data
 model (Ship.current_pilot_id, sync_current_pilot, Stolen/Wanted wiring) was
-already correct and dormant. The salvage-break bypass stays dormant (canon
-itself tags it "Design-only -- not in code today"); board() simply 409s a
-pin-less attempt on a locked, non-owned ship, matching canon's own stated
-"Failed boarding... returns 403/409 Forbidden" behavior for that case.
+already correct and dormant. board() 409s a pin-less attempt on a locked,
+non-owned ship, matching canon's own stated "Failed boarding... returns
+403/409 Forbidden" behavior for that case -- UNLESS hatch_pin_code is NULL
+(WO-BUILD-SHIP-EJECT-BOARD-ROUTES: the post-salvage-break bypass, "eligible
+to anyone in the sector"; see test_ship_registry_salvage_break.py for the
+break mechanic itself).
 
 DB-free: pins ``eject_ship``/``board_ship``'s own decision logic (the ERR_*
 eligibility gates, the turn-cost derivation, and that the right arguments
@@ -85,6 +87,8 @@ def make_ship(**overrides):
         registered_owner_id=uuid.uuid4(),
         hatch_pin_code="ABC123",
         stolen_status=False,
+        salvage_break_in_progress_by_id=None,
+        salvage_break_started_at=None,
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -239,6 +243,30 @@ def test_board_stranger_wrong_pin_rejects(fake_sync_current_pilot):
     ship = make_ship(hatch_pin_code="ABC123")
     with pytest.raises(ShipRegistryError) as exc:
         board_ship(_FakeSession(), ship=ship, boarder=player, pin="WRONG1")
+    assert exc.value.code == "ERR_SHIP_LOCKED"
+
+
+def test_board_stranger_null_pin_code_open_to_anyone_post_salvage_break(fake_sync_current_pilot):
+    """WO-BUILD-SHIP-EJECT-BOARD-ROUTES: hatch_pin_code IS NULL (a
+    completed salvage break) opens a Drifting ship to anyone in the
+    sector, no pin required."""
+    player = make_player(turns=50, is_docked=True)
+    ship = make_ship(hatch_pin_code=None, current_pilot_id=None)
+    result = board_ship(_FakeSession(), ship=ship, boarder=player, pin=None)
+    assert result["boarded"] is True
+    assert result["state"] == "borrowed"
+
+
+def test_board_stranger_null_pin_code_but_still_piloted_rejects(fake_sync_current_pilot):
+    """A pin can only be NULL from a completed break, which requires
+    Drifting (current_pilot_id IS NULL) in the first place -- but guard the
+    combination explicitly (current_pilot_id AND hatch_pin_code both
+    checked) rather than relying on that invariant alone."""
+    other_pilot = uuid.uuid4()
+    player = make_player()
+    ship = make_ship(hatch_pin_code=None, current_pilot_id=other_pilot)
+    with pytest.raises(ShipRegistryError) as exc:
+        board_ship(_FakeSession(), ship=ship, boarder=player, pin=None)
     assert exc.value.code == "ERR_SHIP_LOCKED"
 
 
