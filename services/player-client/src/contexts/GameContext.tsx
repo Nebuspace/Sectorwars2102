@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { useAuth } from './AuthContext';
 import apiClient from '../services/apiClient';
-import { sectorAPI, messageAPI, planetaryAPI, citadelAPI, expeditionAPI } from '../services/api';
+import { sectorAPI, messageAPI, planetaryAPI, citadelAPI, expeditionAPI, pioneerAPI } from '../services/api';
 import websocketService from '../services/websocket';
 import { ariaFeed } from '../components/mfd/ariaFeedStore';
 
@@ -1198,33 +1198,28 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   // Follow the Port Office mold: no global isLoading/error churn — the venue
   // surfaces 400/403 refusals inline. Mutations that move credits or cargo
   // refresh player + ship state so the cockpit stays authoritative.
+  // WO-WIRE-PIONEER-API: pioneerAPI.* (same URLs).
   const getPioneerOffice = async (): Promise<PioneerOffice> => {
-    const response = await api.get('/api/v1/pioneer/office');
-    return response.data;
+    return await pioneerAPI.getOffice();
   };
 
   const brokerMigrationContract = async (cohortTotal: number): Promise<MigrationContract> => {
-    const response = await api.post('/api/v1/pioneer/contracts', { cohort_total: cohortTotal });
-    return response.data;
+    return await pioneerAPI.brokerContract(cohortTotal);
   };
 
   const loadPioneerBatch = async (contractId: string, quantity: number): Promise<MigrationContract> => {
-    const response = await api.post(`/api/v1/pioneer/contracts/${contractId}/load`, { quantity });
+    const data = await pioneerAPI.loadBatch(contractId, quantity);
     await refreshPlayerState();
     await loadShips();
-    return response.data;
+    return data;
   };
 
   const listMigrationContracts = async (includeClosed = false): Promise<MigrationContract[]> => {
-    const response = await api.get('/api/v1/pioneer/contracts', {
-      params: { include_closed: includeClosed },
-    });
-    return response.data;
+    return await pioneerAPI.listContracts(includeClosed);
   };
 
   const cancelMigrationContract = async (contractId: string): Promise<MigrationContract> => {
-    const response = await api.post(`/api/v1/pioneer/contracts/${contractId}/cancel`);
-    return response.data;
+    return await pioneerAPI.cancelContract(contractId);
   };
 
   // --- Citadel: info, upgrades, and the credits-only safe ---
