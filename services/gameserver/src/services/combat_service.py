@@ -5560,13 +5560,11 @@ class CombatService:
                 destroyed_ship.sector_id,
             )
 
-        # WO-F21 (spawn half): the lost cargo — everything NOT rescued to the
-        # escape pod by destroy_ship — drops as a salvageable CargoWreck. Read
-        # the DEAD hull (not player.current_ship, which destroy_ship has just
-        # repointed to the pod), whose cargo["contents"] now holds exactly the
-        # unrescued remainder. Wreck generation lives HERE in CombatService (the
-        # model + destroy_ship's docstring make this the single spawn site), so
-        # there is no double-spawn from the ship_service path.
+        # WO-F21 (spawn half) / ADR-0093 item 40: non-voluntary destroy leaves
+        # the full hold on the dead hull; drop it as a salvageable CargoWreck.
+        # Read the DEAD hull (not player.current_ship, which destroy_ship has
+        # just repointed to the pod). Wreck generation lives HERE in
+        # CombatService — no double-spawn from the ship_service path.
         self._spawn_cargo_wreck(
             destroyed_ship=destroyed_ship,
             cause=cause,
@@ -5638,11 +5636,11 @@ class CombatService:
         hull, or None when no wreck is warranted.
 
         Single spawn site for both the player-ship path (_handle_ship_destruction,
-        after destroy_ship has stripped the emergency-cargo rescue) and the
-        NPC-hull path (attack_npc_ship, after cargo theft). Best-effort: a wreck
-        hiccup must never abort the kill or the caller's combat commit, so the
-        whole body is guarded. Stages with db.add + db.flush only — the calling
-        attack_* method owns the single commit that persists it.
+        after destroy_ship — hold still on the dead hull per ADR-0093 item 40)
+        and the NPC-hull path (attack_npc_ship, after cargo theft). Best-effort:
+        a wreck hiccup must never abort the kill or the caller's combat commit,
+        so the whole body is guarded. Stages with db.add + db.flush only — the
+        calling attack_* method owns the single commit that persists it.
 
         No wreck is spawned when:
           - the cause does not map to a spawning WreckCause (warp_gate_anchor /
