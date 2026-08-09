@@ -652,6 +652,11 @@ export const playerAPI = {
     apiRequest('/api/v1/player/scan-latent-tunnels', { method: 'POST' }),
 };
 
+/** First-login gate / onboarding session (GameContext status probe). */
+export const firstLoginAPI = {
+  getStatus: () => apiRequest('/api/v1/first-login/status'),
+};
+
 /** Ship registry behaviors (SYSTEMS/ship-registry.md) — stolen / abandon / claim / transfer. */
 export const shipRegistryAPI = {
   reportStolen: (shipId: string, recoveryMode?: 'with_bounty' | 'no_bounty' | null) =>
