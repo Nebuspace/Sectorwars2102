@@ -25,7 +25,7 @@ import type { SpecialFormationSummary } from '../../../contexts/GameContext';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const mockGet = vi.fn();
+const mockGetPose = vi.fn();
 const mockGetContents = vi.fn();
 // commitIspBurn/commitIspHalt POST the optimistic ISP burn/halt commit
 // (both .catch(() => {}) -- "optimistic local flight still runs" even if
@@ -33,9 +33,10 @@ const mockGetContents = vi.fn();
 // pose contract, matching the pose GET mock's own no-mock-in-suite stance.
 // Re-armed in beforeEach (not just here): this file's afterEach runs
 // vi.restoreAllMocks(), which strips a bare vi.fn()'s implementation after
-// its first use, leaving later tests' apiClient.post(...) returning
+// its first use, leaving later tests' helmAPI.burn/halt returning
 // undefined instead of a promise.
-const mockPost = vi.fn();
+const mockBurn = vi.fn();
+const mockHalt = vi.fn();
 vi.mock('../../../services/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../services/api')>();
   return {
@@ -44,26 +45,21 @@ vi.mock('../../../services/api', async (importOriginal) => {
       ...actual.sectorAPI,
       getContents: (...args: unknown[]) => mockGetContents(...args),
     },
+    helmAPI: {
+      getPose: (...args: unknown[]) => mockGetPose(...args),
+      burn: (...args: unknown[]) => mockBurn(...args),
+      halt: (...args: unknown[]) => mockHalt(...args),
+    },
   };
 });
-vi.mock('../../../services/apiClient', () => ({
-  default: {
-    get: (...args: unknown[]) => mockGet(...args),
-    post: (...args: unknown[]) => mockPost(...args),
-  },
-}));
 
 // WindshieldTableau fetches sector contents via sectorAPI.getContents and
-// GET /api/v1/helm/intrasystem/pose via apiClient.get. Pose rejects in this
+// GET /api/v1/helm/intrasystem/pose via helmAPI.getPose. Pose rejects in this
 // suite (matches backend lag) so heading_deg stays local; contents use
 // mockGetContents with the given payload.
 const mockContents = (data: unknown) => {
   mockGetContents.mockResolvedValue(data);
-  mockGet.mockImplementation((url: string) =>
-    String(url).includes('/helm/intrasystem/pose')
-      ? Promise.reject(new Error('no pose mock in this suite'))
-      : Promise.resolve({ data: {} })
-  );
+  mockGetPose.mockRejectedValue(new Error('no pose mock in this suite'));
 };
 
 let autopilotStatus: string = 'idle';
@@ -166,11 +162,13 @@ describe('WindshieldTableau', () => {
   let root: ReturnType<typeof createRoot>;
 
   beforeEach(() => {
-    mockGet.mockReset();
+    mockGetPose.mockReset();
     mockGetContents.mockReset();
     mockContents(TEST_SYSTEM);
-    mockPost.mockReset();
-    mockPost.mockRejectedValue(new Error('no burn/halt mock in this suite'));
+    mockBurn.mockReset();
+    mockHalt.mockReset();
+    mockBurn.mockRejectedValue(new Error('no burn/halt mock in this suite'));
+    mockHalt.mockRejectedValue(new Error('no burn/halt mock in this suite'));
     autopilotStatus = 'idle';
     vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({
       width: 800, height: 400, top: 0, left: 0, right: 800, bottom: 400, x: 0, y: 0,
@@ -1055,12 +1053,8 @@ describe('WindshieldTableau', () => {
   it('never goes dark on a fetch failure — renders the static scene chrome + an acquisition-failed message', async () => {
     mockGetContents.mockReset();
     mockGetContents.mockRejectedValue(new Error('network down'));
-    mockGet.mockReset();
-    mockGet.mockImplementation((url: string) =>
-      String(url).includes('/helm/intrasystem/pose')
-        ? Promise.reject(new Error('no pose mock in this suite'))
-        : Promise.resolve({ data: {} })
-    );
+    mockGetPose.mockReset();
+    mockGetPose.mockRejectedValue(new Error('no pose mock in this suite'));
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     await mount();
     expect(container.querySelector('.scene.space')).not.toBeNull();
@@ -1080,12 +1074,8 @@ describe('WindshieldTableau', () => {
     mockGetContents.mockImplementation(
       () => new Promise((resolve) => { resolveContents = resolve; }),
     );
-    mockGet.mockReset();
-    mockGet.mockImplementation((url: string) =>
-      String(url).includes('/helm/intrasystem/pose')
-        ? Promise.reject(new Error('no pose mock in this suite'))
-        : Promise.resolve({ data: {} })
-    );
+    mockGetPose.mockReset();
+    mockGetPose.mockRejectedValue(new Error('no pose mock in this suite'));
     await act(async () => {
       root.render(
         <WindshieldFlightProvider>
