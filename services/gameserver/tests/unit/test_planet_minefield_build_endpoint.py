@@ -83,12 +83,17 @@ class _FakeSession:
         self.flush_count += 1
 
 
-def _planet(*, citadel_level, defense_buildings=None, owner_id=None):
+def _planet(*, citadel_level, defense_buildings=None, owner_id=None, equipment=1_000_000):
+    # ``equipment`` defaults high enough to afford planet_minefield's 10,000-equipment
+    # material cost (SEC-DEFBUILD-MATERIALS) so pre-existing capacity/ownership tests
+    # aren't incidentally exercising the material gate too.
     return SimpleNamespace(
         id=uuid.uuid4(),
         owner_id=owner_id,
         citadel_level=citadel_level,
         active_events={"defense_buildings": dict(defense_buildings or {})},
+        equipment=equipment,
+        fuel_ore=1_000_000,
     )
 
 
