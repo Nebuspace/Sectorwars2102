@@ -686,6 +686,23 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           break;
         }
 
+        case 'ship_recovered_impounded': {
+          // Someone surrendered a tractor-locked ship we're the registered
+          // owner of to station security (station_security_service.
+          // surrender_tractor_locked_ship -> _notify_registered_owner). The
+          // ship is held for retrieval, not destroyed; heads-up only, same
+          // idiom as docking_slip_bumped's server-authored message.
+          addNotification({
+            title: 'Ship Impounded',
+            content:
+              typeof message.message === 'string'
+                ? message.message
+                : 'One of your ships was surrendered to station security and is being held for retrieval.',
+            level: 'warning'
+          });
+          break;
+        }
+
         case 'new_message': {
           // Player-to-player hail (message_service → notification_service).
           // The backend resolves the canon delivery surfaces by priority
@@ -987,7 +1004,7 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           // send_failed is consumed by sendFailedHandler above — it's a
           // client-local synthetic event (websocket.ts's own send()), not
           // an unhandled server frame.)
-          if (!['sector_players', 'connection_status', 'chat_message', 'player_entered_sector', 'player_left_sector', 'notification', 'aria_response', 'aria_narration', 'medal_awarded', 'genesis_progress', 'planetary_update', 'contract_offer', 'contract_settled', 'rp_governor_status', 'reputation_changed', 'team_reputation_changed', 'npc_combat_initiated', 'bounty_updated', 'turn_pool_updated', 'send_failed', 'docking_slip_bumped'].includes(message.type)) {
+          if (!['sector_players', 'connection_status', 'chat_message', 'player_entered_sector', 'player_left_sector', 'notification', 'aria_response', 'aria_narration', 'medal_awarded', 'genesis_progress', 'planetary_update', 'contract_offer', 'contract_settled', 'rp_governor_status', 'reputation_changed', 'team_reputation_changed', 'npc_combat_initiated', 'bounty_updated', 'turn_pool_updated', 'send_failed', 'docking_slip_bumped', 'ship_recovered_impounded'].includes(message.type)) {
             console.warn('WebSocket: Unhandled message type:', message.type);
           }
       }
