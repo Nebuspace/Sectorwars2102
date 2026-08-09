@@ -26,6 +26,7 @@ import type { SpecialFormationSummary } from '../../../contexts/GameContext';
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const mockGet = vi.fn();
+const mockGetContents = vi.fn();
 // commitIspBurn/commitIspHalt POST the optimistic ISP burn/halt commit
 // (both .catch(() => {}) -- "optimistic local flight still runs" even if
 // this rejects) -- reject so the suite's synthetic clicks don't need a real
@@ -35,6 +36,16 @@ const mockGet = vi.fn();
 // its first use, leaving later tests' apiClient.post(...) returning
 // undefined instead of a promise.
 const mockPost = vi.fn();
+vi.mock('../../../services/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../services/api')>();
+  return {
+    ...actual,
+    sectorAPI: {
+      ...actual.sectorAPI,
+      getContents: (...args: unknown[]) => mockGetContents(...args),
+    },
+  };
+});
 vi.mock('../../../services/apiClient', () => ({
   default: {
     get: (...args: unknown[]) => mockGet(...args),
@@ -42,20 +53,16 @@ vi.mock('../../../services/apiClient', () => ({
   },
 }));
 
-// WindshieldTableau now ALSO fetches GET /api/v1/helm/intrasystem/pose on
-// mount (server-authoritative pose hydration) alongside the /contents fetch
-// this suite already exercised -- both go through the SAME apiClient.get, so
-// a blanket mockResolvedValue answers the pose fetch with system-contents
-// shaped data too, leaving `heading_deg` undefined and crashing the ship
-// marker's `heading.toFixed(0)`. Route by URL: the pose endpoint rejects
-// (matches the real backend's behavior when the endpoint 500s/lags deploy --
-// WindshieldTableau's own .catch() silently keeps local flight), everything
-// else answers with the given contents payload.
+// WindshieldTableau fetches sector contents via sectorAPI.getContents and
+// GET /api/v1/helm/intrasystem/pose via apiClient.get. Pose rejects in this
+// suite (matches backend lag) so heading_deg stays local; contents use
+// mockGetContents with the given payload.
 const mockContents = (data: unknown) => {
+  mockGetContents.mockResolvedValue(data);
   mockGet.mockImplementation((url: string) =>
     String(url).includes('/helm/intrasystem/pose')
       ? Promise.reject(new Error('no pose mock in this suite'))
-      : Promise.resolve({ data })
+      : Promise.resolve({ data: {} })
   );
 };
 
@@ -160,6 +167,7 @@ describe('WindshieldTableau', () => {
 
   beforeEach(() => {
     mockGet.mockReset();
+    mockGetContents.mockReset();
     mockContents(TEST_SYSTEM);
     mockPost.mockReset();
     mockPost.mockRejectedValue(new Error('no burn/halt mock in this suite'));
@@ -207,7 +215,7 @@ describe('WindshieldTableau', () => {
 
   it('fetches GET /api/v1/sectors/{id}/contents on mount (WO-UI2-INTRASYSTEM-MODEL adoption)', async () => {
     await mount();
-    expect(mockGet).toHaveBeenCalledWith(`/api/v1/sectors/${SECTOR_ID}/contents`);
+    expect(mockGetContents).toHaveBeenCalledWith(SECTOR_ID);
   });
 
   it('renders the "sliver" composition: fixed stars layer first, off-center sun, one per-body orbit ellipse per body/station (T0-2), and the belt', async () => {
@@ -1045,8 +1053,14 @@ describe('WindshieldTableau', () => {
   });
 
   it('never goes dark on a fetch failure — renders the static scene chrome + an acquisition-failed message', async () => {
+    mockGetContents.mockReset();
+    mockGetContents.mockRejectedValue(new Error('network down'));
     mockGet.mockReset();
-    mockGet.mockRejectedValue(new Error('network down'));
+    mockGet.mockImplementation((url: string) =>
+      String(url).includes('/helm/intrasystem/pose')
+        ? Promise.reject(new Error('no pose mock in this suite'))
+        : Promise.resolve({ data: {} })
+    );
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     await mount();
     expect(container.querySelector('.scene.space')).not.toBeNull();
@@ -1061,12 +1075,16 @@ describe('WindshieldTableau', () => {
     // proven in GameDashboard.dockedStationFace.test.tsx. This test instead
     // proves the LOCAL precondition: no ship glyph renders before the
     // /contents fetch resolves (avoids a flash-of-wrong-position anchor).
-    let resolveGet: (v: unknown) => void = () => {};
+    let resolveContents: (v: unknown) => void = () => {};
+    mockGetContents.mockReset();
+    mockGetContents.mockImplementation(
+      () => new Promise((resolve) => { resolveContents = resolve; }),
+    );
     mockGet.mockReset();
     mockGet.mockImplementation((url: string) =>
       String(url).includes('/helm/intrasystem/pose')
         ? Promise.reject(new Error('no pose mock in this suite'))
-        : new Promise((resolve) => { resolveGet = resolve; })
+        : Promise.resolve({ data: {} })
     );
     await act(async () => {
       root.render(
@@ -1077,7 +1095,7 @@ describe('WindshieldTableau', () => {
     });
     await flush();
     expect(container.querySelector('.shipmk')).toBeNull();
-    await act(async () => { resolveGet({ data: TEST_SYSTEM }); });
+    await act(async () => { resolveContents(TEST_SYSTEM); });
     await flush();
     await flush();
     expect(container.querySelector('.shipmk')).not.toBeNull();
