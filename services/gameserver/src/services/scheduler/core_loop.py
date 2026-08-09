@@ -37,6 +37,7 @@ from src.services.scheduler._common import (
     BOUNTY_ACCRUAL_CHECK_SECONDS,
     STOLEN_SHIP_REP_PENALTY_CHECK_SECONDS,
     TRANSFER_CLAIM_AUTOCOMPLETE_CHECK_SECONDS,
+    PIN_RESET_APPLY_CHECK_SECONDS,
     PORT_OPERATING_COST_CHECK_SECONDS,
     STATION_RECOVERY_CHECK_SECONDS,
     RECLAIM_FLAG_CHECK_SECONDS,
@@ -79,6 +80,7 @@ from src.services.scheduler.economy_sweeps import (
     _run_bounty_accrual_sweep_sync,
     _run_stolen_ship_rep_penalty_sweep_sync,
     _run_transfer_claim_autocomplete_sweep_sync,
+    _run_pin_reset_apply_sweep_sync,
     _run_bounty_expire_sweep_sync,
     _run_wanted_clear_sweep_sync,
     _run_phase14_attachment_retry_sweep_sync,
@@ -628,6 +630,23 @@ async def _npc_scheduler_main_loop() -> None:
                 raise
             except Exception:
                 logger.exception("NPC scheduler: transfer-claim autocomplete sweep crashed (loop continues)")
+
+        # Hatch-pin reset apply sweep (ship-registry.md "Hatch pin lock" "Pin
+        # recovery" -- a real-time 1h delay, same finer-cadence shape as the
+        # transfer-claim sweep directly above). Own session, own advisory
+        # lock, per-ship failure isolated.
+        if elapsed % PIN_RESET_APPLY_CHECK_SECONDS == 0:
+            try:
+                applied = await asyncio.to_thread(_run_pin_reset_apply_sweep_sync)
+                if applied.get("resets"):
+                    logger.info(
+                        "NPC scheduler: pin-reset apply — applied %d reset(s)",
+                        applied.get("resets", 0),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("NPC scheduler: pin-reset apply sweep crashed (loop continues)")
 
         # Port operating-cost sweep (WO-B3) — charge each player-owned port its
         # accrued maintenance/upkeep and force-sell any port insolvent for the

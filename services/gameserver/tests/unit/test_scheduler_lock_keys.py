@@ -178,6 +178,8 @@ EXPECTED_NAME_SITE_MAP = {
     # since this file's original pin.
     "_run_stolen_ship_rep_penalty_sweep_sync": "_STOLEN_SHIP_REP_PENALTY_LOCK_KEY",
     "_run_transfer_claim_autocomplete_sweep_sync": "_TRANSFER_CLAIM_AUTOCOMPLETE_LOCK_KEY",
+    # WO-BUILD-SHIP-PIN-PORT-RESET-DELAYED — hatch-pin reset apply sweep.
+    "_run_pin_reset_apply_sweep_sync": "_PIN_RESET_APPLY_LOCK_KEY",
     "_run_bounty_expire_sweep_sync": "_BOUNTY_EXPIRE_LOCK_KEY",
     "_run_wanted_clear_sweep_sync": "_WANTED_CLEAR_LOCK_KEY",
     "_run_mining_harvest_resolve_sync": "_MINING_HARVEST_LOCK_KEY",

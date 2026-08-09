@@ -33,6 +33,7 @@ from src.services.scheduler._common import (
     _BOUNTY_ACCRUAL_LOCK_KEY,
     _STOLEN_SHIP_REP_PENALTY_LOCK_KEY,
     _TRANSFER_CLAIM_AUTOCOMPLETE_LOCK_KEY,
+    _PIN_RESET_APPLY_LOCK_KEY,
     _PORT_OPERATING_COSTS_LOCK_KEY,
     _STATION_RECOVERY_LOCK_KEY,
     _RECLAIM_FLAG_LOCK_KEY,
@@ -734,6 +735,91 @@ def _run_transfer_claim_autocomplete_sweep_sync() -> Dict[str, int]:
         return result
     except Exception:
         logger.exception("Transfer-claim autocomplete sweep failed")
+        db.rollback()
+        return result
+    finally:
+        db.close()
+
+
+def _run_pin_reset_apply_sweep_sync() -> Dict[str, int]:
+    """Apply any pending hatch-pin reset whose 1h delay has elapsed
+    (ship-registry.md "Hatch pin lock" "Pin recovery"). Own SessionLocal,
+    xact-level advisory lock (skip on contention), a candidate query, then a
+    per-row with_for_update re-read + per-row commit + per-row try/except --
+    same discipline as ``_run_transfer_claim_autocomplete_sweep_sync``
+    directly above.
+
+    IDEMPOTENCY: the candidate gate is the idempotency anchor --
+    ``Ship.pending_hatch_pin_effective_at IS NOT NULL``.
+    ``_apply_pending_pin_reset`` clears that column, so an applied reset
+    drops out of the candidate set and can never be re-applied by a
+    duplicate wake or restart. The per-row re-read re-confirms both the
+    reset is still pending AND the deadline has still passed (a concurrent
+    ``set_pin`` call doesn't clear the pending columns, so no race there
+    beyond the standard row lock).
+
+    Returns {"resets": n_applied}."""
+    from src.core.database import SessionLocal
+    from src.models.ship import Ship
+    from src.services.ship_registry_service import _apply_pending_pin_reset
+
+    result = {"resets": 0}
+
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _PIN_RESET_APPLY_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return result
+        db.commit()
+
+        now = datetime.now(UTC)
+
+        candidate_ids = (
+            db.query(Ship.id)
+            .filter(
+                Ship.pending_hatch_pin_effective_at.isnot(None),
+                Ship.pending_hatch_pin_effective_at <= now,
+            )
+            .all()
+        )
+
+        for (ship_id,) in candidate_ids:
+            try:
+                ship = (
+                    db.query(Ship)
+                    .filter(Ship.id == ship_id)
+                    .with_for_update()
+                    .first()
+                )
+                still_pending_and_due = (
+                    ship is not None
+                    and ship.pending_hatch_pin_effective_at is not None
+                    and ship.pending_hatch_pin_effective_at <= now
+                )
+                if not still_pending_and_due:
+                    db.rollback()
+                    continue
+
+                _apply_pending_pin_reset(ship)
+                result["resets"] += 1
+                db.commit()
+            except Exception:
+                logger.exception(
+                    "Pin-reset apply sweep: apply failed for ship %s", ship_id,
+                )
+                db.rollback()
+
+        if result["resets"]:
+            logger.info(
+                "Pin-reset apply sweep: applied %d pending reset(s)",
+                result["resets"],
+            )
+        return result
+    except Exception:
+        logger.exception("Pin-reset apply sweep failed")
         db.rollback()
         return result
     finally:
