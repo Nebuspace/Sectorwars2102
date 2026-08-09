@@ -1734,6 +1734,40 @@ export const quantumAPI = {
     }),
 };
 
+/** Gatewright Guild — warp-gate construction pipeline. */
+export const warpGatesAPI = {
+  listMine: () => apiRequest('/api/v1/warp-gates/mine'),
+
+  listSector: (sectorId: number) =>
+    apiRequest(`/api/v1/warp-gates/sector/${sectorId}`),
+
+  deployBeacon: (destinationSectorId: number) =>
+    apiRequest('/api/v1/warp-gates/deploy-beacon', {
+      method: 'POST',
+      body: JSON.stringify({ destination_sector_id: destinationSectorId }),
+    }),
+
+  anchorFocus: (beaconId: string, accessMode: string) =>
+    apiRequest('/api/v1/warp-gates/anchor-focus', {
+      method: 'POST',
+      body: JSON.stringify({ beacon_id: beaconId, access_mode: accessMode }),
+    }),
+
+  cancel: (id: string) =>
+    apiRequest(`/api/v1/warp-gates/${id}/cancel`, { method: 'POST' }),
+
+  stageMaterials: (siteId: string, materials: Record<string, number>) =>
+    apiRequest(`/api/v1/warp-gates/${siteId}/stage-materials`, {
+      method: 'POST',
+      body: JSON.stringify(materials),
+    }),
+
+  advanceConstruction: (siteId: string) =>
+    apiRequest(`/api/v1/warp-gates/${siteId}/advance-construction`, {
+      method: 'POST',
+    }),
+};
+
 // Port Office — station ownership, sealed-bid sales, tariffs, takeovers.
 export const portOwnershipAPI = {
   getListings: () => apiRequest('/api/v1/port-ownership/listings'),
@@ -1849,6 +1883,7 @@ export const gameAPI = {
   storage: storageAPI,
   trade: tradeAPI,
   quantum: quantumAPI,
+  warpGates: warpGatesAPI,
   portOwnership: portOwnershipAPI,
   beacon: beaconAPI,
 };
