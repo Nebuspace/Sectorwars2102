@@ -280,8 +280,9 @@ class TestMultiRegionalSystemIntegration:
         assert abs(stats["total_revenue"] - expected_revenue) < 0.01
     
     def test_central_nexus_regional_integration(
-        self, 
+        self,
         client: TestClient,
+        db: Session,
         complete_multi_regional_setup: dict,
         admin_auth_headers: dict
     ):
@@ -330,8 +331,9 @@ class TestMultiRegionalSystemIntegration:
         assert region_info["governance_type"] in ["democracy", "autocracy"]  # Not galactic_council
     
     def test_cross_regional_membership_system(
-        self, 
+        self,
         client: TestClient,
+        db: Session,
         complete_multi_regional_setup: dict,
         admin_auth_headers: dict
     ):
@@ -369,8 +371,9 @@ class TestMultiRegionalSystemIntegration:
             assert visitor["voting_power"] == 0
     
     def test_governance_system_integration(
-        self, 
+        self,
         client: TestClient,
+        db: Session,
         complete_multi_regional_setup: dict,
         admin_auth_headers: dict
     ):
@@ -432,8 +435,9 @@ class TestMultiRegionalSystemIntegration:
         assert stats["active_elections"] >= 1  # Our new election plus any existing
     
     def test_cultural_identity_system(
-        self, 
+        self,
         client: TestClient,
+        db: Session,
         complete_multi_regional_setup: dict,
         admin_auth_headers: dict
     ):
@@ -483,8 +487,9 @@ class TestMultiRegionalSystemIntegration:
         assert region_info["traditions"]["founding_day"] == "Annual Trade Festival celebrating sector founding"
     
     def test_end_to_end_multi_regional_workflow(
-        self, 
+        self,
         client: TestClient,
+        db: Session,
         complete_multi_regional_setup: dict,
         admin_auth_headers: dict
     ):
