@@ -80,6 +80,9 @@ interface FleetStats {
 type InterveneAction = 'end_battle' | 'pause_battle' | 'force_winner';
 type BattleWinner = 'attacker' | 'defender' | 'draw';
 
+// Matches PATCH /{fleet_id}/morale and DELETE /{fleet_id}/force-dissolve
+type FleetAction = 'morale' | 'dissolve';
+
 const FleetOperationsTab: React.FC = () => {
   const [stats, setStats] = useState<FleetStats | null>(null);
   const [fleets, setFleets] = useState<AdminFleet[]>([]);
@@ -94,6 +97,13 @@ const FleetOperationsTab: React.FC = () => {
   const [interveneWinner, setInterveneWinner] = useState<BattleWinner>('draw');
   const [interveneReason, setInterveneReason] = useState('');
   const [submitting, setSubmitting] = useState(false);
+
+  // Inline fleet-management confirm state (morale adjust / force dissolve)
+  const [confirmFleetId, setConfirmFleetId] = useState<string | null>(null);
+  const [fleetAction, setFleetAction] = useState<FleetAction>('morale');
+  const [moraleValue, setMoraleValue] = useState(50);
+  const [fleetActionReason, setFleetActionReason] = useState('');
+  const [fleetSubmitting, setFleetSubmitting] = useState(false);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -180,6 +190,57 @@ const FleetOperationsTab: React.FC = () => {
       setError('Failed to apply battle intervention.');
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const openFleetConfirm = (fleetId: string, currentMorale: number) => {
+    setConfirmFleetId(fleetId);
+    setFleetAction('morale');
+    setMoraleValue(currentMorale);
+    setFleetActionReason('');
+    setError(null);
+    setSuccessMessage(null);
+  };
+
+  const cancelFleetConfirm = () => {
+    setConfirmFleetId(null);
+    setFleetActionReason('');
+  };
+
+  const submitFleetAction = async (fleetId: string) => {
+    if (fleetActionReason.trim().length < 10) {
+      setError('Reason must be at least 10 characters.');
+      return;
+    }
+
+    setFleetSubmitting(true);
+    setError(null);
+    setSuccessMessage(null);
+
+    try {
+      if (fleetAction === 'morale') {
+        await api.patch(`/api/v1/admin/fleets/${fleetId}/morale`, null, {
+          params: { morale: moraleValue, reason: fleetActionReason.trim() },
+        });
+        setSuccessMessage('Fleet morale adjusted successfully.');
+      } else {
+        await api.delete(`/api/v1/admin/fleets/${fleetId}/force-dissolve`, {
+          data: { reason: fleetActionReason.trim() },
+        });
+        setSuccessMessage('Fleet forcefully dissolved.');
+      }
+      setConfirmFleetId(null);
+      setFleetActionReason('');
+      await loadData();
+    } catch (err) {
+      console.error(`Error applying fleet ${fleetAction} action:`, err);
+      setError(
+        fleetAction === 'morale'
+          ? 'Failed to adjust fleet morale.'
+          : 'Failed to dissolve fleet.',
+      );
+    } finally {
+      setFleetSubmitting(false);
     }
   };
 
@@ -316,33 +377,145 @@ const FleetOperationsTab: React.FC = () => {
                   <th>Morale</th>
                   <th>Sector</th>
                   <th>Commander</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {fleets.map((fleet) => (
-                  <tr key={fleet.id}>
-                    <td>{fleet.name}</td>
-                    <td>{fleet.team_name}</td>
-                    <td>
-                      <span
-                        className={`fleet-ops-badge${
-                          fleet.status === 'in_battle' ? ' battle' : ' active'
-                        }`}
-                      >
-                        {fleet.status.replace(/_/g, ' ')}
-                      </span>
-                    </td>
-                    <td>{fleet.formation}</td>
-                    <td className="mono">
-                      {fleet.total_ships} ({fleet.member_count} members)
-                    </td>
-                    <td className="mono">
-                      {fleet.total_firepower.toLocaleString()}
-                    </td>
-                    <td className="mono">{fleet.morale}%</td>
-                    <td>{fleet.sector_name ?? '—'}</td>
-                    <td>{fleet.commander_name ?? '—'}</td>
-                  </tr>
+                  <React.Fragment key={fleet.id}>
+                    <tr>
+                      <td>{fleet.name}</td>
+                      <td>{fleet.team_name}</td>
+                      <td>
+                        <span
+                          className={`fleet-ops-badge${
+                            fleet.status === 'in_battle' ? ' battle' : ' active'
+                          }`}
+                        >
+                          {fleet.status.replace(/_/g, ' ')}
+                        </span>
+                      </td>
+                      <td>{fleet.formation}</td>
+                      <td className="mono">
+                        {fleet.total_ships} ({fleet.member_count} members)
+                      </td>
+                      <td className="mono">
+                        {fleet.total_firepower.toLocaleString()}
+                      </td>
+                      <td className="mono">{fleet.morale}%</td>
+                      <td>{fleet.sector_name ?? '—'}</td>
+                      <td>{fleet.commander_name ?? '—'}</td>
+                      <td>
+                        <button
+                          className="fleet-ops-intervene-btn"
+                          onClick={() => openFleetConfirm(fleet.id, fleet.morale)}
+                          disabled={
+                            fleetSubmitting && confirmFleetId === fleet.id
+                          }
+                        >
+                          Manage
+                        </button>
+                      </td>
+                    </tr>
+                    {confirmFleetId === fleet.id && (
+                      <tr>
+                        <td colSpan={10}>
+                          <div className="fleet-ops-confirm">
+                            <div className="fleet-ops-confirm-text">
+                              Admin fleet management for{' '}
+                              <strong>{fleet.name}</strong>. This is logged
+                              to the audit trail.
+                            </div>
+
+                            <div className="fleet-ops-confirm-field">
+                              <label htmlFor={`fleet-action-${fleet.id}`}>
+                                Action
+                              </label>
+                              <select
+                                id={`fleet-action-${fleet.id}`}
+                                value={fleetAction}
+                                onChange={(e) =>
+                                  setFleetAction(e.target.value as FleetAction)
+                                }
+                              >
+                                <option value="morale">Adjust Morale</option>
+                                <option value="dissolve">Force Dissolve</option>
+                              </select>
+                            </div>
+
+                            {fleetAction === 'morale' && (
+                              <div className="fleet-ops-confirm-field">
+                                <label htmlFor={`morale-${fleet.id}`}>
+                                  Morale (0-100)
+                                </label>
+                                <input
+                                  id={`morale-${fleet.id}`}
+                                  type="number"
+                                  min={0}
+                                  max={100}
+                                  value={moraleValue}
+                                  onChange={(e) =>
+                                    setMoraleValue(
+                                      Math.max(
+                                        0,
+                                        Math.min(100, Number(e.target.value)),
+                                      ),
+                                    )
+                                  }
+                                />
+                              </div>
+                            )}
+
+                            {fleetAction === 'dissolve' && (
+                              <div className="fleet-ops-confirm-text">
+                                This permanently disbands the fleet and ends
+                                any active battle as a draw. This cannot be
+                                undone.
+                              </div>
+                            )}
+
+                            <div className="fleet-ops-confirm-field">
+                              <label htmlFor={`fleet-reason-${fleet.id}`}>
+                                Reason (min 10 characters)
+                              </label>
+                              <input
+                                id={`fleet-reason-${fleet.id}`}
+                                type="text"
+                                value={fleetActionReason}
+                                onChange={(e) =>
+                                  setFleetActionReason(e.target.value)
+                                }
+                                placeholder="Why is this action needed?"
+                              />
+                            </div>
+
+                            <div className="fleet-ops-confirm-actions">
+                              <button
+                                className="confirm-danger"
+                                onClick={() => submitFleetAction(fleet.id)}
+                                disabled={
+                                  fleetSubmitting ||
+                                  fleetActionReason.trim().length < 10
+                                }
+                              >
+                                {fleetSubmitting
+                                  ? 'Applying...'
+                                  : fleetAction === 'morale'
+                                    ? 'Confirm Morale Change'
+                                    : 'Confirm Dissolve'}
+                              </button>
+                              <button
+                                onClick={cancelFleetConfirm}
+                                disabled={fleetSubmitting}
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
                 ))}
               </tbody>
             </table>
