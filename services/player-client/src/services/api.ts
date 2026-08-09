@@ -211,6 +211,16 @@ export const planetaryAPI = {
       body: JSON.stringify({ specialization })
     }),
 
+  // Land on an owned planet / leave the current landed planet.
+  land: (planetId: string) =>
+    apiRequest('/api/v1/planets/land', {
+      method: 'POST',
+      body: JSON.stringify({ planet_id: planetId }),
+    }),
+
+  leave: () =>
+    apiRequest('/api/v1/planets/leave', { method: 'POST' }),
+
   // Defense telemetry — GET /planets/{id}/defenses (scouting-friendly; no
   // ownership required). Distinct from updateDefenses (PUT) / getDefensePricing.
   getDefenses: (planetId: string) =>
