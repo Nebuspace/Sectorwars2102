@@ -211,6 +211,16 @@ export const planetaryAPI = {
       body: JSON.stringify({ specialization })
     }),
 
+  // Land on an owned planet / leave the current landed planet.
+  land: (planetId: string) =>
+    apiRequest('/api/v1/planets/land', {
+      method: 'POST',
+      body: JSON.stringify({ planet_id: planetId }),
+    }),
+
+  leave: () =>
+    apiRequest('/api/v1/planets/leave', { method: 'POST' }),
+
   rename: (planetId: string, name: string) =>
     apiRequest(`/api/v1/planets/${planetId}/rename`, {
       method: 'PUT',

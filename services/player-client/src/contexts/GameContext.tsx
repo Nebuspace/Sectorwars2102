@@ -1040,19 +1040,17 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  // Land on a planet (only works for owned planets)
+  // Land on a planet (only works for owned planets).
+  // WO-WIRE-PLANETARY-LAND-LEAVE: planetaryAPI.land.
   const landOnPlanet = async (planetId: string) => {
     if (!user || !playerState) return;
 
     setError(null);
 
     try {
-      const response = await api.post('/api/v1/planets/land', { planet_id: planetId });
-
-      // Update player state after landing
+      const data = await planetaryAPI.land(planetId);
       await refreshPlayerState();
-
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error landing on planet:', error);
       setError(error.response?.data?.detail || error.response?.data?.message || 'Failed to land on planet');
@@ -1060,19 +1058,16 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  // Leave a planet
+  // Leave a planet — planetaryAPI.leave.
   const leavePlanet = async () => {
     if (!user || !playerState) return;
 
     setError(null);
 
     try {
-      const response = await api.post('/api/v1/planets/leave');
-
-      // Update player state after leaving
+      const data = await planetaryAPI.leave();
       await refreshPlayerState();
-
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error leaving planet:', error);
       setError(error.response?.data?.detail || error.response?.data?.message || 'Failed to leave planet');
