@@ -1348,6 +1348,34 @@ export const contractsAPI = {
     }),
 };
 
+// Pioneer Office — migration contracts at a population hub (GameContext
+// PioneerOfficeVenue). Separate from trade contractsAPI above.
+export const pioneerAPI = {
+  getOffice: () => apiRequest('/api/v1/pioneer/office'),
+
+  brokerContract: (cohortTotal: number) =>
+    apiRequest('/api/v1/pioneer/contracts', {
+      method: 'POST',
+      body: JSON.stringify({ cohort_total: cohortTotal }),
+    }),
+
+  loadBatch: (contractId: string, quantity: number) =>
+    apiRequest(`/api/v1/pioneer/contracts/${contractId}/load`, {
+      method: 'POST',
+      body: JSON.stringify({ quantity }),
+    }),
+
+  listContracts: (includeClosed = false) =>
+    apiRequest(
+      `/api/v1/pioneer/contracts?include_closed=${includeClosed ? 'true' : 'false'}`,
+    ),
+
+  cancelContract: (contractId: string) =>
+    apiRequest(`/api/v1/pioneer/contracts/${contractId}/cancel`, {
+      method: 'POST',
+    }),
+};
+
 // Storage lockers — multi-trip contract fulfillment (FEATURES/economy/storage-lockers.md).
 // Rent is idempotent per (player, contract); deposit auto-completes when
 // accumulated deposits reach the contract quantity.
@@ -1476,6 +1504,7 @@ export const gameAPI = {
   trading: tradingAPI,
   resource: resourceAPI,
   contracts: contractsAPI,
+  pioneer: pioneerAPI,
   storage: storageAPI,
   trade: tradeAPI,
   beacon: beaconAPI,
