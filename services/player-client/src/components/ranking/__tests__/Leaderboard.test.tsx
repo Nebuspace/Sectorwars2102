@@ -1,0 +1,122 @@
+// @vitest-environment jsdom
+/**
+ * Leaderboard — load/error/empty, category switch, current-player highlight.
+ */
+import React, { act } from 'react';
+import { createRoot } from 'react-dom/client';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+(globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+const getPublicLeaderboard = vi.fn();
+
+vi.mock('../../../services/api', () => ({
+  rankingAPI: {
+    getPublicLeaderboard: (...args: unknown[]) => getPublicLeaderboard(...args),
+  },
+}));
+
+import Leaderboard from '../Leaderboard';
+
+describe('Leaderboard', () => {
+  let container: HTMLElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it('shows loading then ranks, highlighting the current player', async () => {
+    getPublicLeaderboard.mockResolvedValue({
+      category: 'rank_points',
+      total_players: 42,
+      player_position: 2,
+      entries: [
+        {
+          position: 1,
+          player_id: 'p-other',
+          nickname: 'Nova',
+          military_rank: 'Captain',
+          score: 9001,
+        },
+        {
+          position: 2,
+          player_id: 'p-me',
+          nickname: 'Ada',
+          military_rank: 'Lieutenant',
+          score: 1200,
+        },
+      ],
+    });
+
+    await act(async () => {
+      root.render(<Leaderboard playerId="p-me" />);
+    });
+
+    expect(getPublicLeaderboard).toHaveBeenCalledWith('rank_points', 20);
+    expect(container.textContent).toContain('42 players');
+    expect(container.textContent).toContain('Nova');
+    expect(container.textContent).toContain('Ada');
+    expect(container.querySelector('tr.current-player')?.textContent).toContain('Ada');
+    expect(container.textContent).toContain('Points');
+  });
+
+  it('surfaces fetch errors', async () => {
+    getPublicLeaderboard.mockRejectedValue(new Error('ranking offline'));
+    await act(async () => {
+      root.render(<Leaderboard />);
+    });
+    expect(container.textContent).toContain('ranking offline');
+  });
+
+  it('refetches when switching categories', async () => {
+    getPublicLeaderboard
+      .mockResolvedValueOnce({
+        category: 'rank_points',
+        total_players: 1,
+        player_position: null,
+        entries: [],
+      })
+      .mockResolvedValueOnce({
+        category: 'combat',
+        total_players: 1,
+        player_position: null,
+        entries: [
+          {
+            position: 1,
+            player_id: 'p1',
+            nickname: 'Ace',
+            military_rank: 'Ensign',
+            score: 3,
+          },
+        ],
+      });
+
+    await act(async () => {
+      root.render(<Leaderboard />);
+    });
+    expect(container.textContent).toContain('No entries yet');
+
+    const combatBtn = Array.from(container.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('Combat'),
+    ) as HTMLButtonElement;
+    await act(async () => {
+      combatBtn.click();
+    });
+
+    expect(getPublicLeaderboard).toHaveBeenLastCalledWith('combat', 20);
+    expect(container.textContent).toContain('Ace');
+    expect(container.textContent).toContain('Victories');
+  });
+});
