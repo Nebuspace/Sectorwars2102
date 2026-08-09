@@ -1709,6 +1709,9 @@ export const tradeAPI = {
 export const quantumAPI = {
   getStatus: () => apiRequest('/api/v1/quantum/status'),
 
+  /** Astrogation chart for Warp Jumper (ADR-0030 Phase 1). */
+  getMinimap: () => apiRequest('/api/v1/quantum/minimap'),
+
   scan: (payload: Record<string, unknown>) =>
     apiRequest('/api/v1/quantum/scan', {
       method: 'POST',
