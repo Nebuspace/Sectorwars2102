@@ -516,14 +516,30 @@ class TestDenormLastWriterWinsRace:
         proves the last-writer-wins race is REAL -- whichever racer's
         denorm rebuild commits last overwrites Sector.message_beacons with
         a snapshot that doesn't reflect the OTHER racer's change, even
-        though the underlying rows end up correct."""
-        store, sector, new_id = self._run(use_lock=False)
-        # Ground truth is unaffected by the race (row-level ops are still
-        # individually atomic in this fake) -- only the denorm view drifts.
-        assert set(store.committed.keys()) == {new_id}
-        denorm_ids = {b["id"] for b in sector.message_beacons}
-        assert denorm_ids != {str(new_id)}, (
+        though the underlying rows end up correct.
+
+        The barrier guarantees both racers read at the same instant, but
+        what happens after release is genuine OS/GIL thread-scheduling --
+        occasionally one racer runs to completion before the other is
+        scheduled at all, so the divergence doesn't manifest on a given
+        attempt (observed in CI: WO-FIX-FLAKY-DENORM-RACE-FALSIFIABILITY-TEST).
+        Retried a bounded number of times rather than asserting on a single
+        attempt; if the race is genuinely no longer possible (e.g. the
+        underlying code stopped being racy), it won't manifest in 3 tries
+        either and this still fails loudly.
+        """
+        last_denorm_ids: set = set()
+        for _ in range(3):
+            store, sector, new_id = self._run(use_lock=False)
+            # Ground truth is unaffected by the race (row-level ops are
+            # still individually atomic in this fake) -- only the denorm
+            # view drifts.
+            assert set(store.committed.keys()) == {new_id}
+            last_denorm_ids = {b["id"] for b in sector.message_beacons}
+            if last_denorm_ids != {str(new_id)}:
+                return
+        assert last_denorm_ids != {str(new_id)}, (
             "expected the denorm to diverge from the committed rows (this is "
             "the FALSIFIABILITY check proving the test isn't vacuous) but the "
-            f"race didn't manifest: denorm={denorm_ids}"
+            f"race didn't manifest in 3 attempts: denorm={last_denorm_ids}"
         )
