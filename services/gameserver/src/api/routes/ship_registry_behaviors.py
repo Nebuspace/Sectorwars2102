@@ -1,13 +1,16 @@
 """Ship Registry behavioral routes -- report-stolen / retract-stolen-report /
-abandon / claim / transfer-claim.
+abandon / claim / transfer-claim / eject / board / salvage-break.
 
 Canon: SYSTEMS/ship-registry.md "Reporting a ship stolen", "Abandonment",
-"Legal ownership transfer". WO-FIX-SHIP-REGISTRY-BEHAVIORAL-ROUTES shipped
-report/retract-stolen. WO-FIX-SHIP-REGISTRY-TRANSFER-SALVAGE-TRADE-ABANDON
-added abandon/claim. WO-BUILD-SHIP-REGISTRY-CONTESTED-TRANSFER-SALVAGE-CLAIM
-adds transfer-claim (file) / transfer-claim/approve here. Trade (peer-to-peer
-sale) is ADR-0089's ship-bundle trade session (src/api/routes/player_trade.py)
--- not duplicated here, see ship_registry_service's module docstring.
+"Legal ownership transfer", "Eject and board", "Salvage break".
+WO-FIX-SHIP-REGISTRY-BEHAVIORAL-ROUTES shipped report/retract-stolen.
+WO-FIX-SHIP-REGISTRY-TRANSFER-SALVAGE-TRADE-ABANDON added abandon/claim.
+WO-BUILD-SHIP-REGISTRY-CONTESTED-TRANSFER-SALVAGE-CLAIM adds transfer-claim
+(file) / transfer-claim/approve here. WO-BUILD-SHIP-EJECT-BOARD-ROUTES adds
+the salvage-break route (eject/board/set-pin/request-pin-reset were already
+shipped by an earlier pass). Trade (peer-to-peer sale) is ADR-0089's
+ship-bundle trade session (src/api/routes/player_trade.py) -- not duplicated
+here, see ship_registry_service's module docstring.
 
 Business logic lives in src.services.ship_registry_service -- this file is
 routing + locking + HTTP-shape translation only.
@@ -18,25 +21,36 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from src.core.database import get_db
 from src.auth.dependencies import get_current_player
 from src.models.player import Player
 from src.models.ship import Ship
+from src.services.station_security_service import StationSecurityError
 from src.services.ship_registry_service import (
     ShipRegistryError,
     abandon_ship,
     approve_transfer_claim,
+    board_ship,
     claim_abandoned_ship,
+    eject_ship,
     file_transfer_claim,
     report_stolen,
+    request_pin_reset,
     retract_stolen_report,
+    set_pin,
+    start_salvage_break,
 )
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ships", tags=["ship-registry"])
+# Canon's eject route is POST /api/v1/players/me/eject -- a distinct prefix
+# from the rest of this file's /ships/* routes, so it needs its own router
+# (matches the existing /players-prefixed precedent in gc_lapse.py).
+player_router = APIRouter(prefix="/players", tags=["ship-registry"])
 
 # ERR_* codes that mean "the request is well-formed but conflicts with
 # current game state" -> 409, distinct from validation (422) or not-found
@@ -57,6 +71,18 @@ _CONFLICT_CODES = {
     "ERR_NOT_ELIGIBLE_FOR_TRANSFER",
     "ERR_INSUFFICIENT_CREDITS",
     "ERR_NO_PENDING_TRANSFER",
+    "ERR_NO_CURRENT_SHIP",
+    "ERR_ALREADY_IN_ESCAPE_POD",
+    "ERR_INSUFFICIENT_TURNS",
+    "ERR_SHIP_DESTROYED",
+    "ERR_SHIP_HARMONIZING",
+    "ERR_ALREADY_PILOTING",
+    "ERR_SHIP_LOCKED",
+    "ERR_NOT_CURRENT_PILOT",
+    "ERR_PIN_RESET_ALREADY_PENDING",
+    "ERR_SALVAGE_BREAK_IN_PROGRESS",
+    "ERR_SHIP_NOT_DRIFTING",
+    "ERR_ESCAPE_POD_CANNOT_BE_SALVAGED",
 }
 
 
@@ -75,6 +101,21 @@ def _get_locked_ship(db: Session, ship_id) -> Ship:
     if ship is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ship not found.")
     return ship
+
+
+def _get_locked_player(db: Session, player_id) -> Player:
+    """Resource-before-player lock ordering: callers lock the ship row (via
+    ``_get_locked_ship``) before this, never after."""
+    locked = (
+        db.query(Player)
+        .filter(Player.id == player_id)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
+    if locked is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Player not found.")
+    return locked
 
 
 class ReportStolenRequest(BaseModel):
@@ -223,4 +264,168 @@ async def approve_transfer_claim_route(
 
     db.commit()
     logger.info("Ship %s transfer claim approved by owner %s", ship_id, player.id)
+    return result
+
+
+@player_router.post("/me/eject")
+async def eject_ship_route(
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Voluntarily eject from the currently-piloted ship (ship-registry.md
+    "Eject and board"). No ship_id -- always acts on the caller's own
+    current ship."""
+    locked_player = _get_locked_player(db, player.id)
+
+    try:
+        result = eject_ship(db, player=locked_player)
+    except ShipRegistryError as exc:
+        db.rollback()
+        _raise_for(exc)
+        return  # pragma: no cover -- _raise_for always raises
+
+    db.commit()
+    logger.info(
+        "Player %s ejected from ship %s (turns_spent=%s)",
+        player.id, result["ejected_ship_id"], result["turns_spent"],
+    )
+    return result
+
+
+class BoardShipRequest(BaseModel):
+    pin: str | None = None  # required unless the caller is the registered owner
+
+
+@router.post("/{ship_id}/board")
+async def board_ship_route(
+    ship_id: str,
+    request: BoardShipRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Board ``ship_id`` (ship-registry.md "Eject and board" + "Hatch pin
+    lock"). Works for both a stranger's ship (pin required unless you're the
+    registered owner) and one of your own parked ships -- for the common
+    "switch between my own ships" case, POST /ships/{id}/set-active remains
+    the existing frontend-wired path with no turn cost; this route is the
+    canon-named general case, including turn-cost accounting."""
+    ship = _get_locked_ship(db, ship_id)
+    locked_player = _get_locked_player(db, player.id)
+
+    try:
+        result = board_ship(db, ship=ship, boarder=locked_player, pin=request.pin)
+    except ShipRegistryError as exc:
+        db.rollback()
+        _raise_for(exc)
+        return  # pragma: no cover -- _raise_for always raises
+    except StationSecurityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+
+    db.commit()
+    logger.info(
+        "Ship %s boarded by %s (state=%s, turns_spent=%s, now_wanted=%s)",
+        ship_id, player.id, result["state"], result["turns_spent"], result["now_wanted"],
+    )
+    return result
+
+
+@router.post("/{ship_id}/salvage-break")
+async def salvage_break_route(
+    ship_id: str,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Force-enter a pin-locked, Drifting ``ship_id`` (ship-registry.md
+    "Salvage break", ADR-0049 SK14). ``with_for_update(nowait=True)`` --
+    a concurrent request that can't acquire the row lock fails immediately
+    (409, no ETA available) rather than queuing; the far more common
+    already-in-progress case is caught at the application level inside
+    ``start_salvage_break`` with the in-progress salvager id + ETA."""
+    try:
+        ship = db.query(Ship).filter(Ship.id == ship_id).with_for_update(nowait=True).first()
+    except OperationalError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "ERR_SALVAGE_BREAK_IN_PROGRESS",
+                "message": "This ship's row is locked by a concurrent request; try again shortly.",
+            },
+        )
+    if ship is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ship not found.")
+
+    try:
+        result = start_salvage_break(db, ship=ship, salvager=player)
+    except ShipRegistryError as exc:
+        db.rollback()
+        _raise_for(exc)
+        return  # pragma: no cover -- _raise_for always raises
+
+    db.commit()
+    logger.info(
+        "Salvage break started on ship %s by %s (completes_at=%s)",
+        ship_id, player.id, result["completes_at"],
+    )
+    return result
+
+
+class SetPinRequest(BaseModel):
+    pin: str
+
+
+@router.post("/{ship_id}/set-pin")
+async def set_pin_route(
+    ship_id: str,
+    request: SetPinRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """The current pilot (owner or borrower) changes the ship's hatch pin
+    (ship-registry.md "Hatch pin lock")."""
+    ship = _get_locked_ship(db, ship_id)
+
+    try:
+        result = set_pin(db, ship=ship, player=player, new_pin=request.pin)
+    except ShipRegistryError as exc:
+        db.rollback()
+        _raise_for(exc)
+        return  # pragma: no cover -- _raise_for always raises
+
+    db.commit()
+    logger.info("Ship %s pin changed by %s", ship_id, player.id)
+    return result
+
+
+class RequestPinResetRequest(BaseModel):
+    port_id: UUID
+    pin: str
+
+
+@router.post("/{ship_id}/request-pin-reset")
+async def request_pin_reset_route(
+    ship_id: str,
+    request: RequestPinResetRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Port-gated pin recovery for the registered owner, 1h delayed take-
+    effect (ship-registry.md "Hatch pin lock" "Pin recovery")."""
+    ship = _get_locked_ship(db, ship_id)
+
+    try:
+        result = request_pin_reset(
+            db, ship=ship, owner=player, port_id=request.port_id, new_pin=request.pin,
+        )
+    except ShipRegistryError as exc:
+        db.rollback()
+        _raise_for(exc)
+        return  # pragma: no cover -- _raise_for always raises
+
+    db.commit()
+    logger.info(
+        "Ship %s pin-reset requested by %s at port %s (effective_at=%s)",
+        ship_id, player.id, request.port_id, result["effective_at"],
+    )
     return result

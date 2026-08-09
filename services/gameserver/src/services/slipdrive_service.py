@@ -63,19 +63,19 @@ class SlipdriveError(Exception):
 # --- Canonical constants ---
 # NO-CANON magnitudes (canon names the mechanism, not these numbers --
 # FEATURES/galaxy/sectors.md only says "multi-turn charge, fuel cost scaled
-# by graph distance"): flagged for Max's sign-off. SLIPDRIVE_CHARGE_HOURS
+# by graph distance"): flagged for human's sign-off. SLIPDRIVE_CHARGE_HOURS
 # mirrors the closest existing canon analog for a module spin-up window
 # (ADR-0036 gate-construction HARMONIZING is 1h canonical) at half that,
 # since this is emergency self-rescue, not a construction ritual.
 #
 # WO-GWQ-STRANDING-2 [NO-CANON] DENOMINATION CHANGE: SLIPDRIVE_FUEL_BASE /
 # SLIPDRIVE_FUEL_PER_HOP now denominate the ship.cargo["contents"]["fuel"]
-# COMMODITY (units), not player.credits (currency) -- Max's design
+# COMMODITY (units), not player.credits (currency) -- human's design
 # direction: the Slipdrive burns real fuel cargo; only the escape pod is
 # free. The MAGNITUDES (50 base + 10/hop) are UNCHANGED from the prior
 # WO-GWQ-STRANDING credits framing -- only what they measure changed, per
 # the dispatch's explicit "[NO-CANON] flag the denomination + the numbers"
-# instruction. Re-flagged for Max's sign-off under the new unit.
+# instruction. Re-flagged for human's sign-off under the new unit.
 SLIPDRIVE_CHARGE_TURN_COST = 3
 SLIPDRIVE_CHARGE_HOURS = 0.5  # canonical, scaled via scaled_deadline
 SLIPDRIVE_FUEL_BASE = 50

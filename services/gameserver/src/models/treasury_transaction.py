@@ -26,7 +26,7 @@ class TreasuryTransaction(Base):
 
     # Movement taxonomy — open String (like RegionalTreasuryEntry.cause_type) so
     # new kinds can append without a migration. Ratified set (DECISIONS.md
-    # treasury-transaction-kind-enum, Max 2026-06-22): deposit · withdraw ·
+    # treasury-transaction-kind-enum, human 2026-06-22): deposit · withdraw ·
     # transfer · combat_loot. KIND_TAX / KIND_PAYOUT are reserved labels for
     # future writers; they are not live mutation sites today.
     KIND_DEPOSIT = "deposit"            # member → treasury

@@ -1,4 +1,4 @@
-"""Numerical haggling engine — ADR-0079 (Accepted, Max 2026-06-14).
+"""Numerical haggling engine — ADR-0079 (Accepted, human 2026-06-14).
 
 A deterministic 4-round price negotiation between a player and a station's NPC
 trader. The agreed per-unit price replaces the normal posted price for that one
@@ -54,7 +54,7 @@ def _commodity_band(commodity: Optional[str]) -> Optional[Tuple[float, float]]:
     """Return the commodity hard [min, max] band the BUY/SELL route enforces, or
     None when the commodity is unbounded (absent from COMMODITY_PRICE_RANGES).
 
-    ADR-0062 (blessed by Max 2026-06-14): this hard band is the ABSOLUTE final
+    ADR-0062 (blessed by human 2026-06-14): this hard band is the ABSOLUTE final
     floor/ceiling the route applies via ``clamp_to_commodity_band`` AFTER reading
     the agreed price. The haggle desk MUST bound its negotiable band and realized
     agreed price by this SAME band so it never strikes a deal the route will
@@ -105,10 +105,10 @@ PERSONAL_BAND_DISLIKED = 1.05
 PERSONAL_BAND_TRUSTED = 0.95
 
 # Point 7: re-entry cooldown after a non-reject close. ADR-0079 says "draft 5 min"
-# — confirmed at 5 min (NO-CANON micro-confirm, flagged to the orchestrator).
+# — confirmed at 5 min (ratified 2026-08-09, DECISIONS.md no-canon-magnitudes-batch-remainder).
 REENTRY_COOLDOWN_SECONDS = 5 * 60
 
-# Per-player haggle MEMORY horizon. Max ruled (sw2102-docs/DECISIONS.md
+# Per-player haggle MEMORY horizon. human ruled (sw2102-docs/DECISIONS.md
 # "haggling-personality-reconciliation", Decided 2026-06-20): the numerical-mode
 # per-player memory contract is 90 days UNIFORM, regardless of the per-archetype
 # ``memory_duration_days`` (Federation 30 / Frontier 14 / Black Market 7). That
@@ -118,7 +118,7 @@ HAGGLE_MEMORY_DAYS = 90
 
 # ── Orange-Cat Society leniency (WO-CG: PUBLISHED +15%, EXEMPT from the cap) ───
 # Holders of the Orange Cat Society badge (medal special.orange_cat_society) get a
-# more lenient NPC. FINAL spec (medal-effects-spec.md:251, Max ruling): the
+# more lenient NPC. FINAL spec (medal-effects-spec.md:251, human ruling): the
 # PUBLISHED +15% haggle ease, EXEMPT from the +0.08 medal cap, applied through
 # THIS dedicated lever (NOT the capped generic get_active_medal_bonuses fold — its
 # catalog effect is kind "special" precisely so the generic folder never
@@ -127,18 +127,21 @@ HAGGLE_MEMORY_DAYS = 90
 ORANGE_CAT_MEDAL_ID = "special.orange_cat_society"
 ORANGE_CAT_BAND_FACTOR = 0.85
 
-# ── Trust accrual (Max #7 step D) ────────────────────────────────────────────
+# ── Trust accrual (human #7 step D) ────────────────────────────────────────────
 # trust_level lives on the [-1000, 1000] scale (jsonb-schema). Successful trades
 # raise it, failed haggling (a REJECT close) erodes it; high trust eases the band.
-# Magnitudes are NO-CANON micro-numbers (jsonb-schema only says "accumulated via
-# repeated successful trades, eroded by failed haggling"); chosen conservative so
-# the [-1000,1000] band takes ~tens of interactions to traverse. Flagged.
+# Magnitudes ratified 2026-08-09 (DECISIONS.md no-canon-magnitudes-batch-remainder,
+# as-is): jsonb-schema only said "accumulated via repeated successful trades,
+# eroded by failed haggling"; chosen conservative so the [-1000,1000] band takes
+# ~tens of interactions to traverse.
 TRUST_ON_ACCEPT = 15
 TRUST_ON_TIMEOUT = 3                 # a 4-round non-reject close still ends amicably
 TRUST_ON_REJECT = -10
 # High trust eases the band. Maps trust in [-1000, 1000] linearly to a band
 # multiplier in [TRUST_EASE_MAX (distrust → harder) .. TRUST_EASE_MIN (trust →
-# easier)]. Endpoints NO-CANON (jsonb only says "high trust eases difficulty").
+# easier)]. Endpoints ratified 2026-08-09 (DECISIONS.md
+# no-canon-magnitudes-batch-remainder, as-is; jsonb only said "high trust eases
+# difficulty").
 TRUST_BAND_AT_MIN_TRUST = 1.05       # trust -1000 → +5% harder
 TRUST_BAND_AT_MAX_TRUST = 0.95       # trust +1000 → -5% easier
 
@@ -315,8 +318,9 @@ def _lerp_by_value(value: int, at_min: float, at_max: float) -> float:
 
 
 def _orange_cat_band_factor(db: Session, player: Player) -> float:
-    """Orange-Cat Society leniency (NO-CANON, proposed ×0.95). Returns 1.0 if the
-    player does not hold the badge. Defensive → neutral on any lookup failure."""
+    """Orange-Cat Society leniency (FINAL, medal-effects-spec.md:251 — see
+    ORANGE_CAT_BAND_FACTOR above). Returns 1.0 if the player does not hold the
+    badge. Defensive → neutral on any lookup failure."""
     try:
         from src.models.medal import PlayerMedal
 
@@ -616,7 +620,7 @@ def clear_docking_session_haggles(player: Player) -> None:
 def _prune_expired_memory(personality: Dict[str, Any]) -> None:
     """Drop per-player memory entries older than the UNIFORM 90-day horizon.
 
-    Max ruled (DECISIONS.md haggling-personality-reconciliation, Decided
+    human ruled (DECISIONS.md haggling-personality-reconciliation, Decided
     2026-06-20): the numerical-mode per-player memory contract is 90 days
     UNIFORM. The per-archetype ``memory_duration_days`` (Federation 30 /
     Frontier 14 / Black Market 7) governs the narrative-mode embedding window
@@ -740,6 +744,25 @@ class HaggleService:
                 "this commodity is locked for the rest of this docking session "
                 "(a prior offer was rejected)"
             )
+
+        # Round-reset exploit guard: a session that is still IN-PROGRESS (status
+        # "open") has not been closed, so the point-7 cooldown never fired — but
+        # unconditionally overwriting it with a fresh round-1 session let a player
+        # binary-search the acceptance threshold for free by re-opening mid-session
+        # instead of submitting an offer. Re-opening an in-progress session just
+        # RESUMES it at its current round/band rather than resetting progress.
+        existing = state["sessions"].get(key)
+        if existing and existing.get("status") == "open":
+            personality = tp.normalize_personality(station.trader_personality)
+            fair = float(existing["fair_price"])
+            band_mult = float(existing["band_multiplier"])
+            round_index = int(existing["round"])
+            band = _compute_band(fair, side, round_index, band_mult, commodity)
+            # quantity may legitimately change between opens (still same round/band).
+            existing["quantity"] = int(quantity)
+            state["sessions"][key] = existing
+            _save_haggle_state(player, state)
+            return self._card(existing, band, personality)
 
         # Re-entry cooldown after a non-reject close.
         cd = state["cooldowns"].get(key)

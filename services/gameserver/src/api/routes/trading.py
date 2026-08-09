@@ -26,7 +26,10 @@ from src.services.trading_service import (
     clamp_to_commodity_band,
     compute_player_price_multiplier,
     compute_region_tariff_multiplier,
+    compute_region_tax_rate,
     compute_station_lever_multiplier,
+    fallback_credit_region_tax,
+    realize_region_tax,
 )
 from src.services.turn_service import regenerate_turns, spend_turns
 
@@ -640,7 +643,7 @@ async def buy_resource(
     # charges players). Charging buy_price here created a same-station
     # buy-low/sell-high arbitrage loop.
     #
-    # Canon (trading.md#price-stacking-order, Max-blessed): the full per-unit
+    # Canon (trading.md#price-stacking-order, human-blessed): the full per-unit
     # stack is rank discount × faction-rep × personal-rep × first-login × region
     # tariff × station lever, then the commodity hard [min, max] band as the
     # FINAL clamp. compute_effective_unit_price is the single source of truth for
@@ -698,6 +701,14 @@ async def buy_resource(
     tax_amount = _buy_totals["tax_amount"]
     total_with_tax = _buy_totals["total_with_tax"]
 
+    # WO-BUILD-REGION-TAX-RATE-WIRING: Region.tax_rate is a SEPARATE levy from
+    # the station tax above (governance-set, applies regardless of station
+    # ownership) — charged on top of total_cost, realized via realize_region_tax
+    # (50/50 owner/treasury split, WO-BUILD-REGION-TAX-REVENUE-SHARE-PAYOUT).
+    region_tax_rate = compute_region_tax_rate(station)
+    region_tax_amount = int(total_cost * region_tax_rate)
+    total_with_tax += region_tax_amount
+
     # Check if player has enough credits (goods + station trade tax)
     if current_player.credits < total_with_tax:
         raise HTTPException(
@@ -737,6 +748,18 @@ async def buy_resource(
                     exc_info=True,
                 )
                 station.treasury_balance = (station.treasury_balance or 0) + tax_amount
+
+        if region_tax_amount > 0:
+            try:
+                realize_region_tax(db, station, region_tax_amount)
+            except Exception:
+                logger.warning(
+                    "realize_region_tax failed (buy); falling back to region treasury",
+                    exc_info=True,
+                )
+                # NEVER station.treasury_balance — that is the station owner's
+                # private purse (WO-FIX-REGION-TAX-FALLBACK-MISROUTES-STATION-TREASURY).
+                fallback_credit_region_tax(db, station, region_tax_amount)
 
         # Update ship cargo (using proper structure)
         if not current_ship.cargo:
@@ -872,6 +895,26 @@ async def buy_resource(
             total_value=total_cost,
         )
 
+        # WO-WIRE-RETENTION-TRADE-ACTIVITY: PlayerActivityService.track_activity
+        # had zero production callers (retention_service.py's own
+        # "STILL DORMANT" note) — the economic_loss_streak at-risk signal and
+        # the Redis session trades_count/trade_volume counters never populated
+        # for any trade. Best-effort, mirrors every other post-trade hook above.
+        try:
+            from src.services.player_activity_service import (
+                ActivityEventType,
+                get_player_activity_service,
+            )
+            activity_service = await get_player_activity_service()
+            await activity_service.track_activity(
+                str(current_player.id),
+                ActivityEventType.TRADE_BUY,
+                {"total_value": total_cost, "commodity": trade_request.resource_type,
+                 "quantity": trade_request.quantity, "station_id": str(station.id)},
+            )
+        except Exception:
+            logger.warning("activity tracking failed (buy trade)", exc_info=True)
+
         db.commit()
 
         # Real-time market broadcast (post-commit, batched, defensive).
@@ -993,7 +1036,7 @@ async def sell_resource(
     # pays players). Paying out sell_price here was the other half of the
     # same-station arbitrage loop.
     #
-    # Canon (trading.md#price-stacking-order, Max-blessed): the full per-unit
+    # Canon (trading.md#price-stacking-order, human-blessed): the full per-unit
     # payout stack flips the relationship direction (a favoured trader is paid
     # MORE) — rank bonus, then divide by player-rep/tariff/lever, then the
     # commodity hard band as the FINAL clamp. compute_effective_unit_price owns
@@ -1039,6 +1082,12 @@ async def sell_resource(
     tax_amount = _sell_totals["tax_amount"]
     net_earnings = _sell_totals["net_earnings"]
 
+    # WO-BUILD-REGION-TAX-RATE-WIRING: Region.tax_rate withheld from sale
+    # proceeds on top of the station tax above — see the buy-path comment.
+    region_tax_rate = compute_region_tax_rate(station)
+    region_tax_amount = int(total_earnings * region_tax_rate)
+    net_earnings -= region_tax_amount
+
     # Execute the trade
     try:
         # Update player credits (net of tax); the withheld tax is realized to
@@ -1057,6 +1106,18 @@ async def sell_resource(
                     exc_info=True,
                 )
                 station.treasury_balance = (station.treasury_balance or 0) + tax_amount
+
+        if region_tax_amount > 0:
+            try:
+                realize_region_tax(db, station, region_tax_amount)
+            except Exception:
+                logger.warning(
+                    "realize_region_tax failed (sell); falling back to region treasury",
+                    exc_info=True,
+                )
+                # NEVER station.treasury_balance — that is the station owner's
+                # private purse (WO-FIX-REGION-TAX-FALLBACK-MISROUTES-STATION-TREASURY).
+                fallback_credit_region_tax(db, station, region_tax_amount)
 
         # Update ship cargo (using proper structure)
         if not current_ship.cargo:
@@ -1233,6 +1294,23 @@ async def sell_resource(
                     dispatch_narration_push(current_player, narration_line)
         except Exception:
             logger.warning("ARIA narration hook failed (P-F1)", exc_info=True)
+
+        # WO-WIRE-RETENTION-TRADE-ACTIVITY: see the buy-path hook above for
+        # the full rationale — same wire, sell side.
+        try:
+            from src.services.player_activity_service import (
+                ActivityEventType,
+                get_player_activity_service,
+            )
+            activity_service = await get_player_activity_service()
+            await activity_service.track_activity(
+                str(current_player.id),
+                ActivityEventType.TRADE_SELL,
+                {"total_value": total_earnings, "commodity": trade_request.resource_type,
+                 "quantity": trade_request.quantity, "station_id": str(station.id)},
+            )
+        except Exception:
+            logger.warning("activity tracking failed (sell trade)", exc_info=True)
 
         db.commit()
 

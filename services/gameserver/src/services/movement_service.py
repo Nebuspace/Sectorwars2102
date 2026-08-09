@@ -1107,6 +1107,16 @@ class MovementService:
         if nexus_gate_rejection is not None:
             return nexus_gate_rejection
 
+        # ADR-0054 X-D1: suspended-region stakeholder-gated ingress. Runs
+        # immediately after the Nexus subscription gate, same rationale —
+        # every movement path (player-gate / direct-warp / natural-tunnel)
+        # funnels through this one call site before any of the three
+        # branches below can execute a move. See
+        # _check_region_ingress_gate's docstring for the full rule.
+        region_ingress_rejection = self._check_region_ingress_gate(player, destination_sector_id)
+        if region_ingress_rejection is not None:
+            return region_ingress_rejection
+
         # Tractor tow (WO-AF; ships.md:354-357): if THIS ship is actively towing
         # another, the hauler pays its full move cost PLUS a tow surcharge. The
         # surcharge is size-based on warps/tunnels (the cached surcharge_per_move:
@@ -1258,7 +1268,7 @@ class MovementService:
         self, player: Player, destination_sector_id: int,
     ) -> Optional[Dict[str, Any]]:
         """
-        Auth fix (b), Max-approved 2026-07-10: ADR-0043 / SYSTEMS/region-
+        Auth fix (b), human-approved 2026-07-10: ADR-0043 / SYSTEMS/region-
         lifecycle.md:655 — "The Galactic Citizen subscription gate is
         enforced at traversal, not at the warp's existence: every region
         carries the warp regardless of subscription tier, and the cross-
@@ -1291,7 +1301,7 @@ class MovementService:
         allowed" for its own, different gate — the closest textual analog
         available, and the only directionally-safe reading. Flagged for
         DECISIONS in case an intentional bidirectional (or Nexus-side) gate
-        is what Max actually wants.
+        is what human actually wants.
 
         [NO-CANON] Scope, flagged not silently resolved: this gates the
         TRAVERSAL endpoint only, per the WO's explicit scope. It does NOT
@@ -1332,6 +1342,78 @@ class MovementService:
                 "turn_cost": 0,
             }
         return None
+
+    def _check_region_ingress_gate(
+        self, player: Player, destination_sector_id: int,
+    ) -> Optional[Dict[str, Any]]:
+        """ADR-0054 X-D1 / SYSTEMS/region-lifecycle.md -- while a region is
+        ``suspended`` or ``grace``, cross-region traversal LANDING in it is
+        stakeholder-gated: allowed for the region's owner, allowed for a
+        stakeholder (owns a planet/station/captured holding/warp-gate
+        endpoint in the region, or has a ship currently sitting in one of
+        its sectors — see ``region_lifecycle_service.is_region_
+        stakeholder``), rejected otherwise with
+        ``ERR_REGION_NEW_RESIDENTS_BLOCKED``. Outbound (leaving a
+        suspended/grace region) is always allowed — this only fires when
+        the destination region is the one gated, never the origin.
+
+        Fires only on genuine CROSS-region ingress: an in-region move
+        (origin region == destination region) is never gated here, even if
+        that region happens to be suspended/grace — same-region movement
+        isn't "new commitments," it's a resident continuing to play in
+        their own region.
+
+        Post-takeover-commit case (ADR-0054's third allowed case, "a
+        takeover claimant after the takeover transaction commits"): NOT
+        special-cased here. A takeover flips ``Region.status`` to ACTIVE
+        as part of the SAME committed transaction, so by the time any
+        traversal request reaches this check (necessarily a later, separate
+        request) the destination region's status already reads ACTIVE and
+        this gate never fires for it — the case resolves itself via the
+        existing ``status not in (SUSPENDED, GRACE)`` early-return below,
+        exactly as the ADR's own text anticipates ("this case may already
+        resolve itself naturally").
+
+        Returns a rejection dict (matching every other early-exit in
+        ``move_player_to_sector``) if the player must be blocked, else
+        ``None`` to let the move proceed unchanged.
+        """
+        from src.models.region import Region, RegionStatus
+        from src.services.region_lifecycle_service import (
+            ERR_REGION_NEW_RESIDENTS_BLOCKED,
+            is_region_stakeholder,
+        )
+
+        destination_sector = self.db.query(Sector).filter(
+            Sector.sector_id == destination_sector_id
+        ).first()
+        if destination_sector is None or destination_sector.region_id is None:
+            return None  # unknown/unattributed destination -- nothing to gate
+
+        destination_region = self.db.query(Region).filter(
+            Region.id == destination_sector.region_id
+        ).first()
+        if destination_region is None:
+            return None
+
+        if destination_region.status not in (RegionStatus.SUSPENDED, RegionStatus.GRACE):
+            return None  # not in the gated window -- no check at all
+
+        if player.current_region_id == destination_region.id:
+            return None  # in-region move, not cross-region ingress
+
+        if destination_region.owner_id is not None and destination_region.owner_id == player.user_id:
+            return None  # the region's own owner is always allowed in
+
+        if is_region_stakeholder(self.db, player.id, destination_region.id):
+            return None
+
+        return {
+            "success": False,
+            "message": ERR_REGION_NEW_RESIDENTS_BLOCKED,
+            "error": ERR_REGION_NEW_RESIDENTS_BLOCKED,
+            "turn_cost": 0,
+        }
 
     def get_available_moves(self, player_id: uuid.UUID) -> Dict[str, Any]:
         """
@@ -1573,7 +1655,7 @@ class MovementService:
     # turn_cost, can_afford} for every neighbor at ZERO cost -- this action
     # is the PAID enrichment above that baseline, never a duplicate of it.
     #
-    # THE SCALING LADDER (Max-approved 2026-07-10 off a 3-rail investigation
+    # THE SCALING LADDER (human-approved 2026-07-10 off a 3-rail investigation
     # -- WO-PROG-SECTOR-SCAN-1). Every magnitude below is [NO-CANON],
     # flagged for DECISIONS: canon confirms the feature and its 2-turn cost
     # only, not these tiers/thresholds.
@@ -1621,7 +1703,7 @@ class MovementService:
     #   (the tree is designed to grow by appending rows -- zero migration
     #   risk) WITHOUT reusing the reserved survey node.
     #
-    # Stateless + ephemeral by design (Max-approved): a passive-fill
+    # Stateless + ephemeral by design (human-approved): a passive-fill
     # enhancement, not a permanent per-player discovery -- no persistence
     # table; the payload is computed fresh on every call and never stored.
     # Fuzzy-disclosure discipline is a HARD constraint (mirrors the quantum
@@ -2501,6 +2583,19 @@ class MovementService:
         from src.services.docking_service import release as _release_docking_slip
         _release_docking_slip(self.db, None, player)
 
+        # Salvage-break interruption (ship-registry.md "Salvage break" step
+        # 4: "leaving the sector ... cancels the operation and clears the
+        # row lock; the timer resets to zero"). Best-effort — a hiccup here
+        # must never strand a warp/travel move.
+        try:
+            from src.services.ship_registry_service import cancel_salvage_break_for_salvager
+            cancel_salvage_break_for_salvager(self.db, player.id, reason="salvager left sector")
+        except Exception:
+            logger.exception(
+                "Salvage-break cancel-on-sector-leave failed for player %s (non-fatal)",
+                player.id,
+            )
+
         # Update ship position
         if player.current_ship:
             player.current_ship.sector_id = destination_sector_id
@@ -3009,7 +3104,7 @@ class MovementService:
                 # once here is the correct shape, not just a safe one.
                 self._maybe_dispatch_police_engagement(player, sector)
 
-        # WO-CMB-NPC-INITIATED-1 lane C (Max ruling, 2026-07-10) — pirate
+        # WO-CMB-NPC-INITIATED-1 lane C (human ruling, 2026-07-10) — pirate
         # trigger. VERIFY-FIRST found this leg's police_patrol_ships block
         # (immediately above) is the SAME deferral this WO closes: its own
         # comment says auto-firing combat here would override the

@@ -33,7 +33,7 @@ HAB_DOME/LAB/LOGISTICS_OFFICE · defense TURRET_NETWORK/ORBITAL_PLATFORM/SCANNER
 tiers/monument Wonders are T2+.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 DOMAINS = ("economy", "defense", "civic", "monument", "terraform")
 
@@ -190,7 +190,7 @@ BUILDING_CATALOG: Dict[str, Dict[str, Any]] = {
         "effect": {"kind": "ct1_defense", "ct1_kind": "scanner_array"},
         "signature": False, "prereqs": [],
     },
-    # The two K0-cashed design-only buildings (magnitudes already Max-blessed in K0).
+    # The two K0-cashed design-only buildings (magnitudes already human-blessed in K0).
     "RAIL_GUN": {
         "kind": "RAIL_GUN", "domain": "defense", "name": "Rail Gun Battery",
         "footprint": [1, 1], "max_level": 1,
@@ -260,18 +260,6 @@ BUILDING_CATALOG: Dict[str, Dict[str, Any]] = {
 def get(kind: str) -> Optional[Dict[str, Any]]:
     """Return the catalog row for a kind, or None if unknown."""
     return BUILDING_CATALOG.get(kind)
-
-
-def kinds_in_domain(domain: str) -> List[str]:
-    return [k for k, spec in BUILDING_CATALOG.items() if spec["domain"] == domain]
-
-
-def footprint_cells(kind: str) -> int:
-    spec = BUILDING_CATALOG.get(kind)
-    if not spec:
-        return 0
-    w, h = spec["footprint"]
-    return int(w) * int(h)
 
 
 def assert_catalog_valid() -> None:

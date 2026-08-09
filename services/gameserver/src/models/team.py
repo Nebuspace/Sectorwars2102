@@ -39,7 +39,7 @@ class Team(Base):
         # DEPRECATED (DECISIONS.md team-reputation-calculation-method-canonical,
         # 2026-08-04): TeamReputation.calculation_method is the sole SSOT.
         # This Team-level duplicate is retained for additive-schema safety
-        # (no DROP without Max GO) and must not be read or written by services.
+        # (no DROP without human GO) and must not be read or written by services.
     )
 
     # Team properties

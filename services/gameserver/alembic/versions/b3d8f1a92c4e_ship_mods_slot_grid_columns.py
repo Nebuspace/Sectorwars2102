@@ -1,7 +1,7 @@
 """ship-mods slot grid columns (additive nullable JSONB)
 
 Canon: audit/design-briefs/ship-mods-unified/SHIP-MODS-MASTER.md §9
-(Max-blessed NO-CANON kernel) — WO-SM-1.
+(human-blessed NO-CANON kernel) — WO-SM-1.
 
 Adds two additive, nullable JSONB columns for the SHIP-MODS slot grid:
 

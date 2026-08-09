@@ -77,7 +77,7 @@ from src.services.citadel_service import CITADEL_LEVELS
 
 logger = logging.getLogger(__name__)
 
-# --- PL4b CONSTANTS (Max-APPROVED numbers; PL4b master §2) -------------------
+# --- PL4b CONSTANTS (human-APPROVED numbers; PL4b master §2) -------------------
 
 # Wall-clock days of owner inactivity (Player.last_game_login age) before a
 # planet is FLAGGED reclaimable. Inactivity is measured in WALL clock, not

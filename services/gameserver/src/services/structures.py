@@ -65,7 +65,7 @@ logger = logging.getLogger(__name__)
 # ``STRICT_VIA_SETTLE=True`` to turn a stray into an AssertionError, proving the guard trips (I5).
 STRICT_VIA_SETTLE = False
 
-# CRT-1 CUTOVER FLAG (Max-ruled 2026-06-21): when True, settle()'s step-3 derive becomes
+# CRT-1 CUTOVER FLAG (human-ruled 2026-06-21): when True, settle()'s step-3 derive becomes
 # AUTHORITATIVE — derive_citadel_level over the grid WRITES planet.citadel_level (+ the three caps)
 # instead of merely shadow-logging the divergence. The size-gated upgrade ladder
 # (max_citadel_level_for_size) makes derive a faithful inverse by construction, so this never
@@ -838,17 +838,8 @@ def can_place_gated(structures: dict, kind: str, x: int, y: int,
     return can_place(structures, kind, x, y)
 
 
-def assert_research_for_kind(kind: str, researched: Optional[Set[str]]) -> None:
-    """Raise ValueError if the player's research does not gate-UP to BUILD ``kind``; no-op when
-    satisfied (gate met or ungated). The raise mirrors place()'s ValueError-on-invalid contract so a
-    placement caller can guard with this before calling place()."""
-    ok, reason = research_satisfied_for_kind(kind, researched)
-    if not ok:
-        raise ValueError(f"cannot place {kind}: {reason}")
-
-
 # ---------------------------------------------------------------------------
-# derive_citadel_level (K1b-1 → CRT-1 cutover, Max-ruled 2026-06-21). Pure read of the
+# derive_citadel_level (K1b-1 → CRT-1 cutover, human-ruled 2026-06-21). Pure read of the
 # placed/powered/populated grid that reproduces the CITADEL_LEVELS ladder.
 # LIVE: settle() step-3 calls this (CITADEL_DERIVE_AUTHORITATIVE=True writes the scalar
 # + caps); citadel upgrade completion + planet_grid reads also call it. Not dormant.
@@ -858,7 +849,7 @@ def assert_research_for_kind(kind: str, researched: Optional[Set[str]]) -> None:
 FLOOR_AREA = {1: 2, 2: 4, 3: 8, 4: 14, 5: 24}        # Σ(footprint cells × level) over operational eco/civic
 HOUSING = {1: 0, 2: 0, 3: 50000, 4: 100000, 5: 200000}  # Σ powered HAB_DOME capacity
 
-# CRT-1 SIZE-GATE (Max-ruled 2026-06-21): the cumulative key-building footprint each citadel level
+# CRT-1 SIZE-GATE (human-ruled 2026-06-21): the cumulative key-building footprint each citadel level
 # requires, in plot-cells. So derive_citadel_level is a FAITHFUL INVERSE by construction — a level
 # is reachable on a grid IFF the grid has at least this many plots to pack the tier's key buildings:
 #   L1 HAB_DOME(1)+MINE(1)=2 · L2 +SCANNER(1)=3 · L3 +HAB_DOME(1)+POWER(1)=5 ·
@@ -942,7 +933,7 @@ def derive_citadel_level(structures: dict) -> int:
     L5→1, first match wins, on powered_floor_area ≥ FLOOR_AREA[L] AND key_buildings_present(L) AND
     population_housed ≥ HOUSING[L]. Returns 0 for an empty/ungridded planet.
 
-    CRT-1 cutover (Max-ruled 2026-06-21): settle() step-3 consumes this; when
+    CRT-1 cutover (human-ruled 2026-06-21): settle() step-3 consumes this; when
     ``CITADEL_DERIVE_AUTHORITATIVE`` is True (current default) a divergence writes
     ``planet.citadel_level`` + caps. Also used by citadel upgrade completion and
     planet_grid reads — not a dormant/shadow-only helper anymore.
@@ -960,7 +951,7 @@ def derive_citadel_level(structures: dict) -> int:
 # ---------------------------------------------------------------------------
 # Terraform field model on the grid (K1b-2, own-plot-flat kernel). SHADOW: advances the per-plot
 # axes + instability and RETURNS the grid-derived habitability; the CALLER logs divergence vs the
-# shipped habitability_score and does NOT write it (habitability-from-grid is a Max-gated ADR-0002
+# shipped habitability_score and does NOT write it (habitability-from-grid is a human-gated ADR-0002
 # amendment — same staging as the citadel button→derived cutover). NOT wired into settle() yet.
 # ---------------------------------------------------------------------------
 # natural_band decay targets per planet type, {thermal, hydro}. Canon gives one habitability band
@@ -1130,11 +1121,11 @@ def _instability_decay_bump(structures: dict) -> float:
 # OFF-SWITCH (reproduce-exactly): ships OFF (False) as the conservative default — the [NO-CANON]
 # threshold ladder below is unblessed, so per the tranche's "all magnitudes ship conservative" rule
 # (matching DECAY_FRONTIER_MULT=1.0 / FAUCET_CREDIT_COPAY=0 / instability-default-0) the writer is
-# dormant until Max blesses the thresholds. The mechanism is built + sim-proven; flipping this to True
+# dormant until human blesses the thresholds. The mechanism is built + sim-proven; flipping this to True
 # activates it. (Even when True the neutral guarantee is also structural: when NO axis has crossed a
 # threshold the resolver returns the plot's CURRENT terrain unchanged, byte-identical to today.)
 # ---------------------------------------------------------------------------
-MUTATION_ENABLED = False        # OFF-SWITCH (conservative default): terrain never mutates == today; Max-gated on the [NO-CANON] thresholds
+MUTATION_ENABLED = False        # OFF-SWITCH (conservative default): terrain never mutates == today; human-gated on the [NO-CANON] thresholds
 # [NO-CANON] threshold ladder (03-spec-terraform §2.4; conservative). thermal/hydro are the 0-100 axes
 # terraform_grid_tick advances. Picked so a default seeded plot (thermal=50, hydro=water%) does NOT
 # spuriously mutate on day one (FLAT stays FLAT until an axis is deliberately pushed past a threshold).
@@ -1371,7 +1362,7 @@ def _natural_band(planet_type: Optional[str], axis: str) -> int:
 def _planet_is_capstoned(structures: dict) -> bool:
     """DONE-tier signal — reads the CRT-3 capstone flag ``terraform_meta.confirmed_biome`` (a key
     INSIDE the ``structures`` JSONB blob, §4.4 — NOT a Planet column). Truthy non-empty value =
-    capstoned. Until the Max-gated CRT-3 capstone-activation WO writes this flag it is absent →
+    capstoned. Until the human-gated CRT-3 capstone-activation WO writes this flag it is absent →
     False, so a peaceful in-band world gets BANDED relief (0.3×), not DONE (0.1×) — the §5.10 guard
     keeps the cockpit from advertising "free to hold" before the engine can deliver it."""
     if not isinstance(structures, dict):
@@ -1488,7 +1479,7 @@ def terraform_grid_tick(structures: dict, planet_type: Optional[str], intensity:
 
     Mutates structures.plots[].axes + structures.instability (the terraform field advancing — the
     grid is terraform's to write). SHADOW: does NOT write the shipped habitability_score column; the
-    caller logs the divergence (Max-gated cutover). Idempotent shape: a rig-less planet simply decays
+    caller logs the divergence (human-gated cutover). Idempotent shape: a rig-less planet simply decays
     toward natural_band each tick.
 
     T1.5-7 DECAY-RESCOPE: the optional ``planet`` (threaded by _advance_grid_field, omitted by legacy/
@@ -1628,7 +1619,7 @@ def grid_habitability(structures: dict) -> Optional[int]:
     floor(area-weighted mean of per-plot {thermal,hydro} axes, flat 50/50) − instability//5. Does
     NOT mutate (no push/decay — unlike terraform_grid_tick, which calls this for its return) and
     never touches the shipped habitability_score column. The settle() step-2 shadow logs this vs the
-    shipped column (habitability-from-grid is a Max-gated ADR-0002 amendment). Returns None when the
+    shipped column (habitability-from-grid is a human-gated ADR-0002 amendment). Returns None when the
     grid has no plots (nothing to derive)."""
     plots = [p for p in structures.get("plots", []) if isinstance(p, dict)]
     if not plots:
@@ -1648,7 +1639,7 @@ def confirm_biome(structures: dict, target_biome: Optional[str]) -> dict:
     (read from ``structures.terraform_meta['biome_hold'][target_biome]``, 0 if unmaintained)?
 
     Returns ``{confirmed, hold_ticks, axes}``. **NEVER writes planet.type** — the hold-tick
-    maintenance + the planet.type biome-reclass are the Max-gated activation step (PL2-adjacent), NOT
+    maintenance + the planet.type biome-reclass are the human-gated activation step (PL2-adjacent), NOT
     done here. This read is the thin capstone the CRT T1-exit gate confirms against."""
     plots = [p for p in structures.get("plots", []) if isinstance(p, dict)]
     if not plots:
@@ -1670,7 +1661,7 @@ def confirm_biome(structures: dict, target_biome: Optional[str]) -> dict:
 
 # ---------------------------------------------------------------------------
 # K1b-5 biome CAPSTONE — hold-tick maintenance + planet.type reclassification
-# (CRT-3, folds WO-PL2; Max APPROVED the planet.type write + the default-TRUE flag).
+# (CRT-3, folds WO-PL2; human APPROVED the planet.type write + the default-TRUE flag).
 # ---------------------------------------------------------------------------
 # Single-target reclass map (PL2): a barren rock terraformed to its target band hardens to a real
 # biome. Keyed by the PlanetType ENUM NAME (resolve via _planet_type_name(planet)). VOLCANIC/DESERT
@@ -1680,7 +1671,7 @@ BIOME_RECLASS_MAP = {"BARREN": "VOLCANIC", "ICE": "DESERT"}
 # Spec 03-spec-terraform.md E4 / 04-implementation-plan.md: the capstone is held for CAPSTONE_HOLD_TICKS
 # consecutive maintained ticks before the reclass ACTION is allowed.
 CAPSTONE_HOLD_TICKS = 24
-# Reversible flag (the ADR amendment — Max approved shipping it default TRUE). Flip to False to
+# Reversible flag (the ADR amendment — human approved shipping it default TRUE). Flip to False to
 # disable the capstone entirely (the endpoint 403s and reclass_planet_type no-ops) without a revert.
 BIOME_RECLASS_ENABLED = True
 
@@ -1709,7 +1700,7 @@ def _maintain_biome_hold(planet, structures: dict, applied_ticks: int) -> None:
             # POST-advance confirmed state only once per settle, so a long-dormant
             # catch-up (many ticks) must NOT instantly grant the full hold just because
             # the band was reached on the final tick. Conservative + exploit-free; the
-            # accrual unit is "confirmed settles" (NO-CANON — flagged to Max).
+            # accrual unit is "confirmed settles" (NO-CANON — flagged to human).
             current = int(hold.get(target, 0) or 0)
             hold[target] = min(CAPSTONE_HOLD_TICKS, current + 1)
         else:
@@ -1781,7 +1772,7 @@ def _advance_grid_field(planet, structures: dict) -> int:
 
 
 def rebaseline_habitability_to_grid(db) -> dict:
-    """K1b-2 CUTOVER one-time pass (Max-ruled 2026-06-21 fresh re-baseline): for every planet, ensure
+    """K1b-2 CUTOVER one-time pass (human-ruled 2026-06-21 fresh re-baseline): for every planet, ensure
     the grid is seeded, then set ``habitability_score = grid_habitability()`` of the current grid.
     Established planets drop to their grid value (terraform re-lifts them — accepted). Logs pre/post.
     Per-planet SAVEPOINT isolation (a bad planet rolls back only itself, like WO-B1). Idempotent:
@@ -1896,7 +1887,7 @@ def _step1_build_queue(planet, db) -> bool:
 
 
 def _step2_terraform(planet, ts) -> bool:
-    """K1b-2 CUTOVER (Max-ruled 2026-06-21, fresh re-baseline — "game is not released yet"):
+    """K1b-2 CUTOVER (human-ruled 2026-06-21, fresh re-baseline — "game is not released yet"):
     grid-habitability is AUTHORITATIVE, NO calibration to legacy. Three substeps:
       1. advance the legacy terraform body (still owns the terraforming_active lifecycle / target /
          resource costs on its own canonical anchor),
@@ -1960,7 +1951,7 @@ def _step3_power_siege(planet, ps) -> bool:
     except Exception:
         logger.exception("T1.5-4 step-3 terrain re-grade failed (non-fatal) for planet %s",
                          getattr(planet, "id", "?"))
-    # CRT-1 CUTOVER (Max-ruled 2026-06-21): compute derive_citadel_level over the (now-seeded) grid.
+    # CRT-1 CUTOVER (human-ruled 2026-06-21): compute derive_citadel_level over the (now-seeded) grid.
     #   * CITADEL_DERIVE_AUTHORITATIVE False → the original K1b-1 SHADOW: READ-ONLY, LOG divergence
     #     from the shipped citadel_level (button authoritative).
     #   * CITADEL_DERIVE_AUTHORITATIVE True → AUTHORITATIVE: on a divergence WRITE
@@ -2001,7 +1992,7 @@ def _step3_power_siege(planet, ps) -> bool:
             elif not CITADEL_DERIVE_AUTHORITATIVE:
                 logger.info(
                     "citadel SHADOW divergence: planet %s derived=%s vs shipped=%s "
-                    "(button authoritative; cutover Max-gated)",
+                    "(button authoritative; cutover human-gated)",
                     getattr(planet, "id", "?"), derived, shipped,
                 )
     except Exception:

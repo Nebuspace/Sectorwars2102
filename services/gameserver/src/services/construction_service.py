@@ -189,6 +189,13 @@ EVENT_NEGATIVE_THRESHOLD = 80
 # Per-engineer biasing: each engineer applies a -5 shift to the roll,
 # biasing toward positive outcomes; at 3 engineers the shift is -15.
 EVENT_ENGINEER_ROLL_SHIFT = -5
+# Bound on how many missed project-days a single lazy _advance_station call
+# will catch up in one pass (the longest builds run 12-14 canonical days —
+# this is a generous multiple, not a tuned gameplay number). Prevents an
+# unbounded loop if a reservation goes unread for a very long real-world
+# stretch; any remainder above the cap is simply picked up on the next call
+# (the anchor only advances by what was actually rolled).
+EVENT_MAX_CATCHUP_DAYS = 60
 
 # Concrete event catalog (type → effect descriptor used by the payload).
 EVENT_CATALOG = {
@@ -424,10 +431,11 @@ def roll_construction_event(
 
     Caller is responsible for:
       1. Checking that the reservation is in an active build phase.
-      2. Calling this once per project-day (the advance path is the right home).
-      3. Persisting the event to reservation.construction_events (a list column
-         — FLAG: ConstructionReservation needs a `construction_events` JSONB
-         column added by the other lane; see FIELD_NEEDED note below).
+      2. Calling this once per project-day (_advance_station's
+         _roll_construction_events is the wired-in home — see there for the
+         canonical-day accrual-anchor bookkeeping).
+      3. Persisting the event via apply_construction_event, which writes to
+         reservation.construction_events / .pending_events.
 
     Canon: roll 0–99; per-engineer −5 shift biases toward positive outcomes.
     """
@@ -502,13 +510,6 @@ def apply_construction_event(
     Returns the event dict (possibly augmented with 'applied' metadata).
     The caller must call flag_modified(reservation, 'construction_events')
     and flush after this function.
-
-    FIELD_NEEDED: ConstructionReservation requires two new columns (flag for
-    the other lane — do NOT add them here):
-      * `construction_events` JSONB default=[] — event log (build history)
-      * `pending_events`      JSONB default=[] — events awaiting player decision
-    Until those fields exist, this function stores events in a defensive
-    `getattr(..., [], [])` pattern and logs a warning if they are missing.
     """
     now = now or datetime.now(UTC)
     event_type = event.get("type", "unknown")
@@ -589,6 +590,62 @@ def apply_construction_event(
         reservation.pending_events = pending
 
     return event
+
+
+def _roll_construction_events(
+    reservation: Any,
+    station: Station,
+    now: datetime,
+    rng: Optional[_random_module.Random] = None,
+) -> int:
+    """Catch the construction-event RNG up to `now`, once per elapsed
+    canonical project-day (tradedock-shipyard.md §Construction events).
+
+    Accrual-anchor pattern (mirrors port_ownership_service.accrue_operating_
+    costs' costs_accrued_at): `reservation.events_last_rolled_at` marks the
+    wall-clock instant the RNG was last rolled through. NULL anchors to `now`
+    on first eligibility (no retroactive backlog for reservations that were
+    already mid-build when this shipped). The anchor advances by exactly the
+    whole days rolled — a sub-day remainder stays pending for the next call,
+    same as the operating-cost engine, so no day is ever double-rolled or
+    silently skipped.
+
+    Baseline engineer_count=0 (Space Engineer assignment is a separate,
+    unbuilt slice — canon's engineer-biasing terms are inert at 0 until it
+    ships). Caller holds the station lock and owns the commit.
+    """
+    anchor = getattr(reservation, "events_last_rolled_at", None)
+    if anchor is None:
+        reservation.events_last_rolled_at = now
+        return 0
+
+    anchor = anchor.replace(tzinfo=UTC) if anchor.tzinfo is None else anchor
+    elapsed_days = int(game_time.canonical_hours_since(anchor, now) // 24)
+    if elapsed_days <= 0:
+        return 0
+
+    capped = min(elapsed_days, EVENT_MAX_CATCHUP_DAYS)
+    if capped < elapsed_days:
+        logger.warning(
+            "Construction event catch-up capped: reservation=%s elapsed_days=%d capped_to=%d",
+            reservation.id, elapsed_days, capped,
+        )
+
+    fired = 0
+    for _ in range(capped):
+        event = roll_construction_event(reservation, engineer_count=0, rng=rng)
+        if event is not None:
+            apply_construction_event(reservation, event, station, now=now)
+            flag_modified(reservation, "construction_events")
+            flag_modified(reservation, "pending_events")
+            fired += 1
+
+    reservation.events_last_rolled_at = game_time.scaled_deadline(
+        capped * 24.0, start=anchor
+    )
+    if fired:
+        reservation.updated_at = now
+    return fired
 
 
 def _next_unpaid_milestone(reservation: Any) -> Optional[str]:
@@ -920,6 +977,14 @@ def _advance_station(db: Session, station: Station, now: datetime) -> None:
     for res in reservations:
         if res.state == "deposit_collected" or res.state in PHASE_ORDER:
             _progress_phases(res, now)
+
+    # 2b. Construction-event RNG (tradedock-shipyard.md §Construction events):
+    #     once per elapsed canonical project-day, for reservations with a
+    #     RUNNING phase clock (phase_deadline set — a paused phase, waiting on
+    #     an unmet milestone/resource gate, does not accrue project-days).
+    for res in reservations:
+        if res.state in PHASE_ORDER and res.phase_deadline is not None:
+            _roll_construction_events(res, station, now)
 
     # 3. Rent forfeitures: 3 consecutive canonical days unpaid loses the
     #    build (resources and payments stay banked; the slip frees).
@@ -1503,7 +1568,7 @@ def claim(
 
     TradeDock-class reservations (ship_type == "TRADEDOCK_CONSTRUCTION",
     region-funded construction — Task B-3) are a different completion
-    entirely per Max's ruling (batch-1 #3a, 2026-07-10, resolving the
+    entirely per human's ruling (batch-1 #3a, 2026-07-10, resolving the
     formerly-KNOWN-GAP left by WO-TD-RGF-1): claiming finalizes the TARGET
     STATION IN PLACE — grants/upgrades its tradedock_tier — and returns the
     Station. No Ship is ever created for this reservation class; there is no

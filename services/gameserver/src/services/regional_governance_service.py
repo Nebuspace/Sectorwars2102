@@ -57,7 +57,7 @@ QUORUM_PCT_DEFAULT = Decimal("0.33")
 QUORUM_PCT_MIN = Decimal("0.25")
 QUORUM_PCT_MAX = Decimal("0.60")
 
-# ADR-0056 N-V3 / Max D5 (region-citizenship-onramp): a citizen cannot VOTE
+# ADR-0056 N-V3 / human D5 (region-citizenship-onramp): a citizen cannot VOTE
 # until their ACCOUNT is at least this old. Citizenship/presence is granted
 # immediately; the franchise is what waits. This is the anti-alt-ring fence for
 # the invite-link onramp (sized for the "spin up alts for two weeks" horizon).
@@ -1011,7 +1011,7 @@ class RegionalGovernanceService:
     # umbrella — a player who has put down a planet in region R has a tangible
     # stake there and is enrolled in R's voter roll as a citizen. The literal
     # "colony ⇒ citizenship" trigger is filed Pending in sw2102-docs/DECISIONS.md
-    # (the precise tier + voting_power are Max-gated canon); this builds the
+    # (the precise tier + voting_power are human-gated canon); this builds the
     # unambiguous kernel: ≥1 owned colony whose sector is in R ⇒ citizen in R.
     # -----------------------------------------------------------------
 
@@ -1303,7 +1303,7 @@ class RegionalGovernanceService:
         - ownership of ≥1 colony in the region (PATH A), regardless of whether
           the membership row has been upgraded yet.
 
-        Then the ADR-0056 N-V3 / Max-D5 60-day ACCOUNT-AGE gate is applied to the
+        Then the ADR-0056 N-V3 / human-D5 60-day ACCOUNT-AGE gate is applied to the
         union: an under-age citizen is on the roll for presence but cannot vote,
         so must not inflate the quorum denominator (cast_election_vote /
         cast_policy_vote reject them at the same threshold). Migration-backfilled
@@ -1379,7 +1379,7 @@ class RegionalGovernanceService:
             return {"ok": False, "code": "ERR_NOT_A_MEMBER"}
         if not membership.can_vote:
             return {"ok": False, "code": "ERR_NOT_ELIGIBLE"}
-        # ADR-0056 N-V3 / Max-D5: a citizen cannot vote until their account is
+        # ADR-0056 N-V3 / human-D5: a citizen cannot vote until their account is
         # ≥ 60 days old (anti-alt-ring fence). Citizenship/presence was granted
         # immediately; the franchise waits. Backfilled citizens predate the
         # window and pass.
@@ -1571,7 +1571,7 @@ class RegionalGovernanceService:
             return {"ok": False, "code": "ERR_NOT_A_MEMBER"}
         if not membership.can_vote:
             return {"ok": False, "code": "ERR_NOT_ELIGIBLE"}
-        # ADR-0056 N-V3 / Max-D5 60-day account-age vote gate (checked before the
+        # ADR-0056 N-V3 / human-D5 60-day account-age vote gate (checked before the
         # row lock so an ineligible voter never holds the policy lock). Mirrors
         # cast_election_vote.
         if not await RegionalGovernanceService._is_account_vote_eligible(

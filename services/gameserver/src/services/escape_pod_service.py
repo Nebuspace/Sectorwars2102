@@ -3,7 +3,7 @@ Escape Pod stranding egress -- the FREE (zero fuel, zero turns, zero
 reputation) recovery mechanic from a WARP_SINK, at the cost of the ship
 itself.
 
-Canon: Max's design direction (WO-GWQ-STRANDING-2, 2026-07-10) -- "[stranded
+Canon: human's design direction (WO-GWQ-STRANDING-2, 2026-07-10) -- "[stranded
 players] have to escape pod out of there, as the escape pod uses no fuel";
 abandoning the ship is the free path's real cost, contrasted with the
 Slipdrive's now fuel-commodity-denominated self-rescue (slipdrive_service.py)

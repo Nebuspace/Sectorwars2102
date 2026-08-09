@@ -133,7 +133,7 @@ class Player(Base):
     # (src/services/suspect_service.py owns this contract).
     suspect_declared_at = Column(DateTime(timezone=True), nullable=True)
     wanted_declared_at = Column(DateTime(timezone=True), nullable=True)
-    # WO-CMB-SUSPECT-LIFE-1 (Max ruling, 2026-07-10) -- ships.md:287-296 +
+    # WO-CMB-SUSPECT-LIFE-1 (human ruling, 2026-07-10) -- ships.md:287-296 +
     # ADR-0061 S-V4. suspect_until: auto-clear timestamp, extended +1h per
     # suspect-flagging event, capped at suspect_declared_at + 4h cumulative.
     # suspect_team_snapshot: the flagged player's team roster (self-inclusive,
@@ -151,7 +151,7 @@ class Player(Base):
     # suspect_until. NULL when not Wanted, or Wanted via a condition-based
     # trigger.
     wanted_until = Column(DateTime(timezone=True), nullable=True)
-    # Grey-flag PvP status (WO-BL, Max-ruled). A temporary "open season" mark
+    # Grey-flag PvP status (WO-BL, human-ruled). A temporary "open season" mark
     # earned by aggressing on a lawful target:
     #   - attacking a GOOD-STANDING player → grey 1h (grey_kind="player_attack");
     #     while grey, GOOD-STANDING players may attack this player penalty-free.
@@ -159,7 +159,7 @@ class Player(Base):
     #     grey, ANY player may attack this player penalty-free.
     # grey_until is the UTC expiry (NULL = not grey); a lesser later offense never
     # shortens it (MAX of existing/new). Cleared early by paying a fine. NO-CANON
-    # numbers (durations / fines / good-standing threshold) — flagged for Max.
+    # numbers (durations / fines / good-standing threshold) — flagged for human.
     grey_until = Column(DateTime(timezone=True), nullable=True)
     grey_kind = Column(String(20), nullable=True)  # "player_attack" | "station_attack"
     # Journey victory (rank-1 completion of the campaign).
@@ -201,6 +201,20 @@ class Player(Base):
     home_region_id = Column(UUID(as_uuid=True), ForeignKey("regions.id"), nullable=True)
     current_region_id = Column(UUID(as_uuid=True), ForeignKey("regions.id"), nullable=True)
     is_galactic_citizen = Column(Boolean, nullable=False, default=False)
+    # ADR-0054 X-D3 — GC-lapse 7-day liquidation window. Set the moment the
+    # PayPal webhook reports the GC subscription cancelled (paypal_service.
+    # _handle_subscription_cancelled); NULL means "not currently lapsing".
+    # `is_galactic_citizen` intentionally STAYS True through the 7-day grace
+    # (every other GC-perk gate in the codebase reads only that flag) — the
+    # sweep in scheduler/economy_sweeps.py flips it False once the window
+    # elapses with no re-subscription. Cleared (set back to NULL) the moment
+    # the player re-subscribes/renews (paypal_service._activate_galactic_
+    # citizenship / _handle_subscription_renewed), which also resets the
+    # one-time gc-emergency-relocation grant for the next lapse cycle.
+    gc_lapsed_at = Column(DateTime(timezone=True), nullable=True)
+    # One-time GC-bypass emergency relocation (ADR-0054 X-D3), consumed once
+    # per lapse cycle; cleared alongside gc_lapsed_at on re-subscription.
+    gc_relocation_used_at = Column(DateTime(timezone=True), nullable=True)
 
     # Relationships
     user = relationship("User", back_populates="player")

@@ -138,6 +138,18 @@ def _generate_registration_block() -> str:
     return "".join(_secrets_choice(_REG_ALPHABET) for _ in range(4))
 
 
+
+# Hatch pin: 6 alphanumeric characters (ship-registry.md "Hatch pin lock" --
+# 4-8, owner-settable; 6 is the interim default length for the auto-generated
+# starting pin). Reuses _REG_ALPHABET -- unambiguous characters matter here
+# too, since the owner reads this off their ship panel and may relay it
+# verbally/in chat to a team-mate.
+def _generate_hatch_pin() -> str:
+    """Pure: a random 6-character hatch pin. No DB access -- pins are not
+    globally unique (per-ship only), so no collision retry is needed."""
+    return "".join(_secrets_choice(_REG_ALPHABET) for _ in range(6))
+
+
 def generate_registration_number(year: int = _REGISTRATION_YEAR) -> str:
     """Pure: a REG-XXXX-YYYY registration number for the given game year."""
     return f"REG-{_generate_registration_block()}-{year:04d}"
@@ -199,6 +211,8 @@ def _assign_registration_fields(mapper, connection, target):
         target.registration_number = candidate
     if target.registered_owner_id is None and target.owner_id is not None:
         target.registered_owner_id = target.owner_id
+    if not target.hatch_pin_code:
+        target.hatch_pin_code = _generate_hatch_pin()
 
 
 @event.listens_for(Ship, "after_insert")

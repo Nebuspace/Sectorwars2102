@@ -204,7 +204,7 @@ class Station(Base):
     # vocabulary. This Border default matches the jsonb-schema Border row
     # (difficulty 5, [economic, personal], 30 days). The additive `player_memory`
     # sub-doc holds per-player haggle history + trust for the 90-day memory
-    # contract (Max #7). Single source of truth: core/trader_personalities.py.
+    # contract (human #7). Single source of truth: core/trader_personalities.py.
     #
     # NB: this default only applies to NEW rows whose creator omits the column.
     # Existing rows carry the OLD shape and are normalized on read by the haggle
@@ -249,7 +249,7 @@ class Station(Base):
     #
     # WO-BP-a (station-defense kernel): the trailing keys (hull_armor,
     # shield_pool, defensive_fire, point_defense_rating) make a station a
-    # FORMIDABLE deterrent — Max: "stations are really really powerful" =
+    # FORMIDABLE deterrent — human: "stations are really really powerful" =
     # DEFENSE + DETERRENCE, not capture. These are read by
     # combat_service._resolve_port_combat to shred an attacker's drone swarm
     # and repel the assault decisively. Magnitudes are NO-CANON, deliberately
@@ -309,7 +309,7 @@ class Station(Base):
     # CLASS_6-11 tiers minted post-import — inherit the Class-5 (strongest
     # defined) profile: canon is silent above Class 5, and these are
     # hub/premium station types that warrant no less than the top
-    # canon-defined tier. Flagged NO-CANON pending orchestrator/Max ruling.
+    # canon-defined tier. Flagged NO-CANON pending orchestrator/human ruling.
     #
     # Used explicitly by the two station-creation sites
     # (nexus_generation_service, bang_import_service) — the Column
@@ -431,7 +431,6 @@ class Station(Base):
     # Relationships
     owner = relationship("Player", secondary=player_stations, back_populates="stations")
     sector = relationship("Sector", foreign_keys=[sector_uuid], back_populates="stations")
-    market = relationship("Market", back_populates="station", uselist=False, cascade="all, delete-orphan")
     region = relationship("Region", back_populates="stations")
     
     def __repr__(self):

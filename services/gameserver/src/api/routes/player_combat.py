@@ -117,7 +117,7 @@ def _execute_planet_assault(db: Session, player: Player, planet_id: UUID) -> dic
     # direct assault (only that morale<=0 marks a planet "vulnerable to
     # capture"). With canon silent on the assault×vulnerability interaction we
     # do NOT invent a morale-based capture path; we only settle the siege state
-    # so morale/isVulnerable are truthful. Flagged for Max — see return.
+    # so morale/isVulnerable are truthful. Flagged for human — see return.
     if planet.under_siege:
         try:
             PlanetaryService(db).check_and_update_siege(planet_id)

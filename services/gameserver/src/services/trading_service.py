@@ -150,13 +150,16 @@ def compute_player_price_multiplier(db: Session, player, station) -> float:
 # ----------------------------------------------------------------------
 # Region tariff + station lever (ADR-0062 E-D3 tail factors, E-F1/E-F2)
 # ----------------------------------------------------------------------
-# These complete the canonical 6-factor stack. E-D3 order:
-#   base x (rep layers) x (1+region_tax) x (1+region_tariff) x (1+station_lever)
-# The rep layers + first-login are compute_player_price_multiplier (above);
-# rank discount + the region/station tax are applied in routes/trading.py.
-# These two helpers add the region COMMERCE tariff and the station MARKETING
-# lever. Both express "what the player PAYS" (> 1.0 = worse deal); the routes
-# divide them back out on a SELL, exactly like the rep multiplier.
+# These complete the canonical unit-price stack (rank, rep x2, tariff, lever
+# -- see market-pricing.md's "Player-facing price modifiers"). Region TAX is
+# NOT part of this stack -- it's a flat treasury levy applied to the
+# transaction TOTAL, after the unit price is clamped to the commodity band
+# (routes/trading.py's compute_buy_totals/compute_sell_totals). The rep
+# layers + first-login are compute_player_price_multiplier (above); rank
+# discount is applied in routes/trading.py alongside these two helpers, which
+# add the region COMMERCE tariff and the station MARKETING lever. Both
+# express "what the player PAYS" (> 1.0 = worse deal); the routes divide them
+# back out on a SELL, exactly like the rep multiplier.
 #
 # STORAGE (no migration — alembic head is stranded): the tariff lives in the
 # Region's existing trade_bonuses JSONB under the "tariff_rate" key; the lever
@@ -231,6 +234,181 @@ def compute_region_tariff_multiplier(db: Session, station) -> Tuple[float, float
     except Exception:
         logger.warning("region tariff lookup failed; using neutral", exc_info=True)
         return 1.0, 0.0
+
+
+# ----------------------------------------------------------------------
+# Region tax (WO-BUILD-REGION-TAX-RATE-WIRING / WO-BUILD-REGION-TAX-REVENUE-
+# SHARE-PAYOUT) — distinct from the region TARIFF above and from
+# Station.tax_rate. Region.tax_rate (CHECK 0.05-0.25, DECIMAL(5,4)) is a
+# governance-set levy on every taxable trade IN the region, independent of
+# whether the traded station itself has an owner (station tax is an owner
+# lever that goes dark for unowned stations; region tax does not — it is
+# the region GOVERNMENT's levy, not a station owner's). Unlike the station
+# tax's 40/30/30 defense/owner/operating split (port_ownership_service.
+# realize_port_revenue), region tax has a simpler two-way split: 50% to the
+# region OWNER (DECISIONS.md region-tax-revenue-share, ratified 2026-08-07,
+# first-cut default subject to a future balance-tuning pass) via the
+# Central Nexus Bank / wallet, 50% into Region.treasury_balance. This is
+# DISTINCT from regional_governance_service.compute_treasury_adjustment /
+# POLICY_TREASURY_KEY, which is a manual, policy-driven treasury spend —
+# region tax collection is automatic and per-trade.
+REGION_TAX_OWNER_SHARE = 0.5
+
+
+def compute_region_tax_rate(station) -> float:
+    """Effective Region.tax_rate for `station`'s region (0.0 if the station
+    sits outside any region). Applies regardless of station ownership —
+    region tax is a governance levy, not an owner lever."""
+    region = getattr(station, "region", None)
+    if region is None:
+        return 0.0
+    return float(region.tax_rate or 0.0)
+
+
+def realize_region_tax(db: Session, station, tax_amount: int) -> Dict[str, Any]:
+    """Realize a collected Region.tax_rate charge: credit Region.treasury_
+    balance with a RegionalTreasuryEntry ledger row (ADR-0059 N-I4,
+    CAUSE_TAX_COLLECTION), and pay the ratified REGION_TAX_OWNER_SHARE cut
+    to Region.owner_id's Player wallet (online) or Central Nexus Bank
+    (offline) via central_bank_service.credit_wallet_or_bank.
+
+    No-op (all-zero result) if tax_amount <= 0 or the station has no region.
+    An unclaimed region (owner_id is None) — or any failure resolving/
+    paying the owner (no linked Player row, DB hiccup) — routes the FULL
+    tax_amount to the treasury instead of erroring; the owner cut is folded
+    in, never dropped. No commit; caller owns the transaction (mirrors
+    realize_port_revenue)."""
+    result: Dict[str, Any] = {
+        "region_tax": 0, "owner_share": 0, "treasury_share": 0,
+        "owner_payout_dest": None,
+    }
+    if tax_amount <= 0:
+        return result
+    region = getattr(station, "region", None)
+    if region is None and getattr(station, "region_id", None) is not None:
+        from src.models.region import Region
+        region = db.query(Region).filter(Region.id == station.region_id).first()
+    if region is None:
+        return result
+
+    from src.models.region import Region, RegionalTreasuryEntry
+    region = (
+        db.query(Region)
+        .filter(Region.id == region.id)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
+    if region is None:
+        return result
+
+    owner_share = int(tax_amount * REGION_TAX_OWNER_SHARE) if region.owner_id is not None else 0
+    treasury_share = tax_amount - owner_share
+
+    owner_payout_dest = None
+    if owner_share > 0:
+        try:
+            from src.models.user import User
+            owner_user = db.query(User).filter(User.id == region.owner_id).first()
+            owner_player = getattr(owner_user, "player", None) if owner_user else None
+            if owner_player is None:
+                raise ValueError("region owner has no linked Player row")
+            from src.services import central_bank_service
+            owner_payout_dest = central_bank_service.credit_wallet_or_bank(
+                db, owner_player, owner_share,
+                entry_type="region_tax_revenue_share",
+                source=f"region:{region.id}",
+                notes=f"{int(REGION_TAX_OWNER_SHARE * 100)}% region-tax revenue share (station {station.id})",
+            )
+        except Exception:
+            logger.warning(
+                "region tax owner payout failed; folding owner share into treasury",
+                exc_info=True,
+            )
+            treasury_share += owner_share
+            owner_share = 0
+
+    before = int(region.treasury_balance or 0)
+    after = before + treasury_share
+    region.treasury_balance = after
+    db.add(RegionalTreasuryEntry(
+        region_id=region.id,
+        before_balance=before,
+        after_balance=after,
+        delta=treasury_share,
+        cause_type=RegionalTreasuryEntry.CAUSE_TAX_COLLECTION,
+        cause_id=station.id,
+        reason=f"Region tax collected via station {station.id}",
+    ))
+
+    result.update(
+        region_tax=tax_amount,
+        owner_share=owner_share,
+        treasury_share=treasury_share,
+        owner_payout_dest=owner_payout_dest,
+    )
+    return result
+
+
+def fallback_credit_region_tax(db: Session, station, tax_amount: int) -> int:
+    """Defensive fallback when ``realize_region_tax`` raises mid-trade.
+
+    Credits ``Region.treasury_balance`` only — NEVER ``Station.treasury_balance``
+    (the station owner's private treasury). Misrouting region tax there was
+    WO-FIX-REGION-TAX-FALLBACK-MISROUTES-STATION-TREASURY.
+
+    Returns the amount credited (0 if ``tax_amount <= 0`` or no region can be
+    resolved). Prefers dropping the credits over crediting the station owner.
+    No commit; caller owns the transaction. Best-effort ledger row.
+    """
+    if tax_amount <= 0:
+        return 0
+    region = getattr(station, "region", None)
+    if region is None and getattr(station, "region_id", None) is not None:
+        from src.models.region import Region
+        try:
+            region = db.query(Region).filter(Region.id == station.region_id).first()
+        except Exception:
+            logger.warning(
+                "region tax fallback: region lookup failed for station %s; "
+                "dropping %s rather than crediting station treasury",
+                getattr(station, "id", None),
+                tax_amount,
+                exc_info=True,
+            )
+            return 0
+    if region is None:
+        logger.warning(
+            "region tax fallback: no region on station %s; dropping %s "
+            "rather than crediting station treasury",
+            getattr(station, "id", None),
+            tax_amount,
+        )
+        return 0
+
+    before = int(region.treasury_balance or 0)
+    after = before + tax_amount
+    region.treasury_balance = after
+    try:
+        from src.models.region import RegionalTreasuryEntry
+        db.add(RegionalTreasuryEntry(
+            region_id=region.id,
+            before_balance=before,
+            after_balance=after,
+            delta=tax_amount,
+            cause_type=RegionalTreasuryEntry.CAUSE_TAX_COLLECTION,
+            cause_id=getattr(station, "id", None),
+            reason=(
+                f"Region tax fallback (realize_region_tax failed) "
+                f"via station {getattr(station, 'id', None)}"
+            ),
+        ))
+    except Exception:
+        logger.warning(
+            "region tax fallback ledger row failed; balance still credited",
+            exc_info=True,
+        )
+    return tax_amount
 
 
 def _buyer_is_station_owner_or_team(db: Session, player, station) -> bool:
@@ -374,7 +552,7 @@ COMMODITY_PRICE_RANGES: Dict[str, Dict[str, int]] = get_commodity_price_ranges()
 def clamp_to_commodity_band(commodity_name: str, price: int) -> int:
     """Clamp a final per-unit price to the commodity's hard [min, max] band.
 
-    Canon (trading.md#price-stacking-order, blessed by Max 2026-06-14): the
+    Canon (trading.md#price-stacking-order, blessed by human 2026-06-14): the
     commodity-specific [min, max] range is the ABSOLUTE floor/ceiling on the
     final per-unit price — it is the LAST step, applied AFTER every multiplicative
     modifier (faction reputation × personal reputation × military rank ×

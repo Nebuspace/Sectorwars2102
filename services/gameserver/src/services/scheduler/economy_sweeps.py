@@ -33,6 +33,8 @@ from src.services.scheduler._common import (
     _BOUNTY_ACCRUAL_LOCK_KEY,
     _STOLEN_SHIP_REP_PENALTY_LOCK_KEY,
     _TRANSFER_CLAIM_AUTOCOMPLETE_LOCK_KEY,
+    _PIN_RESET_APPLY_LOCK_KEY,
+    _SALVAGE_BREAK_APPLY_LOCK_KEY,
     _PORT_OPERATING_COSTS_LOCK_KEY,
     _STATION_RECOVERY_LOCK_KEY,
     _RECLAIM_FLAG_LOCK_KEY,
@@ -243,7 +245,7 @@ def _run_idle_income_sweep_sync() -> Dict[str, int]:
 
 def _run_daily_stipend_sweep_sync() -> Dict[str, int]:
     """Credit each ACTIVE-TODAY player their PER-FACTION guild stipend, once per
-    UTC day (Max's final per-faction ruling 2026-06-20).
+    UTC day (human's final per-faction ruling 2026-06-20).
 
     The reputation stipend used to ride the weekly economy faucet (paid to every
     active player on the citizen-perk cadence). It is now DAILY and gated on the
@@ -740,6 +742,188 @@ def _run_transfer_claim_autocomplete_sweep_sync() -> Dict[str, int]:
         db.close()
 
 
+def _run_pin_reset_apply_sweep_sync() -> Dict[str, int]:
+    """Apply any pending hatch-pin reset whose 1h delay has elapsed
+    (ship-registry.md "Hatch pin lock" "Pin recovery"). Own SessionLocal,
+    xact-level advisory lock (skip on contention), a candidate query, then a
+    per-row with_for_update re-read + per-row commit + per-row try/except --
+    same discipline as ``_run_transfer_claim_autocomplete_sweep_sync``
+    directly above.
+
+    IDEMPOTENCY: the candidate gate is the idempotency anchor --
+    ``Ship.pending_hatch_pin_effective_at IS NOT NULL``.
+    ``_apply_pending_pin_reset`` clears that column, so an applied reset
+    drops out of the candidate set and can never be re-applied by a
+    duplicate wake or restart. The per-row re-read re-confirms both the
+    reset is still pending AND the deadline has still passed (a concurrent
+    ``set_pin`` call doesn't clear the pending columns, so no race there
+    beyond the standard row lock).
+
+    Returns {"resets": n_applied}."""
+    from src.core.database import SessionLocal
+    from src.models.ship import Ship
+    from src.services.ship_registry_service import _apply_pending_pin_reset
+
+    result = {"resets": 0}
+
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _PIN_RESET_APPLY_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return result
+        db.commit()
+
+        now = datetime.now(UTC)
+
+        candidate_ids = (
+            db.query(Ship.id)
+            .filter(
+                Ship.pending_hatch_pin_effective_at.isnot(None),
+                Ship.pending_hatch_pin_effective_at <= now,
+            )
+            .all()
+        )
+
+        for (ship_id,) in candidate_ids:
+            try:
+                ship = (
+                    db.query(Ship)
+                    .filter(Ship.id == ship_id)
+                    .with_for_update()
+                    .first()
+                )
+                still_pending_and_due = (
+                    ship is not None
+                    and ship.pending_hatch_pin_effective_at is not None
+                    and ship.pending_hatch_pin_effective_at <= now
+                )
+                if not still_pending_and_due:
+                    db.rollback()
+                    continue
+
+                _apply_pending_pin_reset(ship)
+                result["resets"] += 1
+                db.commit()
+            except Exception:
+                logger.exception(
+                    "Pin-reset apply sweep: apply failed for ship %s", ship_id,
+                )
+                db.rollback()
+
+        if result["resets"]:
+            logger.info(
+                "Pin-reset apply sweep: applied %d pending reset(s)",
+                result["resets"],
+            )
+        return result
+    except Exception:
+        logger.exception("Pin-reset apply sweep failed")
+        db.rollback()
+        return result
+    finally:
+        db.close()
+
+
+def _run_salvage_break_apply_sweep_sync() -> Dict[str, int]:
+    """Complete any in-progress salvage break whose duration has elapsed
+    (ship-registry.md "Salvage break" step 6 "Salvager disconnect": "a
+    watchdog at salvage_break_started_at + salvage_break_duration
+    auto-clears the lock at duration expiry", step 8: "the ship is now
+    unlocked ... the lock clears"). Own SessionLocal, xact-level advisory
+    lock (skip on contention), a candidate query, then a per-row
+    with_for_update re-read + per-row commit + per-row try/except -- same
+    discipline as ``_run_pin_reset_apply_sweep_sync`` directly above.
+
+    Duration is per-ship-type (``SALVAGE_BREAK_DURATIONS``), not a stored
+    column, so the due-check happens in Python after the per-row lock
+    rather than in the candidate SQL filter -- the candidate filter only
+    narrows to "some break is in progress" (a small set).
+
+    IDEMPOTENCY: the candidate gate is the idempotency anchor --
+    ``Ship.salvage_break_in_progress_by_id IS NOT NULL``.
+    ``_complete_salvage_break`` clears that column, so a completed break
+    drops out of the candidate set and can never be re-applied by a
+    duplicate wake or restart. This same idempotent re-check is also what
+    covers the "stuck lock" backstop case (ADR-0049 SK14's 2x-duration
+    note): a break the sweep missed on its due tick is still found and
+    completed, correctly, on the next tick -- no separate forced-clear
+    path needed.
+
+    Returns {"breaks": n_completed}."""
+    from src.core.database import SessionLocal
+    from src.models.ship import Ship
+    from src.services.ship_registry_service import (
+        SALVAGE_BREAK_DEFAULT_DURATION,
+        SALVAGE_BREAK_DURATIONS,
+        _complete_salvage_break,
+    )
+
+    result = {"breaks": 0}
+
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _SALVAGE_BREAK_APPLY_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return result
+        db.commit()
+
+        now = datetime.now(UTC)
+
+        candidate_ids = (
+            db.query(Ship.id)
+            .filter(Ship.salvage_break_in_progress_by_id.isnot(None))
+            .all()
+        )
+
+        for (ship_id,) in candidate_ids:
+            try:
+                ship = (
+                    db.query(Ship)
+                    .filter(Ship.id == ship_id)
+                    .with_for_update()
+                    .first()
+                )
+                if ship is None or ship.salvage_break_in_progress_by_id is None:
+                    db.rollback()
+                    continue
+                duration = SALVAGE_BREAK_DURATIONS.get(ship.type, SALVAGE_BREAK_DEFAULT_DURATION)
+                due = (
+                    ship.salvage_break_started_at is not None
+                    and ship.salvage_break_started_at + duration <= now
+                )
+                if not due:
+                    db.rollback()
+                    continue
+
+                _complete_salvage_break(ship)
+                result["breaks"] += 1
+                db.commit()
+            except Exception:
+                logger.exception(
+                    "Salvage-break apply sweep: apply failed for ship %s", ship_id,
+                )
+                db.rollback()
+
+        if result["breaks"]:
+            logger.info(
+                "Salvage-break apply sweep: completed %d break(s)",
+                result["breaks"],
+            )
+        return result
+    except Exception:
+        logger.exception("Salvage-break apply sweep failed")
+        db.rollback()
+        return result
+    finally:
+        db.close()
+
+
 def _run_bounty_expire_sweep_sync() -> Dict[str, int]:
     """Auto-cancel + refund every player-placed bounty past its optional
     ``expires_at`` (bounty-and-reputation.md 📐 "auto-refund-minus-fee on
@@ -1172,6 +1356,71 @@ def _run_reclaim_flag_sweep_sync() -> Dict[str, int]:
         return result
     except Exception:
         logger.exception("Reclaim-flag sweep failed")
+        db.rollback()
+        return result
+    finally:
+        db.close()
+
+
+def _run_gc_lapse_sweep_sync() -> Dict[str, int]:
+    """ADR-0054 X-D3 -- flip ``players.is_galactic_citizen`` False once a GC
+    lapse window (``gc_lapsed_at``) has run 7+ wall-clock days with no
+    re-subscription. Mirrors ``_run_reclaim_flag_sweep_sync``'s discipline
+    (own SessionLocal, xact advisory lock claimed-then-released before the
+    write pass, single commit for the marker-only write).
+
+    ``gc_lapsed_at`` is the durable per-player anchor (paypal_service.
+    _handle_subscription_cancelled sets it; _activate_galactic_citizenship /
+    _handle_subscription_renewed clear it on re-subscription) so this sweep is
+    idempotent and restart-safe: a candidate row is one where
+    ``gc_lapsed_at IS NOT NULL AND gc_lapsed_at <= now() - 7d AND
+    is_galactic_citizen = TRUE``. Flipping the flag also clears
+    ``gc_lapsed_at`` (the lapse has now COMPLETED -- the standard 30-day
+    abandonment cascade takes over for foreign-region assets from here, per
+    the ADR's stated fallthrough; this sweep does not itself touch any asset
+    row) so a re-run never re-flips an already-lapsed player.
+
+    Returns {"lapsed": n_flipped}."""
+    from src.core.database import SessionLocal
+    from src.services.scheduler._common import _GC_LAPSE_LOCK_KEY, GC_LAPSE_DAYS
+
+    result = {"lapsed": 0}
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _GC_LAPSE_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return result
+        db.commit()
+
+        cutoff = datetime.now(UTC) - timedelta(days=GC_LAPSE_DAYS)
+        rows = db.execute(
+            text(
+                """
+                UPDATE players
+                SET is_galactic_citizen = FALSE, gc_lapsed_at = NULL
+                WHERE gc_lapsed_at IS NOT NULL
+                  AND gc_lapsed_at <= :cutoff
+                  AND is_galactic_citizen = TRUE
+                RETURNING id
+                """
+            ),
+            {"cutoff": cutoff},
+        ).fetchall()
+        db.commit()
+        result["lapsed"] = len(rows)
+
+        if result["lapsed"]:
+            logger.info(
+                "GC-lapse sweep: flipped %d player(s) past the 7-day liquidation "
+                "window to non-citizen",
+                result["lapsed"],
+            )
+        return result
+    except Exception:
+        logger.exception("GC-lapse sweep failed")
         db.rollback()
         return result
     finally:

@@ -20,7 +20,7 @@ docs are explicitly Design-only):
     Sentinel-Captains on Sentinel Interdictors). Pirate enforcers are
     held back for a later slice; lords are held back because the BANG
     snapshot's 13 lords contradict canon ADR-0047's "Stronghold-tier
-    only, 1-2 per region" (conflict flagged to Max).
+    only, 1-2 per region" (conflict flagged to human).
   - Static NPCs: no movement, no schedules, no NPC-initiated combat,
     no respawn (Loop B), no NPCDeathLog, no bounty hooks. The one
     reputation hook in v1 lives in combat_service.attack_npc_ship
@@ -505,10 +505,12 @@ def _ensure_federation_faction(db: Session) -> Faction:
     are the enforcement arm of the existing **Terran Federation** — and the
     Marshal-kill reputation hook (−250, police-forces.md) needs this row to
     exist. This ensure path is the runtime safety net: the canonical roster
-    seeder (auth/admin.py create_default_factions) now seeds the full 7-row
-    roster with canon names ("Terran Federation"), but is not yet wired into
-    app startup (FLAGGED — see WO-E report). Until it is, this get-or-create
-    guarantees at least the Federation row exists when police spawn. An
+    seeder (auth/admin.py create_default_factions, 9-row roster) IS wired
+    into app startup (WO-E, main.py's lifespan handler — verified
+    2026-08-08, "not yet wired" here was stale). Kept as a defense-in-depth
+    guarantee at least the Federation row exists when police spawn even if
+    startup seeding is ever skipped (e.g. a caught startup exception, per
+    main.py's own "don't crash the server if admin creation fails"). An
     existing FEDERATION-typed row (however named) is left untouched.
 
     """

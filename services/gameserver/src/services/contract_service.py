@@ -482,7 +482,7 @@ def complete(
         # should never go negative, but the clamp costs nothing. Gated
         # `> 0` (matches abandon()'s own insurance_refund gate) so an
         # uninsured player-issued contract writes nothing. `escrow_amount`
-        # is deliberately LEFT UNTOUCHED (Max ruling, abandon()-parity --
+        # is deliberately LEFT UNTOUCHED (human ruling, abandon()-parity --
         # abandon()/the dispute-window sweep don't zero it either after
         # their own full-escrow refunds; a uniform-zero-terminal-escrow
         # invariant is a separate, un-invented follow-up). Only
@@ -614,10 +614,10 @@ def abandon(
     # [NO-CANON, superseding]: contracts.md:75's "acceptor walks -> back
     # to POSTED" language is this kernel's bulk_procurement canon text,
     # but it describes the RETIRED contract_bulk.py deliver()-path model
-    # (Max chose the Locker path instead, see this WO's own design
+    # (human chose the Locker path instead, see this WO's own design
     # brief) -- a re-postable POSTED contract can't simultaneously have
     # its Locker converted away to CLAIMABLE (acceptor keeps the
-    # deposited goods, per Max's own two-mechanics-decoupling ruling), so
+    # deposited goods, per human's own two-mechanics-decoupling ruling), so
     # the Locker-path abandon() below behaves like an early-EXPIRE
     # instead, not a literal "returns to posted" -- flagged here for the
     # canon amendment draft, not silently decided.
@@ -720,7 +720,7 @@ def _is_lock_timeout(exc: OperationalError) -> bool:
 
 
 def _compute_bulk_walkaway_penalty(payment: Decimal, quantity: int, stored_units: int) -> Decimal:
-    """WO-CONTRACT-4-BULK (Max-ruled formula (a)): a bulk_procurement
+    """WO-CONTRACT-4-BULK (human-ruled formula (a)): a bulk_procurement
     contract's walk-away penalty (deadline-lapse OR explicit abandon) is
     `payment x (remaining_units / total_units)`, computed at the moment
     of walk-away from the LOCKER's actual fill (`_stored_units`, storage_
@@ -1129,10 +1129,10 @@ def sweep_expired_accepted_contracts(
     matching the escrow table's "insured acceptor: insurer pays penalty"
     row for a deadline-lapse expiry.
 
-    [SUPERSEDED by WO-CONTRACT-2b-HOLD-ESCROW, Max R (option C)] issuer
+    [SUPERSEDED by WO-CONTRACT-2b-HOLD-ESCROW, human R (option C)] issuer
     escrow disposition on an ACCEPTOR-caused failure was previously an
     immediate refund at THIS sweep (see git history for the WO-1a-CORE /
-    WO-CONTRACT-1b-CLAIM-SAFETY -era reasoning) -- Max ruled that hollow,
+    WO-CONTRACT-1b-CLAIM-SAFETY -era reasoning) -- human ruled that hollow,
     since by the time a dispute could be filed (contracts.md:390, within
     48 game-hours of the failure) the escrow was already gone, so `file_
     dispute`/`resolve_dispute`'s own issuer-funded payouts could only ever
@@ -1490,7 +1490,7 @@ def _process_one_sweep_expired_accepted_contracts_candidate(db: Session, candida
 
 
 def sweep_expired_dispute_window(db: Session, now: Optional[datetime] = None) -> Dict[str, int]:
-    """WO-CONTRACT-2b-HOLD-ESCROW (Max R, option C) -- the DEFERRED half of
+    """WO-CONTRACT-2b-HOLD-ESCROW (human R, option C) -- the DEFERRED half of
     the held-escrow design `sweep_expired_accepted_contracts` starts:
     once an EXPIRED contract's `DISPUTE_FILING_WINDOW_HOURS` (48h,
     contract_dispute.py) has strictly elapsed with NO dispute filed, its

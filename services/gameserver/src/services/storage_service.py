@@ -43,7 +43,7 @@ _load_player(for_update=True) -- reused, not reimplemented) -> Ship
 lock cannot participate in an AB-BA deadlock against this module's own
 Locker-then-Player ordering.
 
-RENT (WO-STORE-FEE-ACCRUAL, D16/D17/D18 -- Max's ruling, delegated):
+RENT (WO-STORE-FEE-ACCRUAL, D16/D17/D18 -- human's ruling, delegated):
 settle_fee() charges flat rent (locker.rent_rate cr/unit/day, wall-clock)
 via a continuous-accrue-and-round-once ledger (D18, see settle_fee's own
 docstring) so no salami-slicing and no per-trip minimum-tax. deposit_
@@ -520,7 +520,7 @@ def settle_fee(
     `stored_units_override`: normally this reads the locker's CURRENT
     live stored-units count (as of this call). deposit_cargo's
     COMPLETING branch passes the PRE-final-deposit count explicitly here
-    instead (D17, Max's ruling) -- see deposit_cargo's own docstring for
+    instead (D17, human's ruling) -- see deposit_cargo's own docstring for
     why: by the time that branch settles, the final deposit row already
     exists, so the live count would over-count units that weren't
     actually sitting in the locker for the elapsed period being billed.
@@ -534,7 +534,7 @@ def settle_fee(
     economy construct, so contract_service.py -- not warp_gate_service.py
     -- is the directly relevant precedent to match.
 
-    D18 (Max's ruling) -- CONTINUOUS-ACCRUE-AND-ROUND-ONCE, closing the
+    D18 (human's ruling) -- CONTINUOUS-ACCRUE-AND-ROUND-ONCE, closing the
     salami-slicing gap (many micro-settlements each individually
     rounding to 0cr) WITHOUT per-trip-taxing a legitimate multi-trip
     fulfillment (charging >=1cr on every trip regardless of how little
@@ -785,7 +785,7 @@ def deposit_cargo(
     the moment the locker's accumulated deposits reach the contract's
     required quantity. FLUSH-ONLY; the route owns the commit.
 
-    D17 (Max's ruling, PAYOUT-then-settle) -- when THIS deposit is the
+    D17 (human's ruling, PAYOUT-then-settle) -- when THIS deposit is the
     one that completes the contract, rent is settled AFTER contract_
     service.complete()'s payout credits the player, not before. Settling
     first would floor the final bill to near-zero at the player's
@@ -912,7 +912,7 @@ def deposit_cargo(
         locker.status = StorageLockerStatus.RELEASED
         completed = True
 
-        # D17 (Max's ruling): settle the FINAL rent period AFTER the
+        # D17 (human's ruling): settle the FINAL rent period AFTER the
         # completion payout above has already credited the player, not
         # before -- see this function's own docstring. stored_units_
         # override=old_stored_units: the units THIS deposit just added
@@ -1011,7 +1011,7 @@ def retrieve_claimable_cargo(
     """WO-STORE-EXPIRY-CLAIMABLE: retrieves cargo from a CLAIMABLE locker
     (see sweep_expired_lockers) back onto the player's current ship.
 
-    CAPACITY (Max's brief flagged this as the open design call --
+    CAPACITY (human's brief flagged this as the open design call --
     PARTIAL RETRIEVE, not reject-if-over): `quantity` is OPTIONAL. Omit
     it to take as much as fits in one trip, up to everything stored; a
     ship too small to take it all in a single trip retrieves the rest on

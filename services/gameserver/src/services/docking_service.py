@@ -682,12 +682,17 @@ def acquire(db: Session, station: Station, player: Player, ship_id: Optional[UUI
             ).delete(synchronize_session=False)
             # WO-DOCK-500 Leg 2 (idempotent dock): a player holds at most ONE
             # occupancy (player_id is UNIQUE). Clear any pre-existing / orphan
-            # row galaxy-wide before granting — otherwise a stale slip (e.g. an
-            # undock-by-warp/quantum/hangar that failed to release it) collides
-            # on INSERT and 500s the dock. This is an immediate SQL DELETE (like
-            # the queue purge above), so it runs before the INSERT below.
+            # TRANSIENT row galaxy-wide before granting — otherwise a stale
+            # slip (e.g. an undock-by-warp/quantum/hangar that failed to
+            # release it) collides on INSERT and 500s the dock. This is an
+            # immediate SQL DELETE (like the queue purge above), so it runs
+            # before the INSERT below. Scoped to slip_class='transient' —
+            # a paid long-term mooring slip (WO-FIX-UNDOCK-DELETES-PAID-
+            # MOORING-SLIP) must never be swept by this defensive clear; it
+            # is released only via its own explicit release_long_term() path.
             db.query(DockingSlipOccupancy).filter(
-                DockingSlipOccupancy.player_id == player.id
+                DockingSlipOccupancy.player_id == player.id,
+                DockingSlipOccupancy.slip_class == "transient",
             ).delete(synchronize_session=False)
             occupancy = DockingSlipOccupancy(
                 station_id=station.id,
@@ -741,11 +746,18 @@ def acquire(db: Session, station: Station, player: Player, ship_id: Optional[UUI
 
 
 def release(db: Session, station: Optional[Station], player: Player) -> bool:
-    """Release the player's slip, if any. Tolerates a missing row silently
-    (players docked before this feature never held one). Does NOT commit.
+    """Release the player's TRANSIENT slip, if any. Tolerates a missing row
+    silently (players docked before this feature never held one). Does NOT
+    commit.
+
+    Scoped to slip_class='transient' (WO-FIX-UNDOCK-DELETES-PAID-MOORING-SLIP):
+    a paid long-term mooring slip must persist across a normal dock/undock
+    cycle at any station — it is released only via the dedicated
+    release_long_term() path.
     """
     occupancy = db.query(DockingSlipOccupancy).filter(
-        DockingSlipOccupancy.player_id == player.id
+        DockingSlipOccupancy.player_id == player.id,
+        DockingSlipOccupancy.slip_class == "transient",
     ).first()
     if occupancy is None:
         return False
@@ -807,18 +819,6 @@ def acquire_for_npc(
         slip_class=DockingSlipOccupancy.SLIP_CLASS_TRANSIENT,
     ))
     db.flush()
-    return True
-
-
-def release_for_npc(db: Session, npc: NPCCharacter) -> bool:
-    """Release npc's slip, if any. Tolerates a missing row silently (never
-    acquired one, or already released). Does NOT commit."""
-    occupancy = db.query(DockingSlipOccupancy).filter(
-        DockingSlipOccupancy.npc_id == npc.id
-    ).first()
-    if occupancy is None:
-        return False
-    db.delete(occupancy)
     return True
 
 

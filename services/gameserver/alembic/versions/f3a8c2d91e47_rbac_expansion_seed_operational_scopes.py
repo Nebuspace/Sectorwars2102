@@ -1,7 +1,7 @@
 """RBAC expansion: seed 7 operational scopes to existing admins.
 
 Additive follow-on to Phase A1 (e2a7f3c8b5d1).  Every User with
-``is_admin = true`` receives the 7 Max-ruled operational scopes added
+``is_admin = true`` receives the 7 human-ruled operational scopes added
 in the 19→26 catalog expansion.  Idempotent: skip scopes already held
 (active grant with revoked_at IS NULL).
 

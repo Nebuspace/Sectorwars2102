@@ -23,6 +23,7 @@ from src.models.player import Player
 from src.models.team import Team
 from src.models.treasury_transaction import TreasuryTransaction
 from src.models.sector import Sector
+from src.services.port_friendliness_service import check_friendly_port
 
 if TYPE_CHECKING:
     # Forward-ref-only imports for type annotations — resolved at runtime via
@@ -124,6 +125,25 @@ class FleetService:
         )
         speeds = [m.ship.current_speed for m in fleet.members if m.ship]
         fleet.average_speed = sum(speeds) / len(speeds) if speeds else 0.0
+
+        # Derive fleet.sector_id from the flagship's live ship position
+        # (fleet-tactics.md:71,81 — the flagship is the fleet's single
+        # position anchor; fleets have no travel-as-a-unit mechanic of their
+        # own). Ship.sector_id is the Integer sector_number; Fleet.sector_id
+        # is the Sector UUID — same resolution move_fleet used before it was
+        # retired as dead/superseded code. Best-effort: no flagship or an
+        # unresolvable sector leaves the prior value untouched rather than
+        # clobbering a known-good position with an unknown one.
+        flagship = next(
+            (m for m in fleet.members if (m.role or "") == FleetRole.FLAGSHIP.value and m.ship),
+            None,
+        )
+        if flagship is not None:
+            sector = self.db.query(Sector).filter(
+                Sector.sector_id == flagship.ship.sector_id
+            ).first()
+            if sector is not None:
+                fleet.sector_id = sector.id
 
     def _compute_coordination_bonus(self, fleet: Fleet) -> float:
         """
@@ -447,32 +467,6 @@ class FleetService:
 
         return fleet
 
-    def move_fleet(self, fleet_id: UUID, sector_id: UUID) -> Fleet:
-        """Move an entire fleet to a new sector."""
-        fleet = self.db.query(Fleet).filter(Fleet.id == fleet_id).first()
-        if not fleet:
-            raise ValueError(f"Fleet {fleet_id} not found")
-
-        if fleet.status == FleetStatus.IN_BATTLE.value:
-            raise ValueError("Cannot move fleet during battle")
-
-        # Validate sector
-        sector = self.db.query(Sector).filter(Sector.id == sector_id).first()
-        if not sector:
-            raise ValueError(f"Sector {sector_id} not found")
-
-        # Move all member ships — Ship.sector_id is an Integer (sector_number)
-        for member in fleet.members:
-            if member.ship:
-                member.ship.sector_id = sector.sector_id
-
-        fleet.sector_id = sector_id
-        self.db.commit()
-        self.db.refresh(fleet)
-
-        logger.info(f"Moved fleet {fleet_id} to sector {sector_id}")
-        return fleet
-
     def disband_fleet(self, fleet_id: UUID) -> bool:
         """Disband a fleet."""
         # Lock the fleet row before checking status (WO-FLEET-ROUND-INTEGRITY
@@ -507,7 +501,7 @@ class FleetService:
     # is docked at a friendly station, at a rate proportional to station class."
     # It is explicitly marked 📐 design-only and gives NO credit cost and NO
     # per-class numbers. The values below are a SENSIBLE KERNEL, not canon, and
-    # must be reconciled with a Max ruling (see report → DECISIONS Pending
+    # must be reconciled with a human ruling (see report → DECISIONS Pending
     # "fleet-station-resupply cost+rate"). They are intentionally named so a
     # future canon swap is a one-line change.
     SUPPLY_MAX = 100                      # Fleet.supply_level upper bound (model: 0-100)
@@ -601,10 +595,7 @@ class FleetService:
         if not player:
             raise ValueError(f"Player {player_id} not found")
 
-        # The fleet is "docked" when its paying member is docked at a station
-        # that sits in the fleet's sector. Fleet.sector_id is a Station/Sector
-        # UUID; Station.sector_id is the integer sector number, so we resolve
-        # the docked station and verify it is the fleet's location.
+        # The fleet is "docked" when its paying member is docked at a station.
         if not player.is_docked or player.current_port_id is None:
             raise ValueError("You must be docked at a station to resupply the fleet")
 
@@ -615,17 +606,29 @@ class FleetService:
         if not station:
             raise ValueError("Docked station not found")
 
-        # Verify the fleet is at this dock. The fleet tracks a Sector UUID
-        # (Fleet.sector_id → sectors.id); the station carries that same UUID in
-        # sector_uuid. If the fleet has no sector recorded we fall back to the
-        # player's integer sector vs the station's integer sector_id.
-        fleet_at_station = False
-        if fleet.sector_id is not None and station.sector_uuid is not None:
-            fleet_at_station = fleet.sector_id == station.sector_uuid
-        else:
-            fleet_at_station = player.current_sector_id == station.sector_id
-        if not fleet_at_station:
+        # Verify the fleet is at this dock. Deliberately checks the paying
+        # player's own live position (already read fresh above, under lock)
+        # rather than Fleet.sector_id: that column is a best-effort display
+        # value derived from the flagship on roster-change events (see
+        # _recalculate_fleet_stats) and can go stale between events, which
+        # this credit-charging gate should never trust.
+        if player.current_sector_id != station.sector_id:
             raise ValueError("The fleet is not docked at your station")
+
+        # Friendly-port gate (fleet-tactics.md:63 — resupply requires a
+        # friendly station). Reuses the exact same reputation convention as
+        # ship_upgrades.check_friendly_port (NEUTRAL+ standing with the
+        # station's controlling faction; a faction-less/unaffiliated station
+        # is always friendly — insurance-factionless-port-gate, reused here
+        # unmodified). Shared via port_friendliness_service rather than
+        # importing ship_upgrades directly: that module lives in api/routes,
+        # and a services-layer file importing FROM a routes file would be a
+        # backwards (routes -> services -> routes) dependency.
+        friendly, unfriendly_reason = check_friendly_port(self.db, player_id, station)
+        if not friendly:
+            raise ValueError(
+                f"Cannot resupply the fleet at a hostile station: {unfriendly_reason}"
+            )
 
         current_supply = fleet.supply_level if fleet.supply_level is not None else self.SUPPLY_MAX
 
@@ -823,7 +826,7 @@ class FleetService:
         combat JSONB, modified by the firing fleet's formation/supply
         multiplier and the outer coordination bonus (ADR-0061 S-I3). Morale
         was removed from the damage stack (WO-BS, reverts WO-AS — combat-morale
-        coupling retired per Max). Ships whose hull drops to 0 are destroyed.
+        coupling retired per human). Ships whose hull drops to 0 are destroyed.
         Ships below 30% hull may retreat.
 
         Returns a dict with round results including damage dealt,
@@ -1054,7 +1057,7 @@ class FleetService:
         # FULLY INERT (WO-BS2, reverts WO-AS): the per-round supply-driven morale
         # decrement was removed (WO-BS), and as of WO-BS2 EVERY remaining combat
         # morale write/read is gone too — the flagship -30, the post-battle -20,
-        # and the < 20 morale-collapse battle-end check. Max ruled Fleet.morale
+        # and the < 20 morale-collapse battle-end check. human ruled Fleet.morale
         # has NO gameplay value at all: it participates in neither combat DAMAGE
         # nor battle DURATION. The combat path now writes/reads Fleet.morale
         # NOWHERE. The Fleet.morale COLUMN is kept (non-destructive, no migration)
@@ -1238,7 +1241,7 @@ class FleetService:
           - standard:   no modifier
 
         MORALE IS NOT APPLIED ANYWHERE in combat. The combat-morale coupling was
-        retired per Max (WO-BS, reverts WO-AS; ADR-0061 S-I3 morale clause
+        retired per human (WO-BS, reverts WO-AS; ADR-0061 S-I3 morale clause
         retired) — fleet combat damage no longer depends on Fleet.morale. The
         supply penalty below is a separate fleet-tactics.md factor and is
         unaffected by that removal.
@@ -1292,7 +1295,7 @@ class FleetService:
                   × scout_first_shot          # +10% if Scout role on round 1
                   × variance
         MORALE WAS REMOVED from this stack (WO-BS, reverts WO-AS; ADR-0061 S-I3
-        morale clause retired per Max): combat damage no longer depends on
+        morale clause retired per human): combat damage no longer depends on
         Fleet.morale, so damage is identical at morale 100 / 50 / 0.
         """
         attack_rating = self._get_ship_combat_stat(ship, "attack_rating", 1)
@@ -1302,7 +1305,7 @@ class FleetService:
         # Static coordination bonus (outer attack multiplier, ADR-0061 S-I3).
         # Read the cached value off the live fleet; clamp defensively. Morale is
         # NO LONGER a factor here (WO-BS, reverts WO-AS — combat-morale coupling
-        # retired per Max): damage is independent of Fleet.morale.
+        # retired per human): damage is independent of Fleet.morale.
         coordination_bonus = 0.0
         if fleet is not None:
             coordination_bonus = max(0.0, fleet.coordination_bonus or 0.0)
@@ -1341,7 +1344,7 @@ class FleetService:
             fleet = member.fleet
             # Formation (+ supply) defense multiplier ONLY. Morale was removed
             # from the defense math (WO-BS, reverts WO-AS — combat-morale
-            # coupling retired per Max): incoming damage no longer depends on
+            # coupling retired per human): incoming damage no longer depends on
             # Fleet.morale.
             defense_bonus = self._calculate_formation_bonus(fleet)["defense"]
             # Higher defense = less damage taken. Guard against a 0 multiplier so
@@ -1507,7 +1510,7 @@ class FleetService:
                 battle.defender_ships_retreated = (battle.defender_ships_retreated or 0) + 1
 
         # Flagship destruction: the former one-shot -30 to Fleet.morale on
-        # flagship loss is REMOVED (WO-BS2, reverts WO-AS). Max ruled Fleet.morale
+        # flagship loss is REMOVED (WO-BS2, reverts WO-AS). human ruled Fleet.morale
         # has NO gameplay value at all — neither combat DAMAGE (cut in WO-BS) nor
         # battle DURATION (this WO). Combat now writes Fleet.morale NOWHERE. The
         # Fleet.morale COLUMN is intentionally kept (non-destructive, no migration)
@@ -1549,28 +1552,13 @@ class FleetService:
 
                 ShipService(self.db).destroy_ship(ship, destroyer=destroyer, cause="combat")
 
-                # WO-FLEETWRECK: spawn the salvageable Cargo Wreck for a FLEET
-                # kill, giving fleet battles the SAME loot-drop the solo combat
-                # path already produces. Previously a fleet KIA stripped only the
-                # 10% emergency cargo to the escape pod (inside destroy_ship) and
-                # the rest of the hold silently vanished — real loot-loss vs the
-                # "single destruction code path" claim in fleet-coordination.md.
-                #
-                # Reuse CombatService._spawn_cargo_wreck — the single wreck-spawn
-                # kernel (canon: DATA_MODELS/cargo-wrecks.md). It is called AFTER
-                # destroy_ship, exactly like the solo path (_handle_ship_destruction),
-                # so it reads the dead hull's LEFTOVER cargo["contents"] — i.e. the
-                # unrescued remainder after the 10% pod transfer — and drops the
-                # FULL remaining cargo as one wreck (no partial-recovery roll; the
-                # recovery-band/damage_type decision is PARKED behind Max — see the
-                # deep-dive escalation, combat_service.py:3949). CombatService(db)
-                # construction is cheap (stores db + a ShipService) and it never
-                # commits — the wreck is staged via begin_nested + flush; the
-                # outer transaction (committed by remove_ship_from_fleet, below)
-                # persists it. The killing fleet's commander is attributed as the
-                # killing-blow pilot (ADR-0055 S-F2; honored only for COMBAT).
-                # Best-effort already: _spawn_cargo_wreck guards its own body, so
-                # a wreck hiccup can never abort the kill or its rewards.
+                # WO-FLEETWRECK / ADR-0093 item 40: spawn the salvageable Cargo
+                # Wreck for a FLEET kill — same loot-drop as solo combat.
+                # destroy_ship leaves the hold on the dead hull (wreck-only);
+                # _spawn_cargo_wreck reads that cargo["contents"] afterward.
+                # CombatService(db) is cheap and never commits — wreck staged
+                # via begin_nested + flush; outer txn persists it. Best-effort:
+                # wreck hiccup must never abort the kill or its rewards.
                 from src.services.combat_service import CombatService
                 CombatService(self.db)._spawn_cargo_wreck(
                     destroyed_ship=ship,
@@ -1882,7 +1870,7 @@ class FleetService:
 
         # Morale-collapse battle-end check REMOVED (WO-BS2, reverts WO-AS). The
         # former ``if (attacker.morale or 100) < 20 or (defender.morale ...) < 20``
-        # gated battle DURATION on Fleet.morale. Max ruled Fleet.morale fully
+        # gated battle DURATION on Fleet.morale. human ruled Fleet.morale fully
         # inert — it no longer participates in combat damage OR duration — so this
         # condition is gone. Termination is now guaranteed entirely by the
         # morale-independent end conditions below: (1) side annihilation handled
@@ -2153,7 +2141,7 @@ class FleetService:
         self._apply_battle_loot(battle, attacker, defender)
 
         # Update fleet statuses. The former post-battle -20 to Fleet.morale is
-        # REMOVED (WO-BS2, reverts WO-AS). Max ruled Fleet.morale fully inert —
+        # REMOVED (WO-BS2, reverts WO-AS). human ruled Fleet.morale fully inert —
         # it participates in neither combat damage nor battle duration — so the
         # combat path writes Fleet.morale NOWHERE. The column is kept
         # (non-destructive, no migration) but is cosmetic only (admin display).

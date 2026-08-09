@@ -516,44 +516,6 @@ async def get_rankings_leaderboard(
 
 
 # ------------------------------------------------------------------
-# Medal endpoints
-# ------------------------------------------------------------------
-
-@router.get("/medals")
-async def get_player_medals(
-    player: Player = Depends(get_current_player),
-    db: Session = Depends(get_db),
-):
-    """Get the current player's earned and available medals."""
-    from src.services.medal_service import MedalService
-    medal_service = MedalService(db)
-    result = medal_service.get_player_medals(player.id)
-    if not result.get("success"):
-        detail = result.get("error") or result.get("message") or "Failed to get medals"
-        raise HTTPException(
-            status_code=(
-                status.HTTP_404_NOT_FOUND
-                if detail == "Player not found"
-                else status.HTTP_400_BAD_REQUEST
-            ),
-            detail=detail,
-        )
-    # Project to a known-safe subset so any exception detail / stack-trace the
-    # service may have stuffed into the dict can't reach the client
-    # (py/stack-trace-exposure). list()/dict() wrappers break the data-flow
-    # tracking — CodeQL stops following taint across new-collection construction.
-    earned_raw = result.get("earned") or []
-    available_raw = result.get("available") or []
-    stats_raw = result.get("stats") or {}
-    return {
-        "success": True,
-        "earned": list(earned_raw),
-        "available": list(available_raw),
-        "stats": dict(stats_raw),
-    }
-
-
-# ------------------------------------------------------------------
 # Reputation endpoints
 # ------------------------------------------------------------------
 

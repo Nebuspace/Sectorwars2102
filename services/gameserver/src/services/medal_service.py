@@ -16,10 +16,12 @@ This module exposes:
 * :func:`check_and_award_combat_medals` — FROZEN dispatcher hook the combat lane
   calls: ``(db, killer_player, context)``. Defensive: never raises into combat.
 * Analogous trade / exploration dispatchers.
-* :class:`MedalService` — preserves the legacy method surface
-  (``get_player_medals``, ``check_combat_medals``, ``check_trading_medals``,
-  ``check_exploration_medals``) now backed by the relational tables, so existing
-  callers in ``combat_service``, ``trading.py`` and ``ranking.py`` keep working.
+* :class:`MedalService` — preserves the legacy ``get_player_medals`` method,
+  now backed by the relational tables, so existing callers in
+  ``ranking.py``/``medals.py`` keep working. The per-category legacy check
+  methods (``check_combat_medals``/``check_trading_medals``/
+  ``check_exploration_medals``) were retired — every real award path routes
+  through the module-level ``check_and_award_*`` dispatchers above instead.
 
 Legacy JSONB readers: this module no longer writes ``Player.settings['medals']``.
 Any code that *reads* that JSONB will simply see no medals; the only known
@@ -531,6 +533,58 @@ def _combat_victory_count(db: Session, player_id: uuid.UUID) -> int:
     )
 
 
+def _profitable_round_trips_count(db: Session, player_id: uuid.UUID) -> int:
+    """economic.spread_hunter: FIFO-match this player's BUY -> SELL pairs.
+
+    Ruled definition (DECISIONS.md `spread-hunter-round-trip-definition`):
+    one completed BUY MarketTransaction paired with a later completed SELL of
+    the same commodity, same player, a DIFFERENT station, sell unit_price >
+    buy unit_price per-unit. Counted once per pair -- no physical
+    return-to-origin required. Query-derived from the never-deleted
+    ``enhanced_market_transactions`` table, mirrors the
+    total_trades/regional_commodity_sales pattern above -- no durable counter
+    needed.
+
+    FIFO per commodity: walk this player's BUY/SELL rows in chronological
+    order; each SELL consumes the oldest still-unmatched BUY of the same
+    commodity at a different station with a lower unit price. Each BUY/SELL
+    row can be consumed by at most one pair.
+    """
+    from src.models.market_transaction import MarketTransaction, TransactionType
+
+    rows = (
+        db.query(
+            MarketTransaction.transaction_type,
+            MarketTransaction.commodity,
+            MarketTransaction.station_id,
+            MarketTransaction.unit_price,
+        )
+        .filter(
+            MarketTransaction.player_id == player_id,
+            MarketTransaction.transaction_type.in_([TransactionType.BUY, TransactionType.SELL]),
+            MarketTransaction.station_id.isnot(None),
+        )
+        .order_by(MarketTransaction.timestamp.asc())
+        .all()
+    )
+
+    unmatched_buys: Dict[str, List[Any]] = {}
+    round_trips = 0
+    for txn_type, commodity, station_id, unit_price in rows:
+        if txn_type == TransactionType.BUY:
+            unmatched_buys.setdefault(commodity, []).append((station_id, unit_price))
+        elif txn_type == TransactionType.SELL:
+            queue = unmatched_buys.get(commodity)
+            if not queue:
+                continue
+            for idx, (buy_station_id, buy_price) in enumerate(queue):
+                if buy_station_id != station_id and buy_price < unit_price:
+                    queue.pop(idx)
+                    round_trips += 1
+                    break
+    return round_trips
+
+
 def _evaluate_and_award(
     db: Session,
     player_id: uuid.UUID,
@@ -813,6 +867,15 @@ def check_and_award_trade_medals(
                 db, player.id, "regional_commodity_sales", int(regional_commodity_sales),
                 source_event_key="trade.sell", awarded_via="trade",
             )
+
+        # economic.spread_hunter -- query-derived, always computed (mirrors
+        # combat's unconditional _combat_victory_count call), not gated on the
+        # caller supplying it in context.
+        round_trips = _profitable_round_trips_count(db, player.id)
+        awarded += _evaluate_and_award(
+            db, player.id, "profitable_round_trips", round_trips,
+            source_event_key="trade.sell", awarded_via="trade",
+        )
         return awarded
     except Exception as e:
         logger.error("check_and_award_trade_medals failed for %s: %s", getattr(player, "id", "?"), e)
@@ -1273,7 +1336,7 @@ class MedalService:
     def get_player_medals(self, player_id: uuid.UUID) -> Dict[str, Any]:
         """Earned (from player_medals) + available (catalog minus earned).
 
-        Preserves the legacy return shape consumed by ranking.py /player/medals.
+        Preserves the legacy return shape consumed by medals.py GET /me.
         """
         try:
             player = self.db.query(Player).filter(Player.id == player_id).first()
@@ -1330,78 +1393,6 @@ class MedalService:
             logger.error(f"Error retrieving medals for player {player_id}: {e}")
             return {"success": False, "error": str(e)}
 
-    # ── Award convenience (legacy-compatible) ───────────────────────
-    def check_combat_medals(
-        self,
-        player_id: uuid.UUID,
-        combat_victories: int,
-        rank_upset_levels: int = 0,
-    ) -> List[str]:
-        """Legacy signature preserved (combat_service calls this).
-
-        Backed by the relational award path. Returns newly-awarded medal ids.
-        """
-        try:
-            awarded = _evaluate_and_award(
-                self.db, player_id, "combat_victories", combat_victories,
-                source_event_key="combat.victory", awarded_via="combat",
-            )
-            if rank_upset_levels >= 5:
-                awarded += _evaluate_and_award(
-                    self.db, player_id, "rank_upset", rank_upset_levels,
-                    source_event_key="combat.rank_upset", awarded_via="combat",
-                )
-            return awarded
-        except Exception as e:
-            logger.error(f"Error checking combat medals for player {player_id}: {e}")
-            return []
-
-    def check_trading_medals(
-        self,
-        player_id: uuid.UUID,
-        total_trades: int,
-        lifetime_credits: int,
-    ) -> List[str]:
-        """Legacy signature preserved (trading.py calls this)."""
-        try:
-            awarded = _evaluate_and_award(
-                self.db, player_id, "total_trades", total_trades,
-                source_event_key="trade.completed", awarded_via="trade",
-            )
-            awarded += _evaluate_and_award(
-                self.db, player_id, "lifetime_credits", lifetime_credits,
-                source_event_key="trade.completed", awarded_via="trade",
-            )
-            return awarded
-        except Exception as e:
-            logger.error(f"Error checking trading medals for player {player_id}: {e}")
-            return []
-
-    def check_exploration_medals(
-        self,
-        player_id: uuid.UUID,
-        sectors_visited: int,
-        planets_created: int,
-        planets_colonized: int,
-    ) -> List[str]:
-        """Legacy signature preserved."""
-        try:
-            awarded = _evaluate_and_award(
-                self.db, player_id, "sectors_visited", sectors_visited,
-                source_event_key="exploration", awarded_via="exploration",
-            )
-            awarded += _evaluate_and_award(
-                self.db, player_id, "planets_created", planets_created,
-                source_event_key="exploration", awarded_via="exploration",
-            )
-            awarded += _evaluate_and_award(
-                self.db, player_id, "planets_colonized", planets_colonized,
-                source_event_key="exploration", awarded_via="exploration",
-            )
-            return awarded
-        except Exception as e:
-            logger.error(f"Error checking exploration medals for player {player_id}: {e}")
-            return []
 
     # ── Admin ────────────────────────────────────────────────────────
     def admin_grant(
