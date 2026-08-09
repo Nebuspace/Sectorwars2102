@@ -1509,6 +1509,35 @@ export const tradeAPI = {
   getOpen: () => apiRequest('/api/v1/trade/open'),
 };
 
+// Quantum drive (Warp Jumper) — status / scan / jump / refine / harvest.
+export const quantumAPI = {
+  getStatus: () => apiRequest('/api/v1/quantum/status'),
+
+  scan: (payload: Record<string, unknown>) =>
+    apiRequest('/api/v1/quantum/scan', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  jump: (payload: Record<string, unknown>) =>
+    apiRequest('/api/v1/quantum/jump', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  refineCharge: () =>
+    apiRequest('/api/v1/quantum/refine-charge', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+
+  harvest: () =>
+    apiRequest('/api/v1/quantum/harvest', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+};
+
 // Message beacons (message-beacons.md) -- deploy/read/salvage/recharge/
 // report kernel is server-shipped (services/gameserver/src/api/routes/
 // beacons.py); `mine` lists the calling player's own deployed beacons
@@ -1575,6 +1604,7 @@ export const gameAPI = {
   pioneer: pioneerAPI,
   storage: storageAPI,
   trade: tradeAPI,
+  quantum: quantumAPI,
   beacon: beaconAPI,
 };
 
