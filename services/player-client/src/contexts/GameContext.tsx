@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { useAuth } from './AuthContext';
 import apiClient from '../services/apiClient';
-import { sectorAPI, messageAPI, planetaryAPI, citadelAPI, expeditionAPI, pioneerAPI } from '../services/api';
+import { sectorAPI, messageAPI, planetaryAPI, citadelAPI, expeditionAPI, pioneerAPI, armoryAPI } from '../services/api';
 import websocketService from '../services/websocket';
 import { ariaFeed } from '../components/mfd/ariaFeedStore';
 
@@ -1362,13 +1362,14 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  // Lay armored mines in the current sector (open space). POST /armory/deploy.
+  // Lay armored mines in the current sector (open space).
+  // WO-WIRE-ARMORY-DEPLOY: armoryAPI.deploy (same URL; still refresh state).
   const deployMines = async (quantity: number) => {
     if (!user || !playerState) throw new Error('Not authenticated');
     try {
-      const response = await api.post(`/api/v1/armory/deploy`, { quantity });
+      const data = await armoryAPI.deploy(quantity);
       await refreshPlayerState();
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error deploying mines:', error);
       throw error;
