@@ -1552,28 +1552,13 @@ class FleetService:
 
                 ShipService(self.db).destroy_ship(ship, destroyer=destroyer, cause="combat")
 
-                # WO-FLEETWRECK: spawn the salvageable Cargo Wreck for a FLEET
-                # kill, giving fleet battles the SAME loot-drop the solo combat
-                # path already produces. Previously a fleet KIA stripped only the
-                # 10% emergency cargo to the escape pod (inside destroy_ship) and
-                # the rest of the hold silently vanished — real loot-loss vs the
-                # "single destruction code path" claim in fleet-coordination.md.
-                #
-                # Reuse CombatService._spawn_cargo_wreck — the single wreck-spawn
-                # kernel (canon: DATA_MODELS/cargo-wrecks.md). It is called AFTER
-                # destroy_ship, exactly like the solo path (_handle_ship_destruction),
-                # so it reads the dead hull's LEFTOVER cargo["contents"] — i.e. the
-                # unrescued remainder after the 10% pod transfer — and drops the
-                # FULL remaining cargo as one wreck (no partial-recovery roll; the
-                # recovery-band/damage_type decision is PARKED behind human — see the
-                # deep-dive escalation, combat_service.py:3949). CombatService(db)
-                # construction is cheap (stores db + a ShipService) and it never
-                # commits — the wreck is staged via begin_nested + flush; the
-                # outer transaction (committed by remove_ship_from_fleet, below)
-                # persists it. The killing fleet's commander is attributed as the
-                # killing-blow pilot (ADR-0055 S-F2; honored only for COMBAT).
-                # Best-effort already: _spawn_cargo_wreck guards its own body, so
-                # a wreck hiccup can never abort the kill or its rewards.
+                # WO-FLEETWRECK / ADR-0093 item 40: spawn the salvageable Cargo
+                # Wreck for a FLEET kill — same loot-drop as solo combat.
+                # destroy_ship leaves the hold on the dead hull (wreck-only);
+                # _spawn_cargo_wreck reads that cargo["contents"] afterward.
+                # CombatService(db) is cheap and never commits — wreck staged
+                # via begin_nested + flush; outer txn persists it. Best-effort:
+                # wreck hiccup must never abort the kill or its rewards.
                 from src.services.combat_service import CombatService
                 CombatService(self.db)._spawn_cargo_wreck(
                     destroyed_ship=ship,
