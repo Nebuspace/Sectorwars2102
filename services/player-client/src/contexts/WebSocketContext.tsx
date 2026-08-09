@@ -670,6 +670,22 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           break;
         }
 
+        case 'docking_slip_bumped': {
+          // Another player paid the 5x bump fee to evict us from a station
+          // slip (docking_service.bump → _notify_bumped). The backend
+          // already ships a human-readable `message`; we've been undocked
+          // server-side, so this is a heads-up, not an action prompt.
+          addNotification({
+            title: 'Docking Slip Bumped',
+            content:
+              typeof message.message === 'string'
+                ? message.message
+                : 'Your ship has been bumped from its docking slip.',
+            level: 'warning'
+          });
+          break;
+        }
+
         case 'new_message': {
           // Player-to-player hail (message_service → notification_service).
           // The backend resolves the canon delivery surfaces by priority
@@ -971,7 +987,7 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           // send_failed is consumed by sendFailedHandler above — it's a
           // client-local synthetic event (websocket.ts's own send()), not
           // an unhandled server frame.)
-          if (!['sector_players', 'connection_status', 'chat_message', 'player_entered_sector', 'player_left_sector', 'notification', 'aria_response', 'aria_narration', 'medal_awarded', 'genesis_progress', 'planetary_update', 'contract_offer', 'contract_settled', 'rp_governor_status', 'reputation_changed', 'team_reputation_changed', 'npc_combat_initiated', 'bounty_updated', 'turn_pool_updated', 'send_failed'].includes(message.type)) {
+          if (!['sector_players', 'connection_status', 'chat_message', 'player_entered_sector', 'player_left_sector', 'notification', 'aria_response', 'aria_narration', 'medal_awarded', 'genesis_progress', 'planetary_update', 'contract_offer', 'contract_settled', 'rp_governor_status', 'reputation_changed', 'team_reputation_changed', 'npc_combat_initiated', 'bounty_updated', 'turn_pool_updated', 'send_failed', 'docking_slip_bumped'].includes(message.type)) {
             console.warn('WebSocket: Unhandled message type:', message.type);
           }
       }
