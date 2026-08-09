@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { useAuth } from './AuthContext';
 import apiClient from '../services/apiClient';
-import { sectorAPI, messageAPI, planetaryAPI, citadelAPI, expeditionAPI, pioneerAPI, armoryAPI, tradingAPI, quantumAPI } from '../services/api';
+import { sectorAPI, messageAPI, planetaryAPI, citadelAPI, expeditionAPI, pioneerAPI, armoryAPI, tradingAPI, quantumAPI, portOwnershipAPI } from '../services/api';
 import websocketService from '../services/websocket';
 import { ariaFeed } from '../components/mfd/ariaFeedStore';
 
@@ -1400,14 +1400,14 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   // the Port Office venue surfaces failures inline. Mutations that move
   // credits (escrowed offers, treasury withdrawals, forced sales) refresh
   // player state so the header credits stay authoritative.
+  // WO-WIRE-PORT-OWNERSHIP-API: portOwnershipAPI.* (same URLs).
 
   // Registry board — every station currently listed for sale in scope
   const getPortListings = async (): Promise<unknown> => {
     if (!user) throw new Error('Not authenticated');
 
     try {
-      const response = await api.get('/api/v1/port-ownership/listings');
-      return response.data;
+      return await portOwnershipAPI.getListings();
     } catch (error: any) {
       console.error('Error getting port listings:', error);
       throw error;
@@ -1421,8 +1421,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!user) throw new Error('Not authenticated');
 
     try {
-      const response = await api.get(`/api/v1/port-ownership/stations/${stationId}/listing`);
-      return response.data;
+      return await portOwnershipAPI.getListing(stationId);
     } catch (error: any) {
       console.error('Error getting station listing:', error);
       throw error;
@@ -1434,8 +1433,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!user || !playerState) throw new Error('Not authenticated');
 
     try {
-      const response = await api.post(`/api/v1/port-ownership/stations/${stationId}/list`);
-      return response.data;
+      return await portOwnershipAPI.listStation(stationId);
     } catch (error: any) {
       console.error('Error listing station for sale:', error);
       throw error;
@@ -1447,12 +1445,10 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!user || !playerState) throw new Error('Not authenticated');
 
     try {
-      const response = await api.post(`/api/v1/port-ownership/stations/${stationId}/offer`, {
-        bid: bidAmount
-      });
+      const data = await portOwnershipAPI.placeOffer(stationId, bidAmount);
       // Escrow debits credits at offer time
       await refreshPlayerState();
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error placing station offer:', error);
       throw error;
@@ -1464,8 +1460,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!user) throw new Error('Not authenticated');
 
     try {
-      const response = await api.get('/api/v1/port-ownership/my-stations');
-      return response.data;
+      return await portOwnershipAPI.getMyStations();
     } catch (error: any) {
       console.error('Error getting my stations:', error);
       throw error;
@@ -1477,10 +1472,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!user || !playerState) throw new Error('Not authenticated');
 
     try {
-      const response = await api.post(`/api/v1/port-ownership/stations/${stationId}/tax`, {
-        rate: taxRate
-      });
-      return response.data;
+      return await portOwnershipAPI.setTax(stationId, taxRate);
     } catch (error: any) {
       console.error('Error setting station tax:', error);
       throw error;
@@ -1492,12 +1484,10 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!user || !playerState) throw new Error('Not authenticated');
 
     try {
-      const response = await api.post(`/api/v1/port-ownership/stations/${stationId}/withdraw`, {
-        amount
-      });
+      const data = await portOwnershipAPI.withdraw(stationId, amount);
       // Withdrawal credits the player
       await refreshPlayerState();
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error withdrawing station treasury:', error);
       throw error;
@@ -1510,8 +1500,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!user) throw new Error('Not authenticated');
 
     try {
-      const response = await api.get(`/api/v1/port-ownership/stations/${stationId}/takeover`);
-      return response.data;
+      return await portOwnershipAPI.getTakeoverStatus(stationId);
     } catch (error: any) {
       console.error('Error getting takeover status:', error);
       throw error;
@@ -1523,8 +1512,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!user || !playerState) throw new Error('Not authenticated');
 
     try {
-      const response = await api.post(`/api/v1/port-ownership/stations/${stationId}/takeover/launch`);
-      return response.data;
+      return await portOwnershipAPI.launchTakeover(stationId);
     } catch (error: any) {
       console.error('Error launching takeover campaign:', error);
       throw error;
@@ -1540,12 +1528,10 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!user || !playerState) throw new Error('Not authenticated');
 
     try {
-      const response = await api.post(`/api/v1/port-ownership/stations/${stationId}/takeover/counter`, {
-        action
-      });
+      const data = await portOwnershipAPI.counterTakeover(stationId, action);
       // 'accept' transfers ownership + sale proceeds atomically
       await refreshPlayerState();
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error countering takeover:', error);
       throw error;
