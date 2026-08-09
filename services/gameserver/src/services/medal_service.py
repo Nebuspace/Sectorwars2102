@@ -1275,7 +1275,7 @@ class MedalService:
     def get_player_medals(self, player_id: uuid.UUID) -> Dict[str, Any]:
         """Earned (from player_medals) + available (catalog minus earned).
 
-        Preserves the legacy return shape consumed by ranking.py /player/medals.
+        Preserves the legacy return shape consumed by medals.py GET /me.
         """
         try:
             player = self.db.query(Player).filter(Player.id == player_id).first()
