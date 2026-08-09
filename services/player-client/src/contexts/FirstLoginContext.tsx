@@ -156,8 +156,6 @@ export const FirstLoginProvider: React.FC<{ children: ReactNode }> = ({ children
   const [exchangeId, setExchangeId] = useState<string | null>(null);
   const [dialogueOutcome, setDialogueOutcome] = useState<DialogueAnalysis['outcome'] | null>(null);
   
-  // Use the shared apiClient instance imported at the top of the file
-  
   // Rate limiting state
   const [lastCheckTime, setLastCheckTime] = useState<number>(0);
   const [lastSessionTime, setLastSessionTime] = useState<number>(0);
