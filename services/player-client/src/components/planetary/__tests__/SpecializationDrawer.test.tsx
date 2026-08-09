@@ -61,7 +61,7 @@ const planet = {
   id: 'p1',
   name: 'Kepler',
   specialization: 'mining',
-} as Planet;
+} as unknown as Planet;
 
 describe('SpecializationDrawer', () => {
   let container: HTMLElement;
