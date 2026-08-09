@@ -135,6 +135,14 @@ jobs:
         # type-check gate is already inline here, unlike player-client.
         run: npm run build
 
+      # WO-TESTCOV-ADMIN-UI-ZERO-UNIT-LAYER: closes the zero-unit-test gap
+      # (vitest + @testing-library/react, mirrors player-client's Test step
+      # above). vitest.config.ts excludes playwright/** so this never
+      # collides with the Route-smoke step below.
+      - name: Test
+        working-directory: services/admin-ui
+        run: npm run test
+
       # WO-ADM-SMOKE-CI / #164: offline Playwright route-smoke (stubbed
       # auth + API — no gameserver). Keeps the required check name
       # `admin-ui (build)` stable for branch protection.
