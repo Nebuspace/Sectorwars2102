@@ -27,7 +27,7 @@ import DeckPageTabs from '../cockpit/DeckPageTabs';
 import type { ProductionLine } from '../cockpit/ProductionPanel';
 import type { PerColonistRates, ProdRole } from '../cockpit/CoupledColonistSliders';
 import SafeVaultPanel from '../cockpit/SafeVaultPanel';
-import { navAPI, type NavChartResponse, sectorAPI, type SectorWreck } from '../../services/api';
+import { miningAPI, navAPI, playerAPI, type NavChartResponse, sectorAPI, type SectorWreck } from '../../services/api';
 import apiClient from '../../services/apiClient';
 import { projectedWarpBearing, subscribeWarpDepart, WARP_TURN_MS } from '../../services/warpCinematicBus';
 import { useResourceCatalog } from '../../hooks/useResourceCatalog';
@@ -2202,7 +2202,7 @@ const GameDashboardInner: React.FC = () => {
   // returns the yield + remaining turns; a failed gate returns a stable reason
   // code in the HTTP detail, which we translate to player-facing copy. Refresh
   // player state after a successful harvest so the cockpit turns/cargo reflect
-  // the spend immediately. Uses the raw apiClient (the GameContext pattern).
+  // the spend immediately.
   const HARVEST_GATE_COPY: Record<string, string> = {
     no_mining_laser: 'No mining laser equipped — fit one at a TradeDock to extract ore.',
     must_be_undocked: 'You must be undocked and in open space to deploy the mining laser.',
@@ -2223,8 +2223,7 @@ const GameDashboardInner: React.FC = () => {
     autopilot.abort('manual helm action');
     setHarvestBusy(true);
     try {
-      const response = await apiClient.post('/api/v1/mining/harvest', { ship_id: shipId });
-      const data = response.data || {};
+      const data = (await miningAPI.harvest(shipId)) || {};
       if (data.status === 'in_progress') {
         setHarvestResult({
           success: true,
@@ -2241,7 +2240,9 @@ const GameDashboardInner: React.FC = () => {
       // Turns prepaid server-side — pull fresh player state (cargo still pending).
       await refreshPlayerState();
     } catch (error: any) {
-      const reason = error?.response?.data?.detail;
+      // apiRequest surfaces string detail as Error.message; axios-shaped
+      // callers (legacy) still carry response.data.detail.
+      const reason = error?.response?.data?.detail ?? error?.message;
       const message =
         (typeof reason === 'string' && (HARVEST_GATE_COPY[reason] || reason)) ||
         'Harvest failed. Please try again.';
@@ -2262,11 +2263,11 @@ const GameDashboardInner: React.FC = () => {
     if (investigatedFormationIds.has(formationId)) return;
     setInvestigatingFormationId(formationId);
     try {
-      const response = await apiClient.post(`/api/v1/player/formations/${formationId}/investigate`);
+      const data = await playerAPI.investigateFormation(formationId);
       setInvestigatedFormationIds(prev => new Set(prev).add(formationId));
-      setInvestigateResult({ success: true, ...response.data });
+      setInvestigateResult({ success: true, ...data });
     } catch (error: any) {
-      const statusCode = error?.response?.status;
+      const statusCode = error?.status ?? error?.response?.status;
       if (statusCode === 409) {
         // Already investigated — reconcile the chip and tell the player.
         setInvestigatedFormationIds(prev => new Set(prev).add(formationId));
@@ -2274,7 +2275,7 @@ const GameDashboardInner: React.FC = () => {
       } else if (statusCode === 404) {
         setInvestigateResult({ success: false, message: 'Formation not found or not yet discovered.' });
       } else {
-        const detail = error?.response?.data?.detail;
+        const detail = error?.response?.data?.detail ?? error?.message;
         setInvestigateResult({
           success: false,
           message: (typeof detail === 'string' && detail) || 'Investigation failed. Please try again.',
