@@ -12,7 +12,7 @@
  *
  * Unlike GameDashboard.navMultihop.test.tsx (which mocks useAutopilot
  * entirely), this file wraps GameDashboard in the REAL AutopilotProvider --
- * apiClient.post is the only mocked seam for the plot round-trip, so the
+ * navAPI.plot is the mocked seam for the plot round-trip, so the
  * plot -> overlay/total-turns, plot -> unreachable-feedback, and (uniquely)
  * engage -> one-hop-at-a-time-via-moveToSector paths are exercised through
  * genuine AutopilotContext state machine transitions, not a stand-in. This
@@ -34,15 +34,17 @@ import type { NavChartResponse, NavChartSector } from '../../../services/api';
 import { WARP_TURN_MS, WARP_ARRIVE_MS } from '../../../services/warpCinematicBus';
 
 // ---------------------------------------------------------------------------
-// services/api -- navAPI.getChart is the only fetch under test here; the
-// windshield SCAN layer's wreck feed and the (GameDashboard no-longer-
+// services/api -- navAPI.getChart + navAPI.plot are the fetches under test;
+// the windshield SCAN layer's wreck feed and the (GameDashboard no-longer-
 // mounted, kept defensively) region-owner probe are resolved inert.
 // ---------------------------------------------------------------------------
 const mockGetChart = vi.fn();
+const mockPlot = vi.fn();
 const mockGetMyRegion = vi.fn();
 vi.mock('../../../services/api', () => ({
   navAPI: {
     getChart: (...a: unknown[]) => mockGetChart(...a),
+    plot: (...a: unknown[]) => mockPlot(...a),
   },
   regionOwnerAPI: { getMyRegion: (...a: unknown[]) => mockGetMyRegion(...a) },
   sectorAPI: { sectorWrecks: () => Promise.resolve([]) },
@@ -53,17 +55,11 @@ vi.mock('../../../services/api', () => ({
   greyStatusAPI: undefined,
 }));
 
-// apiClient -- AutopilotContext's OWN plot POST target (used by the real,
-// unmocked AutopilotProvider wrapping GameDashboard below). GameDashboard's
-// own two direct apiClient.post call sites (mining harvest, formation
-// investigate) are never exercised by these tests. `.get` backs
-// GameDashboard's own STAR/decorative-body sensor-row fetch (GET /sectors/
-// {id}/contents, WO-UI-MAX-BATCH-1 item 9) -- resolves to an empty snapshot
-// here since this file's NAV-monitor tests don't exercise SOLAR SYSTEM rows.
-const mockPost = vi.fn();
+// apiClient -- GameDashboard's own STAR/decorative-body sensor-row fetch
+// (GET /sectors/{id}/contents). Plot traffic goes through navAPI.plot above.
 const mockGet = vi.fn().mockResolvedValue({ data: {} });
 vi.mock('../../../services/apiClient', () => ({
-  default: { post: (...a: unknown[]) => mockPost(...a), get: (...a: unknown[]) => mockGet(...a) },
+  default: { get: (...a: unknown[]) => mockGet(...a) },
 }));
 
 vi.mock('../../layouts/GameLayout', () => ({
@@ -230,8 +226,8 @@ describe('GameDashboard — NAV chart monitor (/game/map parity, WO-UI2-CHART-MO
     mockGetMyRegion.mockReset();
     mockGetMyRegion.mockRejectedValue(new Error('not a region owner'));
     mockGetChart.mockResolvedValue(DEFAULT_CHART);
-    mockPost.mockReset();
-    mockPost.mockResolvedValue({ data: {} });
+    mockPlot.mockReset();
+    mockPlot.mockResolvedValue(REACHABLE_PLOT);
     mockGet.mockReset();
     mockGet.mockResolvedValue({ data: {} });
 
@@ -359,16 +355,12 @@ describe('GameDashboard — NAV chart monitor (/game/map parity, WO-UI2-CHART-MO
   // -- (b) plot -> overlay + total_turns -------------------------------------
 
   it('plotting a reachable multi-hop course draws the overlay polyline and shows total turns', async () => {
-    mockPost.mockImplementation((url: string) =>
-      url === '/api/v1/nav/plot'
-        ? Promise.resolve({ data: REACHABLE_PLOT })
-        : Promise.resolve({ data: {} })
-    );
+    mockPlot.mockResolvedValue(REACHABLE_PLOT);
 
     await mount();
     await plot(103);
 
-    expect(mockPost).toHaveBeenCalledWith('/api/v1/nav/plot', { target_sector_id: 103, objective: 'min_time' });
+    expect(mockPlot).toHaveBeenCalledWith(103, 'min_time');
     // The course summary (.nav-course-meta) lives on NAV[COURSE] itself
     // (WO-UI2-DECK-RECONCILE, §05: "plotted course + ENGAGE" is COURSE's own
     // content) -- read it before switching pages.
@@ -389,11 +381,7 @@ describe('GameDashboard — NAV chart monitor (/game/map parity, WO-UI2-CHART-MO
   // -- (c) engage -> hops execute one-at-a-time ------------------------------
 
   it('engaging autopilot executes hops one-at-a-time via moveToSector, in course order', async () => {
-    mockPost.mockImplementation((url: string) =>
-      url === '/api/v1/nav/plot'
-        ? Promise.resolve({ data: REACHABLE_PLOT })
-        : Promise.resolve({ data: {} })
-    );
+    mockPlot.mockResolvedValue(REACHABLE_PLOT);
     gameState.moveToSector = vi.fn((id: number) => Promise.resolve({ success: true, new_sector_id: id }));
 
     await mount();
@@ -433,11 +421,7 @@ describe('GameDashboard — NAV chart monitor (/game/map parity, WO-UI2-CHART-MO
   // -- (d) unreachable -> nearest-known feedback, not a crash ----------------
 
   it('an unreachable target renders nearest-known feedback instead of crashing', async () => {
-    mockPost.mockImplementation((url: string) =>
-      url === '/api/v1/nav/plot'
-        ? Promise.resolve({ data: UNREACHABLE_PLOT })
-        : Promise.resolve({ data: {} })
-    );
+    mockPlot.mockResolvedValue(UNREACHABLE_PLOT);
 
     await mount();
     await plot(999999);

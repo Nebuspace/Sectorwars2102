@@ -8,21 +8,46 @@ import apiClient from './apiClient';
 // centralized JWT refresh-on-401 behavior. The external contract is
 // unchanged: returns the parsed response body, throws
 // Error(detail || `API Error: <status>`) on failure.
+type ApiRequestOptions = RequestInit & { timeout?: number };
+
 async function apiRequest(
   endpoint: string,
-  options: RequestInit = {}
+  options: ApiRequestOptions = {}
 ): Promise<any> {
+  const method = ((options.method || 'GET') as string).toUpperCase();
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(options.headers as Record<string, string>),
+  };
   try {
-    const response = await apiClient.request({
-      url: endpoint,
-      method: (options.method || 'GET') as string,
-      // Call sites pass pre-stringified JSON bodies; forward as-is.
-      data: options.body,
-      headers: {
-        'Content-Type': 'application/json',
-        ...(options.headers as Record<string, string>)
-      }
-    });
+    // Prefer verb-specific axios helpers so tests that mock apiClient.get/post
+    // (the dominant GameContext harness pattern) still intercept wrapper traffic.
+    // Use .request only when a non-default timeout is required (e.g. move).
+    let response;
+    if (options.timeout != null) {
+      response = await apiClient.request({
+        url: endpoint,
+        method,
+        data: options.body,
+        timeout: options.timeout,
+        headers,
+      });
+    } else if (method === 'GET') {
+      response = await apiClient.get(endpoint, { headers });
+    } else if (method === 'POST') {
+      response = await apiClient.post(endpoint, options.body, { headers });
+    } else if (method === 'PUT') {
+      response = await apiClient.put(endpoint, options.body, { headers });
+    } else if (method === 'DELETE') {
+      response = await apiClient.delete(endpoint, { headers });
+    } else {
+      response = await apiClient.request({
+        url: endpoint,
+        method,
+        data: options.body,
+        headers,
+      });
+    }
     return response.data;
   } catch (error) {
     if (isAxiosError(error) && error.response) {
@@ -67,6 +92,10 @@ async function apiRequest(
         msg = msg || data.message;
       }
       const err = new Error(msg || `API Error: ${error.response.status}`);
+      // Preserve HTTP status + body for callers that branch on gameplay
+      // refusals (400/403/409) or structured detail (tractor lock, etc.).
+      (err as any).status = error.response.status;
+      (err as any).data = data;
       if (errors) (err as any).errors = errors;
       if (code) (err as any).code = code;
       if (regions) (err as any).regions = regions;
@@ -105,6 +134,15 @@ export const combatAPI = {
     apiRequest(`/api/v1/drones/${deploymentId}/recall`, {
       method: 'DELETE'
     })
+};
+
+// Armory — sector mine laying (open space). Distinct from combatAPI.deployDrones.
+export const armoryAPI = {
+  deploy: (quantity: number) =>
+    apiRequest('/api/v1/armory/deploy', {
+      method: 'POST',
+      body: JSON.stringify({ quantity }),
+    }),
 };
 
 // Grey-flag PvP status (WO-BL). Mirrors player_combat.py's
@@ -210,6 +248,42 @@ export const planetaryAPI = {
       method: 'PUT',
       body: JSON.stringify({ specialization })
     }),
+
+  // Land on an owned planet / leave the current landed planet.
+  land: (planetId: string) =>
+    apiRequest('/api/v1/planets/land', {
+      method: 'POST',
+      body: JSON.stringify({ planet_id: planetId }),
+    }),
+
+  leave: () =>
+    apiRequest('/api/v1/planets/leave', { method: 'POST' }),
+
+  rename: (planetId: string, name: string) =>
+    apiRequest(`/api/v1/planets/${planetId}/rename`, {
+      method: 'PUT',
+      body: JSON.stringify({ name }),
+    }),
+
+  // Embark/disembark colonists between ship cargo and planet population.
+  transferColonists: (
+    planetId: string,
+    action: 'embark' | 'disembark',
+    quantity: number,
+  ) =>
+    apiRequest(`/api/v1/planets/${planetId}/colonists/transfer`, {
+      method: 'POST',
+      body: JSON.stringify({ action, quantity }),
+    }),
+
+  // Defense telemetry — GET /planets/{id}/defenses (scouting-friendly; no
+  // ownership required). Distinct from updateDefenses (PUT) / getDefensePricing.
+  getDefenses: (planetId: string) =>
+    apiRequest(`/api/v1/planets/${planetId}/defenses`),
+
+  // Upgrade the planet's shield generator by one level.
+  upgradeShields: (planetId: string) =>
+    apiRequest(`/api/v1/planets/${planetId}/shields/upgrade`, { method: 'POST' }),
 
   getSiegeStatus: (planetId: string) =>
     apiRequest(`/api/v1/planets/${planetId}/siege-status`)
@@ -549,7 +623,78 @@ export const shipAPI = {
   // shape. Delegates to the correct purchase endpoint so any lingering caller
   // works instead of 404-ing. `upgradeType` is the UpgradeType enum value.
   installUpgrade: (shipId: string, upgradeType: string) =>
-    shipUpgradeAPI.purchaseUpgrade(shipId, upgradeType)
+    shipUpgradeAPI.purchaseUpgrade(shipId, upgradeType),
+
+  // Make `shipId` the player's currently-piloted hull.
+  setActive: (shipId: string) =>
+    apiRequest(`/api/v1/ships/${shipId}/set-active`, { method: 'POST' }),
+};
+
+/** Cockpit player state / navigation (distinct from shipAPI maintenance). */
+export const playerAPI = {
+  getState: () => apiRequest('/api/v1/player/state'),
+
+  getCurrentSector: () => apiRequest('/api/v1/player/current-sector'),
+
+  getShips: () => apiRequest('/api/v1/player/ships'),
+
+  getAvailableMoves: () => apiRequest('/api/v1/player/available-moves'),
+
+  // Hard ceiling so a stuck FOR UPDATE / wedged gameserver cannot leave
+  // the cockpit in "warp bubble forever" with no sector change.
+  move: (sectorId: number) =>
+    apiRequest(`/api/v1/player/move/${sectorId}`, {
+      method: 'POST',
+      timeout: 20000,
+    }),
+
+  scanLatentTunnels: () =>
+    apiRequest('/api/v1/player/scan-latent-tunnels', { method: 'POST' }),
+
+  /** One-time reward for a discovered special formation (WO-UI-ANOMALY). */
+  investigateFormation: (formationId: string) =>
+    apiRequest(`/api/v1/player/formations/${formationId}/investigate`, {
+      method: 'POST',
+    }),
+};
+
+/** Asteroid-field mining harvest (WO-UI-MINING). */
+export const miningAPI = {
+  harvest: (shipId: string) =>
+    apiRequest('/api/v1/mining/harvest', {
+      method: 'POST',
+      body: JSON.stringify({ ship_id: shipId }),
+    }),
+};
+
+/** First-login gate / onboarding session (GameContext + FirstLoginContext). */
+export const firstLoginAPI = {
+  getStatus: () => apiRequest('/api/v1/first-login/status'),
+
+  startSession: () =>
+    apiRequest('/api/v1/first-login/session', { method: 'POST' }),
+
+  claimShip: (payload: { ship_type: string; dialogue_response: string }) =>
+    apiRequest('/api/v1/first-login/claim-ship', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  submitDialogue: (exchangeId: string, response: string) =>
+    apiRequest(`/api/v1/first-login/dialogue/${exchangeId}`, {
+      method: 'POST',
+      body: JSON.stringify({ response }),
+    }),
+
+  /** Omit body for decline-by-default (matches pre-nickname complete). */
+  complete: (body?: { nickname_confirmed: boolean; nickname_override: string | null }) =>
+    apiRequest('/api/v1/first-login/complete', {
+      method: 'POST',
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }),
+
+  resetSession: () =>
+    apiRequest('/api/v1/first-login/session', { method: 'DELETE' }),
 };
 
 /** Ship registry behaviors (SYSTEMS/ship-registry.md) — stolen / abandon / claim / transfer. */
@@ -585,15 +730,41 @@ export const shipRegistryAPI = {
 
   approveTransferClaim: (shipId: string) =>
     apiRequest(`/api/v1/ships/${shipId}/transfer-claim/approve`, { method: 'POST' }),
+
+  /** Voluntarily eject from the caller's own currently-piloted ship (no
+   * ship_id -- always acts on the current ship) into a reused escape pod. */
+  eject: () =>
+    apiRequest('/api/v1/players/me/eject', { method: 'POST' }),
+
+  /** Board `shipId` -- free/no-pin for the registered owner, otherwise
+   * requires the ship's hatch_pin_code. */
+  board: (shipId: string, pin?: string | null) =>
+    apiRequest(`/api/v1/ships/${shipId}/board`, {
+      method: 'POST',
+      body: JSON.stringify(pin ? { pin } : {}),
+    }),
+
+  /** The current pilot (owner or borrower) changes the pin instantly --
+   * caller must be aboard `shipId`. */
+  setPin: (shipId: string, pin: string) =>
+    apiRequest(`/api/v1/ships/${shipId}/set-pin`, {
+      method: 'POST',
+      body: JSON.stringify({ pin }),
+    }),
+
+  /** Port-gated pin recovery for the registered owner -- 1h delayed
+   * take-effect, does not require being aboard. */
+  requestPinReset: (shipId: string, portId: string, pin: string) =>
+    apiRequest(`/api/v1/ships/${shipId}/request-pin-reset`, {
+      method: 'POST',
+      body: JSON.stringify({ port_id: portId, pin }),
+    }),
 };
 
 // Ranking & Reputation APIs
 export const rankingAPI = {
   getRank: () =>
     apiRequest('/api/v1/ranking/rank'),
-
-  getMedals: () =>
-    apiRequest('/api/v1/ranking/medals'),
 
   getDefinitions: () =>
     apiRequest('/api/v1/ranking/definitions'),
@@ -608,8 +779,10 @@ export const rankingAPI = {
     apiRequest('/api/v1/ranking/progress'),
 };
 
-/** Player medals service (distinct from rankingAPI.getMedals aggregate). */
+/** Player medals (GET /api/v1/medals/me — typed; ranking /medals retired). */
 export const medalsAPI = {
+  getMe: () => apiRequest('/api/v1/medals/me'),
+
   /** Clear-on-view offline award queue (GET /api/v1/medals/unviewed). */
   getUnviewed: (): Promise<{ unviewed: string[] }> =>
     apiRequest('/api/v1/medals/unviewed'),
@@ -638,6 +811,11 @@ export const citadelAPI = {
   upgrade: (planetId: string) =>
     apiRequest(`/api/v1/planets/${planetId}/citadel/upgrade`, { method: 'POST' }),
 
+  // Cancel an in-progress citadel upgrade — refunds 50% of credits paid
+  // (CitadelService.cancel_upgrade). Owner-only.
+  cancelUpgrade: (planetId: string) =>
+    apiRequest(`/api/v1/planets/${planetId}/citadel/cancel`, { method: 'POST' }),
+
   deposit: (planetId: string, amount: number) =>
     apiRequest(`/api/v1/planets/${planetId}/citadel/deposit`, {
       method: 'POST',
@@ -650,6 +828,20 @@ export const citadelAPI = {
       body: JSON.stringify({ amount }),
     }),
 
+  // Move commodity planet-stockpile → protected citadel safe.
+  depositCommodity: (planetId: string, commodity: string, amount: number) =>
+    apiRequest(`/api/v1/planets/${planetId}/citadel/deposit-commodity`, {
+      method: 'POST',
+      body: JSON.stringify({ commodity, amount }),
+    }),
+
+  // Move commodity protected safe → planet stockpile.
+  withdrawCommodity: (planetId: string, commodity: string, amount: number) =>
+    apiRequest(`/api/v1/planets/${planetId}/citadel/withdraw-commodity`, {
+      method: 'POST',
+      body: JSON.stringify({ commodity, amount }),
+    }),
+
   // Toggle "auto-deposit production into safe" (opt-in, default OFF). When ON,
   // each read-path settle sweeps the planet stockpile into the protected safe
   // up to the shared cr-equivalent cap. Owner-only, requires citadel_level >= 1
@@ -658,6 +850,19 @@ export const citadelAPI = {
     apiRequest(`/api/v1/planets/${planetId}/citadel/auto-deposit`, {
       method: 'POST',
       body: JSON.stringify({ enabled }),
+    }),
+
+  // Defense buildings unlockable at the planet's current citadel level
+  // (CitadelService.get_available_buildings).
+  getAvailableBuildings: (planetId: string) =>
+    apiRequest(`/api/v1/planets/${planetId}/buildings/available`),
+
+  // Construct a defense building — body key is camelCase buildingType
+  // (ConstructBuildingRequest / CitadelService.build_defense_building).
+  constructBuilding: (planetId: string, buildingType: string) =>
+    apiRequest(`/api/v1/planets/${planetId}/buildings/construct`, {
+      method: 'POST',
+      body: JSON.stringify({ buildingType }),
     }),
 };
 
@@ -860,9 +1065,7 @@ export const resourceAPI = {
 // corp-shared ∪ current — course-plotting.md), the warp/tunnel edges between
 // them, and id-only frontier stubs (each linked to the known sector that
 // surfaced it, via `from` -- WO-NAV-CHART-FRONTIER-EDGES) for adjacent-but-
-// unknown sectors. Course plotting/engagement itself stays on
-// AutopilotContext's own apiClient.post call to POST /api/v1/nav/plot
-// (unchanged by this WO).
+// unknown sectors. Course plot: POST /api/v1/nav/plot (navAPI.plot).
 export interface NavChartSector {
   sector_id: number;
   name: string;
@@ -917,6 +1120,42 @@ export interface NavThreatEntry {
   contributors: NavThreatContributor[];
 }
 
+// POST /api/v1/nav/plot — ADR-0072 / AutopilotContext course plot.
+export interface CourseHop {
+  sector_id: number;
+  name: string;
+  turn_cost: number;
+  visited: boolean;
+  safety_rating: number | null;
+  via_tunnel: boolean;
+}
+
+export interface CourseReachable {
+  success: true;
+  reachable: true;
+  target_sector_id: number;
+  hops: CourseHop[];
+  total_turns: number;
+}
+
+export interface CourseUnreachable {
+  success: true;
+  reachable: false;
+  target_sector_id: number;
+  nearest_known: { sector_id: number; name: string } | null;
+  /** Present when the sector id does not exist in the galaxy DB. */
+  error?: string;
+  /**
+   * Why the plot refused:
+   * - `unknown_sector` — no such sector
+   * - `uncharted` — exists but outside the player's known graph
+   * - `no_route` — charted, but no directed path from here (one-ways / gaps)
+   */
+  reason?: 'unknown_sector' | 'uncharted' | 'no_route';
+}
+
+export type CoursePlot = CourseReachable | CourseUnreachable;
+
 export const navAPI = {
   // `bounded` (WO-NAV-REACH-BACKEND, default false) opts into the server's
   // scanner-depth-bounded chart (CHART_BOUNDED_DEPTH_CEILING=12) — sectors
@@ -929,6 +1168,17 @@ export const navAPI = {
     apiRequest(`/api/v1/nav/chart${bounded ? '?bounded=true' : ''}`),
   getThreat: (): Promise<NavThreatEntry[]> =>
     apiRequest('/api/v1/nav/threat'),
+  plot: (
+    targetSectorId: number,
+    objective: 'min_time' | 'min_risk' = 'min_time',
+  ): Promise<CoursePlot> =>
+    apiRequest('/api/v1/nav/plot', {
+      method: 'POST',
+      body: JSON.stringify({
+        target_sector_id: targetSectorId,
+        objective,
+      }),
+    }),
 };
 
 // Sector contents — existing read-only endpoints (services/gameserver/src/
@@ -1121,6 +1371,41 @@ export const regionOwnerAPI = {
       method: 'POST',
       body: JSON.stringify({ station_id: stationId }),
     }),
+
+  // Treaty inbox / lifecycle (WO-ESCALATE-REGIONAL-TREATY-FLOW-PRIORITY).
+  // Owner-scoped list includes `terms`; accept/reject are region_b-only;
+  // terminate is either party. Optional regionId for multi-region owners.
+  listMyTreaties: (regionId?: string) =>
+    apiRequest(
+      regionId
+        ? `/api/v1/regions/my-region/treaties?region_id=${encodeURIComponent(regionId)}`
+        : '/api/v1/regions/my-region/treaties',
+    ),
+
+  proposeTreaty: (
+    body: {
+      counterparty_region_id: string;
+      treaty_type: string;
+      terms?: Record<string, unknown>;
+      expires_at?: string | null;
+    },
+    regionId?: string,
+  ) =>
+    apiRequest(
+      regionId
+        ? `/api/v1/regions/my-region/treaties?region_id=${encodeURIComponent(regionId)}`
+        : '/api/v1/regions/my-region/treaties',
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+
+  acceptTreaty: (treatyId: string) =>
+    apiRequest(`/api/v1/regions/treaties/${treatyId}/accept`, { method: 'POST' }),
+
+  rejectTreaty: (treatyId: string) =>
+    apiRequest(`/api/v1/regions/treaties/${treatyId}/reject`, { method: 'POST' }),
+
+  terminateTreaty: (treatyId: string) =>
+    apiRequest(`/api/v1/regions/treaties/${treatyId}/terminate`, { method: 'POST' }),
 };
 
 // Ship-construction reservation reads (routes/construction.py — the live
@@ -1200,6 +1485,53 @@ export const tradingAPI = {
         action,
       }),
     }),
+
+  dock: (stationId: string) =>
+    apiRequest('/api/v1/trading/dock', {
+      method: 'POST',
+      body: JSON.stringify({ station_id: stationId }),
+    }),
+
+  undock: () =>
+    apiRequest('/api/v1/trading/undock', { method: 'POST' }),
+
+  getSlips: (stationId: string) =>
+    apiRequest(`/api/v1/trading/stations/${stationId}/slips`),
+
+  bumpSlip: (stationId: string, occupantPlayerId: string) =>
+    apiRequest(`/api/v1/trading/stations/${stationId}/slips/bump`, {
+      method: 'POST',
+      body: JSON.stringify({ occupant_player_id: occupantPlayerId }),
+    }),
+
+  getMarket: (stationId: string) =>
+    apiRequest(`/api/v1/trading/market/${stationId}`),
+
+  getMarketHistory: (stationId: string, commodity: string, hours = 24 * 7) =>
+    apiRequest(
+      `/api/v1/trading/market/${encodeURIComponent(stationId)}/history` +
+        `?commodity=${encodeURIComponent(commodity)}&hours=${hours}`,
+    ),
+
+  buy: (stationId: string, resourceType: string, quantity: number) =>
+    apiRequest('/api/v1/trading/buy', {
+      method: 'POST',
+      body: JSON.stringify({
+        station_id: stationId,
+        resource_type: resourceType,
+        quantity,
+      }),
+    }),
+
+  sell: (stationId: string, resourceType: string, quantity: number) =>
+    apiRequest('/api/v1/trading/sell', {
+      method: 'POST',
+      body: JSON.stringify({
+        station_id: stationId,
+        resource_type: resourceType,
+        quantity,
+      }),
+    }),
 };
 
 // Trade Contract APIs (SYSTEMS/contracts.md, gameserver contracts.py) —
@@ -1261,6 +1593,34 @@ export const contractsAPI = {
     apiRequest(`/api/v1/contracts/${contractId}/dispute`, {
       method: 'POST',
       body: JSON.stringify(body),
+    }),
+};
+
+// Pioneer Office — migration contracts at a population hub (GameContext
+// PioneerOfficeVenue). Separate from trade contractsAPI above.
+export const pioneerAPI = {
+  getOffice: () => apiRequest('/api/v1/pioneer/office'),
+
+  brokerContract: (cohortTotal: number) =>
+    apiRequest('/api/v1/pioneer/contracts', {
+      method: 'POST',
+      body: JSON.stringify({ cohort_total: cohortTotal }),
+    }),
+
+  loadBatch: (contractId: string, quantity: number) =>
+    apiRequest(`/api/v1/pioneer/contracts/${contractId}/load`, {
+      method: 'POST',
+      body: JSON.stringify({ quantity }),
+    }),
+
+  listContracts: (includeClosed = false) =>
+    apiRequest(
+      `/api/v1/pioneer/contracts?include_closed=${includeClosed ? 'true' : 'false'}`,
+    ),
+
+  cancelContract: (contractId: string) =>
+    apiRequest(`/api/v1/pioneer/contracts/${contractId}/cancel`, {
+      method: 'POST',
     }),
 };
 
@@ -1330,6 +1690,82 @@ export const tradeAPI = {
   getOpen: () => apiRequest('/api/v1/trade/open'),
 };
 
+// Quantum drive (Warp Jumper) — status / scan / jump / refine / harvest.
+export const quantumAPI = {
+  getStatus: () => apiRequest('/api/v1/quantum/status'),
+
+  scan: (payload: Record<string, unknown>) =>
+    apiRequest('/api/v1/quantum/scan', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  jump: (payload: Record<string, unknown>) =>
+    apiRequest('/api/v1/quantum/jump', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  refineCharge: () =>
+    apiRequest('/api/v1/quantum/refine-charge', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+
+  harvest: () =>
+    apiRequest('/api/v1/quantum/harvest', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+};
+
+// Port Office — station ownership, sealed-bid sales, tariffs, takeovers.
+export const portOwnershipAPI = {
+  getListings: () => apiRequest('/api/v1/port-ownership/listings'),
+
+  getListing: (stationId: string) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/listing`),
+
+  listStation: (stationId: string) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/list`, {
+      method: 'POST',
+    }),
+
+  placeOffer: (stationId: string, bidAmount: number) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/offer`, {
+      method: 'POST',
+      body: JSON.stringify({ bid: bidAmount }),
+    }),
+
+  getMyStations: () => apiRequest('/api/v1/port-ownership/my-stations'),
+
+  setTax: (stationId: string, taxRate: number) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/tax`, {
+      method: 'POST',
+      body: JSON.stringify({ rate: taxRate }),
+    }),
+
+  withdraw: (stationId: string, amount: number) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/withdraw`, {
+      method: 'POST',
+      body: JSON.stringify({ amount }),
+    }),
+
+  getTakeoverStatus: (stationId: string) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/takeover`),
+
+  launchTakeover: (stationId: string) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/takeover/launch`, {
+      method: 'POST',
+    }),
+
+  counterTakeover: (stationId: string, action: 'accept' | 'match' | 'dispute') =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/takeover/counter`, {
+      method: 'POST',
+      body: JSON.stringify({ action }),
+    }),
+};
+
 // Message beacons (message-beacons.md) -- deploy/read/salvage/recharge/
 // report kernel is server-shipped (services/gameserver/src/api/routes/
 // beacons.py); `mine` lists the calling player's own deployed beacons
@@ -1370,6 +1806,7 @@ export const beaconAPI = {
 
 export const gameAPI = {
   combat: combatAPI,
+  armory: armoryAPI,
   greyStatus: greyStatusAPI,
   planetary: planetaryAPI,
   registry: registryAPI,
@@ -1378,6 +1815,7 @@ export const gameAPI = {
   faction: factionAPI,
   message: messageAPI,
   ship: shipAPI,
+  player: playerAPI,
   ranking: rankingAPI,
   bounty: bountyAPI,
   citadel: citadelAPI,
@@ -1392,8 +1830,11 @@ export const gameAPI = {
   trading: tradingAPI,
   resource: resourceAPI,
   contracts: contractsAPI,
+  pioneer: pioneerAPI,
   storage: storageAPI,
   trade: tradeAPI,
+  quantum: quantumAPI,
+  portOwnership: portOwnershipAPI,
   beacon: beaconAPI,
 };
 

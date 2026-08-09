@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { useAuth } from './AuthContext';
 import apiClient from '../services/apiClient';
-import { sectorAPI, messageAPI, planetaryAPI, citadelAPI } from '../services/api';
+import { sectorAPI, messageAPI, planetaryAPI, citadelAPI, expeditionAPI, pioneerAPI, armoryAPI, tradingAPI, quantumAPI, portOwnershipAPI, playerAPI, shipAPI, firstLoginAPI } from '../services/api';
 import websocketService from '../services/websocket';
 import { ariaFeed } from '../components/mfd/ariaFeedStore';
 
@@ -509,13 +509,13 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const api = apiClient;
 
 
-  // Check first login status
+  // Check first login status — firstLoginAPI.getStatus (same URL).
   const checkFirstLoginStatus = async (): Promise<boolean> => {
     if (!user) return false;
     
     try {
-      const response = await api.get('/api/v1/first-login/status');
-      const needsFirstLogin = (response.data as any).requires_first_login;
+      const data = await firstLoginAPI.getStatus();
+      const needsFirstLogin = (data as any).requires_first_login;
       setNeedsFirstLogin(needsFirstLogin);
       return needsFirstLogin;
     } catch (error) {
@@ -582,8 +582,8 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     const id = window.setInterval(async () => {
       if (typeof document !== 'undefined' && document.hidden) return;
       try {
-        const res = await api.get('/api/v1/player/current-sector');
-        setCurrentSector(res.data);
+        const data = await playerAPI.getCurrentSector();
+        setCurrentSector(data);
       } catch {
         // Transient — the next tick retries.
       }
@@ -626,15 +626,15 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setError(null);
 
     try {
-      const response = await api.get('/api/v1/player/state');
-      setPlayerState(response.data as PlayerState);
+      const data = await playerAPI.getState();
+      setPlayerState(data as PlayerState);
       hasHydrated.current = true;
 
       // If player has a current ship, load its details
-      if ((response.data as any).current_ship_id) {
+      if ((data as any).current_ship_id) {
         try {
-          const shipResponse = await api.get('/api/v1/player/current-ship');
-          setCurrentShip(shipResponse.data as Ship);
+          const shipData = await shipAPI.getCurrentShip();
+          setCurrentShip(shipData as Ship);
         } catch (shipError) {
           console.warn('GameContext: Failed to load current ship details:', shipError);
           // Don't fail the whole state refresh if just ship loading fails
@@ -644,9 +644,12 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       console.error('GameContext: Error fetching player state:', error);
       
       // Provide more detailed error messages
-      if (error.response?.status === 401) {
+      // apiRequest attaches .status/.data (axios .response.* for raw calls).
+      const status = error.status ?? error.response?.status;
+      const payload = error.data ?? error.response?.data;
+      if (status === 401) {
         setError('Authentication required. Please log in again.');
-      } else if (error.response?.status === 404) {
+      } else if (status === 404) {
         // Check if this is because first login is needed
         checkFirstLoginStatus().then(needsFirst => {
           if (needsFirst) {
@@ -657,8 +660,8 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         }).catch(() => {
           setError('Player data not found. You may need to complete the first login process.');
         });
-      } else if (error.response?.data?.detail) {
-        setError(`Server error: ${error.response.data.detail}`);
+      } else if (payload?.detail) {
+        setError(`Server error: ${payload.detail}`);
       } else if (error.message) {
         setError(`Network error: ${error.message}`);
       } else {
@@ -674,17 +677,17 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  // Load player's ships
+  // Load player's ships — WO-WIRE-PLAYER-NAV-API: playerAPI.getShips.
   const loadShips = async () => {
     if (!user) return;
 
     try {
-      const response = await api.get('/api/v1/player/ships');
-      setShips(response.data || []);
+      const data = await playerAPI.getShips();
+      setShips(data || []);
       
       // If there's a current ship, update it
       if (playerState?.current_ship_id) {
-        const currentShip = response.data.find((ship: Ship) => ship.id === playerState.current_ship_id);
+        const currentShip = (data || []).find((ship: Ship) => ship.id === playerState.current_ship_id);
         if (currentShip) {
           setCurrentShip(currentShip);
         }
@@ -694,7 +697,8 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
       // Don't set global error - ships failing shouldn't block the game
       // But do handle auth errors specifically since they affect everything
-      if (error.response?.status === 401) {
+      const status = error.status ?? error.response?.status;
+      if (status === 401) {
         setError('Authentication required. Please log in again.');
         setShips([]);
       }
@@ -703,14 +707,14 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
   
-  // Set current ship
+  // Set current ship — shipAPI.setActive.
   const setActiveShip = async (shipId: string) => {
     if (!user) return;
     
     setError(null);
     
     try {
-      await api.post(`/api/v1/ships/${shipId}/set-active`);
+      await shipAPI.setActive(shipId);
       
       // Update player state and ships
       await refreshPlayerState();
@@ -721,18 +725,14 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
   
-  // Move to another sector
+  // Move to another sector — playerAPI.move (20s timeout preserved).
   const moveToSector = async (sectorId: number) => {
     if (!user || !playerState) return;
     
     setError(null);
     
     try {
-      // Hard ceiling so a stuck FOR UPDATE / wedged gameserver cannot leave
-      // the cockpit in "warp bubble forever" with no sector change.
-      const response = await api.post(`/api/v1/player/move/${sectorId}`, null, {
-        timeout: 20000,
-      });
+      const data = await playerAPI.move(sectorId);
 
       // Update player state after movement
       await refreshPlayerState();
@@ -741,27 +741,28 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       // doesn't show the pre-move sector
       await loadShips();
 
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error moving to sector:', error);
+      const payload = error.data ?? error.response?.data;
       const msg =
         error?.code === 'ECONNABORTED'
           ? 'Move timed out — server busy. Try again.'
-          : (error.response?.data?.detail || error.response?.data?.message || 'Failed to move to sector');
+          : (payload?.detail || payload?.message || error.message || 'Failed to move to sector');
       setError(msg);
       throw error;
     }
   };
   
-  // Get available moves from current sector
+  // Get available moves from current sector — playerAPI.getAvailableMoves.
   const getAvailableMoves = async () => {
     if (!user || !playerState) return;
 
     setError(null);
 
     try {
-      const response = await api.get('/api/v1/player/available-moves');
-      setAvailableMoves(response.data);
+      const data = await playerAPI.getAvailableMoves();
+      setAvailableMoves(data);
     } catch (error) {
       console.error('Error getting available moves:', error);
       setError('Failed to get available moves');
@@ -780,15 +781,16 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setError(null);
 
     try {
-      const response = await api.post<ScanLatentTunnelsResult>('/api/v1/player/scan-latent-tunnels');
+      const data = (await playerAPI.scanLatentTunnels()) as ScanLatentTunnelsResult;
       // A successful reveal changes what the player can navigate to — refresh.
-      if (response.data?.revealed) {
+      if (data?.revealed) {
         await getAvailableMoves();
       }
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error scanning for latent tunnels:', error);
-      setError(error.response?.data?.detail || error.response?.data?.message || 'Failed to scan for latent tunnels');
+      const payload = error.data ?? error.response?.data;
+      setError(payload?.detail || payload?.message || error.message || 'Failed to scan for latent tunnels');
       throw error;
     }
   };
@@ -798,10 +800,10 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!user || !playerState) return;
 
     try {
-      // Get sector info
+      // Get sector info — playerAPI.getCurrentSector.
       try {
-        const sectorResponse = await api.get('/api/v1/player/current-sector');
-        setCurrentSector(sectorResponse.data);
+        const sectorData = await playerAPI.getCurrentSector();
+        setCurrentSector(sectorData);
       } catch (sectorError) {
         console.warn('GameContext: Failed to load current sector:', sectorError);
         setCurrentSector(null);
@@ -831,28 +833,31 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
   
-  // Dock at a port
+  // Dock at a port — WO-WIRE-TRADING-API: tradingAPI.dock.
   const dockAtStation = async (stationId: string) => {
     if (!user || !playerState) return;
     
     setError(null);
     
     try {
-      const response = await api.post('/api/v1/trading/dock', { station_id: stationId });
+      const data = await tradingAPI.dock(stationId);
       
       // Update player state after docking
       await refreshPlayerState();
       
-      return response.data;
+      return data;
     } catch (error: any) {
       // 409 = every transient slip is taken; the server auto-enqueued us and
       // returned slip/queue/bump details. Surface that payload to callers
       // instead of throwing so the UI can offer the queue/bump flow inline.
-      if (error.response?.status === 409 && error.response?.data) {
-        return { full: true, ...error.response.data };
+      // apiRequest attaches .status/.data (axios .response.* for raw calls).
+      const status = error.status ?? error.response?.status;
+      const payload = error.data ?? error.response?.data;
+      if (status === 409 && payload) {
+        return { full: true, ...payload };
       }
       console.error('Error docking at port:', error);
-      setError(error.response?.data?.message || 'Failed to dock at port');
+      setError(payload?.message || error.message || 'Failed to dock at port');
       throw error;
     }
   };
@@ -864,8 +869,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!user) return null;
 
     try {
-      const response = await api.get(`/api/v1/trading/stations/${stationId}/slips`);
-      return response.data as StationSlips;
+      return (await tradingAPI.getSlips(stationId)) as StationSlips;
     } catch (error) {
       console.warn('GameContext: Failed to load station slips:', error);
       return null;
@@ -880,11 +884,9 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       throw new Error('Not ready to dock — please try again');
     }
 
-    let response;
+    let data;
     try {
-      response = await api.post(`/api/v1/trading/stations/${stationId}/slips/bump`, {
-        occupant_player_id: occupantPlayerId
-      });
+      data = await tradingAPI.bumpSlip(stationId, occupantPlayerId);
     } catch (error: any) {
       console.error('Error bumping slip occupant:', error);
       throw error;
@@ -898,26 +900,26 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       console.warn('Post-bump state refresh failed:', refreshError);
     }
 
-    return response.data;
+    return data;
   };
 
-  // Undock from current station
+  // Undock from current station — tradingAPI.undock.
   const undockFromStation = async () => {
     if (!user || !playerState) return;
 
     setError(null);
 
     try {
-      const response = await api.post('/api/v1/trading/undock');
+      const data = await tradingAPI.undock();
 
       // Update player state after undocking
       setTractorLock(null);
       await refreshPlayerState();
 
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error undocking from station:', error);
-      const detail = error.response?.data?.detail;
+      const detail = (error.data ?? error.response?.data)?.detail;
       if (
         detail &&
         typeof detail === 'object' &&
@@ -934,7 +936,8 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       } else {
         setError(
           (typeof detail === 'string' ? detail : null) ||
-            error.response?.data?.message ||
+            (error.data ?? error.response?.data)?.message ||
+            error.message ||
             'Failed to undock from station'
         );
       }
@@ -944,78 +947,72 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const clearTractorLock = () => setTractorLock(null);
 
-  // Get market info for a port
+  // Get market info for a port — tradingAPI.getMarket.
   // Note: This intentionally does NOT set global isLoading to avoid re-render cascades
   const getMarketInfo = async (stationId: string) => {
     if (!user) return;
 
     try {
-      const response = await api.get(`/api/v1/trading/market/${stationId}`);
-      setMarketInfo(response.data);
+      const data = await tradingAPI.getMarket(stationId);
+      setMarketInfo(data);
     } catch (error) {
       console.error('Error getting market info:', error);
       // Don't set global error state - let the component handle it
     }
   };
   
-  // Buy resource from a port
+  // Buy resource from a port — tradingAPI.buy.
   const buyResource = async (stationId: string, resourceType: string, quantity: number) => {
     if (!user || !playerState) return;
     
     setError(null);
     
     try {
-      const response = await api.post('/api/v1/trading/buy', {
-        station_id: stationId,
-        resource_type: resourceType,
-        quantity: quantity
-      });
+      const data = await tradingAPI.buy(stationId, resourceType, quantity);
       
       // Update player state and market info after purchase
       await refreshPlayerState();
       await getMarketInfo(stationId);
       
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error buying resource:', error);
-      setError(error.response?.data?.message || 'Failed to buy resource');
+      setError((error.data ?? error.response?.data)?.message || error.message || 'Failed to buy resource');
       throw error;
     }
   };
   
-  // Sell resource to a port
+  // Sell resource to a port — tradingAPI.sell.
   const sellResource = async (stationId: string, resourceType: string, quantity: number) => {
     if (!user || !playerState) return;
     
     setError(null);
     
     try {
-      const response = await api.post('/api/v1/trading/sell', {
-        station_id: stationId,
-        resource_type: resourceType,
-        quantity: quantity
-      });
+      const data = await tradingAPI.sell(stationId, resourceType, quantity);
       
       // Update player state and market info after sale
       await refreshPlayerState();
       await getMarketInfo(stationId);
       
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error selling resource:', error);
-      setError(error.response?.data?.message || 'Failed to sell resource');
+      setError((error.data ?? error.response?.data)?.message || error.message || 'Failed to sell resource');
       throw error;
     }
   };
   
-  // Claim an unclaimed planet (and automatically land on it)
+  // Claim an unclaimed planet (and automatically land on it).
+  // WO-WIRE-PLANET-CLAIM-SETTLE: expeditionAPI.settle (same URL — the claim
+  // route hosts the ADR-0091 CAS settle resolver).
   const claimPlanet = async (planetId: string) => {
     if (!user || !playerState) return;
 
     setError(null);
 
     try {
-      const response = await api.post(`/api/v1/planets/${planetId}/claim`);
+      const data = await expeditionAPI.settle(planetId);
 
       // Update player state after claiming (player is auto-landed).
       // Claiming spends credits and settles colonists from the ship's
@@ -1024,7 +1021,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       await loadShips();
       await exploreCurrentLocation();
 
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error claiming planet:', error);
       // 400 (requirements not met) and 403 (protected population hub) are
@@ -1038,19 +1035,17 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  // Land on a planet (only works for owned planets)
+  // Land on a planet (only works for owned planets).
+  // WO-WIRE-PLANETARY-LAND-LEAVE: planetaryAPI.land.
   const landOnPlanet = async (planetId: string) => {
     if (!user || !playerState) return;
 
     setError(null);
 
     try {
-      const response = await api.post('/api/v1/planets/land', { planet_id: planetId });
-
-      // Update player state after landing
+      const data = await planetaryAPI.land(planetId);
       await refreshPlayerState();
-
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error landing on planet:', error);
       setError(error.response?.data?.detail || error.response?.data?.message || 'Failed to land on planet');
@@ -1058,19 +1053,16 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  // Leave a planet
+  // Leave a planet — planetaryAPI.leave.
   const leavePlanet = async () => {
     if (!user || !playerState) return;
 
     setError(null);
 
     try {
-      const response = await api.post('/api/v1/planets/leave');
-
-      // Update player state after leaving
+      const data = await planetaryAPI.leave();
       await refreshPlayerState();
-
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error leaving planet:', error);
       setError(error.response?.data?.detail || error.response?.data?.message || 'Failed to leave planet');
@@ -1078,19 +1070,16 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  // Rename a planet you own
+  // Rename a planet you own — WO-WIRE-PLANETARY-RENAME: planetaryAPI.rename.
   const renamePlanet = async (planetId: string, newName: string) => {
     if (!user || !playerState) return;
 
     setError(null);
 
     try {
-      const response = await api.put(`/api/v1/planets/${planetId}/rename`, { name: newName });
-
-      // Refresh location data to show updated name
+      const data = await planetaryAPI.rename(planetId, newName);
       await exploreCurrentLocation();
-
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error renaming planet:', error);
       setError(error.response?.data?.detail || error.response?.data?.message || 'Failed to rename planet');
@@ -1111,7 +1100,8 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  // Update planet production allocation (colonist headcounts).
+  // Update planet production allocation — WO-WIRE-PLANETARY-ALLOCATE:
+  // planetaryAPI.allocateColonists (same URL; body is response payload).
   // PUT /allocate returns {success, allocations: {fuel, organics, equipment,
   // unused}, productionRates: {fuel, organics, equipment, colonists}}.
   // No global isLoading/error churn: the allocation sliders persist on a
@@ -1125,15 +1115,15 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!user) throw new Error('Not authenticated');
 
     try {
-      const response = await api.put(`/api/v1/planets/${planetId}/allocate`, allocations);
-      return response.data;
+      return await planetaryAPI.allocateColonists(planetId, allocations);
     } catch (error: any) {
       console.error('Error updating planet allocation:', error);
       throw error;
     }
   };
 
-  // Update planet defenses
+  // Update planet defenses — WO-WIRE-PLANETARY-UPDATE-DEFENSES:
+  // planetaryAPI.updateDefenses (same URL; still refresh state + explore).
   const updatePlanetDefenses = async (
     planetId: string,
     defenses: { turrets?: number; shields?: number; fighters?: number }
@@ -1143,10 +1133,10 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setError(null);
 
     try {
-      const response = await api.put(`/api/v1/planets/${planetId}/defenses`, defenses);
+      const data = await planetaryAPI.updateDefenses(planetId, defenses);
       await refreshPlayerState();
       await exploreCurrentLocation();
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error updating planet defenses:', error);
       setError(error.response?.data?.detail || 'Failed to update defenses');
@@ -1154,20 +1144,18 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  // Upgrade planet building
+  // Upgrade planet building — WO-WIRE-PLANETARY-UPGRADE-BUILDING:
+  // planetaryAPI.upgradeBuilding (same URL; still refresh state + explore).
   const upgradePlanetBuilding = async (planetId: string, buildingType: string, targetLevel: number) => {
     if (!user || !playerState) return;
 
     setError(null);
 
     try {
-      const response = await api.post(`/api/v1/planets/${planetId}/buildings/upgrade`, {
-        buildingType,
-        targetLevel
-      });
+      const data = await planetaryAPI.upgradeBuilding(planetId, buildingType, targetLevel);
       await refreshPlayerState();
       await exploreCurrentLocation();
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error upgrading building:', error);
       setError(error.response?.data?.detail || 'Failed to upgrade building');
@@ -1175,28 +1163,27 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  // Transfer colonists between ship and planet
+  // Transfer colonists between ship and planet —
+  // WO-WIRE-PLANETARY-TRANSFER-COLONISTS: planetaryAPI.transferColonists.
   const transferColonists = async (planetId: string, action: 'embark' | 'disembark', quantity: number) => {
     if (!user || !playerState) return;
 
     setError(null);
 
     try {
-      const response = await api.post(`/api/v1/planets/${planetId}/colonists/transfer`, {
-        action,
-        quantity
-      });
+      const data = await planetaryAPI.transferColonists(planetId, action, quantity);
       await refreshPlayerState();
       await loadShips();
       await exploreCurrentLocation();
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error transferring colonists:', error);
       // 400/403 are gameplay refusals (capacity, ownership, quantity) shown
       // inline by the transfer modal; reserve the global alert for the rest.
-      const status = error.response?.status;
+      // apiRequest attaches `.status` (axios `.response.status` for raw calls).
+      const status = error.status ?? error.response?.status;
       if (status !== 400 && status !== 403) {
-        setError(error.response?.data?.detail || 'Failed to transfer colonists');
+        setError(error.response?.data?.detail || error.message || 'Failed to transfer colonists');
       }
       throw error;
     }
@@ -1206,33 +1193,28 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   // Follow the Port Office mold: no global isLoading/error churn — the venue
   // surfaces 400/403 refusals inline. Mutations that move credits or cargo
   // refresh player + ship state so the cockpit stays authoritative.
+  // WO-WIRE-PIONEER-API: pioneerAPI.* (same URLs).
   const getPioneerOffice = async (): Promise<PioneerOffice> => {
-    const response = await api.get('/api/v1/pioneer/office');
-    return response.data;
+    return await pioneerAPI.getOffice();
   };
 
   const brokerMigrationContract = async (cohortTotal: number): Promise<MigrationContract> => {
-    const response = await api.post('/api/v1/pioneer/contracts', { cohort_total: cohortTotal });
-    return response.data;
+    return await pioneerAPI.brokerContract(cohortTotal);
   };
 
   const loadPioneerBatch = async (contractId: string, quantity: number): Promise<MigrationContract> => {
-    const response = await api.post(`/api/v1/pioneer/contracts/${contractId}/load`, { quantity });
+    const data = await pioneerAPI.loadBatch(contractId, quantity);
     await refreshPlayerState();
     await loadShips();
-    return response.data;
+    return data;
   };
 
   const listMigrationContracts = async (includeClosed = false): Promise<MigrationContract[]> => {
-    const response = await api.get('/api/v1/pioneer/contracts', {
-      params: { include_closed: includeClosed },
-    });
-    return response.data;
+    return await pioneerAPI.listContracts(includeClosed);
   };
 
   const cancelMigrationContract = async (contractId: string): Promise<MigrationContract> => {
-    const response = await api.post(`/api/v1/pioneer/contracts/${contractId}/cancel`);
-    return response.data;
+    return await pioneerAPI.cancelContract(contractId);
   };
 
   // --- Citadel: info, upgrades, and the credits-only safe ---
@@ -1240,72 +1222,67 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   // planetary ops console surfaces failures inline. Mutations that move
   // credits refresh player state so the header credits stay authoritative.
 
-  // Citadel info — GET /planets/{id}/citadel (owner-only; 400 otherwise).
-  // Returns {citadel_level, citadel_name, max_population, safe_storage,
-  // safe_credits, drone_capacity, is_upgrading, upgrade_remaining_seconds?,
-  // next_level: {level, name, upgrade_cost, upgrade_hours, resource_cost, ...} | null}
+  // Citadel info — WO-WIRE-CITADEL-GET-UPGRADE: citadelAPI.getInfo (same URL).
   const getCitadelInfo = async (planetId: string) => {
     if (!user) throw new Error('Not authenticated');
 
     try {
-      const response = await api.get(`/api/v1/planets/${planetId}/citadel`);
-      return response.data;
+      return await citadelAPI.getInfo(planetId);
     } catch (error: any) {
       console.error('Error getting citadel info:', error);
       throw error;
     }
   };
 
-  // Start a citadel upgrade — POST /planets/{id}/citadel/upgrade.
-  // Level 0→1 (Outpost) is free and instant; higher levels deduct credits
-  // and planet resources and run on a timer (CitadelService.start_upgrade).
+  // Start a citadel upgrade — citadelAPI.upgrade (same URL). Level 0→1
+  // (Outpost) is free and instant; higher levels deduct credits and planet
+  // resources and run on a timer (CitadelService.start_upgrade).
   const upgradeCitadel = async (planetId: string) => {
     if (!user || !playerState) throw new Error('Not authenticated');
 
     try {
-      const response = await api.post(`/api/v1/planets/${planetId}/citadel/upgrade`);
-      // Upgrades from level 1+ deduct player credits
+      const data = await citadelAPI.upgrade(planetId);
       await refreshPlayerState();
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error upgrading citadel:', error);
       throw error;
     }
   };
 
-  // Cancel an in-progress citadel upgrade — POST /planets/{id}/citadel/cancel.
-  // Refunds 50% of the credits paid (CitadelService.cancel_upgrade).
+  // Cancel an in-progress citadel upgrade — WO-WIRE-CITADEL-CANCEL-UPGRADE:
+  // citadelAPI.cancelUpgrade (same URL; still refresh player state).
   const cancelCitadelUpgrade = async (planetId: string) => {
     if (!user || !playerState) throw new Error('Not authenticated');
     try {
-      const response = await api.post(`/api/v1/planets/${planetId}/citadel/cancel`);
+      const data = await citadelAPI.cancelUpgrade(planetId);
       await refreshPlayerState();
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error cancelling citadel upgrade:', error);
       throw error;
     }
   };
 
-  // Defense buildings a planet's citadel level unlocks — GET
-  // /planets/{id}/buildings/available (CitadelService.get_available_buildings).
+  // Defense buildings a planet's citadel level unlocks —
+  // WO-WIRE-CITADEL-DEFENSE-BUILDINGS: citadelAPI.getAvailableBuildings.
   const getDefenseBuildings = async (planetId: string) => {
     try {
-      const response = await api.get(`/api/v1/planets/${planetId}/buildings/available`);
-      return response.data;
+      return await citadelAPI.getAvailableBuildings(planetId);
     } catch (error: any) {
       console.error('Error getting defense buildings:', error);
       return null;
     }
   };
 
-  // Construct a defense building — POST /planets/{id}/buildings/construct.
+  // Construct a defense building — citadelAPI.constructBuilding (same URL;
+  // still refresh player state).
   const buildDefenseBuilding = async (planetId: string, buildingType: string) => {
     if (!user || !playerState) throw new Error('Not authenticated');
     try {
-      const response = await api.post(`/api/v1/planets/${planetId}/buildings/construct`, { buildingType });
+      const data = await citadelAPI.constructBuilding(planetId, buildingType);
       await refreshPlayerState();
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error constructing defense building:', error);
       throw error;
@@ -1345,25 +1322,22 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   };
 
   // Move a commodity planet-stockpile -> protected citadel safe.
-  // POST /planets/{id}/citadel/deposit-commodity {commodity, amount}.
+  // WO-WIRE-CITADEL-COMMODITY-SAFE: citadelAPI.depositCommodity.
   const depositCommodityToSafe = async (planetId: string, commodity: string, amount: number) => {
     if (!user || !playerState) throw new Error('Not authenticated');
     try {
-      const response = await api.post(`/api/v1/planets/${planetId}/citadel/deposit-commodity`, { commodity, amount });
-      return response.data;
+      return await citadelAPI.depositCommodity(planetId, commodity, amount);
     } catch (error: any) {
       console.error('Error depositing commodity to citadel safe:', error);
       throw error;
     }
   };
 
-  // Move a commodity safe -> planet stockpile.
-  // POST /planets/{id}/citadel/withdraw-commodity {commodity, amount}.
+  // Move a commodity safe -> planet stockpile — citadelAPI.withdrawCommodity.
   const withdrawCommodityFromSafe = async (planetId: string, commodity: string, amount: number) => {
     if (!user || !playerState) throw new Error('Not authenticated');
     try {
-      const response = await api.post(`/api/v1/planets/${planetId}/citadel/withdraw-commodity`, { commodity, amount });
-      return response.data;
+      return await citadelAPI.withdrawCommodity(planetId, commodity, amount);
     } catch (error: any) {
       console.error('Error withdrawing commodity from citadel safe:', error);
       throw error;
@@ -1383,48 +1357,40 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  // Lay armored mines in the current sector (open space). POST /armory/deploy.
+  // Lay armored mines in the current sector (open space).
+  // WO-WIRE-ARMORY-DEPLOY: armoryAPI.deploy (same URL; still refresh state).
   const deployMines = async (quantity: number) => {
     if (!user || !playerState) throw new Error('Not authenticated');
     try {
-      const response = await api.post(`/api/v1/armory/deploy`, { quantity });
+      const data = await armoryAPI.deploy(quantity);
       await refreshPlayerState();
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error deploying mines:', error);
       throw error;
     }
   };
 
-  // Defense telemetry — GET /planets/{id}/defenses (no ownership required;
-  // useful for scouting). Returns {shieldGenerator: {level, maxLevel, name,
-  // strength, currentShields, regenPerHour, nextUpgrade: {level, name,
-  // strength, regenPerHour, cost} | null}, defenseLevel, damageReduction,
-  // turrets, fighters}.
+  // Defense telemetry — WO-WIRE-PLANETARY-DEFENSE-INFO: planetaryAPI.getDefenses.
   const getPlanetDefenseInfo = async (planetId: string) => {
     if (!user) throw new Error('Not authenticated');
 
     try {
-      const response = await api.get(`/api/v1/planets/${planetId}/defenses`);
-      return response.data;
+      return await planetaryAPI.getDefenses(planetId);
     } catch (error: any) {
       console.error('Error getting planet defense info:', error);
       throw error;
     }
   };
 
-  // Upgrade the planet's shield generator by one level — POST
-  // /planets/{id}/shields/upgrade. Returns {shieldGenerator: {level, name,
-  // strength, regenPerHour, maxLevel}, creditsCost, creditsRemaining,
-  // nextUpgradeCost}; errors arrive as 400 detail strings.
+  // Upgrade the planet's shield generator — planetaryAPI.upgradeShields.
   const upgradeShields = async (planetId: string) => {
     if (!user || !playerState) throw new Error('Not authenticated');
 
     try {
-      const response = await api.post(`/api/v1/planets/${planetId}/shields/upgrade`);
-      // Upgrade deducts player credits
+      const data = await planetaryAPI.upgradeShields(planetId);
       await refreshPlayerState();
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error upgrading shields:', error);
       throw error;
@@ -1436,14 +1402,14 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   // the Port Office venue surfaces failures inline. Mutations that move
   // credits (escrowed offers, treasury withdrawals, forced sales) refresh
   // player state so the header credits stay authoritative.
+  // WO-WIRE-PORT-OWNERSHIP-API: portOwnershipAPI.* (same URLs).
 
   // Registry board — every station currently listed for sale in scope
   const getPortListings = async (): Promise<unknown> => {
     if (!user) throw new Error('Not authenticated');
 
     try {
-      const response = await api.get('/api/v1/port-ownership/listings');
-      return response.data;
+      return await portOwnershipAPI.getListings();
     } catch (error: any) {
       console.error('Error getting port listings:', error);
       throw error;
@@ -1457,8 +1423,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!user) throw new Error('Not authenticated');
 
     try {
-      const response = await api.get(`/api/v1/port-ownership/stations/${stationId}/listing`);
-      return response.data;
+      return await portOwnershipAPI.getListing(stationId);
     } catch (error: any) {
       console.error('Error getting station listing:', error);
       throw error;
@@ -1470,8 +1435,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!user || !playerState) throw new Error('Not authenticated');
 
     try {
-      const response = await api.post(`/api/v1/port-ownership/stations/${stationId}/list`);
-      return response.data;
+      return await portOwnershipAPI.listStation(stationId);
     } catch (error: any) {
       console.error('Error listing station for sale:', error);
       throw error;
@@ -1483,12 +1447,10 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!user || !playerState) throw new Error('Not authenticated');
 
     try {
-      const response = await api.post(`/api/v1/port-ownership/stations/${stationId}/offer`, {
-        bid: bidAmount
-      });
+      const data = await portOwnershipAPI.placeOffer(stationId, bidAmount);
       // Escrow debits credits at offer time
       await refreshPlayerState();
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error placing station offer:', error);
       throw error;
@@ -1500,8 +1462,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!user) throw new Error('Not authenticated');
 
     try {
-      const response = await api.get('/api/v1/port-ownership/my-stations');
-      return response.data;
+      return await portOwnershipAPI.getMyStations();
     } catch (error: any) {
       console.error('Error getting my stations:', error);
       throw error;
@@ -1513,10 +1474,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!user || !playerState) throw new Error('Not authenticated');
 
     try {
-      const response = await api.post(`/api/v1/port-ownership/stations/${stationId}/tax`, {
-        rate: taxRate
-      });
-      return response.data;
+      return await portOwnershipAPI.setTax(stationId, taxRate);
     } catch (error: any) {
       console.error('Error setting station tax:', error);
       throw error;
@@ -1528,12 +1486,10 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!user || !playerState) throw new Error('Not authenticated');
 
     try {
-      const response = await api.post(`/api/v1/port-ownership/stations/${stationId}/withdraw`, {
-        amount
-      });
+      const data = await portOwnershipAPI.withdraw(stationId, amount);
       // Withdrawal credits the player
       await refreshPlayerState();
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error withdrawing station treasury:', error);
       throw error;
@@ -1546,8 +1502,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!user) throw new Error('Not authenticated');
 
     try {
-      const response = await api.get(`/api/v1/port-ownership/stations/${stationId}/takeover`);
-      return response.data;
+      return await portOwnershipAPI.getTakeoverStatus(stationId);
     } catch (error: any) {
       console.error('Error getting takeover status:', error);
       throw error;
@@ -1559,8 +1514,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!user || !playerState) throw new Error('Not authenticated');
 
     try {
-      const response = await api.post(`/api/v1/port-ownership/stations/${stationId}/takeover/launch`);
-      return response.data;
+      return await portOwnershipAPI.launchTakeover(stationId);
     } catch (error: any) {
       console.error('Error launching takeover campaign:', error);
       throw error;
@@ -1576,12 +1530,10 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!user || !playerState) throw new Error('Not authenticated');
 
     try {
-      const response = await api.post(`/api/v1/port-ownership/stations/${stationId}/takeover/counter`, {
-        action
-      });
+      const data = await portOwnershipAPI.counterTakeover(stationId, action);
       // 'accept' transfers ownership + sale proceeds atomically
       await refreshPlayerState();
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error countering takeover:', error);
       throw error;
@@ -1696,13 +1648,14 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   // These follow the Port Office mold: no global isLoading/error churn — the
   // Quantum Drive console surfaces failures inline. Status is a lightweight
   // read; actions that spend turns/shards/charges refresh the affected state.
+  // WO-WIRE-QUANTUM-API: quantumAPI.* (same URLs).
 
   const refreshQuantumStatus = async () => {
     if (!user) return;
 
     try {
-      const response = await api.get('/api/v1/quantum/status');
-      setQuantumStatus(response.data as QuantumStatus);
+      const data = await quantumAPI.getStatus();
+      setQuantumStatus(data as QuantumStatus);
     } catch (error) {
       console.warn('GameContext: Failed to load quantum status:', error);
       setQuantumStatus(null);
@@ -1795,11 +1748,11 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!user || !playerState) throw new Error('Not authenticated');
 
     try {
-      const response = await api.post('/api/v1/quantum/scan', payload);
+      const data = await quantumAPI.scan(payload as unknown as Record<string, unknown>);
       // Scan spends turns (and a shard on the far band) — keep the header
       // turns counter and the console's cooldowns authoritative.
       await Promise.allSettled([refreshPlayerState(), refreshQuantumStatus()]);
-      return response.data as QuantumScanResult;
+      return data as QuantumScanResult;
     } catch (error: any) {
       console.error('Error running quantum scan:', error);
       throw error;
@@ -1810,9 +1763,9 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const quantumJump = async (payload: QuantumBearing): Promise<QuantumJumpResult> => {
     if (!user || !playerState) throw new Error('Not authenticated');
 
-    let response;
+    let data;
     try {
-      response = await api.post('/api/v1/quantum/jump', payload);
+      data = await quantumAPI.jump(payload as unknown as Record<string, unknown>);
     } catch (error: any) {
       console.error('Error committing quantum jump:', error);
       throw error;
@@ -1828,7 +1781,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       console.warn('Post-jump state refresh failed:', refreshError);
     }
 
-    return response.data as QuantumJumpResult;
+    return data as QuantumJumpResult;
   };
 
   // Refine 1 quantum shard into 1 charge on the current Warp Jumper
@@ -1837,9 +1790,9 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!user || !playerState) throw new Error('Not authenticated');
 
     try {
-      const response = await api.post('/api/v1/quantum/refine-charge', {});
+      const data = await quantumAPI.refineCharge();
       await refreshQuantumStatus();
-      return response.data as { quantum_charges: number; quantum_shards: number };
+      return data as { quantum_charges: number; quantum_shards: number };
     } catch (error: any) {
       console.error('Error refining quantum charge:', error);
       throw error;
@@ -1857,9 +1810,9 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!user || !playerState) throw new Error('Not authenticated');
 
     try {
-      const response = await api.post('/api/v1/quantum/harvest', {});
+      const data = await quantumAPI.harvest();
       await refreshQuantumStatus();
-      return response.data as QuantumHarvestResult;
+      return data as QuantumHarvestResult;
     } catch (error: any) {
       console.error('Error harvesting nebula:', error);
       throw error;

@@ -4,6 +4,7 @@ import { useGame } from '../../contexts/GameContext';
 import { regionOwnerAPI } from '../../services/api';
 import RegionInvitePanel from './RegionInvitePanel';
 import RegionTradeDockPanel from './RegionTradeDockPanel';
+import RegionTreatyPanel from './RegionTreatyPanel';
 
 /**
  * RegionOwnerControls — self-contained region/governance/owner-tools bundle
@@ -40,6 +41,7 @@ const RegionOwnerControls: React.FC = () => {
   // Region-funded TradeDock construction (WO-TD-RGF-1). Reuses the ownership
   // probe/state above rather than re-probing — same owner, same region.
   const [showRegionTradeDock, setShowRegionTradeDock] = useState(false);
+  const [showRegionTreaties, setShowRegionTreaties] = useState(false);
   // Pixel a11y REVISE #4 — the probe previously rendered nothing while
   // in-flight (buttons silently appeared/disappeared) and had no error
   // surface on a genuine transient failure, indistinguishable from the
@@ -164,6 +166,16 @@ const RegionOwnerControls: React.FC = () => {
           ◆ TRADEDOCK CONSTRUCTION
         </button>
       )}
+      {!loading && isRegionOwner && (
+        <button
+          type="button"
+          className="hud-region-treaty-btn"
+          onClick={() => setShowRegionTreaties(true)}
+          title="Manage regional treaties"
+        >
+          ◆ TREATIES
+        </button>
+      )}
 
       {/* Region-owner invite control — portal overlay escapes any dropdown's
           stacking context, same pattern as the original chip-hosted modal.
@@ -197,6 +209,22 @@ const RegionOwnerControls: React.FC = () => {
               regionName={ownedRegionName}
               isOwner={isRegionOwner}
               onClose={() => setShowRegionTradeDock(false)}
+            />
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {showRegionTreaties && isRegionOwner && ownedRegionId && createPortal(
+        <div
+          className="region-invite-overlay"
+          onClick={() => setShowRegionTreaties(false)}
+        >
+          <div className="region-invite-shell" onClick={(e) => e.stopPropagation()}>
+            <RegionTreatyPanel
+              regionId={ownedRegionId}
+              regionName={ownedRegionName}
+              onClose={() => setShowRegionTreaties(false)}
             />
           </div>
         </div>,

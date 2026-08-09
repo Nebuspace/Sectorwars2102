@@ -226,45 +226,6 @@ export class InputValidator {
 }
 
 /**
- * XSS Prevention utilities
- */
-export class XSSPrevention {
-  /**
-   * Escape HTML entities in a string
-   */
-  static escapeHtml(str: string): string {
-    const div = document.createElement('div');
-    div.textContent = str;
-    return div.innerHTML;
-  }
-
-  /**
-   * Create safe HTML from user content
-   */
-  static createSafeHtml(content: string): { __html: string } {
-    const sanitized = DOMPurify.sanitize(content, {
-      ALLOWED_TAGS: ['b', 'i', 'em', 'strong', 'br'],
-      ALLOWED_ATTR: []
-    });
-    
-    return { __html: sanitized };
-  }
-
-  /**
-   * Validate URL to prevent javascript: and data: protocols
-   */
-  static validateUrl(url: string): boolean {
-    try {
-      const parsed = new URL(url);
-      const allowedProtocols = ['http:', 'https:'];
-      return allowedProtocols.includes(parsed.protocol);
-    } catch {
-      return false;
-    }
-  }
-}
-
-/**
  * Security audit logger
  */
 export class SecurityAudit {

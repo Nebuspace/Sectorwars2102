@@ -99,7 +99,9 @@ vi.mock('../../../services/api', () => ({
   rankingAPI: {
     getRank: (...a: unknown[]) => mockGetRank(...a),
     getProgress: (...a: unknown[]) => mockGetProgress(...a),
-    getMedals: (...a: unknown[]) => mockGetMedals(...a),
+  },
+  medalsAPI: {
+    getMe: (...a: unknown[]) => mockGetMedals(...a),
   },
   gameAPI: {
     planetary: {

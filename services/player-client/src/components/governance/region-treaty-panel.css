@@ -1,0 +1,145 @@
+/* Treaty inbox — reuses invite panel chrome; compact action rows above fold. */
+
+.region-treaty-panel .ri-hud-sub {
+  margin-left: auto;
+  opacity: 0.7;
+  letter-spacing: 0.08em;
+}
+
+.region-treaty-panel .ri-close {
+  margin-left: 0.5rem;
+  background: transparent;
+  border: 1px solid rgba(0, 217, 255, 0.35);
+  color: #00d9ff;
+  cursor: pointer;
+  padding: 0.1rem 0.35rem;
+}
+
+.region-treaty-panel .ri-error {
+  margin: 0.4rem 0.5rem 0;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid rgba(255, 77, 109, 0.45);
+  color: #ff8da3;
+  font-size: 0.7rem;
+}
+
+.rt-primary,
+.rt-secondary,
+.rt-propose {
+  padding: 0.45rem 0.6rem;
+  position: relative;
+  z-index: 2;
+}
+
+.rt-section-title {
+  margin: 0 0 0.35rem;
+  font-size: 0.65rem;
+  letter-spacing: 0.18em;
+  color: #00d9ff;
+}
+
+.rt-muted {
+  margin: 0;
+  font-size: 0.7rem;
+  color: #9aa3ad;
+}
+
+.rt-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  max-height: 9rem;
+  overflow-y: auto;
+}
+
+.rt-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.35rem 0.45rem;
+  border: 1px solid rgba(0, 217, 255, 0.18);
+  border-radius: 2px;
+  background: rgba(0, 20, 28, 0.6);
+}
+
+.rt-row-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+  font-size: 0.7rem;
+}
+
+.rt-row-meta strong {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.rt-actions {
+  display: flex;
+  gap: 0.3rem;
+  flex-shrink: 0;
+}
+
+.rt-btn {
+  font-family: inherit;
+  font-size: 0.6rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 0.25rem 0.45rem;
+  border-radius: 2px;
+  cursor: pointer;
+  border: 1px solid rgba(0, 217, 255, 0.4);
+  background: rgba(0, 217, 255, 0.08);
+  color: #00d9ff;
+}
+
+.rt-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.rt-btn.accept {
+  border-color: rgba(0, 255, 127, 0.5);
+  color: #00ff7f;
+}
+
+.rt-btn.reject,
+.rt-btn.terminate {
+  border-color: rgba(255, 77, 109, 0.5);
+  color: #ff8da3;
+}
+
+.rt-form {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.rt-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-size: 0.6rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #9aa3ad;
+}
+
+.rt-form input,
+.rt-form select {
+  font-family: inherit;
+  font-size: 0.75rem;
+  padding: 0.3rem 0.4rem;
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(0, 217, 255, 0.3);
+  color: #fff;
+}
+
+.rt-btn.propose {
+  justify-self: start;
+  margin-top: 0.15rem;
+}
