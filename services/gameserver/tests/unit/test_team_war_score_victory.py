@@ -6,6 +6,7 @@ with_for_update + ascending lock order, mirrors declare_war tests.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import patch
 from uuid import uuid4
 
 from src.models.team import Team
@@ -65,6 +66,10 @@ def _team(*, team_id=None, wars=None):
 
 def _player(team_id):
     return SimpleNamespace(id=uuid4(), team_id=team_id)
+
+
+def _member(credits=0):
+    return SimpleNamespace(id=uuid4(), credits=credits)
 
 
 def _mutual_wars(a_id, b_id, a_score=None, b_score=None):
@@ -153,3 +158,63 @@ def test_record_pvp_kill_victory_at_threshold():
     assert event["victory_at"] == result["victory_at"]
     assert event["score"]["winner_us"] == tws.VICTORY_KILL_THRESHOLD
     assert event["threshold"] == tws.VICTORY_KILL_THRESHOLD
+
+
+def test_apply_victory_payout_credits_each_member():
+    """VICTORY_PAYOUT_PER_MEMBER (5,000cr, ratified 2026-08-09) credited to
+    every member of the winning team; duck-typed team/members, no ORM
+    instrumentation involved."""
+    members = [_member(credits=100), _member(credits=0), _member(credits=250)]
+    fake_team = SimpleNamespace(members=members)
+
+    total = tws._apply_victory_payout(fake_team)
+
+    assert total == 3 * tws.VICTORY_PAYOUT_PER_MEMBER
+    assert members[0].credits == 100 + tws.VICTORY_PAYOUT_PER_MEMBER
+    assert members[1].credits == tws.VICTORY_PAYOUT_PER_MEMBER
+    assert members[2].credits == 250 + tws.VICTORY_PAYOUT_PER_MEMBER
+
+
+def test_apply_victory_payout_handles_empty_members():
+    fake_team = SimpleNamespace(members=[])
+    assert tws._apply_victory_payout(fake_team) == 0
+
+
+def test_record_pvp_kill_victory_applies_payout():
+    """record_pvp_kill's victory branch calls _apply_victory_payout on the
+    winning team (attacker) and surfaces its return on the result dict.
+    Patched rather than exercising the real Team.members relationship —
+    that relationship requires mapped Player instances, out of scope for
+    this DB-free score/victory harness."""
+    a_id, b_id = uuid4(), uuid4()
+    n = tws.VICTORY_KILL_THRESHOLD - 1
+    a_wars, b_wars = _mutual_wars(
+        a_id, b_id,
+        a_score={"us": n, "them": 0},
+        b_score={"us": 0, "them": n},
+    )
+    a = _team(team_id=a_id, wars=a_wars)
+    b = _team(team_id=b_id, wars=b_wars)
+    db = _FakeSession([a, b])
+
+    with patch.object(tws, "_apply_victory_payout", return_value=2 * tws.VICTORY_PAYOUT_PER_MEMBER) as payout:
+        result = tws.record_pvp_kill(db, _player(a_id), _player(b_id))
+
+    payout.assert_called_once_with(a)
+    assert result["victory"] is True
+    assert result["victory_payout_total"] == 2 * tws.VICTORY_PAYOUT_PER_MEMBER
+
+
+def test_record_pvp_kill_non_victory_does_not_payout():
+    a_id, b_id = uuid4(), uuid4()
+    a_wars, b_wars = _mutual_wars(a_id, b_id)
+    a = _team(team_id=a_id, wars=a_wars)
+    b = _team(team_id=b_id, wars=b_wars)
+    db = _FakeSession([a, b])
+
+    with patch.object(tws, "_apply_victory_payout") as payout:
+        result = tws.record_pvp_kill(db, _player(a_id), _player(b_id))
+
+    payout.assert_not_called()
+    assert result["victory"] is False
+    assert "victory_payout_total" not in result

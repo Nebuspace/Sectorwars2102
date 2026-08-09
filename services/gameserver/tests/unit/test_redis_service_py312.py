@@ -8,7 +8,7 @@ redis-py >=4.2 absorbed the aioredis 2.x codebase as `redis.asyncio`, already
 present in this repo's dependencies (`redis = {extras = ["hiredis"], version
 = ">=5.0.1,<9.0.0"}` in pyproject.toml) -- this fix is an import swap, not a
 new dependency. `aioredis` itself is still pinned in pyproject.toml/
-poetry.lock, unused; pruning it needs a Max-blessed lockfile regen, not
+poetry.lock, unused; pruning it needs a human-blessed lockfile regen, not
 done here.
 
 A second, previously-masked latent bug in the same file is also pinned here:

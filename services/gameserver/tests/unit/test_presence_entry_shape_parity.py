@@ -105,7 +105,7 @@ class TestHealedEntryMatchesOrganicArrivalEntry:
         assert set(organic.keys()) == set(healed.keys())
         assert organic == healed
         # 2026-07-16 in-window correction: JSON null, not the literal
-        # string "None" -- the string was the ACTUAL live bug (Max's
+        # string "None" -- the string was the ACTUAL live bug (human's
         # windshield contact popup rendered "None" verbatim; the client's
         # own `||`-fallback chains handle null correctly but treat a
         # truthy string-"None" as real data).

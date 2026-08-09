@@ -602,7 +602,7 @@ class TestEscrowConservationEndToEnd:
         # (d) insurance_pool_reserve zeroed after crediting -- mirrors
         # sweep_expired_dispute_window's own escrow_amount zero-out idiom.
         assert contract.insurance_pool_reserve == Decimal("0")
-        # (e) escrow_amount LEFT NON-ZERO (Max ruling, abandon()-parity --
+        # (e) escrow_amount LEFT NON-ZERO (human ruling, abandon()-parity --
         # abandon()/the dispute-window sweep don't zero it after their own
         # full-escrow refunds either; a uniform-zero-terminal-escrow
         # invariant is a separate, un-invented follow-up).
@@ -701,7 +701,7 @@ class TestEscrowConservationEndToEnd:
     def test_accepted_expiry_charges_acceptor_and_holds_escrow(self) -> None:
         """WO-DRIFT-econ-accepted-deadline-expiry -- the ACCEPTED-deadline
         twin of test_post_to_expire_refunds_issuer_and_conserves_the_sum
-        above. WO-CONTRACT-2b-HOLD-ESCROW (Max R, option C): the issuer-
+        above. WO-CONTRACT-2b-HOLD-ESCROW (human R, option C): the issuer-
         refund half no longer happens HERE -- escrow stays HELD through
         the 48h dispute window (see `sweep_expired_dispute_window`'s own
         docstring for the eventual undisputed refund, or `file_dispute`/

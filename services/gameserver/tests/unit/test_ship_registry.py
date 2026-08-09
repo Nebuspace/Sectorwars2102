@@ -151,6 +151,36 @@ class TestBeforeInsertListener:
 
         assert target.registration_number == "REG-FIXD-2103"
 
+    def test_assigns_a_well_formed_hatch_pin(self) -> None:
+        # WO-BUILD-SHIP-EJECT-BOARD-REGISTRY-STATES: hatch_pin_code existed
+        # as a dormant column with zero writers anywhere in the codebase
+        # before this WO -- ship-registry.md "Hatch pin lock" describes a
+        # randomly-generated pin set at ship creation, so this hooks the
+        # same before_insert listener registration_number already uses.
+        target = Ship(id=uuid.uuid4(), owner_id=uuid.uuid4())
+        assert target.hatch_pin_code is None
+
+        _assign_registration_fields(None, _FakeNoCollisionConnection(), target)
+
+        assert re.match(r"^[A-Z0-9]{6}$", target.hatch_pin_code)
+
+    def test_does_not_overwrite_an_already_set_hatch_pin(self) -> None:
+        target = Ship(id=uuid.uuid4(), owner_id=uuid.uuid4(), hatch_pin_code="FIXED1")
+
+        _assign_registration_fields(None, _FakeNoCollisionConnection(), target)
+
+        assert target.hatch_pin_code == "FIXED1"
+
+    def test_npc_ship_with_no_owner_still_gets_a_hatch_pin(self) -> None:
+        # Unlike registered_owner_id (which stays NULL for an ownerless
+        # NPC hull), the pin gates BOARDING, not ownership -- an NPC ship
+        # is still a real hull with a hatch, so it still gets one.
+        target = Ship(id=uuid.uuid4(), owner_id=None, is_npc=True)
+
+        _assign_registration_fields(None, _FakeNoCollisionConnection(), target)
+
+        assert re.match(r"^[A-Z0-9]{6}$", target.hatch_pin_code)
+
     def test_does_not_overwrite_an_already_set_registered_owner_id(self) -> None:
         preset_owner = uuid.uuid4()
         different_owner = uuid.uuid4()

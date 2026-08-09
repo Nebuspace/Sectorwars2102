@@ -1,4 +1,4 @@
-"""P0-FIX-PRESENCE-MIRROR (Max two-seat repro, 2026-07-16): a player's
+"""P0-FIX-PRESENCE-MIRROR (human two-seat repro, 2026-07-16): a player's
 authoritative pose can exist (Player.intrasystem_pose) while their OWN
 players_present entry has no pose keys at all -- ensure_player_pose's lazy
 create-on-GET (GET /helm/intrasystem/pose) never mirrors, only burn/halt do.

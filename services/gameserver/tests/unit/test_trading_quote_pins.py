@@ -219,6 +219,59 @@ class TestSharedTotalsHelpers:
         assert totals == {"total_earnings": 120, "tax_amount": 12, "net_earnings": 108}
 
 
+class TestPriceBandInvariantSurvivesTax:
+    """trading.md's "Price-stacking order" section (canon, blessed by human
+    2026-06-14, `.version-tag[data-version=release]`) makes the commodity
+    [min, max] band an absolute clamp on the modifier-stacked PER-UNIT
+    price -- rank/faction/personal/tariff/lever, clamped last. It does not
+    list tax in that modifier stack, and station/region tax is applied by
+    compute_buy_totals/compute_sell_totals as a separate line item on top
+    of (buy) / withheld from (sell) the already-clamped unit price, never
+    re-multiplied into it. Pin that: for a unit_price sitting AT a
+    commodity's band edge, tax_rate > 0 must never move the per-unit
+    component (total_cost/quantity, or total_earnings/quantity) outside
+    the band, even though the total transaction cost/payout (which
+    includes tax) legitimately can exceed unit_price * quantity."""
+
+    def test_buy_at_band_max_with_high_tax_keeps_per_unit_price_in_band(self):
+        from src.services.trading_service import COMMODITY_PRICE_RANGES
+
+        band = COMMODITY_PRICE_RANGES["exotic_technology"]
+        unit_price_at_max = band["max"]  # 300 -- already clamped by the caller
+        quantity = 10
+        totals = compute_buy_totals(unit_price_at_max, quantity, tax_rate=0.25)
+
+        per_unit_component = totals["total_cost"] / quantity
+        assert per_unit_component == unit_price_at_max
+        assert band["min"] <= per_unit_component <= band["max"]
+        # The tax is a real, separate add-on -- total_with_tax DOES exceed
+        # max*quantity, which is expected (tax is not a "price").
+        assert totals["total_with_tax"] > band["max"] * quantity
+        assert totals["tax_amount"] == int(unit_price_at_max * quantity * 0.25)
+
+    def test_sell_at_band_min_with_high_tax_keeps_per_unit_price_in_band(self):
+        from src.services.trading_service import COMMODITY_PRICE_RANGES
+
+        band = COMMODITY_PRICE_RANGES["ore"]
+        unit_price_at_min = band["min"]  # 15 -- already clamped by the caller
+        quantity = 10
+        totals = compute_sell_totals(unit_price_at_min, quantity, tax_rate=0.25)
+
+        per_unit_component = totals["total_earnings"] / quantity
+        assert per_unit_component == unit_price_at_min
+        assert band["min"] <= per_unit_component <= band["max"]
+        # Tax is withheld from the payout, not multiplied into the price --
+        # net_earnings is LOWER than min*quantity, never higher.
+        assert totals["net_earnings"] < band["min"] * quantity
+        assert totals["tax_amount"] == int(unit_price_at_min * quantity * 0.25)
+
+    def test_zero_tax_is_pure_passthrough_regression(self):
+        totals_buy = compute_buy_totals(50, 4, tax_rate=0.0)
+        assert totals_buy == {"total_cost": 200, "tax_amount": 0, "total_with_tax": 200}
+        totals_sell = compute_sell_totals(50, 4, tax_rate=0.0)
+        assert totals_sell == {"total_earnings": 200, "tax_amount": 0, "net_earnings": 200}
+
+
 @pytest.mark.asyncio
 class TestQuoteEqualsChargeBuy:
     """Each test calls get_trade_quote, THEN buy_resource, against the same

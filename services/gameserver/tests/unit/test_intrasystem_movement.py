@@ -30,7 +30,7 @@ def test_destination_weights_role_bias():
     assert trader["habitable"] > trader["barren"]
     assert science["barren"] > trader["barren"]
     assert abs(sum(default.values()) - 1.0) < 1e-9
-    # Ballpark Max asked for (~60/20/20), not exact.
+    # Ballpark human asked for (~60/20/20), not exact.
     assert 0.50 <= default["habitable"] <= 0.70
     assert 0.10 <= default["outbound"] <= 0.30
     assert 0.10 <= default["barren"] <= 0.30
@@ -96,7 +96,7 @@ def test_burn_orients_then_translates_straight():
 
 # ---------------------------------------------------------------------------
 # heading_deg normalized to [0,360) at every write site (WO-ISP-DOCKPROX+
-# QUEUE-ISP-WS-EMIT-THREAD item 3). Max's live fly-by observed 531deg
+# QUEUE-ISP-WS-EMIT-THREAD item 3). human's live fly-by observed 531deg
 # server-side -- a completed burn's arrival heading is face=prograde+360,
 # the SAME unwrapped "continuous spin" convention the client's own
 # otherShipFlightPose uses for its final_orient sweep (harmless there --

@@ -200,7 +200,7 @@ class TestFieldCompleteness:
         assert r.would_flag_suspect is True  # stranger, inside grace
 
     async def test_damage_type_key_is_absent(self):
-        """CargoWreck has no damage_type column (Max-parked NO-CANON) --
+        """CargoWreck has no damage_type column (human-parked NO-CANON) --
         the response must not fabricate one."""
         sector = _sector()
         wreck = _wreck(sector_uuid=sector.id)

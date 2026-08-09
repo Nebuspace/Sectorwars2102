@@ -80,7 +80,7 @@ class TestNoneTierIsFreeAtEverySize:
     station is a fee-free dock regardless of ship size. This is a deliberate
     LIVE-ECONOMY change from the old flat per-class fee table (every station
     used to charge >=25cr regardless of security posture); flagged for the
-    Max digest as the docking-fee faucet shrinking at undefended stations."""
+    human digest as the docking-fee faucet shrinking at undefended stations."""
 
     @pytest.mark.parametrize("size", [ShipSize.SMALL, ShipSize.MEDIUM, ShipSize.LARGE, ShipSize.CAPITAL])
     def test_free_docking_at_none_tier_station(self, size):
