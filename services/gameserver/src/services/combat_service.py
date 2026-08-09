@@ -1032,7 +1032,25 @@ class CombatService:
 
         # Resolve combat
         combat_result = self._resolve_ship_combat(attacker, defender, sector)
-        
+
+        # Salvage-break interruption (ship-registry.md "Salvage break" step
+        # 5: "combat involving the salvager interrupts the operation; the
+        # timer resets to zero, lock clears"). Applies to EITHER
+        # participant, regardless of outcome -- a salvager who gets into
+        # any fight loses their in-progress break, win or lose. Best-effort:
+        # a hiccup here must never break combat resolution.
+        try:
+            from src.services.ship_registry_service import cancel_salvage_break_for_salvager
+
+            cancel_salvage_break_for_salvager(self.db, attacker.id, reason="salvager in combat")
+            cancel_salvage_break_for_salvager(self.db, defender.id, reason="salvager in combat")
+        except Exception:
+            logger.exception(
+                "Salvage-break cancel-on-combat failed for attacker=%s defender=%s",
+                getattr(attacker, "id", None),
+                getattr(defender, "id", None),
+            )
+
         # Consume turns
         spend_turns(attacker, turn_cost)
         

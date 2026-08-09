@@ -2583,6 +2583,19 @@ class MovementService:
         from src.services.docking_service import release as _release_docking_slip
         _release_docking_slip(self.db, None, player)
 
+        # Salvage-break interruption (ship-registry.md "Salvage break" step
+        # 4: "leaving the sector ... cancels the operation and clears the
+        # row lock; the timer resets to zero"). Best-effort — a hiccup here
+        # must never strand a warp/travel move.
+        try:
+            from src.services.ship_registry_service import cancel_salvage_break_for_salvager
+            cancel_salvage_break_for_salvager(self.db, player.id, reason="salvager left sector")
+        except Exception:
+            logger.exception(
+                "Salvage-break cancel-on-sector-leave failed for player %s (non-fatal)",
+                player.id,
+            )
+
         # Update ship position
         if player.current_ship:
             player.current_ship.sector_id = destination_sector_id

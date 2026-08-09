@@ -403,6 +403,13 @@ PIN_RESET_APPLY_CHECK_SECONDS = int(
     os.environ.get("PIN_RESET_APPLY_CHECK_SECONDS", str(5 * 60))
 )
 
+# Salvage-break watchdog sweep pre-filter (ship-registry.md "Salvage break"
+# -- the shortest duration tier is 1h real-time, same real-time-deadline
+# shape as the pin-reset sweep directly above; same 5-minute cadence).
+SALVAGE_BREAK_APPLY_CHECK_SECONDS = int(
+    os.environ.get("SALVAGE_BREAK_APPLY_CHECK_SECONDS", str(5 * 60))
+)
+
 # Port operating-cost sweep pre-filter (WO-B3). The maintenance/upkeep accrual
 # + 3-month insolvency force-sell live in port_ownership_service.accrue_operating_
 # costs — a LAZY, idempotent engine that, before this sweep, only fired via the
@@ -788,6 +795,10 @@ _TRANSFER_CLAIM_AUTOCOMPLETE_LOCK_KEY = _mnemonic_lock_key("TCLM")
 # Hatch-pin reset apply sweep (ship-registry.md "Hatch pin lock" -- delayed
 # pin-reset take-effect). WO-BUILD-SHIP-PIN-PORT-RESET-DELAYED.
 _PIN_RESET_APPLY_LOCK_KEY = _mnemonic_lock_key("PINR")
+# Salvage-break watchdog sweep (ship-registry.md "Salvage break" -- auto-
+# clears the lock and unlocks the hatch at duration expiry).
+# WO-BUILD-SHIP-EJECT-BOARD-ROUTES.
+_SALVAGE_BREAK_APPLY_LOCK_KEY = _mnemonic_lock_key("SALV")
 _SUSTAINED_DRIP_LOCK_KEY = _mnemonic_lock_key("SDRP")
 _PORT_OPERATING_COSTS_LOCK_KEY = _mnemonic_lock_key("PORT")
 _STATION_RECOVERY_LOCK_KEY = _mnemonic_lock_key("STRC")
