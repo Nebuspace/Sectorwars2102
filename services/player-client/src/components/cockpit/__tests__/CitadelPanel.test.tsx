@@ -86,7 +86,8 @@ describe('CitadelPanel', () => {
     });
 
     expect(container.querySelector('.cp-siege-flag')?.textContent).toContain('SIEGE');
-    const siegeBtn = Array.from(container.querySelectorAll('.cp-action-btn')).at(-1) as HTMLButtonElement;
+    const btns = Array.from(container.querySelectorAll('.cp-action-btn')) as HTMLButtonElement[];
+    const siegeBtn = btns[btns.length - 1];
     expect(siegeBtn.classList.contains('danger')).toBe(true);
     expect(siegeBtn.getAttribute('title')).toBe('View active siege status');
   });
