@@ -646,6 +646,22 @@ export const shipRegistryAPI = {
       method: 'POST',
       body: JSON.stringify(pin ? { pin } : {}),
     }),
+
+  /** The current pilot (owner or borrower) changes the pin instantly --
+   * caller must be aboard `shipId`. */
+  setPin: (shipId: string, pin: string) =>
+    apiRequest(`/api/v1/ships/${shipId}/set-pin`, {
+      method: 'POST',
+      body: JSON.stringify({ pin }),
+    }),
+
+  /** Port-gated pin recovery for the registered owner -- 1h delayed
+   * take-effect, does not require being aboard. */
+  requestPinReset: (shipId: string, portId: string, pin: string) =>
+    apiRequest(`/api/v1/ships/${shipId}/request-pin-reset`, {
+      method: 'POST',
+      body: JSON.stringify({ port_id: portId, pin }),
+    }),
 };
 
 // Ranking & Reputation APIs
