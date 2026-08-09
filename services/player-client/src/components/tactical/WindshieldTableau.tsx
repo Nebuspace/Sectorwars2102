@@ -3,7 +3,7 @@ import apiClient from '../../services/apiClient';
 import { arrivalBearingForWarp, WARP_TURN_MS, WARP_MIN_CHARGE_MS, WARP_ARRIVE_MS, WARP_CHARGE_TIMEOUT_MS } from '../../services/warpCinematicBus';
 import { useAutopilot } from '../../contexts/AutopilotContext';
 import { useWindshieldFlight } from '../../contexts/WindshieldFlightContext';
-import type { SectorWreck } from '../../services/api';
+import { sectorAPI, type SectorWreck } from '../../services/api';
 import type { SpecialFormationSummary } from '../../contexts/GameContext';
 import type {
   HitMeta,
@@ -284,12 +284,12 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
     setSystem(null);
     setFetchFailed(false);
     setPopup(null);
-    apiClient
-      .get(`/api/v1/sectors/${sectorId}/contents`)
-      .then((res) => {
+    sectorAPI
+      .getContents(sectorId)
+      .then((data) => {
         if (cancelled) return;
-        setSystem(toStaticSystem(res.data));
-        const em = res.data?.engage_range_em;
+        setSystem(toStaticSystem(data));
+        const em = data?.engage_range_em;
         setEngageRangeEmFetched(typeof em === 'number' && em > 0 ? em : null);
       })
       .catch((err) => {
@@ -411,11 +411,11 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
     let cancelled = false;
     const { token, destinationSectorId } = warpDepart;
     setPreparedArrival((current) => (current?.token === token ? current : null));
-    apiClient
-      .get(`/api/v1/sectors/${destinationSectorId}/contents`)
-      .then((res) => {
+    sectorAPI
+      .getContents(destinationSectorId)
+      .then((data) => {
         if (cancelled) return;
-        const snapshot = toStaticSystem(res.data);
+        const snapshot = toStaticSystem(data);
         setPreparedArrival({
           token,
           sectorId: destinationSectorId,

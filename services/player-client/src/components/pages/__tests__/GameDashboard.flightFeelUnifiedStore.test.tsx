@@ -187,18 +187,12 @@ describe('GameDashboard — WO-UI2-FLIGHT-FEEL unified flight store (row APPROAC
     mockGetContents.mockReset();
     mockGetContents.mockResolvedValue(CONTENTS_SYSTEM);
     mockApiGet.mockReset();
-    // The real (unstubbed) WindshieldTableau ALSO fetches GET
-    // /api/v1/helm/intrasystem/pose on mount (server-authoritative pose
-    // hydration) through this SAME apiClient.get -- a blanket
-    // mockResolvedValue answers it with CONTENTS_SYSTEM-shaped data too,
-    // leaving `heading_deg` undefined and crashing the ship marker's
-    // `heading.toFixed(0)`. Route by URL: the pose endpoint rejects (matches
-    // the real backend's behavior when the endpoint 500s/lags deploy --
-    // WindshieldTableau's own .catch() silently keeps local flight).
+    // WindshieldTableau pose hydration still uses apiClient.get; contents
+    // go through sectorAPI.getContents (mocked above).
     mockApiGet.mockImplementation((url: string) =>
       String(url).includes('/helm/intrasystem/pose')
         ? Promise.reject(new Error('no pose mock in this suite'))
-        : Promise.resolve({ data: CONTENTS_SYSTEM })
+        : Promise.resolve({ data: {} })
     );
     autopilotState = {
       course: null, lastPlot: null, status: 'idle', pauseReason: null,
@@ -252,7 +246,6 @@ describe('GameDashboard — WO-UI2-FLIGHT-FEEL unified flight store (row APPROAC
   it('mounts the real windshield + real SOLAR row for Alpha, fed by the SAME /contents fetch', async () => {
     await mount();
     expect(mockGetContents).toHaveBeenCalledWith(100);
-    expect(mockApiGet).toHaveBeenCalledWith('/api/v1/sectors/100/contents');
     expect(container.querySelector('.ssv-tableau .shipmk')).not.toBeNull();
     const approachBtn = container.querySelector('[aria-label="Approach Alpha"]') as HTMLButtonElement;
     expect(approachBtn).toBeTruthy();
