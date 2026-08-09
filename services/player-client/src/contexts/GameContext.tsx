@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { useAuth } from './AuthContext';
 import apiClient from '../services/apiClient';
-import { sectorAPI, messageAPI, planetaryAPI, citadelAPI, expeditionAPI, pioneerAPI, armoryAPI, tradingAPI } from '../services/api';
+import { sectorAPI, messageAPI, planetaryAPI, citadelAPI, expeditionAPI, pioneerAPI, armoryAPI, tradingAPI, quantumAPI } from '../services/api';
 import websocketService from '../services/websocket';
 import { ariaFeed } from '../components/mfd/ariaFeedStore';
 
@@ -1660,13 +1660,14 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   // These follow the Port Office mold: no global isLoading/error churn — the
   // Quantum Drive console surfaces failures inline. Status is a lightweight
   // read; actions that spend turns/shards/charges refresh the affected state.
+  // WO-WIRE-QUANTUM-API: quantumAPI.* (same URLs).
 
   const refreshQuantumStatus = async () => {
     if (!user) return;
 
     try {
-      const response = await api.get('/api/v1/quantum/status');
-      setQuantumStatus(response.data as QuantumStatus);
+      const data = await quantumAPI.getStatus();
+      setQuantumStatus(data as QuantumStatus);
     } catch (error) {
       console.warn('GameContext: Failed to load quantum status:', error);
       setQuantumStatus(null);
@@ -1759,11 +1760,11 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!user || !playerState) throw new Error('Not authenticated');
 
     try {
-      const response = await api.post('/api/v1/quantum/scan', payload);
+      const data = await quantumAPI.scan(payload as unknown as Record<string, unknown>);
       // Scan spends turns (and a shard on the far band) — keep the header
       // turns counter and the console's cooldowns authoritative.
       await Promise.allSettled([refreshPlayerState(), refreshQuantumStatus()]);
-      return response.data as QuantumScanResult;
+      return data as QuantumScanResult;
     } catch (error: any) {
       console.error('Error running quantum scan:', error);
       throw error;
@@ -1774,9 +1775,9 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const quantumJump = async (payload: QuantumBearing): Promise<QuantumJumpResult> => {
     if (!user || !playerState) throw new Error('Not authenticated');
 
-    let response;
+    let data;
     try {
-      response = await api.post('/api/v1/quantum/jump', payload);
+      data = await quantumAPI.jump(payload as unknown as Record<string, unknown>);
     } catch (error: any) {
       console.error('Error committing quantum jump:', error);
       throw error;
@@ -1792,7 +1793,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       console.warn('Post-jump state refresh failed:', refreshError);
     }
 
-    return response.data as QuantumJumpResult;
+    return data as QuantumJumpResult;
   };
 
   // Refine 1 quantum shard into 1 charge on the current Warp Jumper
@@ -1801,9 +1802,9 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!user || !playerState) throw new Error('Not authenticated');
 
     try {
-      const response = await api.post('/api/v1/quantum/refine-charge', {});
+      const data = await quantumAPI.refineCharge();
       await refreshQuantumStatus();
-      return response.data as { quantum_charges: number; quantum_shards: number };
+      return data as { quantum_charges: number; quantum_shards: number };
     } catch (error: any) {
       console.error('Error refining quantum charge:', error);
       throw error;
@@ -1821,9 +1822,9 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!user || !playerState) throw new Error('Not authenticated');
 
     try {
-      const response = await api.post('/api/v1/quantum/harvest', {});
+      const data = await quantumAPI.harvest();
       await refreshQuantumStatus();
-      return response.data as QuantumHarvestResult;
+      return data as QuantumHarvestResult;
     } catch (error: any) {
       console.error('Error harvesting nebula:', error);
       throw error;
