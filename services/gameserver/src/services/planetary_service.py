@@ -29,13 +29,11 @@ SIEGE_MORALE_LOSS_PER_TURN = 5  # Morale % lost per turn under siege
 SIEGE_PRODUCTION_PENALTY = 0.25 # 25% production reduction during siege
 
 # Siege resource theft (defense.md "Resource theft" — "a fraction of generated
-# commodities should transfer to the besieger"; previously 📐 Design-only —
-# the production PENALTY above was applied but no transfer ever happened).
-# NO-CANON: the doc gives no figure, only the mechanic — 0.15 (15% of each
-# tick's newly-produced fuel/organics/equipment, ON TOP OF the existing 25%
-# production penalty, i.e. the planet nets 0.75 × 0.85 ≈ 63.75% of its
-# unbesieged output) is a conservative implementer default, flagged for a
-# DECISIONS.md ruling. Applied in _apply_siege_resource_theft below.
+# commodities should transfer to the besieger"). Canon production-diversion
+# fraction: 0.15 (15% of each tick's newly-produced fuel/organics/equipment,
+# ON TOP OF the existing 25% production penalty → planet nets ≈63.75% of
+# unbesieged output). Distinct from SIEGE_STOCKPILE_SKIM_FRACTION (stockpile
+# plunder). Applied in _apply_siege_resource_theft below.
 SIEGE_RESOURCE_THEFT_FRACTION = 0.15
 
 # Low-habitability resource-cost penalty (WO-F5; canon anchor
@@ -190,13 +188,11 @@ SIEGE_TURN_HOURS = 24.0
 # so the skim is idempotent across Loop-A re-reads / scheduler sweeps: no
 # double-skim, no skim per Loop-A pass.
 #
-# NO-CANON: defense.md says "a fraction" but gives no number. SIEGE_STOCKPILE_
-# SKIM_FRACTION = 0.05 (5% of each stockpile commodity per applied siege turn) is
-# a deliberately CONSERVATIVE choice — at 5%/day a stockpile decays geometrically
-# (≈ half drained after ~14 siege turns), so a sustained siege meaningfully bleeds
-# the colony without instantly emptying it on the first applied turn. FLAGGED for
-# DECISIONS; easier to raise than to claw back an over-tuned plunder faucet.
-SIEGE_STOCKPILE_SKIM_FRACTION = 0.05  # NO-CANON: stockpile fraction skimmed per applied siege turn
+# Ratified 2026-08-06 (DECISIONS.md siege-stockpile-skim-fraction): 0.05
+# (5% of each stockpile commodity per applied siege turn). Deliberately
+# conservative — ≈ half drained after ~14 siege turns. Distinct from the
+# already-canon SIEGE_RESOURCE_THEFT_FRACTION production diversion.
+SIEGE_STOCKPILE_SKIM_FRACTION = 0.05
 # The three plunderable planetary stockpile columns and the cargo-contents key
 # each maps to (matching combat_service._transfer_cargo's commodity contents).
 SIEGE_STOCKPILE_COMMODITIES = (
