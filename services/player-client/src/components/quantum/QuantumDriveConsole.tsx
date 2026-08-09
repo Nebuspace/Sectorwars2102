@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useGame, type QuantumBearing, type QuantumScanResult, type QuantumJumpResult, type QuantumHarvestResult } from '../../contexts/GameContext';
-import apiClient from '../../services/apiClient';
+import { quantumAPI } from '../../services/api';
 import { TurnsIcon } from '../icons/TurnsIcon';
 import QuantumBearingViewport, { type MinimapSector } from './QuantumBearingViewport';
 import './quantum-drive.css';
@@ -129,11 +129,11 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
     setMinimap((current) =>
       current && current.origin_sector_id !== originSectorId ? null : current
     );
-    apiClient
-      .get('/api/v1/quantum/minimap')
-      .then((response) => {
+    quantumAPI
+      .getMinimap()
+      .then((data) => {
         if (cancelled) return;
-        const chart = response.data as QuantumMinimap;
+        const chart = data as QuantumMinimap;
         // Stale-response guard: a jump can land between request and reply;
         // a chart whose origin no longer matches our sector is garbage.
         if (chart.origin_sector_id === originSectorId) setMinimap(chart);
