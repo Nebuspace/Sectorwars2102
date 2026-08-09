@@ -1217,6 +1217,10 @@ export const sectorAPI = {
   getPlanets: (sectorId: number) => apiRequest(`/api/v1/sectors/${sectorId}/planets`),
   getStations: (sectorId: number) => apiRequest(`/api/v1/sectors/${sectorId}/stations`),
 
+  /** Intrasystem snapshot (star / decorative bodies / engage range). */
+  getContents: (sectorId: number) =>
+    apiRequest(`/api/v1/sectors/${sectorId}/contents`),
+
   // List salvageable wrecks in a sector (numeric, cockpit-native sector id —
   // the server resolves it to the sector's UUID internally).
   sectorWrecks: (sectorId: number): Promise<SectorWreck[]> =>

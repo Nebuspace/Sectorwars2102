@@ -56,10 +56,8 @@ const mockSectorWrecks = vi.fn();
 vi.mock('../../../services/api', () => ({
   navAPI: { getChart: (...a: unknown[]) => mockGetChart(...a) },
   regionOwnerAPI: { getMyRegion: (...a: unknown[]) => mockGetMyRegion(...a) },
-  sectorAPI: {
-    sectorWrecks: (...a: unknown[]) => mockSectorWrecks(...a),
-    salvageWreck: vi.fn(),
-  },
+  sectorAPI: { sectorWrecks: (...a: unknown[]) => mockSectorWrecks(...a),
+    salvageWreck: vi.fn(), getContents: vi.fn().mockResolvedValue({ star: null, bodies: [] }), },
   combatAPI: { engage: vi.fn(), getStatus: vi.fn() },
   greyStatusAPI: { getStatus: () => Promise.resolve({ isGrey: false, kind: null, greyUntil: null, remainingSeconds: 0, clearFineCredits: null }) },
   planetaryAPI: { getOwnedPlanets: () => Promise.resolve({ planets: [] }) },

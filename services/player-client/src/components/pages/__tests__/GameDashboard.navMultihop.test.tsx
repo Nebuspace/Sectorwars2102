@@ -55,7 +55,7 @@ vi.mock('../../../services/api', () => ({
   regionOwnerAPI: { getMyRegion: (...a: unknown[]) => mockGetMyRegion(...a) },
   // WO-UI2-LIVING-WINDSHIELD: the flight SSV's SCAN-layer wrecks fetch --
   // not under test here, resolved empty so the mount doesn't reject.
-  sectorAPI: { sectorWrecks: () => Promise.resolve([]) },
+  sectorAPI: { sectorWrecks: () => Promise.resolve([]), getContents: vi.fn().mockResolvedValue({ star: null, bodies: [] }), },
 }));
 
 // WO-UI-MAX-BATCH-1 item 9: GameDashboard's own SOLAR SYSTEM[SYSTEM]
