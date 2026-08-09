@@ -249,7 +249,7 @@ def test_k1b5_cold_start_gate():
     assert isinstance(S.derive_citadel_level(s), int)                        # (3) derive coherent (no crash)
     r = S.confirm_biome(s, "OCEANIC")                                        # (4) capstone READ works
     assert set(r) == {"confirmed", "hold_ticks", "axes"} and r["hold_ticks"] == 0
-    assert getattr(p, "type", None) is None                                  # type-reclass NOT written (Max-gated)
+    assert getattr(p, "type", None) is None                                  # type-reclass NOT written (human-gated)
 
 
 def test_confirm_biome_in_and_out_of_band():

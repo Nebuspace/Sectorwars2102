@@ -1,7 +1,7 @@
 """Unit tests for the WO-IL6 redeem-at-signup primitives + the no-invite parity.
 
 Brief: audit/design-briefs/invite-link-onramp.md §4.6-8 + Review corrections +
-Max rulings. AUTH-gated surface — built + tested, NOT deployed without sign-off.
+human rulings. AUTH-gated surface — built + tested, NOT deployed without sign-off.
 
 These are mock-DB unit tests (Tier A — no real DB), mirroring
 tests/unit/test_region_invite_service.py. They pin the SYNC, NO-COMMIT inline

@@ -363,7 +363,7 @@ class TestCreateRegionFundedConstructionService:
 
     def test_region_tradedock_resources_dict_pinned(self) -> None:
         # Byte-identical pin — the canon-"technology"-vs-code-"organics"
-        # divergence is Max-gated, not this WO's to resolve.
+        # divergence is human-gated, not this WO's to resolve.
         assert cs.REGION_TRADEDOCK_RESOURCES == {
             "ore": 500_000, "equipment": 300_000, "organics": 200_000,
         }
@@ -669,7 +669,7 @@ class TestGetMyRegionTreasuryBalance:
         assert exc.value.status_code == 404
 
 
-# --- claim() completion semantics: TD-RGF batch-1 #3a (Max ruling, 2026-07-10) -
+# --- claim() completion semantics: TD-RGF batch-1 #3a (human ruling, 2026-07-10) -
 #
 # Resolves the KNOWN GAP claim()'s own pre-ruling docstring flagged: a
 # TRADEDOCK_CONSTRUCTION reservation reaching 'complete' must finalize the

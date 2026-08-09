@@ -1,6 +1,6 @@
 """WO-ARIA-COST-CAPS -- converges ai_security_service.py's cost engine on
 canon (OPERATIONS/aria.md + SYSTEMS/aria-dialogue.md, both amended
-2026-07-10 per Max's GO on ADR-0092 §4) and enforces it on both chat paths
+2026-07-10 per human's GO on ADR-0092 §4) and enforces it on both chat paths
 BEFORE any real LLM spend exists.
 
 No DB needed: AISecurityService is a pure in-memory singleton (dict-backed

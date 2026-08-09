@@ -202,7 +202,7 @@ def test_combat_log_attacker_drones_snapshot_reads_attack_drones():
     planet, port, plus attack_npc_ship) snapshot attacker_drones= from
     attacker.attack_drones -- a real Player row.
 
-    The 6th site, npc_attack_player (WO-CMB-NPC-INITIATED-1, Max ruling
+    The 6th site, npc_attack_player (WO-CMB-NPC-INITIATED-1, human ruling
     2026-07-10 -- the symmetric NPC-initiated-attack mirror of
     attack_npc_ship), is the deliberate exception: there IS no `attacker`
     Player variable in that function at all (attacker=None is passed to

@@ -262,7 +262,7 @@ def test_completed_flow_is_never_resumable():
 # --- FirstLoginService.record_player_ship_claim ---------------------------
 
 def test_record_player_ship_claim_sets_ship_claimed_field():
-    """WO-PUX-TRUST-METER (Max ruling #3): pins the mechanism every route's
+    """WO-PUX-TRUST-METER (human ruling #3): pins the mechanism every route's
     ship_claimed serialization (``session.ship_claimed.name if
     session.ship_claimed else None`` — routes/first_login.py) depends on.
     record_player_ship_claim must durably set the field on the session row,
