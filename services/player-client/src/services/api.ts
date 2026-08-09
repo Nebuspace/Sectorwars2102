@@ -67,9 +67,10 @@ async function apiRequest(
         msg = msg || data.message;
       }
       const err = new Error(msg || `API Error: ${error.response.status}`);
-      // Preserve HTTP status for callers that suppress global alerts on
-      // gameplay refusals (400/403) — apiRequest otherwise drops it.
+      // Preserve HTTP status + body for callers that branch on gameplay
+      // refusals (400/403/409) or structured detail (tractor lock, etc.).
       (err as any).status = error.response.status;
+      (err as any).data = data;
       if (errors) (err as any).errors = errors;
       if (code) (err as any).code = code;
       if (regions) (err as any).regions = regions;
@@ -1291,6 +1292,47 @@ export const tradingAPI = {
         resource_type: resourceType,
         quantity,
         action,
+      }),
+    }),
+
+  dock: (stationId: string) =>
+    apiRequest('/api/v1/trading/dock', {
+      method: 'POST',
+      body: JSON.stringify({ station_id: stationId }),
+    }),
+
+  undock: () =>
+    apiRequest('/api/v1/trading/undock', { method: 'POST' }),
+
+  getSlips: (stationId: string) =>
+    apiRequest(`/api/v1/trading/stations/${stationId}/slips`),
+
+  bumpSlip: (stationId: string, occupantPlayerId: string) =>
+    apiRequest(`/api/v1/trading/stations/${stationId}/slips/bump`, {
+      method: 'POST',
+      body: JSON.stringify({ occupant_player_id: occupantPlayerId }),
+    }),
+
+  getMarket: (stationId: string) =>
+    apiRequest(`/api/v1/trading/market/${stationId}`),
+
+  buy: (stationId: string, resourceType: string, quantity: number) =>
+    apiRequest('/api/v1/trading/buy', {
+      method: 'POST',
+      body: JSON.stringify({
+        station_id: stationId,
+        resource_type: resourceType,
+        quantity,
+      }),
+    }),
+
+  sell: (stationId: string, resourceType: string, quantity: number) =>
+    apiRequest('/api/v1/trading/sell', {
+      method: 'POST',
+      body: JSON.stringify({
+        station_id: stationId,
+        resource_type: resourceType,
+        quantity,
       }),
     }),
 };

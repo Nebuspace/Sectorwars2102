@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { useAuth } from './AuthContext';
 import apiClient from '../services/apiClient';
-import { sectorAPI, messageAPI, planetaryAPI, citadelAPI, expeditionAPI, pioneerAPI, armoryAPI } from '../services/api';
+import { sectorAPI, messageAPI, planetaryAPI, citadelAPI, expeditionAPI, pioneerAPI, armoryAPI, tradingAPI } from '../services/api';
 import websocketService from '../services/websocket';
 import { ariaFeed } from '../components/mfd/ariaFeedStore';
 
@@ -831,28 +831,31 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
   
-  // Dock at a port
+  // Dock at a port — WO-WIRE-TRADING-API: tradingAPI.dock.
   const dockAtStation = async (stationId: string) => {
     if (!user || !playerState) return;
     
     setError(null);
     
     try {
-      const response = await api.post('/api/v1/trading/dock', { station_id: stationId });
+      const data = await tradingAPI.dock(stationId);
       
       // Update player state after docking
       await refreshPlayerState();
       
-      return response.data;
+      return data;
     } catch (error: any) {
       // 409 = every transient slip is taken; the server auto-enqueued us and
       // returned slip/queue/bump details. Surface that payload to callers
       // instead of throwing so the UI can offer the queue/bump flow inline.
-      if (error.response?.status === 409 && error.response?.data) {
-        return { full: true, ...error.response.data };
+      // apiRequest attaches .status/.data (axios .response.* for raw calls).
+      const status = error.status ?? error.response?.status;
+      const payload = error.data ?? error.response?.data;
+      if (status === 409 && payload) {
+        return { full: true, ...payload };
       }
       console.error('Error docking at port:', error);
-      setError(error.response?.data?.message || 'Failed to dock at port');
+      setError(payload?.message || error.message || 'Failed to dock at port');
       throw error;
     }
   };
@@ -864,8 +867,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!user) return null;
 
     try {
-      const response = await api.get(`/api/v1/trading/stations/${stationId}/slips`);
-      return response.data as StationSlips;
+      return (await tradingAPI.getSlips(stationId)) as StationSlips;
     } catch (error) {
       console.warn('GameContext: Failed to load station slips:', error);
       return null;
@@ -880,11 +882,9 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       throw new Error('Not ready to dock — please try again');
     }
 
-    let response;
+    let data;
     try {
-      response = await api.post(`/api/v1/trading/stations/${stationId}/slips/bump`, {
-        occupant_player_id: occupantPlayerId
-      });
+      data = await tradingAPI.bumpSlip(stationId, occupantPlayerId);
     } catch (error: any) {
       console.error('Error bumping slip occupant:', error);
       throw error;
@@ -898,26 +898,26 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       console.warn('Post-bump state refresh failed:', refreshError);
     }
 
-    return response.data;
+    return data;
   };
 
-  // Undock from current station
+  // Undock from current station — tradingAPI.undock.
   const undockFromStation = async () => {
     if (!user || !playerState) return;
 
     setError(null);
 
     try {
-      const response = await api.post('/api/v1/trading/undock');
+      const data = await tradingAPI.undock();
 
       // Update player state after undocking
       setTractorLock(null);
       await refreshPlayerState();
 
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error undocking from station:', error);
-      const detail = error.response?.data?.detail;
+      const detail = (error.data ?? error.response?.data)?.detail;
       if (
         detail &&
         typeof detail === 'object' &&
@@ -934,7 +934,8 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       } else {
         setError(
           (typeof detail === 'string' ? detail : null) ||
-            error.response?.data?.message ||
+            (error.data ?? error.response?.data)?.message ||
+            error.message ||
             'Failed to undock from station'
         );
       }
@@ -944,66 +945,58 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const clearTractorLock = () => setTractorLock(null);
 
-  // Get market info for a port
+  // Get market info for a port — tradingAPI.getMarket.
   // Note: This intentionally does NOT set global isLoading to avoid re-render cascades
   const getMarketInfo = async (stationId: string) => {
     if (!user) return;
 
     try {
-      const response = await api.get(`/api/v1/trading/market/${stationId}`);
-      setMarketInfo(response.data);
+      const data = await tradingAPI.getMarket(stationId);
+      setMarketInfo(data);
     } catch (error) {
       console.error('Error getting market info:', error);
       // Don't set global error state - let the component handle it
     }
   };
   
-  // Buy resource from a port
+  // Buy resource from a port — tradingAPI.buy.
   const buyResource = async (stationId: string, resourceType: string, quantity: number) => {
     if (!user || !playerState) return;
     
     setError(null);
     
     try {
-      const response = await api.post('/api/v1/trading/buy', {
-        station_id: stationId,
-        resource_type: resourceType,
-        quantity: quantity
-      });
+      const data = await tradingAPI.buy(stationId, resourceType, quantity);
       
       // Update player state and market info after purchase
       await refreshPlayerState();
       await getMarketInfo(stationId);
       
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error buying resource:', error);
-      setError(error.response?.data?.message || 'Failed to buy resource');
+      setError((error.data ?? error.response?.data)?.message || error.message || 'Failed to buy resource');
       throw error;
     }
   };
   
-  // Sell resource to a port
+  // Sell resource to a port — tradingAPI.sell.
   const sellResource = async (stationId: string, resourceType: string, quantity: number) => {
     if (!user || !playerState) return;
     
     setError(null);
     
     try {
-      const response = await api.post('/api/v1/trading/sell', {
-        station_id: stationId,
-        resource_type: resourceType,
-        quantity: quantity
-      });
+      const data = await tradingAPI.sell(stationId, resourceType, quantity);
       
       // Update player state and market info after sale
       await refreshPlayerState();
       await getMarketInfo(stationId);
       
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error selling resource:', error);
-      setError(error.response?.data?.message || 'Failed to sell resource');
+      setError((error.data ?? error.response?.data)?.message || error.message || 'Failed to sell resource');
       throw error;
     }
   };
