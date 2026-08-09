@@ -14,18 +14,40 @@ async function apiRequest(
   endpoint: string,
   options: ApiRequestOptions = {}
 ): Promise<any> {
+  const method = ((options.method || 'GET') as string).toUpperCase();
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(options.headers as Record<string, string>),
+  };
   try {
-    const response = await apiClient.request({
-      url: endpoint,
-      method: (options.method || 'GET') as string,
-      // Call sites pass pre-stringified JSON bodies; forward as-is.
-      data: options.body,
-      timeout: options.timeout,
-      headers: {
-        'Content-Type': 'application/json',
-        ...(options.headers as Record<string, string>)
-      }
-    });
+    // Prefer verb-specific axios helpers so tests that mock apiClient.get/post
+    // (the dominant GameContext harness pattern) still intercept wrapper traffic.
+    // Use .request only when a non-default timeout is required (e.g. move).
+    let response;
+    if (options.timeout != null) {
+      response = await apiClient.request({
+        url: endpoint,
+        method,
+        data: options.body,
+        timeout: options.timeout,
+        headers,
+      });
+    } else if (method === 'GET') {
+      response = await apiClient.get(endpoint, { headers });
+    } else if (method === 'POST') {
+      response = await apiClient.post(endpoint, options.body, { headers });
+    } else if (method === 'PUT') {
+      response = await apiClient.put(endpoint, options.body, { headers });
+    } else if (method === 'DELETE') {
+      response = await apiClient.delete(endpoint, { headers });
+    } else {
+      response = await apiClient.request({
+        url: endpoint,
+        method,
+        data: options.body,
+        headers,
+      });
+    }
     return response.data;
   } catch (error) {
     if (isAxiosError(error) && error.response) {
