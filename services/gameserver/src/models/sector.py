@@ -44,6 +44,9 @@ class SectorType(enum.Enum):
     AGRICULTURAL = "AGRICULTURAL"  # Food production
     FORBIDDEN = "FORBIDDEN"  # Restricted access
     WORMHOLE = "WORMHOLE"  # Special warping mechanics
+    # Audit-cycle-27 #1 / generation.md: spatial oddity; ~1–2% of generated
+    # sectors; one-time investigation loot (anomaly_service, reward 250).
+    ANOMALY = "ANOMALY"
 
 
 class Sector(Base):
