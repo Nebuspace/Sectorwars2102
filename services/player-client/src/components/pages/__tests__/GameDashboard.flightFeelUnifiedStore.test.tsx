@@ -40,6 +40,12 @@ vi.mock('../../../services/api', () => ({
   },
   miningAPI: { harvest: vi.fn() },
   playerAPI: { investigateFormation: vi.fn() },
+  // WindshieldTableau (real, unstubbed) calls helmAPI.getPose on mount.
+  helmAPI: {
+    getPose: vi.fn().mockRejectedValue(new Error('no pose mock in this suite')),
+    burn: vi.fn().mockRejectedValue(new Error('no burn/halt mock in this suite')),
+    halt: vi.fn().mockRejectedValue(new Error('no burn/halt mock in this suite')),
+  },
 }));
 
 vi.mock('react-router-dom', () => ({

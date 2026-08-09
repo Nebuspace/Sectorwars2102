@@ -1250,6 +1250,25 @@ export const sectorAPI = {
     }),
 };
 
+/** Intrasystem helm — windshield pose / burn / halt. */
+export const helmAPI = {
+  getPose: () => apiRequest('/api/v1/helm/intrasystem/pose'),
+
+  burn: (payload: {
+    x_pct: number;
+    y_pct: number;
+    target_kind: string;
+    target_id: string | null;
+  }) =>
+    apiRequest('/api/v1/helm/intrasystem/burn', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  halt: () =>
+    apiRequest('/api/v1/helm/intrasystem/halt', { method: 'POST' }),
+};
+
 // Export all APIs
 // Regional governance APIs (member-facing). The owner-scoped /my-region/*
 // endpoints live in the admin surface; these are the player-facing reads/writes.
@@ -1887,6 +1906,7 @@ export const gameAPI = {
   trade: tradeAPI,
   quantum: quantumAPI,
   warpGates: warpGatesAPI,
+  helm: helmAPI,
   portOwnership: portOwnershipAPI,
   beacon: beaconAPI,
 };

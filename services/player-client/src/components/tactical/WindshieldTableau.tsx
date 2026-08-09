@@ -1,9 +1,8 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import apiClient from '../../services/apiClient';
 import { arrivalBearingForWarp, WARP_TURN_MS, WARP_MIN_CHARGE_MS, WARP_ARRIVE_MS, WARP_CHARGE_TIMEOUT_MS } from '../../services/warpCinematicBus';
 import { useAutopilot } from '../../contexts/AutopilotContext';
 import { useWindshieldFlight } from '../../contexts/WindshieldFlightContext';
-import { sectorAPI, type SectorWreck } from '../../services/api';
+import { helmAPI, sectorAPI, type SectorWreck } from '../../services/api';
 import type { SpecialFormationSummary } from '../../contexts/GameContext';
 import type {
   HitMeta,
@@ -609,16 +608,16 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
   // seed (below) races in after /system resolves and snaps the ship back.
   useEffect(() => {
     let cancelled = false;
-    apiClient
-      .get('/api/v1/helm/intrasystem/pose')
-      .then((res) => {
+    helmAPI
+      .getPose()
+      .then((data) => {
         if (cancelled) return;
-        const data = res.data as IspPose;
-        if (data?.server_time) {
-          setIspClockSkewMs(parseIspTime(data.server_time) - Date.now());
+        const pose = data as IspPose;
+        if (pose?.server_time) {
+          setIspClockSkewMs(parseIspTime(pose.server_time) - Date.now());
         }
-        setSelfIspPose(data);
-        const sample = deriveIspPose(data, Date.now() + (data?.server_time ? parseIspTime(data.server_time) - Date.now() : 0));
+        setSelfIspPose(pose);
+        const sample = deriveIspPose(pose, Date.now() + (pose?.server_time ? parseIspTime(pose.server_time) - Date.now() : 0));
         // Undock/land emerge owns the first frame — don't stomp with a prior ISP.
         if (lastDockedStationId || lastLandedPlanetId) return;
         // Only teleport onto server pose when not mid local CSS glide.
@@ -637,29 +636,29 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
   const ispNowMs = () => Date.now() + ispClockSkewMs;
 
   const commitIspBurn = useCallback((target: PctPoint, objectId: string | null) => {
-    apiClient
-      .post('/api/v1/helm/intrasystem/burn', {
+    helmAPI
+      .burn({
         x_pct: target.xPct,
         y_pct: target.yPct,
         // Kind is informational; coords are authoritative. Free-point = point.
         target_kind: objectId ? 'object' : 'point',
         target_id: objectId,
       })
-      .then((res) => {
-        const data = res.data as IspPose;
-        if (data?.server_time) setIspClockSkewMs(parseIspTime(data.server_time) - Date.now());
-        setSelfIspPose(data);
+      .then((data) => {
+        const pose = data as IspPose;
+        if (pose?.server_time) setIspClockSkewMs(parseIspTime(pose.server_time) - Date.now());
+        setSelfIspPose(pose);
       })
       .catch(() => { /* optimistic local flight still runs */ });
   }, []);
 
   const commitIspHalt = useCallback(() => {
-    apiClient
-      .post('/api/v1/helm/intrasystem/halt')
-      .then((res) => {
-        const data = res.data as IspPose;
-        if (data?.server_time) setIspClockSkewMs(parseIspTime(data.server_time) - Date.now());
-        setSelfIspPose(data);
+    helmAPI
+      .halt()
+      .then((data) => {
+        const pose = data as IspPose;
+        if (pose?.server_time) setIspClockSkewMs(parseIspTime(pose.server_time) - Date.now());
+        setSelfIspPose(pose);
       })
       .catch(() => {});
   }, []);
