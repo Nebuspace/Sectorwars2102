@@ -110,6 +110,15 @@ export const combatAPI = {
     })
 };
 
+// Armory — sector mine laying (open space). Distinct from combatAPI.deployDrones.
+export const armoryAPI = {
+  deploy: (quantity: number) =>
+    apiRequest('/api/v1/armory/deploy', {
+      method: 'POST',
+      body: JSON.stringify({ quantity }),
+    }),
+};
+
 // Grey-flag PvP status (WO-BL). Mirrors player_combat.py's
 // GreyStatusResponse exactly — a temporary "open season" mark earned by
 // aggressing on a lawful target (attacking a player -> 1h, a station -> 1
@@ -1498,6 +1507,7 @@ export const beaconAPI = {
 
 export const gameAPI = {
   combat: combatAPI,
+  armory: armoryAPI,
   greyStatus: greyStatusAPI,
   planetary: planetaryAPI,
   registry: registryAPI,
