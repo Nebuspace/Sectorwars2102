@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const {
   buyResource,
   sellResource,
-  apiPost,
+  tradingQuote,
   getMarketInfo,
   PLAYER,
   SHIP,
@@ -25,12 +25,12 @@ const {
 } = vi.hoisted(() => {
   const buyResource = vi.fn();
   const sellResource = vi.fn();
-  const apiPost = vi.fn();
+  const tradingQuote = vi.fn();
   const getMarketInfo = vi.fn();
   return {
     buyResource,
     sellResource,
-    apiPost,
+    tradingQuote,
     getMarketInfo,
     PLAYER: { is_docked: true, credits: 50000 },
     SHIP: {
@@ -75,10 +75,10 @@ vi.mock('../../../contexts/WebSocketContext', () => ({
   useWebSocket: () => WS,
 }));
 
-vi.mock('../../../services/apiClient', () => ({
-  default: {
-    get: vi.fn().mockResolvedValue({ data: [] }),
-    post: (...a: unknown[]) => apiPost(...a),
+vi.mock('../../../services/api', () => ({
+  tradingAPI: {
+    quote: (...a: unknown[]) => tradingQuote(...a),
+    getMarketHistory: vi.fn().mockResolvedValue({ history: [] }),
   },
 }));
 
@@ -103,16 +103,14 @@ function quoteOk(action: 'buy' | 'sell', quantity = 1) {
   const subtotal = unit * quantity;
   const tax = Math.floor(subtotal * 0.1);
   return {
-    data: {
-      resource_type: 'ore',
-      quantity,
-      action,
-      unit_price: unit,
-      subtotal,
-      tax_rate: 0.1,
-      tax,
-      total: action === 'buy' ? subtotal + tax : subtotal - tax,
-    },
+    resource_type: 'ore',
+    quantity,
+    action,
+    unit_price: unit,
+    subtotal,
+    tax_rate: 0.1,
+    tax,
+    total: action === 'buy' ? subtotal + tax : subtotal - tax,
   };
 }
 
@@ -125,8 +123,9 @@ describe('TradingInterface — buy/sell confirm depth', () => {
   beforeEach(() => {
     buyResource.mockReset().mockResolvedValue({ success: true });
     sellResource.mockReset().mockResolvedValue({ success: true });
-    apiPost.mockReset().mockImplementation((_u: string, body: { action: 'buy' | 'sell'; quantity: number }) =>
-      Promise.resolve(quoteOk(body?.action ?? 'buy', body?.quantity ?? 1)),
+    tradingQuote.mockReset().mockImplementation(
+      (_station: string, _resource: string, quantity: number, action: 'buy' | 'sell') =>
+        Promise.resolve(quoteOk(action ?? 'buy', quantity ?? 1)),
     );
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -168,15 +167,7 @@ describe('TradingInterface — buy/sell confirm depth', () => {
     });
 
     expect(document.body.querySelector('button.confirm-trade-btn')).toBeTruthy();
-    expect(apiPost).toHaveBeenCalledWith(
-      '/api/v1/trading/quote',
-      expect.objectContaining({
-        station_id: 'station-1',
-        resource_type: 'ore',
-        quantity: 1,
-        action: 'buy',
-      }),
-    );
+    expect(tradingQuote).toHaveBeenCalledWith('station-1', 'ore', 1, 'buy');
   });
 
   it('sells ore via Confirm in sell mode', async () => {

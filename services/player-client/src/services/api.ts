@@ -1507,6 +1507,12 @@ export const tradingAPI = {
   getMarket: (stationId: string) =>
     apiRequest(`/api/v1/trading/market/${stationId}`),
 
+  getMarketHistory: (stationId: string, commodity: string, hours = 24 * 7) =>
+    apiRequest(
+      `/api/v1/trading/market/${encodeURIComponent(stationId)}/history` +
+        `?commodity=${encodeURIComponent(commodity)}&hours=${hours}`,
+    ),
+
   buy: (stationId: string, resourceType: string, quantity: number) =>
     apiRequest('/api/v1/trading/buy', {
       method: 'POST',
