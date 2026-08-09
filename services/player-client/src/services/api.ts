@@ -1311,6 +1311,41 @@ export const regionOwnerAPI = {
       method: 'POST',
       body: JSON.stringify({ station_id: stationId }),
     }),
+
+  // Treaty inbox / lifecycle (WO-ESCALATE-REGIONAL-TREATY-FLOW-PRIORITY).
+  // Owner-scoped list includes `terms`; accept/reject are region_b-only;
+  // terminate is either party. Optional regionId for multi-region owners.
+  listMyTreaties: (regionId?: string) =>
+    apiRequest(
+      regionId
+        ? `/api/v1/regions/my-region/treaties?region_id=${encodeURIComponent(regionId)}`
+        : '/api/v1/regions/my-region/treaties',
+    ),
+
+  proposeTreaty: (
+    body: {
+      counterparty_region_id: string;
+      treaty_type: string;
+      terms?: Record<string, unknown>;
+      expires_at?: string | null;
+    },
+    regionId?: string,
+  ) =>
+    apiRequest(
+      regionId
+        ? `/api/v1/regions/my-region/treaties?region_id=${encodeURIComponent(regionId)}`
+        : '/api/v1/regions/my-region/treaties',
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+
+  acceptTreaty: (treatyId: string) =>
+    apiRequest(`/api/v1/regions/treaties/${treatyId}/accept`, { method: 'POST' }),
+
+  rejectTreaty: (treatyId: string) =>
+    apiRequest(`/api/v1/regions/treaties/${treatyId}/reject`, { method: 'POST' }),
+
+  terminateTreaty: (treatyId: string) =>
+    apiRequest(`/api/v1/regions/treaties/${treatyId}/terminate`, { method: 'POST' }),
 };
 
 // Ship-construction reservation reads (routes/construction.py — the live
