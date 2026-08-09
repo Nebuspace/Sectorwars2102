@@ -1906,6 +1906,7 @@ export const gameAPI = {
   trade: tradeAPI,
   quantum: quantumAPI,
   warpGates: warpGatesAPI,
+  helm: helmAPI,
   portOwnership: portOwnershipAPI,
   beacon: beaconAPI,
 };
