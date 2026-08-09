@@ -1075,19 +1075,16 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  // Rename a planet you own
+  // Rename a planet you own — WO-WIRE-PLANETARY-RENAME: planetaryAPI.rename.
   const renamePlanet = async (planetId: string, newName: string) => {
     if (!user || !playerState) return;
 
     setError(null);
 
     try {
-      const response = await api.put(`/api/v1/planets/${planetId}/rename`, { name: newName });
-
-      // Refresh location data to show updated name
+      const data = await planetaryAPI.rename(planetId, newName);
       await exploreCurrentLocation();
-
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error renaming planet:', error);
       setError(error.response?.data?.detail || error.response?.data?.message || 'Failed to rename planet');
