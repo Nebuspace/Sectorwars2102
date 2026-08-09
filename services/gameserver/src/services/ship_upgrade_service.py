@@ -642,10 +642,9 @@ class ShipUpgradeService:
     # NOTE: assigned after the class body (see below) because it references the
     # @staticmethod builders.
 
-    # NO-CANON kernel (ship-systems.md §2.5 marks the Sensor scan-range effect
-    # 📐 Design-only): each Sensor upgrade level adds +1 sector of scanner range
-    # on top of the hull spec's base scanner_range. Flagged for a DECISIONS.md
-    # Pending ruling on the exact per-level figure.
+    # CANON (ship-systems.md §2.5, ✅ Shipped; ratified 2026-08-09, DECISIONS.md
+    # no-canon-magnitudes-batch-remainder): each Sensor upgrade level adds +1
+    # sector of scanner range on top of the hull spec's base scanner_range.
     SCANNER_RANGE_BONUS_PER_SENSOR_LEVEL = 1
 
     # CANON (ship-systems.md §2.5 line 90, marked ✅ Shipped): "Each Sensor level
