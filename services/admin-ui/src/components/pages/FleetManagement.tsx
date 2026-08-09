@@ -4,6 +4,7 @@ import { api } from '../../utils/auth';
 import FleetHealthReport from '../charts/FleetHealthReport';
 import FleetOperationsTab from '../fleet/FleetOperationsTab';
 import { useToast, useConfirm } from '../../contexts/ToastContext';
+import { useFleetUpdates } from '../../contexts/WebSocketContext';
 import './fleet-management.css';
 
 interface Ship {
@@ -156,6 +157,26 @@ const FleetManagement: React.FC = () => {
   useEffect(() => {
     fetchPlayers();
   }, [fetchPlayers]);
+
+  // Live updates: a per-ship status change is common (frequent movement/combat
+  // traffic) so it only surfaces a toast, avoiding a pagination-flicker refetch
+  // on every event; maintenance alerts and emergencies are rarer and higher
+  // priority, so those also refresh the current page.
+  const handleFleetStatusChange = useCallback((data: any) => {
+    toast.info(`Fleet status changed: ${data?.ship_name || data?.ship_id || 'a ship'}`);
+  }, [toast]);
+
+  const handleFleetMaintenanceAlert = useCallback((data: any) => {
+    toast.warning(`Maintenance alert: ${data?.ship_name || data?.ship_id || 'a ship'}`);
+    fetchShips();
+  }, [toast, fetchShips]);
+
+  const handleFleetEmergency = useCallback((data: any) => {
+    toast.error(`Fleet emergency: ${data?.ship_name || data?.ship_id || 'a ship'}`);
+    fetchShips();
+  }, [toast, fetchShips]);
+
+  useFleetUpdates(handleFleetStatusChange, handleFleetMaintenanceAlert, handleFleetEmergency);
 
   const handleCreateShip = async (e: React.FormEvent) => {
     e.preventDefault();
