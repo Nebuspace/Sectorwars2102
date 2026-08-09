@@ -1,6 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { useAuth } from './AuthContext';
-import apiClient from '../services/apiClient';
 import { sectorAPI, messageAPI, planetaryAPI, citadelAPI, expeditionAPI, pioneerAPI, armoryAPI, tradingAPI, quantumAPI, portOwnershipAPI, playerAPI, shipAPI, firstLoginAPI } from '../services/api';
 import websocketService from '../services/websocket';
 import { ariaFeed } from '../components/mfd/ariaFeedStore';
@@ -501,13 +500,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   // Paid echo scan telemetry, lifted out of the console so NAV mode flips
   // don't destroy it. Cleared whenever the player's sector changes.
   const [quantumScanResult, setQuantumScanResult] = useState<QuantumScanTelemetry | null>(null);
-
-  // Shared axios instance: attaches the access token from localStorage and
-  // transparently refreshes it on 401 (see services/apiClient.ts). Its
-  // baseURL resolves to VITE_API_URL or window.location.origin, matching the
-  // Vite-proxy semantics this context previously set up itself.
-  const api = apiClient;
-
 
   // Check first login status — firstLoginAPI.getStatus (same URL).
   const checkFirstLoginStatus = async (): Promise<boolean> => {
