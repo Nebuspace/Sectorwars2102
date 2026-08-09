@@ -32,12 +32,16 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const mockSectorWrecks = vi.fn();
 const mockInvestigateFormation = vi.fn();
+const mockGetContents = vi.fn();
 vi.mock('../../../services/api', () => ({
   navAPI: {
     getChart: vi.fn().mockResolvedValue({ sectors: [], edges: [], frontier: [] }),
     getThreat: vi.fn().mockResolvedValue([]),
   },
-  sectorAPI: { sectorWrecks: (...a: unknown[]) => mockSectorWrecks(...a) },
+  sectorAPI: {
+    sectorWrecks: (...a: unknown[]) => mockSectorWrecks(...a),
+    getContents: (...a: unknown[]) => mockGetContents(...a),
+  },
   playerAPI: {
     investigateFormation: (...a: unknown[]) => mockInvestigateFormation(...a),
   },
@@ -46,10 +50,9 @@ vi.mock('../../../services/api', () => ({
   },
 }));
 
-const mockApiGet = vi.fn();
 vi.mock('../../../services/apiClient', () => ({
   default: {
-    get: (...a: unknown[]) => mockApiGet(...a),
+    get: vi.fn().mockResolvedValue({ data: {} }),
   },
 }));
 
@@ -188,8 +191,8 @@ describe('GameDashboard — SOLAR SYSTEM[SYSTEM] sensor-list rows (WO-UI-MAX-BAT
   beforeEach(() => {
     mockSectorWrecks.mockReset();
     mockSectorWrecks.mockResolvedValue([WRECK]);
-    mockApiGet.mockReset();
-    mockApiGet.mockResolvedValue({ data: CONTENTS_RESPONSE });
+    mockGetContents.mockReset();
+    mockGetContents.mockResolvedValue(CONTENTS_RESPONSE);
     mockInvestigateFormation.mockReset();
     mockInvestigateFormation.mockResolvedValue({ success: true });
     gameState = makeGameState();
@@ -233,7 +236,7 @@ describe('GameDashboard — SOLAR SYSTEM[SYSTEM] sensor-list rows (WO-UI-MAX-BAT
   it('STAR + decorative-body rows render dim, no action — real bodies are excluded (PlanetPortPair owns those)', async () => {
     await mount();
 
-    expect(mockApiGet).toHaveBeenCalledWith('/api/v1/sectors/100/contents');
+    expect(mockGetContents).toHaveBeenCalledWith(100);
     const solar = container.querySelector('.mon.system-monitor')!;
     const rows = Array.from(solar.querySelectorAll('.mbody > .row'));
 
@@ -307,8 +310,8 @@ describe('GameDashboard — SOLAR SYSTEM[SYSTEM] sensor-list rows (WO-UI-MAX-BAT
     const manyBodies = Array.from({ length: 40 }, (_, i) => ({
       slot: i, kind: i % 2 === 0 ? 'BARREN' : 'ICE', real: false,
     }));
-    mockApiGet.mockResolvedValue({
-      data: { star: CONTENTS_RESPONSE.star, bodies: manyBodies, stations: [] },
+    mockGetContents.mockResolvedValue({
+      star: CONTENTS_RESPONSE.star, bodies: manyBodies, stations: [],
     });
     await mount();
     const solar = container.querySelector('.mon.system-monitor')!;
@@ -321,7 +324,7 @@ describe('GameDashboard — SOLAR SYSTEM[SYSTEM] sensor-list rows (WO-UI-MAX-BAT
   });
 
   it('a failed /contents fetch silently degrades to zero STAR/barren rows — no console.error, no crash', async () => {
-    mockApiGet.mockRejectedValue(new Error('network'));
+    mockGetContents.mockRejectedValue(new Error('network'));
     await mount();
 
     const solar = container.querySelector('.mon.system-monitor')!;

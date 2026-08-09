@@ -28,7 +28,6 @@ import type { ProductionLine } from '../cockpit/ProductionPanel';
 import type { PerColonistRates, ProdRole } from '../cockpit/CoupledColonistSliders';
 import SafeVaultPanel from '../cockpit/SafeVaultPanel';
 import { miningAPI, navAPI, playerAPI, type NavChartResponse, sectorAPI, type SectorWreck } from '../../services/api';
-import apiClient from '../../services/apiClient';
 import { projectedWarpBearing, subscribeWarpDepart, WARP_TURN_MS } from '../../services/warpCinematicBus';
 import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import { TurnsIcon } from '../icons/TurnsIcon';
@@ -1012,13 +1011,12 @@ const GameDashboardInner: React.FC = () => {
     let cancelled = false;
     setSolarStatic(null);
     if (currentSector?.sector_id == null) return undefined;
-    apiClient.get(`/api/v1/sectors/${currentSector.sector_id}/contents`)
-      .then((res) => {
+    sectorAPI.getContents(currentSector.sector_id)
+      .then((d) => {
         if (cancelled) return;
-        const d = res.data || {};
-        const rawBodies = Array.isArray(d.bodies) ? d.bodies : [];
+        const rawBodies = Array.isArray(d?.bodies) ? d.bodies : [];
         setSolarStatic({
-          star: d.star?.label ? { label: String(d.star.label) } : null,
+          star: d?.star?.label ? { label: String(d.star.label) } : null,
           bodies: rawBodies
             .filter((b: any) => !b?.real)
             .map((b: any) => ({ kind: String(b?.kind || '') })),

@@ -28,12 +28,18 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const mockSectorWrecks = vi.fn();
+const mockGetContents = vi.fn();
 vi.mock('../../../services/api', () => ({
   navAPI: {
     getChart: vi.fn().mockResolvedValue({ sectors: [], edges: [], frontier: [] }),
     getThreat: vi.fn().mockResolvedValue([]),
   },
-  sectorAPI: { sectorWrecks: (...a: unknown[]) => mockSectorWrecks(...a) },
+  sectorAPI: {
+    sectorWrecks: (...a: unknown[]) => mockSectorWrecks(...a),
+    getContents: (...a: unknown[]) => mockGetContents(...a),
+  },
+  miningAPI: { harvest: vi.fn() },
+  playerAPI: { investigateFormation: vi.fn() },
 }));
 
 vi.mock('react-router-dom', () => ({
@@ -178,6 +184,8 @@ describe('GameDashboard — WO-UI2-FLIGHT-FEEL unified flight store (row APPROAC
   beforeEach(() => {
     mockSectorWrecks.mockReset();
     mockSectorWrecks.mockResolvedValue([]);
+    mockGetContents.mockReset();
+    mockGetContents.mockResolvedValue(CONTENTS_SYSTEM);
     mockApiGet.mockReset();
     // The real (unstubbed) WindshieldTableau ALSO fetches GET
     // /api/v1/helm/intrasystem/pose on mount (server-authoritative pose
@@ -243,6 +251,7 @@ describe('GameDashboard — WO-UI2-FLIGHT-FEEL unified flight store (row APPROAC
 
   it('mounts the real windshield + real SOLAR row for Alpha, fed by the SAME /contents fetch', async () => {
     await mount();
+    expect(mockGetContents).toHaveBeenCalledWith(100);
     expect(mockApiGet).toHaveBeenCalledWith('/api/v1/sectors/100/contents');
     expect(container.querySelector('.ssv-tableau .shipmk')).not.toBeNull();
     const approachBtn = container.querySelector('[aria-label="Approach Alpha"]') as HTMLButtonElement;

@@ -47,7 +47,7 @@ vi.mock('../../../services/api', () => ({
     plot: (...a: unknown[]) => mockPlot(...a),
   },
   regionOwnerAPI: { getMyRegion: (...a: unknown[]) => mockGetMyRegion(...a) },
-  sectorAPI: { sectorWrecks: () => Promise.resolve([]) },
+  sectorAPI: { sectorWrecks: () => Promise.resolve([]), getContents: vi.fn().mockResolvedValue({ star: null, bodies: [] }), },
   // TACTICAL[TARGET]/[THREAT] (WO-UI2-DECK-RECONCILE) only call these from
   // click handlers / the THREAT page (never mounted -- TACTICAL defaults to
   // TARGET, not under test here) -- undefined stand-ins are never invoked.
