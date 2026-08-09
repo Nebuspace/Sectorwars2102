@@ -228,6 +228,18 @@ interface WebSocketContextType {
     timestamp: string | null;
   } | null;
 
+  // Limpet mine tracking (movement_service._dispatch_limpet_signals): bumps
+  // once per inbound `limpet_signal` frame, sent to a limpet mine's owner on
+  // every move of the ship it's tracking. Pure plumbing — no toast (fires on
+  // every tracked move, not a one-off event) — a future tracker-panel UI can
+  // watch the signal for the tracked ship's last-known sector.
+  limpetSignalEventSignal: number;
+  lastLimpetSignal: {
+    tracked_player_id: string | null;
+    tracked_ship_id: string | null;
+    sector_id: number | null;
+  } | null;
+
   // Connection management
   connect: () => void;
   disconnect: () => void;
@@ -374,6 +386,12 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
     total_collected: number | null;
     refund: number | null;
     timestamp: string | null;
+  } | null>(null);
+  const [limpetSignalEventSignal, setLimpetSignalEventSignal] = useState(0);
+  const [lastLimpetSignal, setLastLimpetSignal] = useState<{
+    tracked_player_id: string | null;
+    tracked_ship_id: string | null;
+    sector_id: number | null;
   } | null>(null);
 
   // Keep track of cleanup functions
@@ -670,6 +688,39 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           break;
         }
 
+        case 'docking_slip_bumped': {
+          // Another player paid the 5x bump fee to evict us from a station
+          // slip (docking_service.bump → _notify_bumped). The backend
+          // already ships a human-readable `message`; we've been undocked
+          // server-side, so this is a heads-up, not an action prompt.
+          addNotification({
+            title: 'Docking Slip Bumped',
+            content:
+              typeof message.message === 'string'
+                ? message.message
+                : 'Your ship has been bumped from its docking slip.',
+            level: 'warning'
+          });
+          break;
+        }
+
+        case 'ship_recovered_impounded': {
+          // Someone surrendered a tractor-locked ship we're the registered
+          // owner of to station security (station_security_service.
+          // surrender_tractor_locked_ship -> _notify_registered_owner). The
+          // ship is held for retrieval, not destroyed; heads-up only, same
+          // idiom as docking_slip_bumped's server-authored message.
+          addNotification({
+            title: 'Ship Impounded',
+            content:
+              typeof message.message === 'string'
+                ? message.message
+                : 'One of your ships was surrendered to station security and is being held for retrieval.',
+            level: 'warning'
+          });
+          break;
+        }
+
         case 'new_message': {
           // Player-to-player hail (message_service → notification_service).
           // The backend resolves the canon delivery surfaces by priority
@@ -939,6 +990,17 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           break;
         }
 
+        case 'limpet_signal': {
+          // See limpetSignalEventSignal field doc. Stash + bump only.
+          setLastLimpetSignal({
+            tracked_player_id: message.tracked_player_id != null ? String(message.tracked_player_id) : null,
+            tracked_ship_id: message.tracked_ship_id != null ? String(message.tracked_ship_id) : null,
+            sector_id: typeof message.sector_id === 'number' ? message.sector_id : null,
+          });
+          setLimpetSignalEventSignal(prev => prev + 1);
+          break;
+        }
+
         case 'admin_broadcast':
           addNotification({
             title: message.title || 'System Message',
@@ -971,7 +1033,7 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           // send_failed is consumed by sendFailedHandler above — it's a
           // client-local synthetic event (websocket.ts's own send()), not
           // an unhandled server frame.)
-          if (!['sector_players', 'connection_status', 'chat_message', 'player_entered_sector', 'player_left_sector', 'notification', 'aria_response', 'aria_narration', 'medal_awarded', 'genesis_progress', 'planetary_update', 'contract_offer', 'contract_settled', 'rp_governor_status', 'reputation_changed', 'team_reputation_changed', 'npc_combat_initiated', 'bounty_updated', 'turn_pool_updated', 'send_failed'].includes(message.type)) {
+          if (!['sector_players', 'connection_status', 'chat_message', 'player_entered_sector', 'player_left_sector', 'notification', 'aria_response', 'aria_narration', 'medal_awarded', 'genesis_progress', 'planetary_update', 'contract_offer', 'contract_settled', 'rp_governor_status', 'reputation_changed', 'team_reputation_changed', 'npc_combat_initiated', 'bounty_updated', 'turn_pool_updated', 'send_failed', 'docking_slip_bumped', 'ship_recovered_impounded'].includes(message.type)) {
             console.warn('WebSocket: Unhandled message type:', message.type);
           }
       }
@@ -1072,6 +1134,10 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
     // Bounty lifecycle (bounty_updated — WO-BOUNTY-REALTIME-EVENTS)
     bountyEventSignal,
     lastBountyUpdated,
+
+    // Limpet mine tracking (limpet_signal)
+    limpetSignalEventSignal,
+    lastLimpetSignal,
 
     // Connection management
     connect,

@@ -14,14 +14,19 @@
  * its private notifyHandlers the same way websocket.eviction.test.ts does.
  * apiClient and AuthContext are mocked at the module boundary, following
  * FirstLoginContext.resume.test.tsx.
+ *
+ * WO-WIRE-QUANTUM-API: refreshQuantumStatus routes through quantumAPI.getStatus
+ * (apiRequest), so status-refresh assertions spy that wrapper — not raw
+ * apiClient.get('/api/v1/quantum/status').
  */
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const { mockGet, mockPost } = vi.hoisted(() => ({
+const { mockGet, mockPost, mockGetStatus } = vi.hoisted(() => ({
   mockGet: vi.fn(),
   mockPost: vi.fn(),
+  mockGetStatus: vi.fn(),
 }));
 
 vi.mock('../../services/apiClient', () => ({
@@ -29,6 +34,17 @@ vi.mock('../../services/apiClient', () => ({
   getAccessToken: vi.fn(() => 'fake-access-token'),
   refreshAccessToken: vi.fn(),
 }));
+
+vi.mock('../../services/api', async () => {
+  const actual = await vi.importActual<typeof import('../../services/api')>('../../services/api');
+  return {
+    ...actual,
+    quantumAPI: {
+      ...actual.quantumAPI,
+      getStatus: (...a: unknown[]) => mockGetStatus(...a),
+    },
+  };
+});
 
 vi.mock('../AuthContext', () => ({
   useAuth: () => ({ user: { id: 'player-1' }, isAuthenticated: true }),
@@ -61,9 +77,6 @@ function defaultGet(url: string) {
   if (url === '/api/v1/player/ships') {
     return Promise.resolve({ data: [] });
   }
-  if (url === '/api/v1/quantum/status') {
-    return Promise.resolve({ data: QUANTUM_STATUS_RESPONSE });
-  }
   return Promise.resolve({ data: {} });
 }
 
@@ -84,7 +97,9 @@ describe('GameContext quantum_harvest WS consumer', () => {
     captured = null;
     mockGet.mockReset();
     mockPost.mockReset();
+    mockGetStatus.mockReset();
     mockGet.mockImplementation(defaultGet);
+    mockGetStatus.mockResolvedValue(QUANTUM_STATUS_RESPONSE);
     appendNavSpy = vi.spyOn(ariaFeed, 'appendNav').mockImplementation(() => {});
 
     container = document.createElement('div');
@@ -107,6 +122,7 @@ describe('GameContext quantum_harvest WS consumer', () => {
 
     // Isolate the harvest-triggered call from the mount-time hydration calls.
     mockGet.mockClear();
+    mockGetStatus.mockClear();
     appendNavSpy.mockClear();
   });
 
@@ -130,8 +146,7 @@ describe('GameContext quantum_harvest WS consumer', () => {
       await flush();
     });
 
-    const quantumStatusCalls = mockGet.mock.calls.filter(([url]) => url === '/api/v1/quantum/status');
-    expect(quantumStatusCalls).toHaveLength(1);
+    expect(mockGetStatus).toHaveBeenCalledTimes(1);
     expect(appendNavSpy).toHaveBeenCalledTimes(1);
     expect(appendNavSpy).toHaveBeenCalledWith('Harvested 3 quantum shards.');
     expect(captured?.quantumStatus).toEqual(QUANTUM_STATUS_RESPONSE);
@@ -161,6 +176,7 @@ describe('GameContext quantum_harvest WS consumer', () => {
       await flush();
     });
 
+    expect(mockGetStatus).not.toHaveBeenCalled();
     expect(mockGet).not.toHaveBeenCalled();
     expect(appendNavSpy).not.toHaveBeenCalled();
   });
@@ -176,7 +192,6 @@ describe('GameContext quantum_harvest WS consumer', () => {
 
     expect(appendNavSpy).toHaveBeenCalledTimes(1);
     expect(appendNavSpy).toHaveBeenCalledWith('Harvested 0 quantum shards.');
-    const quantumStatusCalls = mockGet.mock.calls.filter(([url]) => url === '/api/v1/quantum/status');
-    expect(quantumStatusCalls).toHaveLength(1);
+    expect(mockGetStatus).toHaveBeenCalledTimes(1);
   });
 });

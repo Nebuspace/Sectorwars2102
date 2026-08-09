@@ -15,8 +15,6 @@ export const ISP_MOVE_MS = ISP_ACCEL_MS + ISP_COAST_MS + ISP_FLIP_MS + ISP_DECEL
 export const ISP_HALT_FLIP_MS = 1800;
 export const ISP_HALT_BRAKE_MS = 1600;
 
-export const ISP_REF_BAND_ASPECT = 335 / 1440;
-
 export type IspPhase =
   | 'idle'
   | 'orienting'

@@ -74,6 +74,18 @@ export interface Treaty {
   status: string;
 }
 
+/** Owner inbox shape from GET /api/v1/regions/my-region/treaties. */
+export interface OwnerTreaty {
+  id: string;
+  region_a_name?: string | null;
+  region_b_name?: string | null;
+  treaty_type: string;
+  terms?: Record<string, unknown>;
+  signed_at?: string | null;
+  expires_at?: string | null;
+  status: string;
+}
+
 // The 6 keys policy_proposal_rules.validate_proposed_changes recognizes --
 // any other top-level key in proposed_changes is rejected with a 400.
 export const KNOWN_POLICY_KEYS = [

@@ -31,20 +31,25 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const mockSectorWrecks = vi.fn();
+const mockInvestigateFormation = vi.fn();
 vi.mock('../../../services/api', () => ({
   navAPI: {
     getChart: vi.fn().mockResolvedValue({ sectors: [], edges: [], frontier: [] }),
     getThreat: vi.fn().mockResolvedValue([]),
   },
   sectorAPI: { sectorWrecks: (...a: unknown[]) => mockSectorWrecks(...a) },
+  playerAPI: {
+    investigateFormation: (...a: unknown[]) => mockInvestigateFormation(...a),
+  },
+  miningAPI: {
+    harvest: vi.fn(),
+  },
 }));
 
 const mockApiGet = vi.fn();
-const mockApiPost = vi.fn();
 vi.mock('../../../services/apiClient', () => ({
   default: {
     get: (...a: unknown[]) => mockApiGet(...a),
-    post: (...a: unknown[]) => mockApiPost(...a),
   },
 }));
 
@@ -185,8 +190,8 @@ describe('GameDashboard — SOLAR SYSTEM[SYSTEM] sensor-list rows (WO-UI-MAX-BAT
     mockSectorWrecks.mockResolvedValue([WRECK]);
     mockApiGet.mockReset();
     mockApiGet.mockResolvedValue({ data: CONTENTS_RESPONSE });
-    mockApiPost.mockReset();
-    mockApiPost.mockResolvedValue({ data: { success: true } });
+    mockInvestigateFormation.mockReset();
+    mockInvestigateFormation.mockResolvedValue({ success: true });
     gameState = makeGameState();
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -368,7 +373,7 @@ describe('GameDashboard — SOLAR SYSTEM[SYSTEM] sensor-list rows (WO-UI-MAX-BAT
     const surveyBtn = Array.from(solar.querySelectorAll('button')).find((b) => b.textContent?.includes('SURVEY')) as HTMLButtonElement;
     expect(surveyBtn).toBeTruthy();
     await click(surveyBtn);
-    expect(mockApiPost).toHaveBeenCalledWith('/api/v1/player/formations/f-known/investigate');
+    expect(mockInvestigateFormation).toHaveBeenCalledWith('f-known');
 
     // Undiscovered formation: masked, no action button next to it.
     expect(solar.textContent).toContain('UNKNOWN ANOMALY');

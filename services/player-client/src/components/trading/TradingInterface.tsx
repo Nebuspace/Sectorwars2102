@@ -6,7 +6,7 @@ import CockpitInstrument from '../cockpit/CockpitInstrument';
 import { StationClassBadge, getTraderPersonality } from '../common/stationIdentity';
 import { formatCredits } from '../../utils/formatters';
 import { resourceIcon } from '../../services/resourceCatalog';
-import apiClient from '../../services/apiClient';
+import { tradingAPI } from '../../services/api';
 import marketStreamService from '../../services/marketStream';
 import HaggleDesk from './HaggleDesk';
 import RoutePlannerPanel from './RoutePlannerPanel';
@@ -377,12 +377,10 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
     if (historyByKey[key] !== undefined) return;
 
     setHistoryByKey(prev => ({ ...prev, [key]: 'loading' }));
-    apiClient
-      .get(`/api/v1/trading/market/${selectedPort}/history`, {
-        params: { commodity: expandedSparkline, hours: 24 * 7 }
-      })
-      .then(response => {
-        setHistoryByKey(prev => ({ ...prev, [key]: response.data?.history ?? [] }));
+    tradingAPI
+      .getMarketHistory(selectedPort, expandedSparkline, 24 * 7)
+      .then((data: { history?: PriceHistoryPoint[] }) => {
+        setHistoryByKey(prev => ({ ...prev, [key]: data?.history ?? [] }));
       })
       .catch(() => {
         setHistoryByKey(prev => ({ ...prev, [key]: 'error' }));
@@ -463,16 +461,10 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
     setQuoteLoading(true);
     setQuoteError(false);
     const timer = window.setTimeout(() => {
-      apiClient
-        .post('/api/v1/trading/quote', {
-          station_id: selectedPort,
-          resource_type: selectedResource,
-          quantity: tradeQuantity,
-          action: tradeMode,
-        })
-        .then(response => {
+      tradingAPI
+        .quote(selectedPort, selectedResource, tradeQuantity, tradeMode)
+        .then(data => {
           if (cancelled) return;
-          const data = response.data;
           setQuote({
             resourceType: data.resource_type,
             quantity: data.quantity,
@@ -780,13 +772,12 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
         // locked recompute a moment later — bounded to one network
         // round-trip, not zero. Fully closing that needs a server-side
         // price/version token (hub follow-on), not done here.
-        const freshResponse = await apiClient.post('/api/v1/trading/quote', {
-          station_id: selectedPort,
-          resource_type: selectedResource,
-          quantity: qty,
-          action: tradeMode,
-        });
-        const fresh = freshResponse.data;
+        const fresh = await tradingAPI.quote(
+          selectedPort,
+          selectedResource,
+          qty,
+          tradeMode,
+        );
         if (!quote || fresh.total !== quote.total) {
           setQuote({
             resourceType: fresh.resource_type,
