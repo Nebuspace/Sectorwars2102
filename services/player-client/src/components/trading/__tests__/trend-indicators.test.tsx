@@ -163,8 +163,10 @@ describe('TradingInterface — price-trend glyphs + sparkline', () => {
     await act(async () => { await Promise.resolve(); });
 
     expect(mockGet).toHaveBeenCalledWith(
-      '/api/v1/trading/market/station-1/history',
-      expect.objectContaining({ params: expect.objectContaining({ commodity: 'ore' }) })
+      '/api/v1/trading/market/station-1/history?commodity=ore&hours=168',
+      expect.objectContaining({
+        headers: expect.objectContaining({ 'Content-Type': 'application/json' }),
+      }),
     );
 
     const polyline = cardFor(container, 'ore').querySelector('.price-sparkline-panel polyline');
