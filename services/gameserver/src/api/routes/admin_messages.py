@@ -24,14 +24,17 @@ class ModerateMessageRequest(BaseModel):
     reason: Optional[str] = None
 
 
-@router.get("/all")
-async def get_all_messages(
-    page: int = Query(1, ge=1),
-    flagged: Optional[bool] = None,
-    admin: User = Depends(require_scope(PLAYERS_VIEW)),
-    db: Session = Depends(get_db)
+async def _list_admin_messages(
+    *,
+    page: int,
+    flagged: Optional[bool],
+    db: Session,
 ):
-    """Get all messages with optional filtering for flagged messages"""
+    """Shared list helper for admin message moderation (not a route).
+
+    GET /admin/messages/all was retired (WO-CLEANUP-MINOR-DEAD-ADMIN-ENDPOINTS-BATCH);
+    the live UI uses GET /flagged only.
+    """
     try:
         # Eager-load sender so to_dict's sender_name is always populated from
         # this query's own join, not whatever happened to already be in the
@@ -40,18 +43,16 @@ async def get_all_messages(
 
         if flagged is not None:
             query = query.filter(Message.flagged == flagged)
-        
-        # Get total count
+
         total = query.count()
-        
-        # Get paginated messages
+
         limit = 100
         offset = (page - 1) * limit
         messages = query.order_by(Message.sent_at.desc())\
                       .limit(limit)\
                       .offset(offset)\
                       .all()
-        
+
         return {
             "messages": [msg.to_dict() for msg in messages],
             "total": total,
@@ -59,7 +60,7 @@ async def get_all_messages(
             "limit": limit,
             "pages": (total + limit - 1) // limit
         }
-        
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -71,7 +72,7 @@ async def get_flagged_messages(
     db: Session = Depends(get_db)
 ):
     """Get only flagged messages for review"""
-    return await get_all_messages(page=page, flagged=True, admin=admin, db=db)
+    return await _list_admin_messages(page=page, flagged=True, db=db)
 
 
 @router.post("/{message_id}/moderate")

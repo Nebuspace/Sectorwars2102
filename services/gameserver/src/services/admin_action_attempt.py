@@ -265,6 +265,5 @@ E5_WRAPPED_ROUTES: frozenset[str] = frozenset(
         "POST /admin/warp-tunnel/create-enhanced",
         "POST /admin/factions/",
         "PUT /admin/factions/{faction_id}",
-        "DELETE /admin/factions/{faction_id}",
     }
 )
