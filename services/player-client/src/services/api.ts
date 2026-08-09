@@ -67,6 +67,9 @@ async function apiRequest(
         msg = msg || data.message;
       }
       const err = new Error(msg || `API Error: ${error.response.status}`);
+      // Preserve HTTP status for callers that suppress global alerts on
+      // gameplay refusals (400/403) — apiRequest otherwise drops it.
+      (err as any).status = error.response.status;
       if (errors) (err as any).errors = errors;
       if (code) (err as any).code = code;
       if (regions) (err as any).regions = regions;
@@ -225,6 +228,17 @@ export const planetaryAPI = {
     apiRequest(`/api/v1/planets/${planetId}/rename`, {
       method: 'PUT',
       body: JSON.stringify({ name }),
+    }),
+
+  // Embark/disembark colonists between ship cargo and planet population.
+  transferColonists: (
+    planetId: string,
+    action: 'embark' | 'disembark',
+    quantity: number,
+  ) =>
+    apiRequest(`/api/v1/planets/${planetId}/colonists/transfer`, {
+      method: 'POST',
+      body: JSON.stringify({ action, quantity }),
     }),
 
   // Defense telemetry — GET /planets/{id}/defenses (scouting-friendly; no

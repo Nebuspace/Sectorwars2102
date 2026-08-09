@@ -1168,28 +1168,27 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  // Transfer colonists between ship and planet
+  // Transfer colonists between ship and planet —
+  // WO-WIRE-PLANETARY-TRANSFER-COLONISTS: planetaryAPI.transferColonists.
   const transferColonists = async (planetId: string, action: 'embark' | 'disembark', quantity: number) => {
     if (!user || !playerState) return;
 
     setError(null);
 
     try {
-      const response = await api.post(`/api/v1/planets/${planetId}/colonists/transfer`, {
-        action,
-        quantity
-      });
+      const data = await planetaryAPI.transferColonists(planetId, action, quantity);
       await refreshPlayerState();
       await loadShips();
       await exploreCurrentLocation();
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error transferring colonists:', error);
       // 400/403 are gameplay refusals (capacity, ownership, quantity) shown
       // inline by the transfer modal; reserve the global alert for the rest.
-      const status = error.response?.status;
+      // apiRequest attaches `.status` (axios `.response.status` for raw calls).
+      const status = error.status ?? error.response?.status;
       if (status !== 400 && status !== 403) {
-        setError(error.response?.data?.detail || 'Failed to transfer colonists');
+        setError(error.response?.data?.detail || error.message || 'Failed to transfer colonists');
       }
       throw error;
     }
