@@ -118,7 +118,11 @@ describe('FirstLoginContext resume', () => {
 
     expect(mockDelete).not.toHaveBeenCalled();
     expect(mockPost).toHaveBeenCalledTimes(1);
-    expect(mockPost).toHaveBeenCalledWith('/api/v1/first-login/session');
+    expect(mockPost).toHaveBeenCalledWith(
+      '/api/v1/first-login/session',
+      undefined,
+      expect.objectContaining({ headers: expect.any(Object) }),
+    );
 
     expect(captured?.dialogueHistory).toHaveLength(2);
     expect(captured?.dialogueHistory[0]).toMatchObject({
