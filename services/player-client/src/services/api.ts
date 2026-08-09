@@ -1538,6 +1538,53 @@ export const quantumAPI = {
     }),
 };
 
+// Port Office — station ownership, sealed-bid sales, tariffs, takeovers.
+export const portOwnershipAPI = {
+  getListings: () => apiRequest('/api/v1/port-ownership/listings'),
+
+  getListing: (stationId: string) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/listing`),
+
+  listStation: (stationId: string) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/list`, {
+      method: 'POST',
+    }),
+
+  placeOffer: (stationId: string, bidAmount: number) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/offer`, {
+      method: 'POST',
+      body: JSON.stringify({ bid: bidAmount }),
+    }),
+
+  getMyStations: () => apiRequest('/api/v1/port-ownership/my-stations'),
+
+  setTax: (stationId: string, taxRate: number) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/tax`, {
+      method: 'POST',
+      body: JSON.stringify({ rate: taxRate }),
+    }),
+
+  withdraw: (stationId: string, amount: number) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/withdraw`, {
+      method: 'POST',
+      body: JSON.stringify({ amount }),
+    }),
+
+  getTakeoverStatus: (stationId: string) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/takeover`),
+
+  launchTakeover: (stationId: string) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/takeover/launch`, {
+      method: 'POST',
+    }),
+
+  counterTakeover: (stationId: string, action: 'accept' | 'match' | 'dispute') =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/takeover/counter`, {
+      method: 'POST',
+      body: JSON.stringify({ action }),
+    }),
+};
+
 // Message beacons (message-beacons.md) -- deploy/read/salvage/recharge/
 // report kernel is server-shipped (services/gameserver/src/api/routes/
 // beacons.py); `mine` lists the calling player's own deployed beacons
@@ -1605,6 +1652,7 @@ export const gameAPI = {
   storage: storageAPI,
   trade: tradeAPI,
   quantum: quantumAPI,
+  portOwnership: portOwnershipAPI,
   beacon: beaconAPI,
 };
 
