@@ -17,6 +17,7 @@ import './message-moderation.css';
  *   POST /api/v1/admin/messages/{id}/moderate    -> { success: boolean }
  *   GET  /api/v1/admin/beacons/flagged?page=N    -> FlaggedBeaconsResponse
  *   POST /api/v1/admin/beacons/{id}/clear-flag   -> { success, flagged, ... }
+ *   POST /api/v1/admin/beacons/{id}/confirm-abuse -> { success, removed, deployer_player_id, trust_before, trust_after, trust_dock, aria_violation_count }
  */
 
 interface FlaggedMessage {
@@ -47,6 +48,16 @@ interface FlaggedBeacon {
   preview: string;
   deployed_at: string | null;
   flagged: boolean;
+}
+
+interface ConfirmAbuseResponse {
+  success: boolean;
+  removed: boolean;
+  deployer_player_id: string;
+  trust_before: number;
+  trust_after: number;
+  trust_dock: number;
+  aria_violation_count: number;
 }
 
 interface FlaggedBeaconsResponse {
@@ -241,6 +252,40 @@ const MessageModeration: React.FC = () => {
       } catch (err) {
         console.error('Failed to clear beacon flag:', err);
         toast.error('Failed to clear the beacon flag.');
+      } finally {
+        setActingId(null);
+      }
+    },
+    [confirm, toast, loadData],
+  );
+
+  const confirmBeaconAbuse = useCallback(
+    async (beacon: FlaggedBeacon) => {
+      const confirmed = await confirm({
+        title: 'Confirm Abuse',
+        message:
+          'Confirm this beacon as abusive? This docks the deployer\'s trust score, ' +
+          'counts as a violation, and permanently removes the beacon. This action ' +
+          'cannot be undone — use Clear Flag instead for false reports.',
+        confirmLabel: 'Confirm Abuse',
+        danger: true,
+      });
+      if (!confirmed) return;
+
+      setActingId(beacon.id);
+      try {
+        const res = await api.post<ConfirmAbuseResponse>(
+          `/api/v1/admin/beacons/${beacon.id}/confirm-abuse`,
+        );
+        toast.success(
+          `Beacon removed. Deployer trust ${res.data.trust_before.toFixed(2)} → ` +
+          `${res.data.trust_after.toFixed(2)} (violation #${res.data.aria_violation_count}).`,
+        );
+        setBeacons((current) => current.filter((b) => b.id !== beacon.id));
+        await loadData();
+      } catch (err) {
+        console.error('Failed to confirm beacon abuse:', err);
+        toast.error('Failed to confirm abuse for this beacon.');
       } finally {
         setActingId(null);
       }
@@ -469,6 +514,14 @@ const MessageModeration: React.FC = () => {
                           onClick={() => void clearBeaconFlag(beacon)}
                         >
                           Clear Flag
+                        </button>
+                        <button
+                          type="button"
+                          className="msgmod-btn msgmod-btn-danger"
+                          disabled={actingId === beacon.id}
+                          onClick={() => void confirmBeaconAbuse(beacon)}
+                        >
+                          Confirm Abuse
                         </button>
                       </div>
                     </td>
