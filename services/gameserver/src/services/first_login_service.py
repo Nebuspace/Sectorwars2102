@@ -1803,8 +1803,11 @@ Description: {ship_specs.get('description', 'N/A')}
                         'player': exchange.player_response
                     })
 
-            # Build the outcome generation prompt
-            prompts = self.ai_service.build_outcome_generation_prompt(
+            # Generate AI response (builds its own prompt internally via
+            # FirstLoginAIPrompts.build_outcome_generation_prompt — no
+            # separate prompt-build step here, mirroring
+            # generate_initial_scene's call shape above).
+            response, provider_used = await self.ai_provider_service.generate_outcome_text(
                 guard_name=session.guard_name,
                 guard_title=session.guard_title,
                 guard_trait=session.guard_trait,
@@ -1816,11 +1819,13 @@ Description: {ship_specs.get('description', 'N/A')}
                 conversation_history=conversation_history
             )
 
-            # Generate AI response
-            response, provider = await self.ai_provider_service.generate_outcome(prompts)
-            logger.info(f"[AI-{provider.upper()}] Generated outcome response")
+            if not response or provider_used == ProviderType.MANUAL:
+                logger.info("[FirstLogin:Outcome] AI generation returned None/MANUAL, using fallback")
+                return self._generate_guard_outcome_response_fallback(session)
 
-            return f"[AI-{provider.upper()}] {response}"
+            logger.info(f"[AI-{provider_used.value.upper()}] Generated outcome response")
+
+            return f"[AI-{provider_used.value.upper()}] {response}"
 
         except Exception as e:
             logger.error(f"Failed to generate AI outcome response: {e}", exc_info=True)
