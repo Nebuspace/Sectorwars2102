@@ -652,9 +652,34 @@ export const playerAPI = {
     apiRequest('/api/v1/player/scan-latent-tunnels', { method: 'POST' }),
 };
 
-/** First-login gate / onboarding session (GameContext status probe). */
+/** First-login gate / onboarding session (GameContext + FirstLoginContext). */
 export const firstLoginAPI = {
   getStatus: () => apiRequest('/api/v1/first-login/status'),
+
+  startSession: () =>
+    apiRequest('/api/v1/first-login/session', { method: 'POST' }),
+
+  claimShip: (payload: { ship_type: string; dialogue_response: string }) =>
+    apiRequest('/api/v1/first-login/claim-ship', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  submitDialogue: (exchangeId: string, response: string) =>
+    apiRequest(`/api/v1/first-login/dialogue/${exchangeId}`, {
+      method: 'POST',
+      body: JSON.stringify({ response }),
+    }),
+
+  /** Omit body for decline-by-default (matches pre-nickname complete). */
+  complete: (body?: { nickname_confirmed: boolean; nickname_override: string | null }) =>
+    apiRequest('/api/v1/first-login/complete', {
+      method: 'POST',
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }),
+
+  resetSession: () =>
+    apiRequest('/api/v1/first-login/session', { method: 'DELETE' }),
 };
 
 /** Ship registry behaviors (SYSTEMS/ship-registry.md) — stolen / abandon / claim / transfer. */

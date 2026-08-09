@@ -86,10 +86,11 @@ describe('FirstLoginContext completeFirstLogin', () => {
       await captured!.completeFirstLogin({ confirmed: true, override: null });
     });
 
-    expect(mockPost).toHaveBeenCalledWith('/api/v1/first-login/complete', {
-      nickname_confirmed: true,
-      nickname_override: null,
-    });
+    expect(mockPost).toHaveBeenCalledWith(
+      '/api/v1/first-login/complete',
+      JSON.stringify({ nickname_confirmed: true, nickname_override: null }),
+      expect.objectContaining({ headers: expect.any(Object) }),
+    );
   });
 
   it('a confirmed verdict with a retry override sends the override text', async () => {
@@ -102,10 +103,11 @@ describe('FirstLoginContext completeFirstLogin', () => {
       await captured!.completeFirstLogin({ confirmed: true, override: 'ZaraV' });
     });
 
-    expect(mockPost).toHaveBeenCalledWith('/api/v1/first-login/complete', {
-      nickname_confirmed: true,
-      nickname_override: 'ZaraV',
-    });
+    expect(mockPost).toHaveBeenCalledWith(
+      '/api/v1/first-login/complete',
+      JSON.stringify({ nickname_confirmed: true, nickname_override: 'ZaraV' }),
+      expect.objectContaining({ headers: expect.any(Object) }),
+    );
   });
 
   it('a declined verdict sends nickname_confirmed:false', async () => {
@@ -118,10 +120,11 @@ describe('FirstLoginContext completeFirstLogin', () => {
       await captured!.completeFirstLogin({ confirmed: false, override: null });
     });
 
-    expect(mockPost).toHaveBeenCalledWith('/api/v1/first-login/complete', {
-      nickname_confirmed: false,
-      nickname_override: null,
-    });
+    expect(mockPost).toHaveBeenCalledWith(
+      '/api/v1/first-login/complete',
+      JSON.stringify({ nickname_confirmed: false, nickname_override: null }),
+      expect.objectContaining({ headers: expect.any(Object) }),
+    );
   });
 
   it('an omitted verdict (no extracted name) issues a body-less call, matching pre-existing behavior', async () => {
@@ -134,7 +137,11 @@ describe('FirstLoginContext completeFirstLogin', () => {
       await captured!.completeFirstLogin();
     });
 
-    expect(mockPost).toHaveBeenCalledWith('/api/v1/first-login/complete', undefined);
+    expect(mockPost).toHaveBeenCalledWith(
+      '/api/v1/first-login/complete',
+      undefined,
+      expect.objectContaining({ headers: expect.any(Object) }),
+    );
   });
 
   it('surfaces nickname_rejected_reason on the result for the caller to display', async () => {
