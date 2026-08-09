@@ -56,6 +56,16 @@ interface PlanetStats {
   };
 }
 
+interface PlanetTickResult {
+  planetId: string;
+  planetName: string;
+  changed: boolean;
+  before: Record<string, number>;
+  after: Record<string, number>;
+  delta: Record<string, number>;
+  lastProductionAt: string | null;
+}
+
 interface TerraformingProject {
   id: string;
   planetId: string;
@@ -85,6 +95,9 @@ export const PlanetaryManagement: React.FC = () => {
   const [filterOwnership, setFilterOwnership] = useState<string>('all');
   const [showOnlyColonizable, setShowOnlyColonizable] = useState(false);
   const [sortBy, setSortBy] = useState<string>('habitability');
+  const [ticking, setTicking] = useState(false);
+  const [tickResult, setTickResult] = useState<PlanetTickResult | null>(null);
+  const [tickError, setTickError] = useState<string | null>(null);
 
   useEffect(() => {
     loadPlanetaryData();
@@ -126,6 +139,39 @@ export const PlanetaryManagement: React.FC = () => {
       setTerraformingProjects([]);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const forceProductionTick = async (planet: Planet) => {
+    setTicking(true);
+    setTickError(null);
+    try {
+      const token = localStorage.getItem('accessToken');
+      const response = await fetch(
+        `/api/v1/admin/colonization/planets/${planet.id}/tick`,
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+          },
+        },
+      );
+
+      if (!response.ok) {
+        setTickError(`Failed to advance production (HTTP ${response.status})`);
+        setTickResult(null);
+        return;
+      }
+
+      const data: PlanetTickResult = await response.json();
+      setTickResult(data);
+      await loadPlanetaryData();
+    } catch (err) {
+      console.error('Error forcing production tick:', err);
+      setTickError('Gameserver unreachable — network error advancing production');
+      setTickResult(null);
+    } finally {
+      setTicking(false);
     }
   };
 
@@ -319,7 +365,11 @@ export const PlanetaryManagement: React.FC = () => {
               <div
                 key={planet.id}
                 className={`planet-card ${planet.ownership.contested ? 'contested' : ''}`}
-                onClick={() => setSelectedPlanet(planet)}
+                onClick={() => {
+                  setSelectedPlanet(planet);
+                  setTickResult(null);
+                  setTickError(null);
+                }}
               >
                 <div className="planet-header">
                   <span className="planet-icon">{getTypeIcon(planet.type)}</span>
@@ -460,10 +510,10 @@ export const PlanetaryManagement: React.FC = () => {
         </div>
 
       {selectedPlanet && (
-        <div className="planet-detail-modal" onClick={() => setSelectedPlanet(null)}>
+        <div className="planet-detail-modal" onClick={() => { setSelectedPlanet(null); setTickResult(null); setTickError(null); }}>
           <div className="modal-content" onClick={(e) => e.stopPropagation()}>
             <h2>{selectedPlanet.name} Details</h2>
-            <button className="close-button" onClick={() => setSelectedPlanet(null)}>×</button>
+            <button className="close-button" onClick={() => { setSelectedPlanet(null); setTickResult(null); setTickError(null); }}>×</button>
             
             <div className="detail-grid">
               <div className="detail-section">
@@ -536,6 +586,65 @@ export const PlanetaryManagement: React.FC = () => {
                 />
               </div>
 
+              <div className="detail-section">
+                <h3>Production</h3>
+                <button
+                  type="button"
+                  className="refresh-button"
+                  disabled={ticking}
+                  onClick={() => void forceProductionTick(selectedPlanet)}
+                >
+                  {ticking ? 'Advancing…' : 'Force Production Tick'}
+                </button>
+
+                {tickError && (
+                  <div
+                    role="alert"
+                    style={{
+                      marginTop: '10px',
+                      padding: '10px 12px',
+                      background: 'rgba(239, 68, 68, 0.12)',
+                      border: '1px solid rgba(239, 68, 68, 0.35)',
+                      borderRadius: '6px',
+                      color: '#fca5a5',
+                      fontSize: '0.82rem',
+                      lineHeight: 1.4,
+                    }}
+                  >
+                    {tickError}
+                  </div>
+                )}
+
+                {tickResult && tickResult.planetId === selectedPlanet.id && (
+                  <div
+                    role="status"
+                    style={{
+                      marginTop: '10px',
+                      padding: '10px 12px',
+                      background: 'rgba(34, 197, 94, 0.12)',
+                      border: '1px solid rgba(34, 197, 94, 0.35)',
+                      borderRadius: '6px',
+                      color: '#86efac',
+                      fontSize: '0.82rem',
+                      lineHeight: 1.4,
+                    }}
+                  >
+                    {tickResult.changed ? (
+                      <>
+                        Production advanced.{' '}
+                        {Object.entries(tickResult.delta)
+                          .filter(([, v]) => v !== 0)
+                          .map(([k, v]) => `${k} +${v}`)
+                          .join(', ') || 'no whole units accrued yet'}
+                        .
+                      </>
+                    ) : (
+                      'Already caught up — no elapsed production to accrue.'
+                    )}
+                  </div>
+                )}
+              </div>
+
               <div
                 role="note"
                 style={{
@@ -549,9 +658,10 @@ export const PlanetaryManagement: React.FC = () => {
                   lineHeight: 1.4,
                 }}
               >
-                Planet detail actions (view colonies, monitor resources, mark for colonization,
-                resolve conflict, start terraforming) are unavailable — no admin backend exists
-                for them. This drawer does not invent an Actions button bar.
+                Other planet detail actions (view colonies, mark for colonization,
+                resolve conflict, start terraforming) are still unavailable — no
+                admin backend exists for them. This drawer does not invent an
+                Actions button bar beyond what the backend actually supports.
               </div>
             </div>
           </div>
