@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { useAuth } from './AuthContext';
 import apiClient from '../services/apiClient';
-import { sectorAPI, messageAPI, planetaryAPI, citadelAPI, expeditionAPI, pioneerAPI, armoryAPI, tradingAPI, quantumAPI, portOwnershipAPI } from '../services/api';
+import { sectorAPI, messageAPI, planetaryAPI, citadelAPI, expeditionAPI, pioneerAPI, armoryAPI, tradingAPI, quantumAPI, portOwnershipAPI, playerAPI, shipAPI } from '../services/api';
 import websocketService from '../services/websocket';
 import { ariaFeed } from '../components/mfd/ariaFeedStore';
 
@@ -582,8 +582,8 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     const id = window.setInterval(async () => {
       if (typeof document !== 'undefined' && document.hidden) return;
       try {
-        const res = await api.get('/api/v1/player/current-sector');
-        setCurrentSector(res.data);
+        const data = await playerAPI.getCurrentSector();
+        setCurrentSector(data);
       } catch {
         // Transient — the next tick retries.
       }
@@ -626,15 +626,15 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setError(null);
 
     try {
-      const response = await api.get('/api/v1/player/state');
-      setPlayerState(response.data as PlayerState);
+      const data = await playerAPI.getState();
+      setPlayerState(data as PlayerState);
       hasHydrated.current = true;
 
       // If player has a current ship, load its details
-      if ((response.data as any).current_ship_id) {
+      if ((data as any).current_ship_id) {
         try {
-          const shipResponse = await api.get('/api/v1/player/current-ship');
-          setCurrentShip(shipResponse.data as Ship);
+          const shipData = await shipAPI.getCurrentShip();
+          setCurrentShip(shipData as Ship);
         } catch (shipError) {
           console.warn('GameContext: Failed to load current ship details:', shipError);
           // Don't fail the whole state refresh if just ship loading fails
@@ -644,9 +644,12 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       console.error('GameContext: Error fetching player state:', error);
       
       // Provide more detailed error messages
-      if (error.response?.status === 401) {
+      // apiRequest attaches .status/.data (axios .response.* for raw calls).
+      const status = error.status ?? error.response?.status;
+      const payload = error.data ?? error.response?.data;
+      if (status === 401) {
         setError('Authentication required. Please log in again.');
-      } else if (error.response?.status === 404) {
+      } else if (status === 404) {
         // Check if this is because first login is needed
         checkFirstLoginStatus().then(needsFirst => {
           if (needsFirst) {
@@ -657,8 +660,8 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         }).catch(() => {
           setError('Player data not found. You may need to complete the first login process.');
         });
-      } else if (error.response?.data?.detail) {
-        setError(`Server error: ${error.response.data.detail}`);
+      } else if (payload?.detail) {
+        setError(`Server error: ${payload.detail}`);
       } else if (error.message) {
         setError(`Network error: ${error.message}`);
       } else {
@@ -674,17 +677,17 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  // Load player's ships
+  // Load player's ships — WO-WIRE-PLAYER-NAV-API: playerAPI.getShips.
   const loadShips = async () => {
     if (!user) return;
 
     try {
-      const response = await api.get('/api/v1/player/ships');
-      setShips(response.data || []);
+      const data = await playerAPI.getShips();
+      setShips(data || []);
       
       // If there's a current ship, update it
       if (playerState?.current_ship_id) {
-        const currentShip = response.data.find((ship: Ship) => ship.id === playerState.current_ship_id);
+        const currentShip = (data || []).find((ship: Ship) => ship.id === playerState.current_ship_id);
         if (currentShip) {
           setCurrentShip(currentShip);
         }
@@ -694,7 +697,8 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
       // Don't set global error - ships failing shouldn't block the game
       // But do handle auth errors specifically since they affect everything
-      if (error.response?.status === 401) {
+      const status = error.status ?? error.response?.status;
+      if (status === 401) {
         setError('Authentication required. Please log in again.');
         setShips([]);
       }
@@ -703,14 +707,14 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
   
-  // Set current ship
+  // Set current ship — shipAPI.setActive.
   const setActiveShip = async (shipId: string) => {
     if (!user) return;
     
     setError(null);
     
     try {
-      await api.post(`/api/v1/ships/${shipId}/set-active`);
+      await shipAPI.setActive(shipId);
       
       // Update player state and ships
       await refreshPlayerState();
@@ -721,18 +725,14 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
   
-  // Move to another sector
+  // Move to another sector — playerAPI.move (20s timeout preserved).
   const moveToSector = async (sectorId: number) => {
     if (!user || !playerState) return;
     
     setError(null);
     
     try {
-      // Hard ceiling so a stuck FOR UPDATE / wedged gameserver cannot leave
-      // the cockpit in "warp bubble forever" with no sector change.
-      const response = await api.post(`/api/v1/player/move/${sectorId}`, null, {
-        timeout: 20000,
-      });
+      const data = await playerAPI.move(sectorId);
 
       // Update player state after movement
       await refreshPlayerState();
@@ -741,27 +741,28 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       // doesn't show the pre-move sector
       await loadShips();
 
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error moving to sector:', error);
+      const payload = error.data ?? error.response?.data;
       const msg =
         error?.code === 'ECONNABORTED'
           ? 'Move timed out — server busy. Try again.'
-          : (error.response?.data?.detail || error.response?.data?.message || 'Failed to move to sector');
+          : (payload?.detail || payload?.message || error.message || 'Failed to move to sector');
       setError(msg);
       throw error;
     }
   };
   
-  // Get available moves from current sector
+  // Get available moves from current sector — playerAPI.getAvailableMoves.
   const getAvailableMoves = async () => {
     if (!user || !playerState) return;
 
     setError(null);
 
     try {
-      const response = await api.get('/api/v1/player/available-moves');
-      setAvailableMoves(response.data);
+      const data = await playerAPI.getAvailableMoves();
+      setAvailableMoves(data);
     } catch (error) {
       console.error('Error getting available moves:', error);
       setError('Failed to get available moves');
@@ -780,15 +781,16 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setError(null);
 
     try {
-      const response = await api.post<ScanLatentTunnelsResult>('/api/v1/player/scan-latent-tunnels');
+      const data = (await playerAPI.scanLatentTunnels()) as ScanLatentTunnelsResult;
       // A successful reveal changes what the player can navigate to — refresh.
-      if (response.data?.revealed) {
+      if (data?.revealed) {
         await getAvailableMoves();
       }
-      return response.data;
+      return data;
     } catch (error: any) {
       console.error('Error scanning for latent tunnels:', error);
-      setError(error.response?.data?.detail || error.response?.data?.message || 'Failed to scan for latent tunnels');
+      const payload = error.data ?? error.response?.data;
+      setError(payload?.detail || payload?.message || error.message || 'Failed to scan for latent tunnels');
       throw error;
     }
   };
@@ -798,10 +800,10 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!user || !playerState) return;
 
     try {
-      // Get sector info
+      // Get sector info — playerAPI.getCurrentSector.
       try {
-        const sectorResponse = await api.get('/api/v1/player/current-sector');
-        setCurrentSector(sectorResponse.data);
+        const sectorData = await playerAPI.getCurrentSector();
+        setCurrentSector(sectorData);
       } catch (sectorError) {
         console.warn('GameContext: Failed to load current sector:', sectorError);
         setCurrentSector(null);
