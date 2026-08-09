@@ -221,6 +221,12 @@ export const planetaryAPI = {
   leave: () =>
     apiRequest('/api/v1/planets/leave', { method: 'POST' }),
 
+  rename: (planetId: string, name: string) =>
+    apiRequest(`/api/v1/planets/${planetId}/rename`, {
+      method: 'PUT',
+      body: JSON.stringify({ name }),
+    }),
+
   // Defense telemetry — GET /planets/{id}/defenses (scouting-friendly; no
   // ownership required). Distinct from updateDefenses (PUT) / getDefensePricing.
   getDefenses: (planetId: string) =>
