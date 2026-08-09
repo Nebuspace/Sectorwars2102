@@ -164,15 +164,13 @@ class ShipUpgradeService:
         UpgradeType.SENSOR: {
             "base_cost": 6000,
             "cost_multiplier": 2.5,
-            # Canon (sw2102-docs ship-systems.md §2.5): "Each Sensor level adds
-            # +15% evasion. Sensors also affect scan range." The evasion number
-            # is canon; the scan-range increment is NO-CANON (the doc marks the
-            # scan-range effect 📐 Design-only with no per-level figure). Kernel:
-            # +1 scanner-range sector per Sensor level — flagged for a
-            # DECISIONS.md Pending ruling. The effective scanner range
-            # (spec base + this bonus) is computed by effective_scanner_range();
-            # there is no per-instance scanner_range column to mutate, so the
-            # bonus is applied as a derived value the scan path consults.
+            # Canon (sw2102-docs ship-systems.md §2.5, ✅ Shipped; DECISIONS.md
+            # no-canon-magnitudes-batch-remainder 2026-08-09): each Sensor level
+            # adds +15% evasion and +1 scanner-range sector. The effective
+            # scanner range (spec base + this bonus) is computed by
+            # effective_scanner_range(); there is no per-instance scanner_range
+            # column to mutate, so the bonus is a derived value the scan path
+            # consults.
             "effect_per_level": {"evasion_bonus_percent": 15, "scanner_range_bonus": 1},
             "description": "Increases evasion by +15% per level and scan range by +1 sector per level"
         },
@@ -711,8 +709,8 @@ class ShipUpgradeService:
     @staticmethod
     def effective_scanner_range(ship, base_scanner_range: int) -> int:
         """Effective scanner range = the hull spec's base scanner_range plus the
-        Sensor-upgrade scan-range bonus (+1 sector per Sensor level, NO-CANON
-        kernel — see SCANNER_RANGE_BONUS_PER_SENSOR_LEVEL).
+        Sensor-upgrade scan-range bonus (+1 sector per Sensor level — CANON
+        ship-systems.md §2.5; see SCANNER_RANGE_BONUS_PER_SENSOR_LEVEL).
 
         `Ship` has no per-instance scanner_range column (the value lives on
         `ShipSpecification.scanner_range`); callers pass that spec base in and

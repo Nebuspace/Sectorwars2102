@@ -66,14 +66,14 @@ CLEANSED_SUPPRESSION_FACTOR = 0.50  # :66-93 extra *= 0.50 while the Cleansed wi
 KILL_WEIGHT_SUPPRESSION_RATE = 0.05  # :66-93 suppression_modifier slope
 MIN_SUPPRESSION_MODIFIER = 0.20  # :66-93 floor
 
-# [NO-CANON] Canon's REGION_BASELINE_TARGET table (:85-93) is keyed by
-# "region size (sectors)" with buckets up to 1,200, and says the 1,201+
-# bucket should "scale up proportionally" -- no numeric anchor/slope is
-# specified for that extrapolation. We anchor at the last defined point
-# (1200 -> 35) and scale linearly. Flagged for the docs repo. Region has no
-# `size_tier` column (canon's pseudocode references `region.size_tier`,
-# which doesn't exist on the model) -- bucketed from `Region.total_sectors`
-# instead, which is the only sizing field the model actually has.
+# Canon's REGION_BASELINE_TARGET table (:85-93) is keyed by "region size
+# (sectors)" with buckets up to 1,200, and says the 1,201+ bucket should
+# "scale up proportionally." Linear extrapolation beyond the last defined
+# anchor (1200 -> 35) was ratified 2026-08-09 (DECISIONS.md
+# no-canon-magnitudes-batch-remainder). Region has no `size_tier` column
+# (canon's pseudocode references `region.size_tier`, which doesn't exist on
+# the model) -- bucketed from `Region.total_sectors` instead, which is the
+# only sizing field the model actually has.
 _BASELINE_TARGET_BUCKETS = (
     (300, 12.0),
     (600, 22.0),
@@ -154,7 +154,7 @@ def compute_population_score(db: Session, region_id: uuid.UUID) -> int:
 
 def base_target_for_total_sectors(total_sectors: int) -> float:
     """REGION_BASELINE_TARGET, bucketed from Region.total_sectors -- see the
-    [NO-CANON] note above `_BASELINE_TARGET_BUCKETS`."""
+    linear-extrapolation note above `_BASELINE_TARGET_BUCKETS` (ratified)."""
     for ceiling, target in _BASELINE_TARGET_BUCKETS:
         if total_sectors <= ceiling:
             return target
