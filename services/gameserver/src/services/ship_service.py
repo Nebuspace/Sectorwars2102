@@ -225,11 +225,14 @@ class ShipService:
 
         cause="warp_gate_anchor" is the ADR-0029 planned dismantle: the Warp
         Jumper hull fuses into the gate focus, so there is NO insurance payout
-        (Warp Jumpers are non-insurable), NO 10% emergency-cargo haircut (ALL
-        non-bound cargo transfers to the pod), and destruction_cause is set to
-        WARP_GATE_ANCHOR. No CargoWreck is generated on ANY path through this
-        method — wreck generation lives in CombatService, which never handles
-        this cause.
+        (Warp Jumpers are non-insurable), ALL non-bound cargo transfers to the
+        pod, and destruction_cause is set to WARP_GATE_ANCHOR. No CargoWreck is
+        generated on ANY path through this method — wreck generation lives in
+        CombatService, which never handles this cause.
+
+        Non-voluntary destroys (combat etc.) leave the hold on the dead hull
+        for CombatService/fleet wreck spawn (ADR-0093 item 40 — wreck-only;
+        the legacy 10% escape-pod rescue was retired).
         """
         player = ship.owner
 
@@ -322,9 +325,8 @@ class ShipService:
         if is_voluntary_consume:
             # Planned dismantle / genesis sacrifice — all non-bound cargo transfers
             self._transfer_all_cargo(ship, escape_pod)
-        else:
-            # Transfer emergency cargo to escape pod (10% of original cargo)
-            self._transfer_emergency_cargo(ship, escape_pod)
+        # else: ADR-0093 item 40 — non-voluntary destroy is wreck-only.
+        # Leave cargo on the dead hull for CombatService/fleet _spawn_cargo_wreck.
 
         # Set escape pod as player's current ship ONLY when the piloted hull
         # was destroyed (FIX 6).
@@ -449,71 +451,6 @@ class ShipService:
 
         logger.info(f"Transferred full cargo to Escape Pod (planned dismantle): {transferred}")
 
-    def _transfer_emergency_cargo(self, destroyed_ship: Ship, escape_pod: Ship) -> None:
-        """Transfer 10% of cargo contents from destroyed ship to escape pod.
-
-        Operates on the real cargo JSONB shape
-        {"capacity": n, "used": n, "contents": {commodity: qty}} (see
-        create_ship) — mirrors CombatService._transfer_cargo. Treating the
-        cargo dict as flat {resource: qty} made sum() blow up on the nested
-        contents dict, 500ing every ship destruction.
-        """
-        destroyed_cargo = destroyed_ship.cargo or {}
-        destroyed_contents: Dict[str, int] = destroyed_cargo.get("contents") or {}
-        if not destroyed_contents:
-            return
-
-        pod_cargo = escape_pod.cargo or {}
-        pod_contents: Dict[str, int] = pod_cargo.get("contents") or {}
-
-        # Pod capacity from its own cargo record, falling back to the spec
-        pod_capacity = pod_cargo.get("capacity") or 0
-        if not pod_capacity:
-            escape_pod_spec = self.db.query(ShipSpecification).filter(
-                ShipSpecification.type == ShipType.ESCAPE_POD
-            ).first()
-            pod_capacity = escape_pod_spec.max_cargo if escape_pod_spec else 0
-
-        pod_used = sum(int(q) for q in pod_contents.values() if isinstance(q, (int, float)))
-        available_space = max(0, int(pod_capacity) - pod_used)
-        if available_space <= 0:
-            return
-
-        # Move 10% of each commodity (at least 1 unit), clamped to what the
-        # destroyed ship actually holds and the pod's remaining space
-        transferred: Dict[str, int] = {}
-        for resource, amount in list(destroyed_contents.items()):
-            if available_space <= 0:
-                break
-            if not isinstance(amount, (int, float)) or amount <= 0:
-                continue
-            emergency_amount = min(max(1, int(amount * 0.1)), int(amount), available_space)
-            if emergency_amount <= 0:
-                continue
-
-            destroyed_contents[resource] = int(amount) - emergency_amount
-            if destroyed_contents[resource] <= 0:
-                del destroyed_contents[resource]
-            pod_contents[resource] = int(pod_contents.get(resource, 0)) + emergency_amount
-            transferred[resource] = emergency_amount
-            available_space -= emergency_amount
-
-        if not transferred:
-            return
-
-        # Write back with recalculated usage; flag_modified is required for
-        # SQLAlchemy to detect in-place JSONB mutation
-        destroyed_cargo["contents"] = destroyed_contents
-        destroyed_cargo["used"] = sum(int(q) for q in destroyed_contents.values())
-        pod_cargo["contents"] = pod_contents
-        pod_cargo["used"] = sum(int(q) for q in pod_contents.values())
-        destroyed_ship.cargo = destroyed_cargo
-        escape_pod.cargo = pod_cargo
-        flag_modified(destroyed_ship, "cargo")
-        flag_modified(escape_pod, "cargo")
-
-        logger.info(f"Transferred emergency cargo to Escape Pod: {transferred}")
-    
     def _calculate_insurance_payout(self, ship: Ship, insurance: Dict[str, Any]) -> int:
         """Calculate insurance payout for a destroyed ship.
 
