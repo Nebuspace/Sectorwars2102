@@ -726,9 +726,6 @@ export const rankingAPI = {
   getRank: () =>
     apiRequest('/api/v1/ranking/rank'),
 
-  getMedals: () =>
-    apiRequest('/api/v1/ranking/medals'),
-
   getDefinitions: () =>
     apiRequest('/api/v1/ranking/definitions'),
 
@@ -742,8 +739,10 @@ export const rankingAPI = {
     apiRequest('/api/v1/ranking/progress'),
 };
 
-/** Player medals service (distinct from rankingAPI.getMedals aggregate). */
+/** Player medals (GET /api/v1/medals/me — typed; ranking /medals retired). */
 export const medalsAPI = {
+  getMe: () => apiRequest('/api/v1/medals/me'),
+
   /** Clear-on-view offline award queue (GET /api/v1/medals/unviewed). */
   getUnviewed: (): Promise<{ unviewed: string[] }> =>
     apiRequest('/api/v1/medals/unviewed'),
