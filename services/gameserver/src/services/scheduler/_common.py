@@ -394,6 +394,15 @@ TRANSFER_CLAIM_AUTOCOMPLETE_CHECK_SECONDS = int(
     os.environ.get("TRANSFER_CLAIM_AUTOCOMPLETE_CHECK_SECONDS", str(5 * 60))
 )
 
+# Hatch-pin reset apply sweep pre-filter (ship-registry.md "Hatch pin lock" --
+# "the registered owner can always reset the pin via a port admin action
+# (1-hour real-time delay before the new pin takes effect)"). Same real-time-
+# deadline shape as the transfer-claim sweep directly above, same 5-minute
+# cadence.
+PIN_RESET_APPLY_CHECK_SECONDS = int(
+    os.environ.get("PIN_RESET_APPLY_CHECK_SECONDS", str(5 * 60))
+)
+
 # Port operating-cost sweep pre-filter (WO-B3). The maintenance/upkeep accrual
 # + 3-month insolvency force-sell live in port_ownership_service.accrue_operating_
 # costs — a LAZY, idempotent engine that, before this sweep, only fired via the
@@ -776,6 +785,9 @@ _STOLEN_SHIP_REP_PENALTY_LOCK_KEY = _mnemonic_lock_key("STLN")
 # "Legal ownership transfer") -- WO-BUILD-SHIP-REGISTRY-CONTESTED-TRANSFER-
 # SALVAGE-CLAIM.
 _TRANSFER_CLAIM_AUTOCOMPLETE_LOCK_KEY = _mnemonic_lock_key("TCLM")
+# Hatch-pin reset apply sweep (ship-registry.md "Hatch pin lock" -- delayed
+# pin-reset take-effect). WO-BUILD-SHIP-PIN-PORT-RESET-DELAYED.
+_PIN_RESET_APPLY_LOCK_KEY = _mnemonic_lock_key("PINR")
 _SUSTAINED_DRIP_LOCK_KEY = _mnemonic_lock_key("SDRP")
 _PORT_OPERATING_COSTS_LOCK_KEY = _mnemonic_lock_key("PORT")
 _STATION_RECOVERY_LOCK_KEY = _mnemonic_lock_key("STRC")

@@ -34,6 +34,7 @@ from src.services.ship_registry_service import (
     eject_ship,
     file_transfer_claim,
     report_stolen,
+    request_pin_reset,
     retract_stolen_report,
     set_pin,
 )
@@ -73,6 +74,7 @@ _CONFLICT_CODES = {
     "ERR_ALREADY_PILOTING",
     "ERR_SHIP_LOCKED",
     "ERR_NOT_CURRENT_PILOT",
+    "ERR_PIN_RESET_ALREADY_PENDING",
 }
 
 
@@ -344,4 +346,37 @@ async def set_pin_route(
 
     db.commit()
     logger.info("Ship %s pin changed by %s", ship_id, player.id)
+    return result
+
+
+class RequestPinResetRequest(BaseModel):
+    port_id: UUID
+    pin: str
+
+
+@router.post("/{ship_id}/request-pin-reset")
+async def request_pin_reset_route(
+    ship_id: str,
+    request: RequestPinResetRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Port-gated pin recovery for the registered owner, 1h delayed take-
+    effect (ship-registry.md "Hatch pin lock" "Pin recovery")."""
+    ship = _get_locked_ship(db, ship_id)
+
+    try:
+        result = request_pin_reset(
+            db, ship=ship, owner=player, port_id=request.port_id, new_pin=request.pin,
+        )
+    except ShipRegistryError as exc:
+        db.rollback()
+        _raise_for(exc)
+        return  # pragma: no cover -- _raise_for always raises
+
+    db.commit()
+    logger.info(
+        "Ship %s pin-reset requested by %s at port %s (effective_at=%s)",
+        ship_id, player.id, request.port_id, result["effective_at"],
+    )
     return result

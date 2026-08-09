@@ -53,6 +53,11 @@ ABANDONMENT_ARCHIVE_DAYS = 7
 TRANSFER_CLAIM_FEE_PCT = 0.30
 TRANSFER_CLAIM_DISPUTE_WINDOW = timedelta(hours=24)
 
+# ship-registry.md "Hatch pin lock" -- "1-hour real-time delay before the
+# new pin takes effect; gives any current borrower a window to extract
+# themselves before being locked out."
+PIN_RESET_DELAY = timedelta(hours=1)
+
 # 50% of the ship's last appraised value (ship-registry.md "Reporting a ship
 # stolen" effects #5). ``Ship.purchase_value`` is this codebase's existing
 # "last appraised value" field (ship_service._calculate_insurance_payout
@@ -957,3 +962,53 @@ def set_pin(db: Session, *, ship: Ship, player: Player, new_pin: str) -> dict:
         "ship_id": str(ship.id),
         "hatch_pin_code": ship.hatch_pin_code,
     }
+
+
+def request_pin_reset(db: Session, *, ship: Ship, owner: Player, port_id: UUID, new_pin: str) -> dict:
+    """Port-gated pin recovery for the registered owner (ship-registry.md
+    "Hatch pin lock" "Pin recovery": "the registered owner can always reset
+    the pin via a port admin action (1-hour real-time delay before the new
+    pin takes effect; gives any current borrower a window to extract
+    themselves before being locked out)"). Distinct from ``set_pin``, which
+    is instant but requires being aboard -- this is the recovery path for an
+    owner who is NOT the current pilot (their ship could be anywhere:
+    borrowed, drifting, out of sector) and needs the registration alone to
+    regain control. Raises ``ShipRegistryError`` with the exact canon ERR_*
+    code on rejection. Flushes but does not commit -- the route owns the
+    commit."""
+    if ship.registered_owner_id != owner.id:
+        raise ShipRegistryError(
+            "ERR_NOT_REGISTERED_OWNER", "Only the registered owner can reset this ship's pin.",
+        )
+    if not owner.is_docked or owner.current_port_id != port_id:
+        raise ShipRegistryError(
+            "ERR_NOT_AT_PORT", "You must be docked at this port to reset the pin here.",
+        )
+    if ship.pending_hatch_pin_effective_at is not None:
+        raise ShipRegistryError(
+            "ERR_PIN_RESET_ALREADY_PENDING", "A pin reset is already pending on this ship.",
+        )
+
+    now = datetime.now(timezone.utc)
+    effective_at = now + PIN_RESET_DELAY
+    ship.pending_hatch_pin_code = _validate_hatch_pin(new_pin)
+    ship.pending_hatch_pin_effective_at = effective_at
+    db.flush()
+
+    return {
+        "ship_id": str(ship.id),
+        "requested_at": now.isoformat(),
+        "effective_at": effective_at.isoformat(),
+    }
+
+
+def _apply_pending_pin_reset(ship: Ship) -> None:
+    """Shared apply path for the pin-reset delay sweep (scheduler/
+    economy_sweeps.py). Caller must already hold the row lock on ``ship``
+    and have re-verified the reset is still pending and due. Copies
+    pending_hatch_pin_code -> hatch_pin_code and clears both pending
+    columns. No commit/flush here -- the sweep owns the transaction
+    boundary, same discipline as ``_complete_transfer_claim``."""
+    ship.hatch_pin_code = ship.pending_hatch_pin_code
+    ship.pending_hatch_pin_code = None
+    ship.pending_hatch_pin_effective_at = None
