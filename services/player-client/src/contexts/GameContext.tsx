@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { useAuth } from './AuthContext';
 import apiClient from '../services/apiClient';
-import { sectorAPI, messageAPI, planetaryAPI, citadelAPI, expeditionAPI, pioneerAPI, armoryAPI, tradingAPI, quantumAPI, portOwnershipAPI, playerAPI, shipAPI } from '../services/api';
+import { sectorAPI, messageAPI, planetaryAPI, citadelAPI, expeditionAPI, pioneerAPI, armoryAPI, tradingAPI, quantumAPI, portOwnershipAPI, playerAPI, shipAPI, firstLoginAPI } from '../services/api';
 import websocketService from '../services/websocket';
 import { ariaFeed } from '../components/mfd/ariaFeedStore';
 
@@ -509,13 +509,13 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const api = apiClient;
 
 
-  // Check first login status
+  // Check first login status — firstLoginAPI.getStatus (same URL).
   const checkFirstLoginStatus = async (): Promise<boolean> => {
     if (!user) return false;
     
     try {
-      const response = await api.get('/api/v1/first-login/status');
-      const needsFirstLogin = (response.data as any).requires_first_login;
+      const data = await firstLoginAPI.getStatus();
+      const needsFirstLogin = (data as any).requires_first_login;
       setNeedsFirstLogin(needsFirstLogin);
       return needsFirstLogin;
     } catch (error) {
