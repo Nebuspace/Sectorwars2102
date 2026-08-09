@@ -46,7 +46,7 @@ describe('mfd/atoms', () => {
   it('MFDPageHeader with showTitle=false and non-partial status renders nothing', async () => {
     await act(async () => {
       root.render(
-        <MFDPageHeader title="VESSEL" accent="#0ff" status="live" showTitle={false} />,
+        <MFDPageHeader title="VESSEL" accent="#0ff" status="shipped" showTitle={false} />,
       );
     });
     expect(container.querySelector('.mfd-page-header')).toBeNull();
