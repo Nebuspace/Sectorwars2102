@@ -1050,9 +1050,7 @@ export const resourceAPI = {
 // corp-shared ∪ current — course-plotting.md), the warp/tunnel edges between
 // them, and id-only frontier stubs (each linked to the known sector that
 // surfaced it, via `from` -- WO-NAV-CHART-FRONTIER-EDGES) for adjacent-but-
-// unknown sectors. Course plotting/engagement itself stays on
-// AutopilotContext's own apiClient.post call to POST /api/v1/nav/plot
-// (unchanged by this WO).
+// unknown sectors. Course plot: POST /api/v1/nav/plot (navAPI.plot).
 export interface NavChartSector {
   sector_id: number;
   name: string;
@@ -1107,6 +1105,42 @@ export interface NavThreatEntry {
   contributors: NavThreatContributor[];
 }
 
+// POST /api/v1/nav/plot — ADR-0072 / AutopilotContext course plot.
+export interface CourseHop {
+  sector_id: number;
+  name: string;
+  turn_cost: number;
+  visited: boolean;
+  safety_rating: number | null;
+  via_tunnel: boolean;
+}
+
+export interface CourseReachable {
+  success: true;
+  reachable: true;
+  target_sector_id: number;
+  hops: CourseHop[];
+  total_turns: number;
+}
+
+export interface CourseUnreachable {
+  success: true;
+  reachable: false;
+  target_sector_id: number;
+  nearest_known: { sector_id: number; name: string } | null;
+  /** Present when the sector id does not exist in the galaxy DB. */
+  error?: string;
+  /**
+   * Why the plot refused:
+   * - `unknown_sector` — no such sector
+   * - `uncharted` — exists but outside the player's known graph
+   * - `no_route` — charted, but no directed path from here (one-ways / gaps)
+   */
+  reason?: 'unknown_sector' | 'uncharted' | 'no_route';
+}
+
+export type CoursePlot = CourseReachable | CourseUnreachable;
+
 export const navAPI = {
   // `bounded` (WO-NAV-REACH-BACKEND, default false) opts into the server's
   // scanner-depth-bounded chart (CHART_BOUNDED_DEPTH_CEILING=12) — sectors
@@ -1119,6 +1153,17 @@ export const navAPI = {
     apiRequest(`/api/v1/nav/chart${bounded ? '?bounded=true' : ''}`),
   getThreat: (): Promise<NavThreatEntry[]> =>
     apiRequest('/api/v1/nav/threat'),
+  plot: (
+    targetSectorId: number,
+    objective: 'min_time' | 'min_risk' = 'min_time',
+  ): Promise<CoursePlot> =>
+    apiRequest('/api/v1/nav/plot', {
+      method: 'POST',
+      body: JSON.stringify({
+        target_sector_id: targetSectorId,
+        objective,
+      }),
+    }),
 };
 
 // Sector contents — existing read-only endpoints (services/gameserver/src/

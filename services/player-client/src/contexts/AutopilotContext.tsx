@@ -25,7 +25,13 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import apiClient from '../services/apiClient';
+import {
+  navAPI,
+  type CourseHop,
+  type CoursePlot,
+  type CourseReachable,
+  type CourseUnreachable,
+} from '../services/api';
 import { requestWarpDepart, WARP_TURN_MS, WARP_ARRIVE_MS } from '../services/warpCinematicBus';
 import { useGame } from './GameContext';
 
@@ -37,42 +43,8 @@ import { useGame } from './GameContext';
  */
 export const AUTOPILOT_POST_ARRIVE_MS = WARP_ARRIVE_MS;
 
-// ── Types ──────────────────────────────────────────────────────────────────
-
-export interface CourseHop {
-  sector_id: number;
-  name: string;
-  turn_cost: number;
-  visited: boolean;
-  safety_rating: number | null;
-  via_tunnel: boolean;
-}
-
-export interface CourseReachable {
-  success: true;
-  reachable: true;
-  target_sector_id: number;
-  hops: CourseHop[];
-  total_turns: number;
-}
-
-export interface CourseUnreachable {
-  success: true;
-  reachable: false;
-  target_sector_id: number;
-  nearest_known: { sector_id: number; name: string } | null;
-  /** Present when the sector id does not exist in the galaxy DB. */
-  error?: string;
-  /**
-   * Why the plot refused:
-   * - `unknown_sector` — no such sector
-   * - `uncharted` — exists but outside the player's known graph
-   * - `no_route` — charted, but no directed path from here (one-ways / gaps)
-   */
-  reason?: 'unknown_sector' | 'uncharted' | 'no_route';
-}
-
-export type CoursePlot = CourseReachable | CourseUnreachable;
+// Re-export plot types (canonical definitions live on navAPI / api.ts).
+export type { CourseHop, CoursePlot, CourseReachable, CourseUnreachable };
 
 export type AutopilotStatus =
   | 'idle'
@@ -154,11 +126,7 @@ export const AutopilotProvider: React.FC<{ children: React.ReactNode }> = ({
       hopIndexRef.current = 0;
 
       try {
-        const response = await apiClient.post<CoursePlot>('/api/v1/nav/plot', {
-          target_sector_id: targetSectorId,
-          objective: 'min_time',
-        });
-        const plot = response.data;
+        const plot = await navAPI.plot(targetSectorId, 'min_time');
         setLastPlot(plot);
 
         if (plot.reachable) {
