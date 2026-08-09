@@ -148,7 +148,7 @@ export const PlanetaryManagement: React.FC = () => {
     try {
       const token = localStorage.getItem('accessToken');
       const response = await fetch(
-        `/api/v1/admin/colonization/planets/${planet.id}/tick`,
+        `/api/v1/admin/planets/${planet.id}/tick`,
         {
           method: 'POST',
           headers: {

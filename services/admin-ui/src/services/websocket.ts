@@ -418,12 +418,6 @@ class AdminWebSocketService {
     this.connected = false;
     await this.connect(this.token);
   }
-
-  // Compatibility method for smooth transition
-  getSocket(): null {
-    // Return null as we don't expose the raw WebSocket
-    return null;
-  }
 }
 
 // Create singleton instance
