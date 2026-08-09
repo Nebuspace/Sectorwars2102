@@ -1,115 +1,167 @@
 // @vitest-environment jsdom
 /**
- * WelcomeBackToast — bridges AuthContext welcomeBackSignal into a cockpit
- * toast + ARIA feed line (one bump = one grant; signal 0 is baseline).
+ * WelcomeBackToast (WO-PUX-WBACK-SURFACE) — the AuthContext-signal consumer
+ * that bridges the welcome-back grant into the cockpit's toast rail + ARIA
+ * feed. AuthContext sits outside WebSocketProvider (see the component's own
+ * doc comment), so this is the seam that actually fires the surfaces; the
+ * companion AuthContext.welcomeBack.test.tsx only pins that the signal/
+ * payload are threaded correctly, not that anything renders from them.
+ *
+ * Exercises the REAL WebSocketProvider (its `notifications` queue is what
+ * PriorityHailConsumer renders) with AuthContext mocked to a controllable
+ * signal/payload pair, mirroring WebSocketContext.teammateUnderAttack.test
+ * .tsx's real-provider technique.
  */
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-(globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+interface MockWelcomeBack {
+  granted: boolean;
+  bonus: number;
+  days_inactive: number;
+}
 
-const mockAddNotification = vi.fn();
-const mockAppendNav = vi.fn();
-
-let welcomeBackSignal = 0;
-let lastWelcomeBack: { granted: boolean; bonus: number; days_inactive: number } | null = null;
+let mockAuthState: { welcomeBackSignal: number; lastWelcomeBack: MockWelcomeBack | null };
 
 vi.mock('../../../contexts/AuthContext', () => ({
-  useAuth: () => ({ welcomeBackSignal, lastWelcomeBack }),
+  useAuth: () => mockAuthState,
 }));
 
-vi.mock('../../../contexts/WebSocketContext', () => ({
-  useWebSocket: () => ({ addNotification: mockAddNotification }),
-}));
-
-vi.mock('../../mfd/ariaFeedStore', () => ({
-  ariaFeed: { appendNav: (...args: unknown[]) => mockAppendNav(...args) },
-}));
-
+import { WebSocketProvider, useWebSocket } from '../../../contexts/WebSocketContext';
+import { ariaFeed } from '../../mfd/ariaFeedStore';
 import WelcomeBackToast from '../WelcomeBackToast';
+
+let captured: ReturnType<typeof useWebSocket> | null = null;
+function Consumer() {
+  captured = useWebSocket();
+  return null;
+}
+
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe('WelcomeBackToast', () => {
   let container: HTMLElement;
   let root: ReturnType<typeof createRoot>;
+  let appendNavSpy: ReturnType<typeof vi.spyOn>;
 
-  beforeEach(() => {
-    mockAddNotification.mockReset();
-    mockAppendNav.mockReset();
-    welcomeBackSignal = 0;
-    lastWelcomeBack = null;
+  const renderTree = async () => {
+    act(() => {
+      root.render(
+        React.createElement(
+          WebSocketProvider,
+          null,
+          React.createElement(WelcomeBackToast),
+          React.createElement(Consumer)
+        )
+      );
+    });
+    await flush();
+  };
+
+  beforeEach(async () => {
+    mockAuthState = { welcomeBackSignal: 0, lastWelcomeBack: null };
+    appendNavSpy = vi.spyOn(ariaFeed, 'appendNav');
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
+    captured = null;
+    await renderTree();
   });
 
-  afterEach(async () => {
-    await act(async () => {
+  afterEach(() => {
+    act(() => {
       root.unmount();
     });
     container.remove();
+    appendNavSpy.mockRestore();
   });
 
-  it('renders nothing and stays quiet on the baseline signal', async () => {
-    await act(async () => {
-      root.render(<WelcomeBackToast />);
-    });
-    expect(container.innerHTML).toBe('');
-    expect(mockAddNotification).not.toHaveBeenCalled();
-    expect(mockAppendNav).not.toHaveBeenCalled();
+  it('is inert on mount -- signal 0 is the baseline, never a real grant', () => {
+    expect(captured!.notifications).toHaveLength(0);
+    expect(appendNavSpy).not.toHaveBeenCalled();
   });
 
-  it('fires one toast + ARIA line when the signal bumps with a grant', async () => {
-    await act(async () => {
-      root.render(<WelcomeBackToast />);
-    });
+  it('fires exactly one toast + one ARIA line on a granted signal bump', async () => {
+    mockAuthState = {
+      welcomeBackSignal: 1,
+      lastWelcomeBack: { granted: true, bonus: 400, days_inactive: 8 },
+    };
+    await renderTree();
 
-    welcomeBackSignal = 1;
-    lastWelcomeBack = { granted: true, bonus: 25, days_inactive: 3 };
-    await act(async () => {
-      root.render(<WelcomeBackToast />);
-    });
+    expect(captured!.notifications).toHaveLength(1);
+    expect(captured!.notifications[0].title).toBe('Welcome Back');
+    expect(captured!.notifications[0].content).toBe(
+      '+400 turns — welcome back, Commander (8 days away)'
+    );
+    expect(captured!.notifications[0].level).toBe('success');
 
-    expect(mockAddNotification).toHaveBeenCalledTimes(1);
-    expect(mockAddNotification.mock.calls[0][0]).toMatchObject({
-      title: 'Welcome Back',
-      level: 'success',
-    });
-    expect(mockAddNotification.mock.calls[0][0].content).toContain('+25 turns');
-    expect(mockAddNotification.mock.calls[0][0].content).toContain('3 days');
-    expect(mockAppendNav).toHaveBeenCalledTimes(1);
-    expect(mockAppendNav.mock.calls[0][0]).toContain('+25 turns');
+    expect(appendNavSpy).toHaveBeenCalledTimes(1);
+    expect(appendNavSpy).toHaveBeenCalledWith(
+      'Welcome back, Commander. +400 turns credited — 8 days away.'
+    );
   });
 
-  it('does not re-fire when the same signal is rendered again', async () => {
-    await act(async () => {
-      root.render(<WelcomeBackToast />);
-    });
+  it('does not re-fire on a re-render with the same signal', async () => {
+    mockAuthState = {
+      welcomeBackSignal: 1,
+      lastWelcomeBack: { granted: true, bonus: 400, days_inactive: 8 },
+    };
+    await renderTree();
+    await renderTree(); // identical signal, second render pass
 
-    welcomeBackSignal = 2;
-    lastWelcomeBack = { granted: true, bonus: 10, days_inactive: 1 };
-    await act(async () => {
-      root.render(<WelcomeBackToast />);
-    });
-    expect(mockAddNotification).toHaveBeenCalledTimes(1);
-
-    await act(async () => {
-      root.render(<WelcomeBackToast />);
-    });
-    expect(mockAddNotification).toHaveBeenCalledTimes(1);
-    expect(mockAppendNav).toHaveBeenCalledTimes(1);
+    expect(captured!.notifications).toHaveLength(1);
+    expect(appendNavSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('ignores a signal bump when granted is false', async () => {
-    await act(async () => {
-      root.render(<WelcomeBackToast />);
-    });
-    welcomeBackSignal = 1;
-    lastWelcomeBack = { granted: false, bonus: 0, days_inactive: 0 };
-    await act(async () => {
-      root.render(<WelcomeBackToast />);
-    });
-    expect(mockAddNotification).not.toHaveBeenCalled();
-    expect(mockAppendNav).not.toHaveBeenCalled();
+  it('does not fire when the payload is granted:false (defensive -- AuthContext never bumps this way)', async () => {
+    mockAuthState = {
+      welcomeBackSignal: 1,
+      lastWelcomeBack: { granted: false, bonus: 0, days_inactive: 0 },
+    };
+    await renderTree();
+
+    expect(captured!.notifications).toHaveLength(0);
+    expect(appendNavSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not fire when lastWelcomeBack is null even if the signal is nonzero (defensive)', async () => {
+    mockAuthState = { welcomeBackSignal: 1, lastWelcomeBack: null };
+    await renderTree();
+
+    expect(captured!.notifications).toHaveLength(0);
+    expect(appendNavSpy).not.toHaveBeenCalled();
+  });
+
+  it('pluralizes "day" correctly for a 1-day gap', async () => {
+    mockAuthState = {
+      welcomeBackSignal: 1,
+      lastWelcomeBack: { granted: true, bonus: 50, days_inactive: 1 },
+    };
+    await renderTree();
+
+    expect(captured!.notifications[0].content).toBe(
+      '+50 turns — welcome back, Commander (1 day away)'
+    );
+    expect(appendNavSpy).toHaveBeenCalledWith(
+      'Welcome back, Commander. +50 turns credited — 1 day away.'
+    );
+  });
+
+  it('fires again on a second distinct signal bump (a genuine second grant)', async () => {
+    mockAuthState = {
+      welcomeBackSignal: 1,
+      lastWelcomeBack: { granted: true, bonus: 400, days_inactive: 8 },
+    };
+    await renderTree();
+
+    mockAuthState = {
+      welcomeBackSignal: 2,
+      lastWelcomeBack: { granted: true, bonus: 500, days_inactive: 40 },
+    };
+    await renderTree();
+
+    expect(captured!.notifications).toHaveLength(2);
+    expect(appendNavSpy).toHaveBeenCalledTimes(2);
   });
 });
