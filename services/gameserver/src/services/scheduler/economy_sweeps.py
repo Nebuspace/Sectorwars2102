@@ -34,6 +34,7 @@ from src.services.scheduler._common import (
     _STOLEN_SHIP_REP_PENALTY_LOCK_KEY,
     _TRANSFER_CLAIM_AUTOCOMPLETE_LOCK_KEY,
     _PIN_RESET_APPLY_LOCK_KEY,
+    _SALVAGE_BREAK_APPLY_LOCK_KEY,
     _PORT_OPERATING_COSTS_LOCK_KEY,
     _STATION_RECOVERY_LOCK_KEY,
     _RECLAIM_FLAG_LOCK_KEY,
@@ -820,6 +821,103 @@ def _run_pin_reset_apply_sweep_sync() -> Dict[str, int]:
         return result
     except Exception:
         logger.exception("Pin-reset apply sweep failed")
+        db.rollback()
+        return result
+    finally:
+        db.close()
+
+
+def _run_salvage_break_apply_sweep_sync() -> Dict[str, int]:
+    """Complete any in-progress salvage break whose duration has elapsed
+    (ship-registry.md "Salvage break" step 6 "Salvager disconnect": "a
+    watchdog at salvage_break_started_at + salvage_break_duration
+    auto-clears the lock at duration expiry", step 8: "the ship is now
+    unlocked ... the lock clears"). Own SessionLocal, xact-level advisory
+    lock (skip on contention), a candidate query, then a per-row
+    with_for_update re-read + per-row commit + per-row try/except -- same
+    discipline as ``_run_pin_reset_apply_sweep_sync`` directly above.
+
+    Duration is per-ship-type (``SALVAGE_BREAK_DURATIONS``), not a stored
+    column, so the due-check happens in Python after the per-row lock
+    rather than in the candidate SQL filter -- the candidate filter only
+    narrows to "some break is in progress" (a small set).
+
+    IDEMPOTENCY: the candidate gate is the idempotency anchor --
+    ``Ship.salvage_break_in_progress_by_id IS NOT NULL``.
+    ``_complete_salvage_break`` clears that column, so a completed break
+    drops out of the candidate set and can never be re-applied by a
+    duplicate wake or restart. This same idempotent re-check is also what
+    covers the "stuck lock" backstop case (ADR-0049 SK14's 2x-duration
+    note): a break the sweep missed on its due tick is still found and
+    completed, correctly, on the next tick -- no separate forced-clear
+    path needed.
+
+    Returns {"breaks": n_completed}."""
+    from src.core.database import SessionLocal
+    from src.models.ship import Ship
+    from src.services.ship_registry_service import (
+        SALVAGE_BREAK_DEFAULT_DURATION,
+        SALVAGE_BREAK_DURATIONS,
+        _complete_salvage_break,
+    )
+
+    result = {"breaks": 0}
+
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _SALVAGE_BREAK_APPLY_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return result
+        db.commit()
+
+        now = datetime.now(UTC)
+
+        candidate_ids = (
+            db.query(Ship.id)
+            .filter(Ship.salvage_break_in_progress_by_id.isnot(None))
+            .all()
+        )
+
+        for (ship_id,) in candidate_ids:
+            try:
+                ship = (
+                    db.query(Ship)
+                    .filter(Ship.id == ship_id)
+                    .with_for_update()
+                    .first()
+                )
+                if ship is None or ship.salvage_break_in_progress_by_id is None:
+                    db.rollback()
+                    continue
+                duration = SALVAGE_BREAK_DURATIONS.get(ship.type, SALVAGE_BREAK_DEFAULT_DURATION)
+                due = (
+                    ship.salvage_break_started_at is not None
+                    and ship.salvage_break_started_at + duration <= now
+                )
+                if not due:
+                    db.rollback()
+                    continue
+
+                _complete_salvage_break(ship)
+                result["breaks"] += 1
+                db.commit()
+            except Exception:
+                logger.exception(
+                    "Salvage-break apply sweep: apply failed for ship %s", ship_id,
+                )
+                db.rollback()
+
+        if result["breaks"]:
+            logger.info(
+                "Salvage-break apply sweep: completed %d break(s)",
+                result["breaks"],
+            )
+        return result
+    except Exception:
+        logger.exception("Salvage-break apply sweep failed")
         db.rollback()
         return result
     finally:

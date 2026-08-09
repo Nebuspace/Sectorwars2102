@@ -188,9 +188,11 @@ EXPECTED_NAME_SITE_MAP = {
     "_run_phase14_attachment_retry_sweep_sync": "_PHASE14_ATTACHMENT_RETRY_LOCK_KEY",
     # ADR-0054 X-D3 gc-lapse-window — 7-day liquidation sweep.
     "_run_gc_lapse_sweep_sync": "_GC_LAPSE_LOCK_KEY",
+    # WO-BUILD-SHIP-EJECT-BOARD-ROUTES — salvage-break watchdog sweep.
+    "_run_salvage_break_apply_sweep_sync": "_SALVAGE_BREAK_APPLY_LOCK_KEY",
 }
 
-# 29 bare-Name sites + 1 Call-form site (bootstrap_region_sync) = the true
+# 30 bare-Name sites + 1 Call-form site (bootstrap_region_sync) = the true
 # lock-site count (superseding any stale figure quoted anywhere else --
 # this file is the enumeration of record going forward).
 EXPECTED_TOTAL_LOCK_SITES = len(EXPECTED_NAME_SITE_MAP) + 1

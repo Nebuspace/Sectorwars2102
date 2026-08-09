@@ -78,6 +78,15 @@ def sync_current_pilot(
         if new_ship.current_pilot_id != player.id:
             new_ship.current_pilot_since = datetime.now(timezone.utc)
         new_ship.current_pilot_id = player.id
+        # ship-registry.md "Salvage break" step 7: "the owner can ...
+        # simply re-board their ship using the pin (instantly aborting the
+        # break by occupying the ship)." Generalized to ANY successful
+        # board while a break is in progress -- occupying the ship aborts
+        # it, whether it's the owner interrupting or a stranger boarding
+        # via a pin obtained out-of-band mid-break.
+        if getattr(new_ship, "salvage_break_in_progress_by_id", None) is not None:
+            new_ship.salvage_break_in_progress_by_id = None
+            new_ship.salvage_break_started_at = None
     if db is not None:
         try:
             from src.services.wanted_service import recompute_is_wanted
