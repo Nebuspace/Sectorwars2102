@@ -170,4 +170,28 @@ describe('apiRequest via trade/combat/grey wrappers', () => {
       }),
     );
   });
+
+  it('shipRegistryAPI.setPin POSTs the new pin', async () => {
+    request.mockResolvedValue({ data: { ship_id: 'ship-2', hatch_pin_code: 'NEWPIN1' } });
+    await shipRegistryAPI.setPin('ship-2', 'NEWPIN1');
+    expect(request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: '/api/v1/ships/ship-2/set-pin',
+        method: 'POST',
+        data: JSON.stringify({ pin: 'NEWPIN1' }),
+      }),
+    );
+  });
+
+  it('shipRegistryAPI.requestPinReset POSTs port_id and pin', async () => {
+    request.mockResolvedValue({ data: { ship_id: 'ship-2', effective_at: '2026-01-01T01:00:00Z' } });
+    await shipRegistryAPI.requestPinReset('ship-2', 'port-9', 'NEWPIN1');
+    expect(request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: '/api/v1/ships/ship-2/request-pin-reset',
+        method: 'POST',
+        data: JSON.stringify({ port_id: 'port-9', pin: 'NEWPIN1' }),
+      }),
+    );
+  });
 });
