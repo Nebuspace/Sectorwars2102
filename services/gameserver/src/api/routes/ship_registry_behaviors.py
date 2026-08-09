@@ -35,6 +35,7 @@ from src.services.ship_registry_service import (
     file_transfer_claim,
     report_stolen,
     retract_stolen_report,
+    set_pin,
 )
 
 logger = logging.getLogger(__name__)
@@ -71,6 +72,7 @@ _CONFLICT_CODES = {
     "ERR_SHIP_HARMONIZING",
     "ERR_ALREADY_PILOTING",
     "ERR_SHIP_LOCKED",
+    "ERR_NOT_CURRENT_PILOT",
 }
 
 
@@ -315,4 +317,31 @@ async def board_ship_route(
         "Ship %s boarded by %s (state=%s, turns_spent=%s, now_wanted=%s)",
         ship_id, player.id, result["state"], result["turns_spent"], result["now_wanted"],
     )
+    return result
+
+
+class SetPinRequest(BaseModel):
+    pin: str
+
+
+@router.post("/{ship_id}/set-pin")
+async def set_pin_route(
+    ship_id: str,
+    request: SetPinRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """The current pilot (owner or borrower) changes the ship's hatch pin
+    (ship-registry.md "Hatch pin lock")."""
+    ship = _get_locked_ship(db, ship_id)
+
+    try:
+        result = set_pin(db, ship=ship, player=player, new_pin=request.pin)
+    except ShipRegistryError as exc:
+        db.rollback()
+        _raise_for(exc)
+        return  # pragma: no cover -- _raise_for always raises
+
+    db.commit()
+    logger.info("Ship %s pin changed by %s", ship_id, player.id)
     return result

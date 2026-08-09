@@ -921,3 +921,39 @@ def board_ship(db: Session, *, ship: Ship, boarder: Player, pin: Optional[str] =
         "turns_spent": turn_cost,
         "now_wanted": bool(boarder.is_wanted),
     }
+
+
+def _validate_hatch_pin(raw: str) -> str:
+    """Pure: ship-registry.md "Hatch pin lock" -- 4-8 alphanumeric
+    characters. Normalizes to uppercase, matching the auto-generated pin's
+    format (hatch_pin_code is a plain String column, case is a convention
+    not a DB constraint). Raises ShipRegistryError on a malformed pin."""
+    candidate = (raw or "").strip().upper()
+    if not (4 <= len(candidate) <= 8) or not candidate.isalnum():
+        raise ShipRegistryError(
+            "ERR_INVALID_PIN", "Pin must be 4-8 alphanumeric characters.",
+        )
+    return candidate
+
+
+def set_pin(db: Session, *, ship: Ship, player: Player, new_pin: str) -> dict:
+    """The current pilot -- owner OR borrower -- changes ``ship``'s hatch pin
+    while aboard (ship-registry.md "Hatch pin lock": "the current pilot --
+    owner OR borrower -- can change the pin while aboard. A borrower who
+    changes the pin locks the owner out of their own ship; the owner's
+    recourse is to file a stolen report."). Deliberately does NOT special-
+    case owner vs borrower -- canon states both may do this, with the
+    borrower-lockout consequence being the intended (if adversarial)
+    outcome. Flushes but does not commit -- the route owns the commit."""
+    if ship.current_pilot_id != player.id:
+        raise ShipRegistryError(
+            "ERR_NOT_CURRENT_PILOT", "You must be aboard this ship to change its pin.",
+        )
+
+    ship.hatch_pin_code = _validate_hatch_pin(new_pin)
+    db.flush()
+
+    return {
+        "ship_id": str(ship.id),
+        "hatch_pin_code": ship.hatch_pin_code,
+    }

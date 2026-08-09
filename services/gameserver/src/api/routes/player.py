@@ -73,6 +73,12 @@ class ShipResponse(BaseModel):
     # equipment_slots["mining_laser"]["level"]) so the laser-upgrade UI can show
     # the CURRENT level before a refit. None when no Mining Laser is fitted.
     mining_laser_level: int | None = None
+    # ship-registry.md "Hatch pin lock": "The owner sees it in their ship
+    # panel from minute one." Populated ONLY on this owner-scoped listing
+    # (GET /players/ships already filters Ship.owner_id == the caller) --
+    # never add this field to a response shape another player's client can
+    # see, since it's the boarding secret for the ship.
+    hatch_pin_code: str | None = None
 
 class RepairShipResponse(BaseModel):
     success: bool
@@ -305,7 +311,8 @@ async def get_player_ships(
             current_value=ship.current_value,
             genesis_devices=ship.genesis_devices or 0,
             max_genesis_devices=ship.max_genesis_devices or 0,
-            mining_laser_level=_mining_laser_level(ship)
+            mining_laser_level=_mining_laser_level(ship),
+            hatch_pin_code=ship.hatch_pin_code,
         ))
 
     return ship_responses
