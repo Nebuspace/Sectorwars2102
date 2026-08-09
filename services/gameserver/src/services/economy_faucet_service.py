@@ -1,6 +1,6 @@
 """Economy Faucet Service — periodic credit faucets (lifecycle economy Phase 2).
 
-Two credit faucets, on DIFFERENT cadences (Max's final ruling 2026-06-20):
+Two credit faucets, on DIFFERENT cadences (human's final ruling 2026-06-20):
 
   1. SUBSCRIPTION PERK — WEEKLY.  Galactic citizens
      (``Player.is_galactic_citizen`` True AND
@@ -17,13 +17,13 @@ Two credit faucets, on DIFFERENT cadences (Max's final ruling 2026-06-20):
      standing with the in-game factions/guilds, giving alignment a tangible
      economic reward beyond the station-price modifier.
 
-     ⚠️  BALANCE CAP (Max's KEY constraint): the SUMMED daily total is capped at
+     ⚠️  BALANCE CAP (human's KEY constraint): the SUMMED daily total is capped at
      ``GLOBAL_DAILY_STIPEND_CAP`` so a player favored by MANY factions can never
      out-earn the paid weekly citizen perk (~10,000 cr/mo).  The cap is set well
      under ~333 cr/day (the perk's daily-equivalent) — see the constant below.
      The grant is ``min(sum_over_factions, GLOBAL_DAILY_STIPEND_CAP)``.
 
-WHY THE PER-FACTION MODEL (Max's final ruling 2026-06-20): the reputation
+WHY THE PER-FACTION MODEL (human's final ruling 2026-06-20): the reputation
 stipend used to ride the weekly faucet alongside the citizen perk, paying a
 single PERSONAL-rep-tier weekly amount to every active player.  That coupled a
 free reward to a paid subscription cadence and ignored the per-faction guild
@@ -50,7 +50,7 @@ DESIGN — both paths mirror the proven scheduler sweep discipline:
     UTC day re-reads the anchor and skips, so the stipend NEVER double-pays.
 
 ⚠️  NO-CANON NOTE — amounts and cadence are NOT specified in sw2102-docs.
-    The constants below are small, defensible defaults flagged for Max to
+    The constants below are small, defensible defaults flagged for human to
     ratify (see module docstring summary and the CONSTANTS_FOR_RATIFICATION
     dict at the bottom of this file).
 
@@ -85,7 +85,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 # ⚠️ NO-CANON — PER-FACTION DAILY guild stipend, keyed by the player's
-# ReputationLevel WITH ONE FACTION (Max's final per-faction ruling 2026-06-20).
+# ReputationLevel WITH ONE FACTION (human's final per-faction ruling 2026-06-20).
 # For each faction the player is in GOOD STANDING with (see
 # _GOOD_STANDING_MIN_LEVEL), this table gives that faction's daily contribution;
 # the contributions are SUMMED across factions, then CAPPED at
@@ -118,12 +118,12 @@ PER_FACTION_DAILY_BY_LEVEL: Dict[str, int] = {
 # is a simple ordinal >=.
 _GOOD_STANDING_MIN_NUMERIC_LEVEL: int = 1  # RECOGNIZED (the first positive tier)
 
-# ⚠️ NO-CANON — GLOBAL DAILY CAP (Max's KEY balance constraint).  The SUMMED
+# ⚠️ NO-CANON — GLOBAL DAILY CAP (human's KEY balance constraint).  The SUMMED
 # per-faction stipend is clamped to this so a player favored by MANY factions can
 # never out-earn the paid weekly citizen perk (~10,000 cr/mo ⇒ ~333 cr/day
 # equivalent).  100 cr/day ⇒ ~3,000 cr/mo at the cap — comfortably under the
 # perk, and reached only by a player in good standing with several factions
-# (e.g. 2× EXALTED, or 3–4 mid-tier factions).  Starts LOW per Max's directive;
+# (e.g. 2× EXALTED, or 3–4 mid-tier factions).  Starts LOW per human's directive;
 # a single-faction player is below the cap and gets the raw sum.
 GLOBAL_DAILY_STIPEND_CAP: int = 100  # ⚠️ NO-CANON — ~3,000/mo at cap, under the perk
 
@@ -187,7 +187,7 @@ def daily_stipend_amount(player) -> int:
     contribution SUMMED over every faction the player is in GOOD STANDING with,
     then clamped to ``GLOBAL_DAILY_STIPEND_CAP``.
 
-    PER-FACTION MODEL (Max's final ruling 2026-06-20): the player's standing with
+    PER-FACTION MODEL (human's final ruling 2026-06-20): the player's standing with
     each faction lives in the ``Reputation`` rows (one per (player, faction),
     with a ``current_level``/``current_value``).  For each row at or above the
     good-standing floor (``_GOOD_STANDING_MIN_NUMERIC_LEVEL`` = RECOGNIZED), look
@@ -370,7 +370,7 @@ def _select_faucet_candidate_ids(db) -> List[Any]:
 def run_weekly_faucet_sync() -> Dict[str, int]:
     """WEEKLY economy faucet — galactic-citizen SUBSCRIPTION PERK ONLY.
 
-    Max's ruling (2026-06-20) SPLIT the old two-faucet weekly job: the rep
+    human's ruling (2026-06-20) SPLIT the old two-faucet weekly job: the rep
     stipend moved to the DAILY active-gated path
     (apply_daily_rep_stipend_for_player, driven by the scheduler's daily sweep),
     and THIS weekly path now pays ONLY the paid citizen perk.  Everything else is
@@ -456,7 +456,7 @@ def run_weekly_faucet_sync() -> Dict[str, int]:
 
 
 # ---------------------------------------------------------------------------
-# Constants manifest — for Max's ratification
+# Constants manifest — for human's ratification
 # ---------------------------------------------------------------------------
 
 CONSTANTS_FOR_RATIFICATION: Dict[str, Any] = {
@@ -478,13 +478,13 @@ CONSTANTS_FOR_RATIFICATION: Dict[str, Any] = {
                      "player having logged in (User.last_login) THAT UTC day; "
                      "idle day = 0; durable per-player UTC-date anchor in "
                      "Player.settings (no migration)",
-    "model": "PER-FACTION GUILD PAYOUT (Max's final ruling 2026-06-20): for each "
+    "model": "PER-FACTION GUILD PAYOUT (human's final ruling 2026-06-20): for each "
              "faction the player is in GOOD STANDING with (standing >= "
              "RECOGNIZED), add PER_FACTION_DAILY_BY_LEVEL[level]; SUM across "
              "factions; grant min(sum, GLOBAL_DAILY_STIPEND_CAP).",
     "notes": (
         "All credit amounts + thresholds are NO-CANON placeholders requiring "
-        "Max's ratification. BALANCE CAP satisfied: cap 100 cr/day ⇒ ~3,000/mo, "
+        "human's ratification. BALANCE CAP satisfied: cap 100 cr/day ⇒ ~3,000/mo, "
         "UNDER the citizen perk's ~10,000/mo even for a player favored by many "
         "factions; a single-faction EXALTED player earns 50 cr/day (~1,500/mo). "
         "Recommended ratification questions: "

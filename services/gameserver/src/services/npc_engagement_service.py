@@ -33,7 +33,7 @@ Documented v1 deferrals (flagged, not invented):
     jurisdiction) — the squad releases when the offender leaves the
     encounter sector.
   - Surrender (police-forces.md "Engagement outcomes" #1 — a pre-combat
-    choice to decline and pay a fine). WO-CMB-NPC-INITIATED-1 (Max
+    choice to decline and pay a fine). WO-CMB-NPC-INITIATED-1 (human
     ruling, 2026-07-10) supersedes this bullet's old text ("combat with
     the arrived squad is player-initiated PvE via the existing attack
     path"): npc_combat_initiation_service.initiate_npc_combat now has
@@ -545,7 +545,7 @@ def _release_squad(db: Session, engagement: PendingEngagement) -> None:
 
 
 # ---------------------------------------------------------------------------
-# NPC-initiated combat trigger (WO-CMB-NPC-INITIATED-1, Max ruling
+# NPC-initiated combat trigger (WO-CMB-NPC-INITIATED-1, human ruling
 # 2026-07-10) — supersedes the "combat is player-initiated PvE" deferral
 # above: an arrived squad attacks FIRST once co-located with the
 # offender, via npc_combat_initiation_service.initiate_npc_combat (the

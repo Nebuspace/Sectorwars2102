@@ -93,6 +93,9 @@ class Region(Base):
     subscription_expires_at = Column(TIMESTAMP, nullable=True)
     last_payment_at = Column(TIMESTAMP, nullable=True)
     next_billing_at = Column(TIMESTAMP, nullable=True)
+    # Consecutive failed recurring-payment count for this region's ownership
+    # subscription. Same semantics as users.payment_failure_count.
+    payment_failure_count = Column(Integer, nullable=True, default=0)
     status = Column(String(50), nullable=False, default=RegionStatus.ACTIVE)
     # ADR-0050 batch3 provisioning-lifecycle hardening (SK17/SK19/SK21/SK22):
     # lifecycle timestamps + generation-tracking columns backing the 7-state

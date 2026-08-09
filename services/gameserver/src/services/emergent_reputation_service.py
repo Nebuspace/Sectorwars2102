@@ -383,8 +383,11 @@ EMERGENT_ACTIONS: Dict[str, EmergentAction] = {
         doc_source="factions-and-teams.md TF: Kill a Pirate or Cabal NPC (+5)",
     ),
     # Mercantile Guild insurance hooks (factions-and-teams.md MG table) —
-    # canon-numbered, one-time per hull. Registered for table-completeness;
-    # NOT wired by this WO (no caller invokes them yet → no double-fire).
+    # canon-numbered, one-time per hull. Wired at ship_upgrades.py's ship-
+    # insurance purchase route (INSURANCE_REP_ACTION dict, ~line 178) inside
+    # the same locked txn as the policy write; a per-hull awarded-tier ledger
+    # (ship.insurance.mg_rep_awarded) prevents double-firing on repurchase.
+    # Verified 2026-08-08 — "not wired" here was stale.
     "BUY_INSURANCE_BASIC": EmergentAction(
         name="BUY_INSURANCE_BASIC",
         deltas=[FactionDelta(FactionType.MERCHANTS, 2)],
@@ -485,9 +488,8 @@ EMERGENT_ACTIONS: Dict[str, EmergentAction] = {
     # EmergentAction.deltas list already supports a multi-faction event, and the
     # dispatcher fans out each delta (with its own throttle/cap/cascade) in one
     # transaction. Wired at gate-activation (advance_gate) ONLY for a public
-    # tunnel (WarpTunnel.is_public). The private/whitelist row (line 214) is
-    # PARKED — the private-gate build path does not exist (is_public is always
-    # True at creation), so no caller can reach it.
+    # tunnel (WarpTunnel.is_public). Private/whitelist builds fire
+    # BUILD_PRIVATE_WARP_GATE below (WO-WIRE-PRIVATE-WARP-GATE-BUILD).
     "BUILD_PUBLIC_WARP_GATE": EmergentAction(
         name="BUILD_PUBLIC_WARP_GATE",
         deltas=[
@@ -498,6 +500,23 @@ EMERGENT_ACTIONS: Dict[str, EmergentAction] = {
         doc_source=(
             "factions-and-teams.md anti-symmetric matrix: Build a public toll "
             "warp gate (MG +30, FC +5, NS +5; TF/AM/FA/SS/PI 0)"
+        ),
+    ),
+    # WO-WIRE-PRIVATE-WARP-GATE-BUILD — matrix row "Build a private/whitelist
+    # warp gate | TF −5 | MG 0 | FC +5 | AM 0 | NS 0 | FA +5 | SS +10 | PI 0".
+    # Fired at the same advance_gate activation point when the tunnel is NOT
+    # public (PRIVATE / WHITELIST / TEAM_ONLY / ALLIANCE).
+    "BUILD_PRIVATE_WARP_GATE": EmergentAction(
+        name="BUILD_PRIVATE_WARP_GATE",
+        deltas=[
+            FactionDelta(FactionType.FEDERATION, -5),
+            FactionDelta(FactionType.INDEPENDENTS, 5),
+            FactionDelta(FactionType.OUTLAWS, 5),
+            FactionDelta(FactionType.SYNDICATE, 10),
+        ],
+        doc_source=(
+            "factions-and-teams.md anti-symmetric matrix: Build a private/"
+            "whitelist warp gate (TF −5, FC +5, FA +5, SS +10; MG/AM/NS/PI 0)"
         ),
     ),
 }
@@ -926,7 +945,7 @@ def apply_emergent_action(
 
 
 # ---------------------------------------------------------------------------
-# Planet-capture faction penalty (DECISIONS planet-assault-reward-model, Max
+# Planet-capture faction penalty (DECISIONS planet-assault-reward-model, human
 # 2026-06-20 conditional (c)).
 #
 # Capturing a FACTION-OWNED planet earns the captor NEGATIVE reputation with
@@ -941,7 +960,7 @@ def apply_emergent_action(
 # MAGNITUDE IS NO-CANON: −50 is PROPOSED, mirroring the canon
 # ``attacked_chartered_planet`` personal-rep penalty (−50). The factions canon
 # (factions-and-teams.md reputation-triggers / ADR-0032) does NOT list a
-# capture-a-faction-planet trigger, so this number is flagged for Max and is
+# capture-a-faction-planet trigger, so this number is flagged for human and is
 # the smallest sensible intervention until canon lands.
 #
 # WIRING REALITY: the Planet model has no faction-owner field (planets are owned

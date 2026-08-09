@@ -164,15 +164,13 @@ class ShipUpgradeService:
         UpgradeType.SENSOR: {
             "base_cost": 6000,
             "cost_multiplier": 2.5,
-            # Canon (sw2102-docs ship-systems.md §2.5): "Each Sensor level adds
-            # +15% evasion. Sensors also affect scan range." The evasion number
-            # is canon; the scan-range increment is NO-CANON (the doc marks the
-            # scan-range effect 📐 Design-only with no per-level figure). Kernel:
-            # +1 scanner-range sector per Sensor level — flagged for a
-            # DECISIONS.md Pending ruling. The effective scanner range
-            # (spec base + this bonus) is computed by effective_scanner_range();
-            # there is no per-instance scanner_range column to mutate, so the
-            # bonus is applied as a derived value the scan path consults.
+            # Canon (sw2102-docs ship-systems.md §2.5, ✅ Shipped; DECISIONS.md
+            # no-canon-magnitudes-batch-remainder 2026-08-09): each Sensor level
+            # adds +15% evasion and +1 scanner-range sector. The effective
+            # scanner range (spec base + this bonus) is computed by
+            # effective_scanner_range(); there is no per-instance scanner_range
+            # column to mutate, so the bonus is a derived value the scan path
+            # consults.
             "effect_per_level": {"evasion_bonus_percent": 15, "scanner_range_bonus": 1},
             "description": "Increases evasion by +15% per level and scan range by +1 sector per level"
         },
@@ -350,7 +348,7 @@ class ShipUpgradeService:
     #
     # This is the Phase-A KERNEL: the catalog (this dict) + _apply_module_effects
     # (bake-on-install). install/remove/routes + the Phase-2 destructive cutover
-    # are SEPARATE WOs (SM-3 / Max-gated). During coexistence both legacy upgrades
+    # are SEPARATE WOs (SM-3 / human-gated). During coexistence both legacy upgrades
     # and modules write the SAME baked stat columns — see _apply_module_effects for
     # the zero-double-count contract.
     # ========================================================================
@@ -358,16 +356,16 @@ class ShipUpgradeService:
     # §4.1 supercharge multiplier (flat) — a module installed in a supercharged
     # slot has its effects multiplied by this. Snapshotted as `super_at_install`
     # on the slot record so a later slot-layout re-tune never silently re-buffs a
-    # fielded ship. [NO-CANON — Max-blessed launch value.]
+    # fielded ship. [NO-CANON — human-blessed launch value.]
     SUPERCHARGE_MULT = 1.6
 
     # §4.2 stacking cap — FLAT best-3 per effect: of all same-effect contributions
     # only the 3 LARGEST count (summed); the rest contribute 0. The dumb cap that
     # prevents the god-ship; the smooth geometric DR curve is the Phase-B swap-in.
-    # [NO-CANON — Max-blessed launch value.]
+    # [NO-CANON — human-blessed launch value.]
     MODULE_STACK_BEST_N = 3
 
-    # §5.3 tier curve (NO-CANON, co-tuned + Max-blessed): a module's effect scales
+    # §5.3 tier curve (NO-CANON, co-tuned + human-blessed): a module's effect scales
     # SUB-LINEARLY with tier (so breadth-by-count survives as a real alternative to
     # depth-in-a-super-slot) while cost scales faster. tier is 1-based (Mk I = 1).
     #   tier_effect = base_effect × MODULE_TIER_EFFECT_MULT ** (tier - 1)
@@ -379,7 +377,7 @@ class ShipUpgradeService:
     # §6.x SALVAGE — removing an installed module refunds this FRACTION of its
     # (tier-scaled) catalog cost; the rest is the salvage haircut (you don't get
     # the full price back for pulling a module). int-truncated on credit-back.
-    # [NO-CANON — Max-blessed launch value; flagged for a DECISIONS.md ruling on
+    # [NO-CANON — human-blessed launch value; flagged for a DECISIONS.md ruling on
     # the exact refund fraction.]
     SALVAGE_FRACTION = 0.25
 
@@ -642,10 +640,9 @@ class ShipUpgradeService:
     # NOTE: assigned after the class body (see below) because it references the
     # @staticmethod builders.
 
-    # NO-CANON kernel (ship-systems.md §2.5 marks the Sensor scan-range effect
-    # 📐 Design-only): each Sensor upgrade level adds +1 sector of scanner range
-    # on top of the hull spec's base scanner_range. Flagged for a DECISIONS.md
-    # Pending ruling on the exact per-level figure.
+    # CANON (ship-systems.md §2.5, ✅ Shipped; ratified 2026-08-09, DECISIONS.md
+    # no-canon-magnitudes-batch-remainder): each Sensor upgrade level adds +1
+    # sector of scanner range on top of the hull spec's base scanner_range.
     SCANNER_RANGE_BONUS_PER_SENSOR_LEVEL = 1
 
     # CANON (ship-systems.md §2.5 line 90, marked ✅ Shipped): "Each Sensor level
@@ -712,8 +709,8 @@ class ShipUpgradeService:
     @staticmethod
     def effective_scanner_range(ship, base_scanner_range: int) -> int:
         """Effective scanner range = the hull spec's base scanner_range plus the
-        Sensor-upgrade scan-range bonus (+1 sector per Sensor level, NO-CANON
-        kernel — see SCANNER_RANGE_BONUS_PER_SENSOR_LEVEL).
+        Sensor-upgrade scan-range bonus (+1 sector per Sensor level — CANON
+        ship-systems.md §2.5; see SCANNER_RANGE_BONUS_PER_SENSOR_LEVEL).
 
         `Ship` has no per-instance scanner_range column (the value lives on
         `ShipSpecification.scanner_range`); callers pass that spec base in and

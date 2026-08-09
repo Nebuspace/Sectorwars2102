@@ -1,6 +1,6 @@
 """add nullable medals.effect JSONB column (WO-CG medal bespoke-effect layer)
 
-DECISIONS.md:479 (``medal-effects-model``, ✅ Decided Max 2026-06-20) + the blessed
+DECISIONS.md:479 (``medal-effects-model``, ✅ Decided human 2026-06-20) + the blessed
 spec ``audit/design-briefs/medal-effects-spec.md`` (FINAL section authoritative):
 medals grant bespoke per-medal gameplay effects. The catalog ships an ``effect``
 dict per entry; this migration adds the matching column so ``seed_medals`` can

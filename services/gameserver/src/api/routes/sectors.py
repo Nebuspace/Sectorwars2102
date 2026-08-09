@@ -67,7 +67,7 @@ class WreckResponse(BaseModel):
     cargo: Dict[str, int]
     # ADR-0007 preview: would salvaging THIS wreck, right now, flag the
     # calling player Suspect? (No damage_type key here on purpose — that
-    # column does not exist on CargoWreck; NO-CANON, parked with Max.)
+    # column does not exist on CargoWreck; NO-CANON, parked with human.)
     would_flag_suspect: bool
 
 class PlanetResponse(BaseModel):
@@ -334,7 +334,7 @@ async def get_sector_wrecks(
     returns ``[]`` with 200; an unknown sector 404s. Newest
     ``WRECK_LISTING_LIMIT`` wrecks only.
 
-    No ``damage_type`` field — CargoWreck carries no such column (Max-parked
+    No ``damage_type`` field — CargoWreck carries no such column (human-parked
     NO-CANON, see this WO's report). ``would_flag_suspect`` is a live preview
     of what salvaging THIS wreck right now would do to the CALLING player —
     it can flip from true to false while the page is open as the grace

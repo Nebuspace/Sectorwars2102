@@ -91,7 +91,7 @@ class AISecurityService:
     def __init__(self):
         # Rate/cost limiting configuration -- WO-ARIA-COST-CAPS. Canon:
         # OPERATIONS/aria.md "Cost & rate controls" + SYSTEMS/aria-dialogue.md
-        # "Rate / cost controls", both amended 2026-07-10 (Max GO on ADR-0092
+        # "Rate / cost controls", both amended 2026-07-10 (human GO on ADR-0092
         # §4): max_cost_per_request raised from the doc's OLD $0.05 to $0.25
         # ("too low -- throttles legitimate deep queries once tool-retrieval
         # loops are in play"); requests_per_hour RETIRED (dominated by the
@@ -261,8 +261,9 @@ class AISecurityService:
         """
         violations = []
 
-        # Update player profile
-        profile = self.get_or_create_player_profile(player_id, seed_from=seed_from)
+        # Update player profile (mutation-only -- seeds/refreshes self.player_profiles;
+        # every method below reads that dict, not a return value here).
+        self.get_or_create_player_profile(player_id, seed_from=seed_from)
 
         # Check if player is blocked
         if self.is_player_blocked(player_id):
@@ -1048,7 +1049,7 @@ class AISecurityService:
         total_cost = (input_tokens * input_rate) + (output_tokens * output_rate)
         
         # Cap at reasonable maximum
-        return min(total_cost, 0.25)  # Max $0.25 per request
+        return min(total_cost, 0.25)  # human $0.25 per request
 
     def get_daily_cost_usage(self, player_id: str) -> float:
         """Get current daily cost usage for player"""

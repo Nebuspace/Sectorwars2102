@@ -197,7 +197,7 @@ class ConversationResponse(BaseModel):
     # is off (the pinned flag-off contract) or on any error-path response
     # built before EnhancedAIService ever ran.
     mode: Optional[str] = None
-    # Max's GO amendment on WO-ARIA-CHAT-LLM: a Resonance-ledger accounting
+    # human's GO amendment on WO-ARIA-CHAT-LLM: a Resonance-ledger accounting
     # SEAM -- a documented hook point only. The ledger itself is a future
     # post-ADR-0092 WO; this field is deliberately always None today.
     ledger_entry: Optional[Any] = None
@@ -802,7 +802,7 @@ async def cleanup_ai_data(
         # auth is plain `validate_ai_access` (any AI-eligible player). The call
         # below is GLOBAL DELETE (ai_conversation_logs / ai_cross_system_knowledge /
         # ai_security_audit_log) — not scoped to the caller. Do NOT "fix" the
-        # gate here without Max OK — Pending DECISION
+        # gate here without human OK — Pending DECISION
         # `enhanced-ai-cleanup-admin-gate` (HIGH / safety-list). Diagnose-only.
         deleted_count = await ai_service.cleanup_expired_data()
         

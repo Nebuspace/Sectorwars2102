@@ -29,9 +29,10 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from src.models.bounty_claim import BountyClaim, BountyClaimStatus
 from src.models.player import Player
-from src.models.ship import Ship, ShipSpecification, ShipStatus
+from src.models.ship import Ship, ShipSpecification, ShipStatus, ShipType
 from src.models.ship_registry import RegistryEventType, ShipRegistry, generate_registration_number
 from src.services.bounty_service import BountyService
+from src.services.turn_service import regenerate_turns, spend_turns
 from src.services.wanted_service import recompute_is_wanted
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,29 @@ ABANDONMENT_ARCHIVE_DAYS = 7
 # refunded"); kept on successful completion (auto-complete or owner-approve).
 TRANSFER_CLAIM_FEE_PCT = 0.30
 TRANSFER_CLAIM_DISPUTE_WINDOW = timedelta(hours=24)
+
+# ship-registry.md "Hatch pin lock" -- "1-hour real-time delay before the
+# new pin takes effect; gives any current borrower a window to extract
+# themselves before being locked out."
+PIN_RESET_DELAY = timedelta(hours=1)
+
+# ship-registry.md "Salvage break" duration table, keyed by ShipType.
+# ESCAPE_POD is deliberately absent -- "n/a -- escape pods cannot be
+# salvage-broken" is enforced as an explicit rejection in start_salvage_break,
+# not a duration lookup. NPC-only hulls (never player-Drifting) fall back to
+# the 4h mid-tier via .get() below rather than KeyError.
+SALVAGE_BREAK_DURATIONS = {
+    ShipType.SCOUT_SHIP: timedelta(hours=1),
+    ShipType.FAST_COURIER: timedelta(hours=1),
+    ShipType.CITIZEN_CLIPPER: timedelta(hours=1),  # FAST_COURIER re-skin
+    ShipType.LIGHT_FREIGHTER: timedelta(hours=1),
+    ShipType.CARGO_HAULER: timedelta(hours=4),
+    ShipType.DEFENDER: timedelta(hours=4),
+    ShipType.COLONY_SHIP: timedelta(hours=4),
+    ShipType.CARRIER: timedelta(hours=12),
+    ShipType.WARP_JUMPER: timedelta(hours=12),
+}
+SALVAGE_BREAK_DEFAULT_DURATION = timedelta(hours=4)
 
 # 50% of the ship's last appraised value (ship-registry.md "Reporting a ship
 # stolen" effects #5). ``Ship.purchase_value`` is this codebase's existing
@@ -135,9 +159,10 @@ def backfill_initial_registrations(db: Session) -> int:
     (mirrors the before_insert listener's generator, since pre-existing
     rows never went through it). Returns the number of ships backfilled.
 
-    Not wired to any route or scheduler by this WO (schema-only scope) --
-    invoke manually (e.g. a one-off admin script) when ready to run it
-    against existing data.
+    Wired at POST /admin/ships/registry/backfill (admin_comprehensive.py's
+    admin_backfill_ship_registry, SHIPS_MANAGE-scoped) -- verified
+    2026-08-08, "not wired" here was stale. Idempotent, so admins can
+    invoke it more than once safely.
     """
     already_registered_ship_ids = {
         row.ship_id
@@ -306,6 +331,9 @@ def report_stolen(
         "ship_id": str(ship.id),
         "stolen_status": True,
         "stolen_reported_at": now.isoformat(),
+        # WR10: server-authoritative deadline so the client never has to
+        # duplicate STOLEN_RETRACT_GRACE (24h) to render a countdown ticker.
+        "retract_grace_expires_at": (now + STOLEN_RETRACT_GRACE).isoformat(),
         "recovery_mode": mode,
         "bounty_id": bounty_ref,
         "cancelled_transfer_claim": cancelled_transfer_claim_id is not None,
@@ -756,3 +784,352 @@ def _complete_transfer_claim(db: Session, *, ship: Ship, via: str) -> dict:
         "completed_at": now.isoformat(),
         "via": via,
     }
+
+
+# --- Eject / board (ship-registry.md "Eject and board" + "Hatch pin lock") -
+
+# WO-BUILD-SHIP-EJECT-BOARD-REGISTRY-STATES interpretation note (no
+# ship-level "docked at port" marker exists -- only Player.is_docked/
+# current_port_id -- so canon's "both ships docked at the same port = 0
+# turns" collapses to a single check on the ACTING player): 0 turns while
+# docked at a station (the safe, planned-switch case); 1 turn in open space
+# (friction against loadout-cycling mid-fight). Cross-sector eject+board is
+# impossible by construction -- board() requires the target ship's sector to
+# match the boarder's current sector, so there is no third tier to encode.
+EJECT_BOARD_SPACE_TURN_COST = 1
+
+
+def _eject_board_turn_cost(player: Player) -> int:
+    """0 turns docked at a port, 1 turn in open space -- see the module-level
+    note above this section for the interpretation this reads off."""
+    return 0 if player.is_docked else EJECT_BOARD_SPACE_TURN_COST
+
+
+def eject_ship(db: Session, *, player: Player) -> dict:
+    """Voluntarily eject from the currently-piloted ship (ship-registry.md
+    "Eject and board"): the old ship's ``current_pilot_id`` clears and it
+    transitions to Drifting in its current sector; the player reseats onto
+    their escape pod (the single-pod-per-player invariant already
+    established by ``ShipService._ensure_escape_pod`` -- reuses an existing
+    owned pod if the player has one, otherwise creates one, exactly matching
+    canon's "briefly in escape-pod state"). Raises ``ShipRegistryError`` with
+    a stable code on any rejection. Flushes but does not commit -- the route
+    owns the commit and the player-row lock."""
+    if player.current_ship_id is None:
+        raise ShipRegistryError("ERR_NO_CURRENT_SHIP", "You are not currently piloting a ship.")
+
+    old_ship = db.query(Ship).filter(Ship.id == player.current_ship_id).with_for_update().first()
+    if old_ship is None:
+        # Dangling pointer (the row it names no longer exists) -- clear it
+        # rather than leave the invariant broken, but still reject: there is
+        # genuinely nothing to eject from. Calling the shared pilot-pointer
+        # sync helper below with new_ship=None is a documented total no-op
+        # (nothing to clear on a ship side, no Wanted change) -- called
+        # anyway to keep this file's write-site convention uniform (every
+        # current_ship_id write pairs with a sync call, per test_registry_
+        # pilot_wiring.py's structural sweep) rather than a special-cased
+        # exception.
+        from src.services.ship_service import sync_current_pilot
+        player.current_ship_id = None
+        sync_current_pilot(player, None, old_ship=None, db=db)
+        raise ShipRegistryError("ERR_NO_CURRENT_SHIP", "Your current ship could not be found.")
+    if old_ship.type == ShipType.ESCAPE_POD:
+        raise ShipRegistryError(
+            "ERR_ALREADY_IN_ESCAPE_POD",
+            "You are already in an escape pod; there is nothing to eject from.",
+        )
+
+    regenerate_turns(db, player)
+    turn_cost = _eject_board_turn_cost(player)
+    if player.turns < turn_cost:
+        raise ShipRegistryError(
+            "ERR_INSUFFICIENT_TURNS",
+            f"Not enough turns to eject. Need {turn_cost}, have {player.turns}.",
+        )
+
+    from src.services.ship_service import ShipService, sync_current_pilot
+    escape_pod = ShipService(db)._ensure_escape_pod(player, old_ship.sector_id)
+    player.current_ship_id = escape_pod.id
+    sync_current_pilot(player, escape_pod, old_ship=old_ship, db=db)
+    if turn_cost:
+        spend_turns(player, turn_cost)
+
+    db.flush()
+    return {
+        "ejected_ship_id": str(old_ship.id),
+        "ejected_ship_now_drifting": True,
+        "escape_pod_id": str(escape_pod.id),
+        "turns_spent": turn_cost,
+    }
+
+
+def board_ship(db: Session, *, ship: Ship, boarder: Player, pin: Optional[str] = None) -> dict:
+    """Board ``ship`` (ship-registry.md "Eject and board" + "Hatch pin
+    lock"). Eligibility: the registered owner always qualifies (no pin); a
+    matching ``pin`` qualifies anyone (regular Borrow); a ship with
+    ``hatch_pin_code IS NULL`` (post-salvage-break, ``_complete_salvage_
+    break`` cleared it) is open to anyone in the sector -- canon's "eligible
+    to anyone in the sector" bypass. A pin-less attempt on a locked,
+    non-owned ship is rejected 409 -- canon's own stated behavior for "no
+    pin and ship still locked".
+
+    Boarding a ``stolen_status`` ship immediately enters Wanted Status --
+    already ``sync_current_pilot``'s existing behavior via
+    ``recompute_is_wanted``, not reimplemented here. Raises
+    ``ShipRegistryError`` with a stable code on any rejection. Flushes but
+    does not commit -- the route owns the commit and the player-row lock."""
+    if ship.is_destroyed:
+        raise ShipRegistryError("ERR_SHIP_DESTROYED", "This ship has been destroyed.")
+    if ship.status == ShipStatus.HARMONIZING:
+        raise ShipRegistryError(
+            "ERR_SHIP_HARMONIZING",
+            "This ship is harmonizing into a warp gate focus and cannot be boarded.",
+        )
+    if ship.current_pilot_id == boarder.id:
+        raise ShipRegistryError("ERR_ALREADY_PILOTING", "You are already piloting this ship.")
+    if ship.sector_id != boarder.current_sector_id:
+        raise ShipRegistryError(
+            "ERR_DIFFERENT_SECTOR",
+            f"This ship is in sector {ship.sector_id}; travel there to board it.",
+        )
+
+    is_owner = ship.registered_owner_id == boarder.id
+    pin_matches = bool(pin) and bool(ship.hatch_pin_code) and pin == ship.hatch_pin_code
+    # Post-salvage-break bypass (ship-registry.md "Eject and board"
+    # "Eligibility"): a completed break clears hatch_pin_code to NULL,
+    # opening a Drifting ship to anyone in the sector.
+    salvage_broken_open = ship.current_pilot_id is None and ship.hatch_pin_code is None
+    if not (is_owner or pin_matches or salvage_broken_open):
+        raise ShipRegistryError(
+            "ERR_SHIP_LOCKED",
+            "This ship's hatch is locked. You need the pin (or a completed salvage break) to board it.",
+        )
+
+    regenerate_turns(db, boarder)
+    turn_cost = _eject_board_turn_cost(boarder)
+    if boarder.turns < turn_cost:
+        raise ShipRegistryError(
+            "ERR_INSUFFICIENT_TURNS",
+            f"Not enough turns to board. Need {turn_cost}, have {boarder.turns}.",
+        )
+
+    old_ship = None
+    if boarder.current_ship_id is not None and boarder.current_ship_id != ship.id:
+        old_ship = (
+            db.query(Ship).filter(Ship.id == boarder.current_ship_id).with_for_update().first()
+        )
+
+    from src.services.ship_service import sync_current_pilot
+    boarder.current_ship_id = ship.id
+    # sync_current_pilot's require_ship_access gate (detention) runs inside
+    # this call and raises StationSecurityError -- the route catches that
+    # type separately from ShipRegistryError, mirroring station_security.py.
+    sync_current_pilot(boarder, ship, old_ship=old_ship, db=db)
+    if turn_cost:
+        spend_turns(boarder, turn_cost)
+
+    db.flush()
+
+    if is_owner:
+        new_state = "owner_aboard"
+    elif ship.stolen_status:
+        new_state = "stolen_piloted"
+    else:
+        new_state = "borrowed"
+
+    return {
+        "ship_id": str(ship.id),
+        "boarded": True,
+        "state": new_state,
+        "turns_spent": turn_cost,
+        "now_wanted": bool(boarder.is_wanted),
+    }
+
+
+def _validate_hatch_pin(raw: str) -> str:
+    """Pure: ship-registry.md "Hatch pin lock" -- 4-8 alphanumeric
+    characters. Normalizes to uppercase, matching the auto-generated pin's
+    format (hatch_pin_code is a plain String column, case is a convention
+    not a DB constraint). Raises ShipRegistryError on a malformed pin."""
+    candidate = (raw or "").strip().upper()
+    if not (4 <= len(candidate) <= 8) or not candidate.isalnum():
+        raise ShipRegistryError(
+            "ERR_INVALID_PIN", "Pin must be 4-8 alphanumeric characters.",
+        )
+    return candidate
+
+
+def set_pin(db: Session, *, ship: Ship, player: Player, new_pin: str) -> dict:
+    """The current pilot -- owner OR borrower -- changes ``ship``'s hatch pin
+    while aboard (ship-registry.md "Hatch pin lock": "the current pilot --
+    owner OR borrower -- can change the pin while aboard. A borrower who
+    changes the pin locks the owner out of their own ship; the owner's
+    recourse is to file a stolen report."). Deliberately does NOT special-
+    case owner vs borrower -- canon states both may do this, with the
+    borrower-lockout consequence being the intended (if adversarial)
+    outcome. Flushes but does not commit -- the route owns the commit."""
+    if ship.current_pilot_id != player.id:
+        raise ShipRegistryError(
+            "ERR_NOT_CURRENT_PILOT", "You must be aboard this ship to change its pin.",
+        )
+
+    ship.hatch_pin_code = _validate_hatch_pin(new_pin)
+    db.flush()
+
+    return {
+        "ship_id": str(ship.id),
+        "hatch_pin_code": ship.hatch_pin_code,
+    }
+
+
+def request_pin_reset(db: Session, *, ship: Ship, owner: Player, port_id: UUID, new_pin: str) -> dict:
+    """Port-gated pin recovery for the registered owner (ship-registry.md
+    "Hatch pin lock" "Pin recovery": "the registered owner can always reset
+    the pin via a port admin action (1-hour real-time delay before the new
+    pin takes effect; gives any current borrower a window to extract
+    themselves before being locked out)"). Distinct from ``set_pin``, which
+    is instant but requires being aboard -- this is the recovery path for an
+    owner who is NOT the current pilot (their ship could be anywhere:
+    borrowed, drifting, out of sector) and needs the registration alone to
+    regain control. Raises ``ShipRegistryError`` with the exact canon ERR_*
+    code on rejection. Flushes but does not commit -- the route owns the
+    commit."""
+    if ship.registered_owner_id != owner.id:
+        raise ShipRegistryError(
+            "ERR_NOT_REGISTERED_OWNER", "Only the registered owner can reset this ship's pin.",
+        )
+    if not owner.is_docked or owner.current_port_id != port_id:
+        raise ShipRegistryError(
+            "ERR_NOT_AT_PORT", "You must be docked at this port to reset the pin here.",
+        )
+    if ship.pending_hatch_pin_effective_at is not None:
+        raise ShipRegistryError(
+            "ERR_PIN_RESET_ALREADY_PENDING", "A pin reset is already pending on this ship.",
+        )
+
+    now = datetime.now(timezone.utc)
+    effective_at = now + PIN_RESET_DELAY
+    ship.pending_hatch_pin_code = _validate_hatch_pin(new_pin)
+    ship.pending_hatch_pin_effective_at = effective_at
+    db.flush()
+
+    return {
+        "ship_id": str(ship.id),
+        "requested_at": now.isoformat(),
+        "effective_at": effective_at.isoformat(),
+    }
+
+
+def _apply_pending_pin_reset(ship: Ship) -> None:
+    """Shared apply path for the pin-reset delay sweep (scheduler/
+    economy_sweeps.py). Caller must already hold the row lock on ``ship``
+    and have re-verified the reset is still pending and due. Copies
+    pending_hatch_pin_code -> hatch_pin_code and clears both pending
+    columns. No commit/flush here -- the sweep owns the transaction
+    boundary, same discipline as ``_complete_transfer_claim``."""
+    ship.hatch_pin_code = ship.pending_hatch_pin_code
+    ship.pending_hatch_pin_code = None
+    ship.pending_hatch_pin_effective_at = None
+
+
+def start_salvage_break(db: Session, *, ship: Ship, salvager: Player) -> dict:
+    """A stranger without the pin force-enters a Drifting ``ship`` via a
+    salvage break (ship-registry.md "Salvage break"). Caller must already
+    hold a ``with_for_update(nowait=True)`` lock on ``ship`` (ADR-0049 SK14)
+    -- a concurrent request that can't acquire that lock is a DB-level
+    ``OperationalError``, translated by the route to the same
+    ERR_SALVAGE_BREAK_IN_PROGRESS this function raises at the application
+    level for the far more common case: a prior request already committed
+    an in-progress break on this row.
+
+    Deliberately rejects a re-call by the SAME salvager too (not just a
+    different one) -- canon's own pseudocode would silently restart the
+    timer on a duplicate call, which reads as a UI-double-click footgun;
+    treating any already-in-progress break as a flat conflict, regardless
+    of who owns it, is simpler and matches "no queue, no silent
+    serialization."
+
+    Raises ``ShipRegistryError`` with a stable code on any rejection.
+    Flushes but does not commit -- the route owns the commit."""
+    if ship.type == ShipType.ESCAPE_POD:
+        raise ShipRegistryError(
+            "ERR_ESCAPE_POD_CANNOT_BE_SALVAGED", "Escape pods cannot be salvage-broken.",
+        )
+    if ship.is_destroyed:
+        raise ShipRegistryError("ERR_SHIP_DESTROYED", "This ship has been destroyed.")
+    if ship.status == ShipStatus.HARMONIZING:
+        raise ShipRegistryError(
+            "ERR_SHIP_HARMONIZING",
+            "This ship is harmonizing into a warp gate focus and cannot be salvage-broken.",
+        )
+    if ship.current_pilot_id is not None:
+        raise ShipRegistryError(
+            "ERR_SHIP_NOT_DRIFTING", "This ship is currently piloted; it is not Drifting.",
+        )
+    if ship.sector_id != salvager.current_sector_id:
+        raise ShipRegistryError(
+            "ERR_DIFFERENT_SECTOR",
+            f"This ship is in sector {ship.sector_id}; travel there to salvage-break it.",
+        )
+    if ship.salvage_break_in_progress_by_id is not None:
+        duration = SALVAGE_BREAK_DURATIONS.get(ship.type, SALVAGE_BREAK_DEFAULT_DURATION)
+        completes_at = ship.salvage_break_started_at + duration
+        raise ShipRegistryError(
+            "ERR_SALVAGE_BREAK_IN_PROGRESS",
+            f"A salvage break is already in progress on this ship "
+            f"(by {ship.salvage_break_in_progress_by_id}, ETA {completes_at.isoformat()}).",
+        )
+
+    now = datetime.now(timezone.utc)
+    ship.salvage_break_in_progress_by_id = salvager.id
+    ship.salvage_break_started_at = now
+    db.flush()
+
+    duration = SALVAGE_BREAK_DURATIONS.get(ship.type, SALVAGE_BREAK_DEFAULT_DURATION)
+    return {
+        "ship_id": str(ship.id),
+        "started_at": now.isoformat(),
+        "duration_seconds": int(duration.total_seconds()),
+        "completes_at": (now + duration).isoformat(),
+    }
+
+
+def _complete_salvage_break(ship: Ship) -> None:
+    """Shared apply path for the salvage-break watchdog sweep (scheduler/
+    economy_sweeps.py). Caller must already hold the row lock on ``ship``
+    and have re-verified the break is still in progress and due. Clears
+    ``hatch_pin_code`` (ship-registry.md "Salvage break" step 8: "the ship
+    is now unlocked... the lock clears") and both in-progress columns.
+    Idempotently covers both the on-time watchdog fire and a late/"stuck
+    lock" catch-up sweep -- a break completed late still ends in exactly
+    the same correct state as one completed on time, so no separate
+    forced-clear-without-unlocking path is needed. No commit/flush here --
+    the sweep owns the transaction boundary."""
+    ship.hatch_pin_code = None
+    ship.salvage_break_in_progress_by_id = None
+    ship.salvage_break_started_at = None
+
+
+def cancel_salvage_break_for_salvager(db: Session, salvager_id: UUID, *, reason: str) -> None:
+    """Interruption hook (ship-registry.md "Salvage break" steps 4-5):
+    sector-leave or combat cancels any salvage break THIS player has in
+    progress as the salvager -- the lock clears and the timer resets to
+    zero ("a new salvager can start a fresh break"). Best-effort by
+    contract: callers wrap this in try/except so a hiccup here never
+    breaks movement or combat. No commit/flush here -- the caller owns the
+    transaction boundary (mirrors every other best-effort dispatch hook in
+    this codebase, e.g. team_war_service.record_pvp_kill's call site)."""
+    ship = (
+        db.query(Ship)
+        .filter(Ship.salvage_break_in_progress_by_id == salvager_id)
+        .with_for_update()
+        .first()
+    )
+    if ship is None:
+        return
+    ship.salvage_break_in_progress_by_id = None
+    ship.salvage_break_started_at = None
+    db.flush()
+    logger.info(
+        "Salvage break on ship %s cancelled (%s) -- salvager %s", ship.id, reason, salvager_id,
+    )

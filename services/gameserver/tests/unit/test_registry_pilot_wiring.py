@@ -29,6 +29,15 @@ def _ship(pid=None):
     return SimpleNamespace(id=uuid.uuid4(), current_pilot_id=pid)
 
 
+def _ship_with_break(pid=None, salvager_id=None):
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        current_pilot_id=pid,
+        salvage_break_in_progress_by_id=salvager_id,
+        salvage_break_started_at="not-none-sentinel",
+    )
+
+
 @pytest.mark.unit
 class TestSyncCurrentPilotBehavior:
     def test_no_old_ship_sets_new_ships_pointer(self) -> None:
@@ -92,6 +101,40 @@ class TestSyncCurrentPilotBehavior:
         player = SimpleNamespace(id=uuid.uuid4())
         sync_current_pilot(player, None, old_ship=None)  # must not raise
 
+    def test_boarding_a_ship_with_an_in_progress_break_aborts_it(self) -> None:
+        """ship-registry.md "Salvage break" step 7: occupying the ship
+        (owner re-boarding via pin, or anyone else's successful board)
+        instantly aborts an in-progress break."""
+        player = SimpleNamespace(id=uuid.uuid4())
+        salvager_id = uuid.uuid4()
+        new_ship = _ship_with_break(salvager_id=salvager_id)
+
+        sync_current_pilot(player, new_ship)
+
+        assert new_ship.salvage_break_in_progress_by_id is None
+        assert new_ship.salvage_break_started_at is None
+
+    def test_boarding_a_ship_with_no_break_leaves_break_fields_untouched(self) -> None:
+        player = SimpleNamespace(id=uuid.uuid4())
+        new_ship = _ship_with_break(salvager_id=None)
+
+        sync_current_pilot(player, new_ship)
+
+        assert new_ship.salvage_break_in_progress_by_id is None
+        assert new_ship.salvage_break_started_at == "not-none-sentinel"
+
+    def test_bare_ship_without_salvage_break_columns_does_not_raise(self) -> None:
+        """A lightweight ship-like double (this file's own ``_ship``
+        helper, or any pre-existing caller's test double) that never set
+        the salvage-break columns must not AttributeError -- the check is
+        getattr-defensive."""
+        player = SimpleNamespace(id=uuid.uuid4())
+        new_ship = _ship()
+
+        sync_current_pilot(player, new_ship)  # must not raise
+
+        assert new_ship.current_pilot_id == player.id
+
 
 @pytest.mark.unit
 class TestEveryCurrentShipIdWriteSitePairsWithSyncCurrentPilot:
@@ -114,9 +157,12 @@ class TestEveryCurrentShipIdWriteSitePairsWithSyncCurrentPilot:
         "services/first_login_service.py": (1, 1),
         # docking_service.py -- stolen-ship impound-and-eject (station-
         # protection arrest surrender flow); ship_registry_service.py --
-        # abandonment's owner-pointer clear (ship-registry.md "Abandonment").
+        # abandonment's owner-pointer clear (ship-registry.md "Abandonment")
+        # plus eject_ship's dangling-pointer-clear branch, eject_ship's
+        # escape-pod success path, and board_ship's success path (WO-BUILD-
+        # SHIP-EJECT-BOARD-REGISTRY-STATES).
         "services/docking_service.py": (1, 1),
-        "services/ship_registry_service.py": (1, 1),
+        "services/ship_registry_service.py": (4, 4),
         # ship_service.py DEFINES sync_current_pilot -- the def line itself
         # matches the sync-call regex, so 1 real call there = 2 raw matches.
         "services/ship_service.py": (1, 2),

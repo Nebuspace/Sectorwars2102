@@ -72,6 +72,11 @@ class ConstructionReservation(Base):
     # construction-event RNG). Append-only history + a queue awaiting a decision.
     construction_events = Column(JSONB, nullable=False, default=list)
     pending_events = Column(JSONB, nullable=False, default=list)
+    # Accrual-anchor for the event RNG cadence (mirrors port_ownership_service's
+    # costs_accrued_at pattern): wall-clock instant the RNG was last rolled
+    # through. NULL = never rolled yet; the service anchors to `now` on first
+    # eligibility rather than backdating.
+    events_last_rolled_at = Column(DateTime(timezone=True), nullable=True)
 
     # Warp Jumper consumes a Tier-A SPECIALIZED slip; everything else uses
     # the standard construction pool.

@@ -321,7 +321,7 @@ IDLE_INCOME_CHECK_SECONDS = int(
 # cargo['_capacity_bonus_percent'] is kept apart from cargo commodity keys.
 _PASSIVE_INCOME_ANCHOR_KEY = "_passive_income_last_utc_date"
 
-# Daily rep-stipend faucet pre-filter. Max's 2026-06-20 ruling SPLIT the old
+# Daily rep-stipend faucet pre-filter. human's 2026-06-20 ruling SPLIT the old
 # weekly economy faucet: the galactic-citizen subscription perk stays WEEKLY
 # (run_weekly_faucet_sync, above), but the reputation-tier stipend moved to this
 # DAILY, ACTIVE-GATED sweep — each player who logged in THAT UTC day receives a
@@ -394,6 +394,22 @@ TRANSFER_CLAIM_AUTOCOMPLETE_CHECK_SECONDS = int(
     os.environ.get("TRANSFER_CLAIM_AUTOCOMPLETE_CHECK_SECONDS", str(5 * 60))
 )
 
+# Hatch-pin reset apply sweep pre-filter (ship-registry.md "Hatch pin lock" --
+# "the registered owner can always reset the pin via a port admin action
+# (1-hour real-time delay before the new pin takes effect)"). Same real-time-
+# deadline shape as the transfer-claim sweep directly above, same 5-minute
+# cadence.
+PIN_RESET_APPLY_CHECK_SECONDS = int(
+    os.environ.get("PIN_RESET_APPLY_CHECK_SECONDS", str(5 * 60))
+)
+
+# Salvage-break watchdog sweep pre-filter (ship-registry.md "Salvage break"
+# -- the shortest duration tier is 1h real-time, same real-time-deadline
+# shape as the pin-reset sweep directly above; same 5-minute cadence).
+SALVAGE_BREAK_APPLY_CHECK_SECONDS = int(
+    os.environ.get("SALVAGE_BREAK_APPLY_CHECK_SECONDS", str(5 * 60))
+)
+
 # Port operating-cost sweep pre-filter (WO-B3). The maintenance/upkeep accrual
 # + 3-month insolvency force-sell live in port_ownership_service.accrue_operating_
 # costs — a LAZY, idempotent engine that, before this sweep, only fired via the
@@ -458,11 +474,26 @@ STATION_RECOVERY_CHECK_SECONDS = int(
 # Offset to 55m so it does not share a wake with the other coarse probes
 # (decay 15m / faucet 20m / snapshot 25m / idle 30m / stipend 35m / bounty 40m /
 # port-costs 45m / station-recovery 50m). The 90-day inactivity / 7-day grace /
-# 7-day tenure numbers are Max-APPROVED (PL4b); only this background sweep
+# 7-day tenure numbers are human-APPROVED (PL4b); only this background sweep
 # cadence is operational.
 RECLAIM_FLAG_CHECK_SECONDS = int(
     os.environ.get("RECLAIM_FLAG_CHECK_SECONDS", str(55 * 60))
 )
+
+# GC-lapse 7-day liquidation-window sweep cadence (ADR-0054 X-D3). Flips
+# players.is_galactic_citizen False for any player whose gc_lapsed_at is more
+# than 7 wall-clock days old (a re-subscription during the window already
+# cleared gc_lapsed_at via paypal_service, so this sweep never touches an
+# actively-renewed player). Same COARSE elapsed pre-filter discipline as the
+# reclaim-flag sweep: the durable per-player anchor (gc_lapsed_at) is what
+# makes this restart-safe and idempotent, not the counter. Offset to 58m to
+# avoid the other coarse-probe wakes.
+GC_LAPSE_CHECK_SECONDS = int(
+    os.environ.get("GC_LAPSE_CHECK_SECONDS", str(58 * 60))
+)
+
+# ADR-0054 X-D3 ratified number -- the 7-day liquidation-window length.
+GC_LAPSE_DAYS = 7
 
 # Sustained-reputation-drip sweep cadence (factions-and-teams.md:229-230,
 # WO-PROG-SUSTAINED-DRIPS). Like the port-cost / station-recovery / reclaim-
@@ -761,10 +792,18 @@ _STOLEN_SHIP_REP_PENALTY_LOCK_KEY = _mnemonic_lock_key("STLN")
 # "Legal ownership transfer") -- WO-BUILD-SHIP-REGISTRY-CONTESTED-TRANSFER-
 # SALVAGE-CLAIM.
 _TRANSFER_CLAIM_AUTOCOMPLETE_LOCK_KEY = _mnemonic_lock_key("TCLM")
+# Hatch-pin reset apply sweep (ship-registry.md "Hatch pin lock" -- delayed
+# pin-reset take-effect). WO-BUILD-SHIP-PIN-PORT-RESET-DELAYED.
+_PIN_RESET_APPLY_LOCK_KEY = _mnemonic_lock_key("PINR")
+# Salvage-break watchdog sweep (ship-registry.md "Salvage break" -- auto-
+# clears the lock and unlocks the hatch at duration expiry).
+# WO-BUILD-SHIP-EJECT-BOARD-ROUTES.
+_SALVAGE_BREAK_APPLY_LOCK_KEY = _mnemonic_lock_key("SALV")
 _SUSTAINED_DRIP_LOCK_KEY = _mnemonic_lock_key("SDRP")
 _PORT_OPERATING_COSTS_LOCK_KEY = _mnemonic_lock_key("PORT")
 _STATION_RECOVERY_LOCK_KEY = _mnemonic_lock_key("STRC")
 _RECLAIM_FLAG_LOCK_KEY = _mnemonic_lock_key("RCLM")
+_GC_LAPSE_LOCK_KEY = _mnemonic_lock_key("GCLP")
 _PRICE_HISTORY_LOCK_KEY = _mnemonic_lock_key("PXHS")
 _ROUTE_RUNS_RETENTION_LOCK_KEY = _mnemonic_lock_key("RTRT")
 _ORPHAN_SCHEDULE_REPAIR_LOCK_KEY = _mnemonic_lock_key("ORPH")
@@ -1048,7 +1087,7 @@ LOOP_A_WATERMARK_STATE_KEY = "loop_a_watermark"
 LOOP_B_WATERMARK_STATE_KEY = "loop_b_watermark"
 LOOP_C_WATERMARK_STATE_KEY = "loop_c_watermark"
 
-# CANON (ratified by Max 2026-08-02, was NO-CANON 2026-07-16): bounds how
+# CANON (ratified by human 2026-08-02, was NO-CANON 2026-07-16): bounds how
 # many missed Loop-A cadence intervals a single restart-wake will
 # synchronously replay. At LOOP_A_SECONDS = 60 this caps one wake at 24
 # ticks == 24 minutes of replayed patrol movement.

@@ -30,7 +30,7 @@ from src.models.player_warp_knowledge import (
     WarpVisibilityState,
     WarpRevealedVia,
 )
-from src.models.resource import Resource, ResourceType, ResourceQuality, Market
+from src.models.resource import Resource, ResourceType, ResourceQuality
 from src.models.combat_log import CombatLog, CombatStats
 from src.models.game_event import GameEvent, EventTemplate, EventEffect, EventParticipation
 from src.models.market_transaction import MarketTransaction as EnhancedMarketTransaction, MarketPrice, PriceHistory, EconomicMetrics, PriceAlert

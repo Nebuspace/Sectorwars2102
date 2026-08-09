@@ -8,9 +8,9 @@ Declares / list / ceasefire already live on ``Team.member_roles['active_wars']``
   both sides' JSONB entries.
 * When either side's ``score.us`` reaches ``VICTORY_KILL_THRESHOLD``, flip both
   entries to ``status=ceased`` with ``cease_reason=victory``, persist
-  ``victory_at`` / ``winner_team_id`` / ``loser_team_id``, and emit a structured
-  ``team_war_victory`` realtime event to both team rooms (credit payout HOLD —
-  DECISIONS Pending team-war-victory-reward; UI deferred).
+  ``victory_at`` / ``winner_team_id`` / ``loser_team_id``, credit each winning
+  team member ``VICTORY_PAYOUT_PER_MEMBER``, and emit a structured
+  ``team_war_victory`` realtime event to both team rooms (UI still deferred).
 
 Flush-only; caller owns commit. Lock both Team rows ascending-id (same
 discipline as ``declare_war`` / fleet_service).
@@ -31,10 +31,11 @@ from src.models.team import Team
 
 logger = logging.getLogger(__name__)
 
-# NO-CANON provisional — factions-and-teams.md names victory rewards but gives
-# no kill threshold. Banked for a DECISIONS.md ratification; thin v1 needs a
-# concrete gate so wars can actually end without a manual ceasefire.
+# Ratified 2026-08-09 (DECISIONS.md no-canon-magnitudes-batch-remainder) —
+# factions-and-teams.md names victory rewards but gave no kill threshold or
+# payout; both ratified as-is here.
 VICTORY_KILL_THRESHOLD = 10
+VICTORY_PAYOUT_PER_MEMBER = 5000
 
 
 def _active_war_vs(wars: list, target_team_id: str) -> Optional[dict]:
@@ -98,6 +99,18 @@ def _emit_team_war_victory_event(
     return payload
 
 
+def _apply_victory_payout(winner_team: Team) -> int:
+    """Credit each winning-team member ``VICTORY_PAYOUT_PER_MEMBER`` on war
+    victory. Flush-only, mirrors the module's caller-owns-commit convention.
+    Returns the total amount credited (for logging/telemetry).
+    """
+    total = 0
+    for member in winner_team.members or []:
+        member.credits = int(getattr(member, "credits", 0) or 0) + VICTORY_PAYOUT_PER_MEMBER
+        total += VICTORY_PAYOUT_PER_MEMBER
+    return total
+
+
 def record_pvp_kill(
     db: Session,
     attacker: Player,
@@ -155,8 +168,10 @@ def record_pvp_kill(
 
     victory = False
     victory_event: Optional[Dict[str, Any]] = None
+    victory_payout_total = 0
     if a_score["us"] >= VICTORY_KILL_THRESHOLD:
         victory = True
+        victory_payout_total = _apply_victory_payout(attacker_team)
         now = datetime.now(UTC).isoformat()
         for entry, winner, loser in (
             (a_entry, str(atid), str(dtid)),
@@ -195,8 +210,9 @@ def record_pvp_kill(
         result["loser_team_id"] = str(dtid)
         result["victory_at"] = a_entry.get("victory_at")
         result["event"] = victory_event
+        result["victory_payout_total"] = victory_payout_total
         logger.info(
-            "team_war: victory team=%s over team=%s at %d kills",
-            atid, dtid, a_score["us"],
+            "team_war: victory team=%s over team=%s at %d kills, payout=%dcr",
+            atid, dtid, a_score["us"], victory_payout_total,
         )
     return result

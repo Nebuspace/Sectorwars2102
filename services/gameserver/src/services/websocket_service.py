@@ -1505,7 +1505,7 @@ async def handle_aria_chat(user_id: str, message_data: Dict[str, Any]):
                 # WO-ARIA-CHAT-LLM: absent from result (== None here)
                 # whenever ARIA_LLM_CHAT_ENABLED is off -- the flag-off pin.
                 "mode": result.get("mode"),
-                # Max's GO amendment: a Resonance-ledger accounting SEAM --
+                # human's GO amendment: a Resonance-ledger accounting SEAM --
                 # hook point only, always None until a future post-ADR-0092
                 # WO builds the ledger itself.
                 "ledger_entry": result.get("ledger_entry"),

@@ -10,8 +10,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 
 from src.core.database import get_db
-from src.auth.admin_scopes import PLAYERS_VIEW
-from src.auth.dependencies import get_current_user, require_scope
+from src.auth.dependencies import get_current_user
 from src.models.user import User
 from src.services.mfa_service import MFAService
 
@@ -76,11 +75,11 @@ class MFAAttemptsResponse(BaseModel):
 
 @router.post("/generate", response_model=MFAGenerateResponse)
 async def generate_mfa_secret(
-    current_user: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
-    Generate a new MFA secret for the current admin user.
+    Generate a new MFA secret for the current user.
     Returns QR code and setup URL for authenticator app configuration.
     """
     mfa_service = MFAService(db)
@@ -101,7 +100,7 @@ async def generate_mfa_secret(
 @router.post("/verify", response_model=MFAVerifyResponse)
 async def verify_mfa_setup(
     request: MFAVerifyRequest,
-    current_user: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -157,11 +156,11 @@ async def check_mfa_code(
 
 @router.get("/status", response_model=MFAStatusResponse)
 async def get_mfa_status(
-    current_user: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
-    Get the current MFA status for the admin user.
+    Get the current MFA status for the current user.
     """
     mfa_service = MFAService(db)
     
@@ -183,11 +182,11 @@ async def get_mfa_status(
 
 @router.post("/disable")
 async def disable_mfa(
-    current_user: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
-    Disable MFA for the current admin user.
+    Disable MFA for the current user.
     """
     mfa_service = MFAService(db)
     
@@ -201,11 +200,11 @@ async def disable_mfa(
 
 @router.get("/backup-codes", response_model=BackupCodesResponse)
 async def get_backup_codes(
-    current_user: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
-    Get remaining backup codes for the current admin user.
+    Get remaining backup codes for the current user.
     """
     mfa_service = MFAService(db)
     
@@ -222,11 +221,11 @@ async def get_backup_codes(
 
 @router.post("/regenerate-backup-codes", response_model=BackupCodesResponse)
 async def regenerate_backup_codes(
-    current_user: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
-    Regenerate backup codes for the current admin user.
+    Regenerate backup codes for the current user.
     This invalidates all existing backup codes.
     """
     mfa_service = MFAService(db)
@@ -245,7 +244,7 @@ async def regenerate_backup_codes(
 @router.get("/attempts", response_model=MFAAttemptsResponse)
 async def get_mfa_attempts(
     hours: int = 24,
-    current_user: User = Depends(require_scope(PLAYERS_VIEW)),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """

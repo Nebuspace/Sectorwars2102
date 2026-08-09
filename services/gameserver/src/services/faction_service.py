@@ -177,7 +177,7 @@ def adjust_sector_influence(
     warp-gate-build paths, mirroring ``apply_faction_rep_delta``).
 
     The READ-side taxonomy / patrol-spawn effects (ADR-0021) are deliberately
-    NOT computed here (Max-gated) — this only maintains the canonical stored
+    NOT computed here (human-gated) — this only maintains the canonical stored
     influence value. ``patrol_spawn_weight`` is left at its model default and is
     untouched until the read-side lands.
 
@@ -301,25 +301,6 @@ def get_sector_influence(
         )
         .all()
     )
-
-
-def dominant_sector_faction(
-    db: Session,
-    sector_id: UUID,
-) -> Optional[SectorFactionInfluence]:
-    """READ the single highest-influence faction row for a sector, or ``None``.
-
-    ``None`` when the sector has no influence rows OR its strongest influence is
-    0 (genuinely Uncontrolled) — only a faction with positive influence is the
-    dominant one. Deterministic tie-break via ``get_sector_influence``.
-    """
-    rows = get_sector_influence(db, sector_id)
-    if not rows:
-        return None
-    top = rows[0]
-    if (top.influence_percentage or 0.0) <= 0.0:
-        return None
-    return top
 
 
 def sector_territory_tier(rows: List[SectorFactionInfluence]) -> str:

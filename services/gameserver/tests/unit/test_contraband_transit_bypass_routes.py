@@ -215,7 +215,7 @@ def test_no_bypass_route_was_missed():
     exactly how this gap appeared in the first place."""
     import pathlib
 
-    wired = {"hangar_service", "tow_service", "quantum_service", "slipdrive_service"}
+    wired = {"hangar_service", "tow_service", "quantum_service", "slipdrive_service", "gc_lapse_service"}
     exempt = {
         "movement_service",      # the original K2 hook lives here
         "distress_service",      # involuntary rescue

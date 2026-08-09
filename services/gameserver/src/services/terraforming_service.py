@@ -222,7 +222,7 @@ class TerraformingService:
         # K1b-2: mirror the terraform investment onto the structures grid as a rig BUNDLE (additive —
         # the grid is terraform-owned state; the legacy habitability_score path above stays the
         # AUTHORITATIVE driver of habitability). The placed rigs feed the settle() step-2 SHADOW
-        # grid-habitability log (Max-gated ADR-0002 amendment). Fully defensive: a grid-placement
+        # grid-habitability log (human-gated ADR-0002 amendment). Fully defensive: a grid-placement
         # hiccup must never break the terraform start (credits/resources already validated above).
         try:
             from src.services import structures as _struct
@@ -521,24 +521,6 @@ class TerraformingService:
             self.db.commit()
             self.db.refresh(planet)
         return changed
-
-    def complete_terraforming(self, planet_id: UUID) -> Dict[str, Any]:
-        """
-        Public method to force-complete terraforming on a planet.
-
-        Typically called internally when target is reached, but can
-        be invoked directly for admin/testing purposes.
-        """
-        planet = self.db.query(Planet).filter(Planet.id == planet_id).first()
-        if not planet:
-            raise ValueError("Planet not found")
-
-        if not planet.terraforming_active:
-            raise ValueError("No active terraforming project on this planet")
-
-        result = self._complete_terraforming(planet)
-        self.db.commit()
-        return result
 
     # --- Public helpers ---
 

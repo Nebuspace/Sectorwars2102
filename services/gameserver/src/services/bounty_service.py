@@ -57,14 +57,14 @@ BOUNTY_SOFT_CAP_ENTRIES = 50
 # PLAYER-PLACED (zero-sum) bounties are untouched by this table — they pay their
 # own escrowed `amount` from Player.settings["bounties"].
 #
-# NO-CANON: canon §1.3 gives ONLY the 5,000–250,000 band and marks the per-tier
-# scale 📐 Design-only — it does NOT specify per-tier figures. The intermediate
-# rung below (-750 -> 75,000) is a CONSERVATIVE monotonic interpolation across the
-# three existing criminal thresholds, anchored to the canon endpoints (5,000 at
-# the shallowest tier, 250,000 at the deepest). Flagged for DECISIONS.md bless.
+# Canon §1.3 gives the 5,000–250,000 band; the intermediate rung (-750 ->
+# 75,000) is a monotonic interpolation across the three existing criminal
+# thresholds, anchored to the canon endpoints (5,000 at the shallowest tier,
+# 250,000 at the deepest). Ratified as canon 2026-08-09 (DECISIONS.md
+# `bounty-pot-cap-750-interpolation`).
 SYSTEM_BOUNTY_TIERS = {
     -500: 5000,     # Criminal: pot caps at 5,000 credits (canon band floor)
-    -750: 75000,    # Villain low: pot caps at 75,000 credits (NO-CANON interp)
+    -750: 75000,    # Villain low: pot caps at 75,000 credits (ratified interp)
     -1000: 250000,  # Villain max: pot caps at 250,000 credits (canon band ceiling)
 }
 
@@ -548,6 +548,24 @@ class BountyService:
 
         if placer_id == target_id:
             return {"success": False, "message": "Cannot place a bounty on yourself"}
+
+        # ADR-0055 S-V3 / bounty-and-reputation.md "Bounty uniqueness": one
+        # active bounty per (placer, target) pair. A single placer cannot
+        # stack a second active bounty on the same target while their first
+        # is still outstanding; DISTINCT placers each having their own
+        # active bounty on the same target is intentional (ADR-0054 X-V2
+        # stacking-pressure design) and is NOT blocked here. "Active" ==
+        # "still present in the target's JSONB bounty list" — cancel_bounty/
+        # collect_bounty/expire_due_bounties all REMOVE an entry the moment
+        # it resolves (no separate resolved/cancelled/expired marker), so a
+        # plain membership check is sufficient and matches every other
+        # invalidation path in this file.
+        existing_bounties = self._get_bounties(target)
+        if any(str(b.get("placed_by")) == str(placer_id) for b in existing_bounties):
+            return {
+                "success": False,
+                "message": "You already have an active bounty on this target",
+            }
 
         fee = int(amount * (BOUNTY_PLACEMENT_FEE if fee_pct is None else fee_pct))
         total_cost = amount + fee

@@ -37,9 +37,12 @@ from src.services.scheduler._common import (
     BOUNTY_ACCRUAL_CHECK_SECONDS,
     STOLEN_SHIP_REP_PENALTY_CHECK_SECONDS,
     TRANSFER_CLAIM_AUTOCOMPLETE_CHECK_SECONDS,
+    PIN_RESET_APPLY_CHECK_SECONDS,
+    SALVAGE_BREAK_APPLY_CHECK_SECONDS,
     PORT_OPERATING_COST_CHECK_SECONDS,
     STATION_RECOVERY_CHECK_SECONDS,
     RECLAIM_FLAG_CHECK_SECONDS,
+    GC_LAPSE_CHECK_SECONDS,
     SUSTAINED_REP_DRIP_CHECK_SECONDS,
     PRICE_RECOMPUTE_FLUSH_SECONDS,
     PRICE_ALERT_SWEEP_SECONDS,
@@ -78,12 +81,15 @@ from src.services.scheduler.economy_sweeps import (
     _run_bounty_accrual_sweep_sync,
     _run_stolen_ship_rep_penalty_sweep_sync,
     _run_transfer_claim_autocomplete_sweep_sync,
+    _run_pin_reset_apply_sweep_sync,
+    _run_salvage_break_apply_sweep_sync,
     _run_bounty_expire_sweep_sync,
     _run_wanted_clear_sweep_sync,
     _run_phase14_attachment_retry_sweep_sync,
     _run_port_operating_costs_sync,
     _run_station_recovery_sync,
     _run_reclaim_flag_sweep_sync,
+    _run_gc_lapse_sweep_sync,
     _run_price_recompute_flush_sync,
     _run_price_alert_sweep_sync,
     _run_price_history_sweep_sync,
@@ -473,7 +479,7 @@ async def _npc_scheduler_main_loop() -> None:
                 logger.exception("NPC scheduler: weekly decay crashed (loop continues)")
 
         # Economy faucet (WEEKLY) — galactic-citizen subscription perk ONLY.
-        # Max's 2026-06-20 split moved the rep stipend to the DAILY sweep below;
+        # human's 2026-06-20 split moved the rep stipend to the DAILY sweep below;
         # this weekly path now pays only the paid citizen perk. Same coarse
         # pre-filter / durable-anchor pattern as the weekly decay; intentionally
         # on a separate cadence (20 min) to avoid colliding with the decay wake.
@@ -544,7 +550,7 @@ async def _npc_scheduler_main_loop() -> None:
 
         # Daily rep-stipend faucet — credit each player who logged in THIS UTC
         # day their per-reputation-tier stipend, once per day (idle day = 0).
-        # Max's 2026-06-20 split moved the rep stipend off the weekly faucet onto
+        # human's 2026-06-20 split moved the rep stipend off the weekly faucet onto
         # this DAILY, active-gated cadence. Coarse elapsed pre-filter (35 min) so
         # we don't scan players every 60s; the once-per-day-per-player guarantee
         # + restart-proofing come from the durable per-player UTC-date anchor in
@@ -626,6 +632,40 @@ async def _npc_scheduler_main_loop() -> None:
                 raise
             except Exception:
                 logger.exception("NPC scheduler: transfer-claim autocomplete sweep crashed (loop continues)")
+
+        # Hatch-pin reset apply sweep (ship-registry.md "Hatch pin lock" "Pin
+        # recovery" -- a real-time 1h delay, same finer-cadence shape as the
+        # transfer-claim sweep directly above). Own session, own advisory
+        # lock, per-ship failure isolated.
+        if elapsed % PIN_RESET_APPLY_CHECK_SECONDS == 0:
+            try:
+                applied = await asyncio.to_thread(_run_pin_reset_apply_sweep_sync)
+                if applied.get("resets"):
+                    logger.info(
+                        "NPC scheduler: pin-reset apply — applied %d reset(s)",
+                        applied.get("resets", 0),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("NPC scheduler: pin-reset apply sweep crashed (loop continues)")
+
+        # Salvage-break watchdog sweep (ship-registry.md "Salvage break" --
+        # auto-completes any break whose duration has elapsed, same
+        # finer-cadence shape as the pin-reset sweep directly above). Own
+        # session, own advisory lock, per-ship failure isolated.
+        if elapsed % SALVAGE_BREAK_APPLY_CHECK_SECONDS == 0:
+            try:
+                completed = await asyncio.to_thread(_run_salvage_break_apply_sweep_sync)
+                if completed.get("breaks"):
+                    logger.info(
+                        "NPC scheduler: salvage-break apply — completed %d break(s)",
+                        completed.get("breaks", 0),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("NPC scheduler: salvage-break apply sweep crashed (loop continues)")
 
         # Port operating-cost sweep (WO-B3) — charge each player-owned port its
         # accrued maintenance/upkeep and force-sell any port insolvent for the
@@ -717,6 +757,25 @@ async def _npc_scheduler_main_loop() -> None:
                 raise
             except Exception:
                 logger.exception("NPC scheduler: reclaim-flag sweep crashed (loop continues)")
+
+        # GC-lapse 7-day liquidation-window sweep (ADR-0054 X-D3). Flips
+        # players.is_galactic_citizen False once gc_lapsed_at has run 7+
+        # wall-clock days with no re-subscription. Own session, own advisory
+        # lock -- same discipline as the reclaim-flag sweep above; the durable
+        # per-player anchor (gc_lapsed_at) makes it idempotent/restart-safe.
+        if elapsed % GC_LAPSE_CHECK_SECONDS == 0:
+            try:
+                gc_lapse = await asyncio.to_thread(_run_gc_lapse_sweep_sync)
+                if gc_lapse.get("lapsed"):
+                    logger.info(
+                        "NPC scheduler: GC-lapse sweep — flipped %d player(s) "
+                        "past the 7-day liquidation window",
+                        gc_lapse.get("lapsed", 0),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("NPC scheduler: GC-lapse sweep crashed (loop continues)")
 
         # Sustained-reputation-drip sweep (factions-and-teams.md:229-230,
         # WO-PROG-SUSTAINED-DRIPS) — a player sustaining Heroic+ personal

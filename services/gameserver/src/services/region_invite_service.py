@@ -1,12 +1,12 @@
 """Region invite-link onramp service (WO-IL3).
 
 Design brief: audit/design-briefs/invite-link-onramp.md §4.2 / §4.5 / §5 +
-the 2026-06-20 Review corrections and Max rulings.
+the 2026-06-20 Review corrections and human rulings.
 
 This is the **auth-free** half of the invite-link region-citizenship onramp.
 It mints, lists, revokes, validates and consumes region invites. It deliberately
 does NOT create accounts, touch ``auth.py`` / ``oauth.py``, or grant citizenship
-— that signup-wiring half is WO-IL6 (Max-gated). The signup path will merely
+— that signup-wiring half is WO-IL6 (human-gated). The signup path will merely
 *call* ``validate_invite`` + ``consume_invite`` from here, keeping all invite
 logic on the safe side of the auth line.
 
@@ -24,7 +24,7 @@ Security model (brief §5):
   * **Per-owner caps** bound swarm size at the mint side (brief §5 Threat 1/2):
     ≤ MAX_ACTIVE_INVITES_PER_OWNER_PER_REGION active invites per owner per region,
     and ≤ MAX_REDEMPTIONS_PER_OWNER_PER_WINDOW redemptions per owner per rolling
-    window. **These numbers are NO-CANON (invented in brief D4) — flagged for Max
+    window. **These numbers are NO-CANON (invented in brief D4) — flagged for human
     to ratify in sw2102-docs/DECISIONS.md.**
   * **Validate fails closed** on status≠active / uses≥max_uses / now≥expires_at /
     region gone / **owner no longer owns the region** (brief §5 Threat 3/4).
@@ -63,7 +63,7 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Invented numbers (NO-CANON — brief §6 D2/D3/D4). Flagged for Max to ratify in
+# Invented numbers (NO-CANON — brief §6 D2/D3/D4). Flagged for human to ratify in
 # sw2102-docs/DECISIONS.md. Kept as module constants so a single ruling change
 # is one edit, and so the unit tests pin the documented kernel, not magic ints.
 # ---------------------------------------------------------------------------
@@ -385,7 +385,7 @@ class RegionInviteService:
         ``{ok: True}`` — the loser sees ERR_INVITE_EXHAUSTED.
 
         Returns ``{ok, code, invite}``. Does NOT create the redemption-audit row
-        or grant citizenship — those live in the Max-gated WO-IL6 signup path
+        or grant citizenship — those live in the human-gated WO-IL6 signup path
         which calls this under the SAME transaction (lock the invite row first,
         then the player rows — brief lock-order note).
 

@@ -6,7 +6,7 @@ is_wanted auto-set (which had wrong triggers and no expiry) — those columns ar
 left in place for the canon-correct cargo-wreck / stolen-ship triggers, but the
 combat path no longer touches them; grey is the combat-aggression consequence.
 
-Design (Max-ruled):
+Design (human-ruled):
 
   - Attacking a GOOD-STANDING player  → attacker goes GREY for 1 HOUR
     (kind="player_attack"). While the attacker is grey, GOOD-STANDING players may
@@ -21,7 +21,7 @@ The penalty-free distinction (player-grey = only good-standing attackers go
 penalty-free; station-grey = anyone goes penalty-free) is driven by the cached
 ``grey_kind`` column, so the predicate never has to reconstruct the offense.
 
-⚠️ NO-CANON NUMBERS (proposed kernel — flagged for Max / DECISIONS.md
+⚠️ NO-CANON NUMBERS (proposed kernel — flagged for human / DECISIONS.md
 "grey-flag-pvp-status"):
   - GOOD-STANDING threshold    : personal_reputation >= 0
   - player-attack grey duration: 3600 s   (1 hour)
@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 GREY_KIND_PLAYER_ATTACK = "player_attack"
 GREY_KIND_STATION_ATTACK = "station_attack"
 
-# ⚠️ NO-CANON — proposed kernel, flagged for Max.
+# ⚠️ NO-CANON — proposed kernel, flagged for human.
 GOOD_STANDING_MIN_REPUTATION = 0  # personal_reputation >= 0 == "good standing"
 
 GREY_DURATION_SECONDS = {

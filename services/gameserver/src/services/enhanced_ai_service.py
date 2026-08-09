@@ -863,7 +863,7 @@ class EnhancedAIService:
             # byte-identical to the pre-WO shape (the pinned contract).
             if mode is not None:
                 result["mode"] = mode
-                # Max's GO amendment: a Resonance-ledger accounting SEAM —
+                # human's GO amendment: a Resonance-ledger accounting SEAM —
                 # a documented hook point only. The ledger itself is a
                 # future post-ADR-0092 WO; deliberately always None here.
                 result["ledger_entry"] = None

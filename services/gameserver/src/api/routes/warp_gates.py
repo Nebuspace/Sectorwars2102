@@ -36,6 +36,10 @@ class DeployBeaconRequest(BaseModel):
 
 class AnchorFocusRequest(BaseModel):
     beacon_id: str
+    # WO-WIRE-PRIVATE-WARP-GATE-BUILD — initial access mode on the FORMING
+    # tunnel (PUBLIC default). PRIVATE/WHITELIST/TEAM_ONLY/ALLIANCE clear
+    # is_public and fire BUILD_PRIVATE_WARP_GATE on activation.
+    access_mode: Optional[str] = None
 
 
 class DeployBeaconResponse(BaseModel):
@@ -219,7 +223,10 @@ async def anchor_focus(
     (ADR-0078 — never the Warp Jumper's hold); the ship enters HARMONIZING
     for one canonical hour."""
     try:
-        result = warp_gate_service.anchor_focus(db, player, request.beacon_id)
+        result = warp_gate_service.anchor_focus(
+            db, player, request.beacon_id,
+            access_mode=request.access_mode or "PUBLIC",
+        )
         db.commit()
     except WarpGateError as e:
         db.rollback()

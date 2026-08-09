@@ -1,7 +1,7 @@
 """add grey-flag PvP status to players (grey_until + grey_kind)
 
 WO-BL — Grey-flag PvP status. Adds the storage for the "grey" temporary
-penalty-free-to-attack status (Max-ruled design):
+penalty-free-to-attack status (human-ruled design):
 
   - Attacking a GOOD-STANDING player → the attacker goes GREY for 1 HOUR.
     While grey, GOOD-STANDING players may attack the grey player with NO

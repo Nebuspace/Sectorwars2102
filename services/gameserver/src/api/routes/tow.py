@@ -27,7 +27,8 @@ from src.auth.dependencies import get_current_player
 from src.core.database import get_db
 from src.models.player import Player
 from src.models.ship import Ship
-from src.services.tow_service import TowService, TowError
+from src.services.tow_service import TowService, TowError, REQUEST_PENDING
+from sqlalchemy.orm.attributes import flag_modified
 
 logger = logging.getLogger(__name__)
 
@@ -222,15 +223,38 @@ async def tow_status(
     db: Session = Depends(get_db),
 ):
     """The requester's current tow involvement: whether their active ship is a
-    hauler (towing), is being towed, and the tow details."""
+    hauler (towing), is being towed, and pending consent requests (incoming /
+    outgoing)."""
     if player.current_ship_id is None:
-        return {"towing": None, "being_towed_by": None}
+        return {
+            "towing": None,
+            "being_towed_by": None,
+            "pending_outgoing": None,
+            "pending_incoming": None,
+        }
 
     svc = TowService(db)
     my_ship = db.query(Ship).filter(Ship.id == player.current_ship_id).first()
     towing = None
-    if my_ship is not None and svc.is_actively_towing(my_ship):
-        towing = my_ship.tow_state
+    pending_outgoing = None
+    if my_ship is not None:
+        if svc.is_actively_towing(my_ship):
+            towing = my_ship.tow_state
+        else:
+            ts = my_ship.tow_state or {}
+            if ts.get("request_state") == REQUEST_PENDING:
+                if svc._expiry_passed(ts):
+                    my_ship.tow_state = None
+                    flag_modified(my_ship, "tow_state")
+                else:
+                    pending_outgoing = {
+                        "hauler_id": str(my_ship.id),
+                        "towed_ship_id": ts.get("towed_ship_id"),
+                        "towed_size": ts.get("towed_size"),
+                        "surcharge_per_move": ts.get("surcharge_per_move"),
+                        "requested_at": ts.get("requested_at"),
+                        "request_state": REQUEST_PENDING,
+                    }
 
     being_towed_by = None
     hauler = svc.find_hauler_towing(player.current_ship_id)
@@ -240,4 +264,25 @@ async def tow_status(
             "surcharge_per_move": (hauler.tow_state or {}).get("surcharge_per_move"),
         }
 
-    return {"towing": towing, "being_towed_by": being_towed_by}
+    pending_incoming = None
+    pending_hauler = svc.find_pending_hauler_for_target(player.current_ship_id)
+    if pending_hauler is not None:
+        pts = pending_hauler.tow_state or {}
+        pending_incoming = {
+            "hauler_id": str(pending_hauler.id),
+            "towed_ship_id": pts.get("towed_ship_id"),
+            "towed_size": pts.get("towed_size"),
+            "surcharge_per_move": pts.get("surcharge_per_move"),
+            "requested_at": pts.get("requested_at"),
+            "request_state": REQUEST_PENDING,
+        }
+
+    # Persist any PENDING-expiry clears performed above / in find_pending_*.
+    db.commit()
+
+    return {
+        "towing": towing,
+        "being_towed_by": being_towed_by,
+        "pending_outgoing": pending_outgoing,
+        "pending_incoming": pending_incoming,
+    }
