@@ -265,6 +265,13 @@ export const planetaryAPI = {
       body: JSON.stringify({ name }),
     }),
 
+  /** Preferred rename path (ADR-0073) — POST /planets/{id}/name. */
+  setName: (planetId: string, name: string) =>
+    apiRequest(`/api/v1/planets/${planetId}/name`, {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
+
   // Embark/disembark colonists between ship cargo and planet population.
   transferColonists: (
     planetId: string,
@@ -1217,9 +1224,13 @@ export const sectorAPI = {
   getPlanets: (sectorId: number) => apiRequest(`/api/v1/sectors/${sectorId}/planets`),
   getStations: (sectorId: number) => apiRequest(`/api/v1/sectors/${sectorId}/stations`),
 
-  /** Intrasystem snapshot (star / decorative bodies / engage range). */
+  /** Live sector contents — ships, planets, ports, etc. */
   getContents: (sectorId: number) =>
     apiRequest(`/api/v1/sectors/${sectorId}/contents`),
+
+  /** Celestial system snapshot (star / decorative bodies) for SolarSystemViewscreen. */
+  getSystem: (sectorId: number) =>
+    apiRequest(`/api/v1/sectors/${sectorId}/system`),
 
   // List salvageable wrecks in a sector (numeric, cockpit-native sector id —
   // the server resolves it to the sector's UUID internally).
