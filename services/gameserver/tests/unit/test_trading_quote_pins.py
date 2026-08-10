@@ -212,11 +212,17 @@ class TestSharedTotalsHelpers:
     def test_buy_totals_truncates_tax_with_int(self):
         totals = compute_buy_totals(30, 7, 0.07)
         # 30*7=210; 210*0.07=14.7 -> int() truncates to 14, NOT rounds to 15.
-        assert totals == {"total_cost": 210, "tax_amount": 14, "total_with_tax": 224}
+        assert totals["total_cost"] == 210
+        assert totals["tax_amount"] == 14
+        assert totals["fee_amount"] == 0
+        assert totals["total_with_tax"] == 224
 
     def test_sell_totals_withholds_tax_from_gross(self):
         totals = compute_sell_totals(20, 6, 0.10)
-        assert totals == {"total_earnings": 120, "tax_amount": 12, "net_earnings": 108}
+        assert totals["total_earnings"] == 120
+        assert totals["tax_amount"] == 12
+        assert totals["fee_amount"] == 0
+        assert totals["net_earnings"] == 108
 
 
 class TestPriceBandInvariantSurvivesTax:
@@ -267,9 +273,15 @@ class TestPriceBandInvariantSurvivesTax:
 
     def test_zero_tax_is_pure_passthrough_regression(self):
         totals_buy = compute_buy_totals(50, 4, tax_rate=0.0)
-        assert totals_buy == {"total_cost": 200, "tax_amount": 0, "total_with_tax": 200}
+        assert totals_buy["total_cost"] == 200
+        assert totals_buy["tax_amount"] == 0
+        assert totals_buy["fee_amount"] == 0
+        assert totals_buy["total_with_tax"] == 200
         totals_sell = compute_sell_totals(50, 4, tax_rate=0.0)
-        assert totals_sell == {"total_earnings": 200, "tax_amount": 0, "net_earnings": 200}
+        assert totals_sell["total_earnings"] == 200
+        assert totals_sell["tax_amount"] == 0
+        assert totals_sell["fee_amount"] == 0
+        assert totals_sell["net_earnings"] == 200
 
 
 @pytest.mark.asyncio

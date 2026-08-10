@@ -581,6 +581,60 @@ def clamp_to_commodity_band(commodity_name: str, price: int) -> int:
 SELL_SPREAD = 1.15   # Station sell price is 15% above dynamic midpoint
 BUY_SPREAD = 0.85    # Station buy price is 15% below dynamic midpoint
 
+# TradeDock premium spreads (FEATURES/economy/tradedock-shipyard.md:44-60).
+# Canon gives ranges; midpoints keep a single deterministic engine value.
+TRADEDOCK_SELL_SPREAD = 1.075  # mid of 1.05–1.10
+TRADEDOCK_BUY_SPREAD = 0.925   # mid of 0.90–0.95
+# Canon Class-0 platform fee is 2% (tradedock-shipyard.md:48). That levy was
+# never a separate live charge before this WO (only station/region tax_rate).
+# Flipping it on here would reprice every NPC trade overnight — leave at 0.0
+# until a dedicated fee-activation pass; TradeDock still resolves through
+# transaction_fee_rate() → 0.0 so the branch is wired.
+STANDARD_TRANSACTION_FEE = 0.0
+TRADEDOCK_INVENTORY_CAP_MULT = 10
+TRADEDOCK_BULK_DISCOUNT_PER_1000 = 0.05
+TRADEDOCK_BULK_DISCOUNT_CAP = 0.20
+
+
+def is_tradedock(station: Station) -> bool:
+    """True when Station.tradedock_tier is set (A/B/C/…), else ordinary port."""
+    return getattr(station, "tradedock_tier", None) is not None
+
+
+def spreads_for(station: Station) -> Tuple[float, float]:
+    """Return (sell_spread, buy_spread) for this station."""
+    if is_tradedock(station):
+        return TRADEDOCK_SELL_SPREAD, TRADEDOCK_BUY_SPREAD
+    return SELL_SPREAD, BUY_SPREAD
+
+
+def transaction_fee_rate(station: Station) -> float:
+    """Platform transaction fee fraction (0 for TradeDocks, 2% otherwise)."""
+    return 0.0 if is_tradedock(station) else STANDARD_TRANSACTION_FEE
+
+
+def inventory_capacity_for(station: Station, base_capacity: int) -> int:
+    """Effective stock ceiling — TradeDocks get 10× the commodity capacity."""
+    cap = max(1, int(base_capacity or 1))
+    if is_tradedock(station):
+        return cap * TRADEDOCK_INVENTORY_CAP_MULT
+    return cap
+
+
+def tradedock_bulk_discount_fraction(quantity: int) -> float:
+    """5% per 1,000 units on TradeDock buys, capped at 20% (canon ladder)."""
+    try:
+        qty = int(quantity)
+    except (TypeError, ValueError):
+        return 0.0
+    if qty < 1000:
+        return 0.0
+    return min(
+        TRADEDOCK_BULK_DISCOUNT_CAP,
+        (qty // 1000) * TRADEDOCK_BULK_DISCOUNT_PER_1000,
+    )
+
+
 # Station-class premium multipliers, applied at transaction-price time so
 # they survive every dynamic reprice. Values are the trading.md
 # #class-8--class-9-premium-pricing design target (+20% buy / +25% sell,
@@ -653,6 +707,9 @@ class TradingService:
             return 0
 
         quantity = commodity.get("quantity", 0)
+        # Supply-ratio uses the commodity's stored capacity (not the TradeDock
+        # 10× production ceiling) so a half-full dock prices like a half-full
+        # port; the 10× multiplier only raises tick_production's hard ceiling.
         capacity = commodity.get("capacity", 1)
         base_price = commodity.get("base_price", 0)
 
@@ -686,13 +743,14 @@ class TradingService:
         npc_nudge = 1.0 + max(-0.15, min(0.15, (npc_factor - 1.0) * 0.15))
         midpoint *= npc_nudge
 
-        # Apply spread based on transaction direction
+        # Apply spread based on transaction direction (TradeDock vs Class-0+)
+        sell_spread, buy_spread = spreads_for(station)
         if transaction_type == "sell":
             # Station sells TO player — player pays more
-            raw_price = midpoint * SELL_SPREAD
+            raw_price = midpoint * sell_spread
         elif transaction_type == "buy":
             # Station buys FROM player — player receives less
-            raw_price = midpoint * BUY_SPREAD
+            raw_price = midpoint * buy_spread
         else:
             raw_price = midpoint
 
@@ -1158,7 +1216,9 @@ class TradingService:
                 continue
 
             quantity = commodity_data.get("quantity", 0)
-            capacity = commodity_data.get("capacity", 0)
+            capacity = inventory_capacity_for(
+                station, commodity_data.get("capacity", 0)
+            )
 
             if quantity >= capacity:
                 # Already at per-commodity capacity — no production
