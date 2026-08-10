@@ -508,25 +508,14 @@ def storage_cap_for(citadel_level: int) -> int:
     Cap source — CITADEL_LEVELS[level]["safe_storage"]: the only concrete,
     shipped per-level capacity figure in code (L1 100k → L5 50M, mirroring how
     `max_colonists_for` reads `max_population` from the same table). Applied as a
-    PER-RESOURCE cap, matching the per-commodity `cap_fuel/cap_organics/
-    cap_equipment` shape of the canon formula (production-tick.md:142-144,178-180).
+    PER-RESOURCE cap. Ratified 2026-08-09 (DECISIONS.md `storage-cap-formula-mismatch`)
+    — the old `base_cap * (1 + storage_level * 0.5)` formula is retired; there is
+    no storage-building/`storage_level` model. `safe_storage` is the permanent cap.
 
-    [NO-CANON divergence — FLAGGED, not invented]: the canon "Storage caps"
-    formula is `cap = base_cap * (1 + storage_level * 0.5)`, parameterised by a
-    `base_cap` and a *storage-building* `storage_level`. Neither a base_cap
-    constant nor a storage-building model/level exists in code today, so there is
-    no way to evaluate that formula. This helper substitutes the in-code
-    `safe_storage` per-tier figure as the cap until a storage-building tier lands
-    (at which point the canon multiplier `(1 + storage_level * 0.5)` can layer on
-    top of this base). Propose DECISIONS entry: ratify safe_storage as the
-    commodity storage base_cap, or define the missing base_cap/storage_level.
-
-    Edge case (production-tick.md:223): a non-positive cap "due to
-    misconfiguration" is treated as no cap (return 0 → callers skip clamping).
-    An un-citadeled planet (level 0, safe_storage 0) is therefore left UNCAPPED,
-    which reproduces today's behaviour exactly for citadel-less colonies — the
-    cap only binds once a player has actually built a citadel (level ≥ 1, where
-    safe_storage is positive). This avoids the destructive alternative of
+    Edge case (production-tick.md Failure modes): a non-positive cap is treated
+    as no cap (return 0 → callers skip clamping). An un-citadeled planet
+    (level 0, safe_storage 0) is therefore left UNCAPPED — the cap only binds
+    once a player has actually built a citadel (level ≥ 1). This avoids
     clamping a producing L0 colony to ~0 and discarding all of its output.
     """
     from src.services.citadel_service import CITADEL_LEVELS
