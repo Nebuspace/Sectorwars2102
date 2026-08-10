@@ -1,23 +1,22 @@
 """Admin review queue for multi-account detection clusters (ADR-0056 /
 WO-PADMIN-multiacct-review).
 
-Exposes ``MultiAccountCluster`` and ``MultiAccountFlag`` rows (written by the
-future ``MultiAccountDetectionService`` sweep) over REST so an admin can list
-pending clusters, inspect evidence, and record a ruling (confirmed /
-overridden / escalated).
+Exposes ``MultiAccountCluster`` and ``MultiAccountFlag`` rows (written by
+``MultiAccountDetectionService`` / the hourly scheduler sweep) over REST so an
+admin can list pending clusters, inspect evidence, and record a ruling
+(confirmed / overridden / escalated).
 
 Auth: ``require_scope(MULTI_ACCOUNT_REVIEW)`` is resolved BEFORE ``get_db`` on
 every route signature — an unauthenticated or scopeless caller is rejected
 before any DB access occurs.  See tests/unit/test_admin_multi_account.py for
 the 401/403 never-mutate proof.
 
-[Honest gap] The ``MultiAccountDetectionService`` and its hourly scheduler
-sweep (P7-admin-multiacct-service-sweep) have not shipped yet — the
-``multi_account_clusters`` / ``multi_account_flags`` tables are schema-only at
-this point.  The review queue will be empty in a freshly-seeded game until
-that sweep runs.  This route surfaces whatever the DB holds, records admin
-decisions, and documents the dependency clearly rather than inventing
-detection heuristics.
+[Honest gap closed — WO-BUILD-MULTI-ACCOUNT-DETECTION-SWEEP]
+``MultiAccountDetectionService`` + hourly scheduler sweep now populate
+``multi_account_clusters`` / ``multi_account_flags``. Soft-tier
+participation discount (0.5×) remains out of scope; HARD flags drive
+``participation_weight``. This route surfaces whatever the DB holds and
+records admin decisions.
 """
 import uuid
 from datetime import datetime, timezone

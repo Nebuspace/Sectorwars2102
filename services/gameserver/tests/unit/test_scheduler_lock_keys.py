@@ -148,6 +148,7 @@ EXPECTED_NAME_SITE_MAP = {
     "_assign_trader_missions_sync": "_TRADER_MISSION_LOCK_KEY",
     "_bulk_fill_traders_sync": "_BULK_FILL_TRADERS_LOCK_KEY",
     "_run_retention_sweep_sync": "_RETENTION_SWEEP_LOCK_KEY",
+    "_run_multi_account_detection_sweep_sync": "_MULTI_ACCOUNT_DETECTION_LOCK_KEY",
     "_run_citizen_rebake_sweep_sync": "_CITIZEN_REBAKE_LOCK_KEY",
     "_run_presence_sweep_sync": "_PRESENCE_SWEEP_LOCK_KEY",
     # WO-CMB-SUSPECT-LIFE-1 / WO-RT-TEAM-REP / WO-PIRATE-ECO-2 held-sweep
