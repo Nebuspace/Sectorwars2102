@@ -424,6 +424,12 @@ class TestQuoteEqualsChargeSell:
             "subtotal": 120,
             "tax_rate": 0.10,
             "tax": 12,
+            # TradeDock premium quote fields (cycle-51): NPC ports carry
+            # fee_rate=0 / fee=0 / bulk_discount=0 — still part of the
+            # quote shape so quote == charge stays dict-complete.
+            "fee": 0,
+            "fee_rate": 0.0,
+            "bulk_discount": 0.0,
             "total": 108,
         }
 
