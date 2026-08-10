@@ -469,3 +469,171 @@ async def delete_price_alert(
     db.commit()
 
     return {"message": "Price alert deleted successfully", "alert_id": str(alert_id)}
+
+
+# ---------------------------------------------------------------------------
+# Economy Levers panel (lifecycle.md § Balancing levers) — cycle-50
+# ---------------------------------------------------------------------------
+
+
+class RegionLeverPatch(BaseModel):
+    tax_rate: Optional[float] = Field(None, ge=0.05, le=0.25)
+    starting_credits: Optional[int] = Field(None, ge=100, le=10000)
+
+
+class ShipSpecLeverPatch(BaseModel):
+    base_cost: int = Field(..., ge=1, le=50_000_000)
+
+
+class UpgradeLeverPatch(BaseModel):
+    base_cost: Optional[int] = Field(None, ge=1, le=50_000_000)
+    cost_multiplier: Optional[float] = Field(None, ge=1.0, le=10.0)
+
+
+@router.get("/levers")
+async def get_economy_levers(
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    db: Session = Depends(get_db),
+):
+    """Snapshot of admin-editable balancing levers (regions, ship costs, upgrades)."""
+    from src.models.region import Region
+    from src.models.ship import ShipSpecification
+    from src.services.ship_upgrade_service import ShipUpgradeService
+
+    regions = db.query(Region).order_by(Region.name).all()
+    specs = db.query(ShipSpecification).order_by(ShipSpecification.base_cost).all()
+    upgrades = []
+    for utype, definition in ShipUpgradeService.UPGRADE_DEFINITIONS.items():
+        upgrades.append({
+            "type": utype.value if hasattr(utype, "value") else str(utype),
+            "base_cost": int(definition["base_cost"]),
+            "cost_multiplier": float(definition["cost_multiplier"]),
+            "description": definition.get("description", ""),
+        })
+
+    return {
+        "regions": [
+            {
+                "id": str(r.id),
+                "name": r.name,
+                "display_name": r.display_name,
+                "tax_rate": float(r.tax_rate),
+                "starting_credits": int(r.starting_credits),
+                "status": r.status,
+            }
+            for r in regions
+        ],
+        "ship_specs": [
+            {
+                "type": spec.type.value if hasattr(spec.type, "value") else str(spec.type),
+                "base_cost": int(spec.base_cost),
+                "is_npc_only": bool(spec.is_npc_only),
+            }
+            for spec in specs
+        ],
+        "upgrades": upgrades,
+    }
+
+
+@router.patch("/levers/regions/{region_id}")
+async def patch_region_levers(
+    region_id: UUID,
+    body: RegionLeverPatch,
+    admin: User = Depends(require_scope(ECONOMY_INTERVENE)),
+    db: Session = Depends(get_db),
+):
+    """Adjust region tax_rate (5–25%) and/or starting_credits."""
+    from src.models.region import Region
+
+    region = db.query(Region).filter(Region.id == region_id).first()
+    if not region:
+        raise HTTPException(status_code=404, detail="Region not found")
+    if body.tax_rate is None and body.starting_credits is None:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    applied = {}
+    if body.tax_rate is not None:
+        applied["tax_rate"] = {"old": float(region.tax_rate), "new": float(body.tax_rate)}
+        region.tax_rate = float(body.tax_rate)
+    if body.starting_credits is not None:
+        applied["starting_credits"] = {
+            "old": int(region.starting_credits),
+            "new": int(body.starting_credits),
+        }
+        region.starting_credits = int(body.starting_credits)
+    db.commit()
+    return {
+        "region_id": str(region.id),
+        "applied": applied,
+        "tax_rate": float(region.tax_rate),
+        "starting_credits": int(region.starting_credits),
+    }
+
+
+@router.patch("/levers/ship-specs/{ship_type}")
+async def patch_ship_spec_lever(
+    ship_type: str,
+    body: ShipSpecLeverPatch,
+    admin: User = Depends(require_scope(ECONOMY_INTERVENE)),
+    db: Session = Depends(get_db),
+):
+    """Adjust ShipSpecification.base_cost (direct sink throttle)."""
+    from src.models.ship import ShipSpecification, ShipType
+
+    try:
+        st = ShipType(ship_type)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Unknown ship type: {ship_type}")
+
+    spec = db.query(ShipSpecification).filter(ShipSpecification.type == st).first()
+    if not spec:
+        raise HTTPException(status_code=404, detail="Ship specification not found")
+
+    old = int(spec.base_cost)
+    spec.base_cost = int(body.base_cost)
+    db.commit()
+    return {
+        "type": st.value,
+        "base_cost": {"old": old, "new": int(spec.base_cost)},
+    }
+
+
+@router.patch("/levers/upgrades/{upgrade_type}")
+async def patch_upgrade_lever(
+    upgrade_type: str,
+    body: UpgradeLeverPatch,
+    admin: User = Depends(require_scope(ECONOMY_INTERVENE)),
+):
+    """Adjust in-process UPGRADE_DEFINITIONS costs (process-local until restart)."""
+    from src.models.ship import UpgradeType
+    from src.services.ship_upgrade_service import ShipUpgradeService
+
+    try:
+        ut = UpgradeType(upgrade_type)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Unknown upgrade type: {upgrade_type}")
+
+    if ut not in ShipUpgradeService.UPGRADE_DEFINITIONS:
+        raise HTTPException(status_code=404, detail="Upgrade definition not found")
+    if body.base_cost is None and body.cost_multiplier is None:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    # Copy-on-write so we don't mutate shared nested refs unexpectedly.
+    current = dict(ShipUpgradeService.UPGRADE_DEFINITIONS[ut])
+    applied = {}
+    if body.base_cost is not None:
+        applied["base_cost"] = {"old": int(current["base_cost"]), "new": int(body.base_cost)}
+        current["base_cost"] = int(body.base_cost)
+    if body.cost_multiplier is not None:
+        applied["cost_multiplier"] = {
+            "old": float(current["cost_multiplier"]),
+            "new": float(body.cost_multiplier),
+        }
+        current["cost_multiplier"] = float(body.cost_multiplier)
+    ShipUpgradeService.UPGRADE_DEFINITIONS[ut] = current
+    return {
+        "type": ut.value,
+        "applied": applied,
+        "note": "In-process override; reverts on gameserver restart unless persisted elsewhere.",
+        "actor": str(admin.id),
+    }

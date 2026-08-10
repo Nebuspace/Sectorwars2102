@@ -5,6 +5,7 @@ import { api } from '../../utils/auth';
 import { useEconomyUpdates } from '../../contexts/WebSocketContext';
 import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import { useToast, useConfirm } from '../../contexts/ToastContext';
+import EconomyLeversPanel from './EconomyLeversPanel';
 import './economy-dashboard.css';
 
 interface MarketData {
@@ -615,6 +616,8 @@ const EconomyDashboard: React.FC = () => {
       }}>
         <span>Last updated: {lastUpdate.toLocaleTimeString()}</span>
       </div>
+
+      <EconomyLeversPanel />
       
       {loading ? (
         <div className="loading-spinner">Loading economic data...</div>
