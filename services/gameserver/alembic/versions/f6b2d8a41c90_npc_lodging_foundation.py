@@ -9,7 +9,7 @@ Additive schema for WO-BUILD-NPC-LODGING-FOUNDATION:
 No backfill — existing NPCs keep NULL home lodging until spawn/roster wiring
 assigns one. Raid/capture on OutlawBase stays out of scope.
 
-Revision ID: e4a8c2f91b70
+Revision ID: f6b2d8a41c90
 Revises: d7f3a1c9e842
 Create Date: 2026-08-10 12:45:00.000000
 """
@@ -18,7 +18,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 
-revision = "e4a8c2f91b70"
+revision = "f6b2d8a41c90"
 down_revision = "d7f3a1c9e842"
 branch_labels = None
 depends_on = None

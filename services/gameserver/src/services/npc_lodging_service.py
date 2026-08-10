@@ -162,7 +162,8 @@ def is_npc_ship_barracks_shielded(db: Session, ship_id: UUID) -> bool:
     )
     if sector is None:
         return False
-    for entry in (sector.defenses or {}).get("docked_npc_ships") or []:
+    # getattr: combat FakeSession sectors are often SimpleNamespace without defenses
+    for entry in (getattr(sector, "defenses", None) or {}).get("docked_npc_ships") or []:
         if (
             entry.get("ship_id") == str(ship_id)
             and entry.get("status") == DOCKED_OFF_DUTY
