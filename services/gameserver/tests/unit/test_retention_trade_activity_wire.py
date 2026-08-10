@@ -149,8 +149,15 @@ class _FakeActivityService:
         self.calls: List[Dict[str, Any]] = []
         self.raises: Optional[Exception] = None
 
-    async def track_activity(self, player_id, event_type, details=None):
-        self.calls.append({"player_id": player_id, "event_type": event_type, "details": details})
+    async def track_activity(self, player_id, event_type, details=None, db=None):
+        # db= added by WO-BUILD-RETENTION-SIGNALS-TRADE-SQL-INSERT — callers
+        # pass the trade Session so durable PlayerActivity rows can flush.
+        self.calls.append({
+            "player_id": player_id,
+            "event_type": event_type,
+            "details": details,
+            "db": db,
+        })
         if self.raises is not None:
             raise self.raises
 
@@ -201,6 +208,8 @@ class TestRetentionTradeActivityWireBuy:
         assert call["details"]["commodity"] == "ore"
         assert call["details"]["quantity"] == 10
         assert call["details"]["station_id"] == str(station.id)
+        assert call["details"]["sector_id"] == player.current_sector_id
+        assert call["db"] is db
 
     async def test_activity_tracking_raise_never_fails_the_buy(self, fake_activity):
         fake_activity.raises = RuntimeError("redis unreachable")
@@ -217,6 +226,7 @@ class TestRetentionTradeActivityWireBuy:
 
         assert result is not None
         assert len(fake_activity.calls) == 1  # the call was attempted before it raised
+        assert fake_activity.calls[0]["db"] is db
 
 
 @pytest.mark.asyncio
@@ -241,6 +251,8 @@ class TestRetentionTradeActivityWireSell:
         assert call["details"]["commodity"] == "ore"
         assert call["details"]["quantity"] == 10
         assert call["details"]["station_id"] == str(station.id)
+        assert call["details"]["sector_id"] == player.current_sector_id
+        assert call["db"] is db
 
     async def test_activity_tracking_raise_never_fails_the_sell(self, fake_activity):
         fake_activity.raises = RuntimeError("redis unreachable")
@@ -257,3 +269,4 @@ class TestRetentionTradeActivityWireSell:
 
         assert result is not None
         assert len(fake_activity.calls) == 1
+        assert fake_activity.calls[0]["db"] is db
