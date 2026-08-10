@@ -549,3 +549,62 @@
     grid-template-columns: 1fr;
   }
 }
+.levers-panel {
+  background: #1e293b;
+  border: 1px solid #475569;
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 24px;
+}
+
+.levers-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.levers-header h3 {
+  margin: 0;
+}
+
+.levers-blurb {
+  color: #94a3b8;
+  font-size: 13px;
+  margin: 0 0 16px;
+}
+
+.levers-meta {
+  color: #64748b;
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.levers-table-wrap {
+  overflow-x: auto;
+  margin-bottom: 20px;
+}
+
+.levers-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.levers-table th,
+.levers-table td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid #334155;
+  vertical-align: top;
+}
+
+.levers-table input {
+  width: 110px;
+  background: #0f172a;
+  border: 1px solid #475569;
+  color: #e2e8f0;
+  border-radius: 6px;
+  padding: 6px 8px;
+}
