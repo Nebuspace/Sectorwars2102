@@ -21,8 +21,9 @@ export const WARP_MIN_CHARGE_MS = 3200;
 export const WARP_LAUNCH_MS = 1700;
 /** Bubble-in / arrival flash. */
 export const WARP_ARRIVE_MS = 3400;
-/** Abandon a stuck buildup (turn + charge + slack). */
-export const WARP_CHARGE_TIMEOUT_MS = 11000;
+/** Abandon a stuck buildup (turn + charge + launch + slack). */
+export const WARP_CHARGE_TIMEOUT_MS =
+  WARP_TURN_MS + WARP_MIN_CHARGE_MS + WARP_LAUNCH_MS + 3100;
 
 export interface WarpDepartRequest {
   destinationSectorId: number;
