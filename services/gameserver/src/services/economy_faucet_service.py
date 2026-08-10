@@ -6,7 +6,10 @@ Two credit faucets, on DIFFERENT cadences (human's final ruling 2026-06-20):
      (``Player.is_galactic_citizen`` True AND
      ``User.subscription_tier == "galactic_citizen"``) receive a weekly credit
      grant.  This is a PAID benefit (payments-signed-off) and KEEPS its weekly
-     cadence — it is the ONLY thing the weekly faucet path pays now.
+     cadence.  Regional Owners (``User.subscription_tier == "regional_owner"``)
+     receive a parallel weekly *treasury seed* into each ACTIVE owned region's
+     ``Region.treasury_balance`` (lifecycle.md §1.6) — not a personal wallet
+     credit.  Both ride ``run_weekly_faucet_sync``.
 
   2. REPUTATION STIPEND — DAILY + ACTIVE-GATED + PER-FACTION GUILD PAYOUT.
      Every player who logged in THAT UTC day receives a "guild stipend": for
@@ -128,10 +131,14 @@ _GOOD_STANDING_MIN_NUMERIC_LEVEL: int = 1  # RECOGNIZED (the first positive tier
 GLOBAL_DAILY_STIPEND_CAP: int = 100  # ⚠️ NO-CANON — ~3,000/mo at cap, under the perk
 
 # Weekly credit grant for galactic citizens (subscription perk).  This is now
-# the ONLY thing the weekly faucet path pays.  ~10,000 cr/mo (2,500 × ~4 weeks)
-# — a meaningful, PAID economic differentiator that stays strictly above any
-# tier's free daily stipend monthly sum.
+# the ONLY thing the weekly faucet path pays to *player wallets*.  ~10,000 cr/mo
+# (2,500 × ~4 weeks) — a meaningful, PAID economic differentiator that stays
+# strictly above any tier's free daily stipend monthly sum.
 CITIZEN_WEEKLY_PERK: int = 2_500  # ⚠️ NO-CANON — paid perk, ~10,000 cr/mo
+# lifecycle.md §1.6: Region Owner treasury seeding ≈ 100,000 cr/mo into the
+# *region treasury* (not the owner wallet). Weekly slice ≈ 25,000.
+REGION_OWNER_TREASURY_SEED_WEEKLY: int = 25_000  # ⚠️ NO-CANON — ≈100k/mo
+_REGION_OWNER_TIER: str = "regional_owner"
 
 # Player.settings JSONB key for the durable PER-PLAYER daily-stipend anchor —
 # holds the UTC date string (YYYY-MM-DD) of the last day this player was paid
@@ -350,6 +357,57 @@ def _apply_citizen_perks(
     return total
 
 
+def _apply_region_owner_treasury_seeds(db) -> int:
+    """Seed Region.treasury_balance for paid Regional Owners (lifecycle.md §1.6).
+
+    cycle-50 WO-BUILD-REGION-OWNER-TREASURY-SEEDING — parallel to the Galactic
+    Citizen weekly wallet perk, but credits the *region treasury* (for NPC
+    bounties / infrastructure subsidies), never the owner's personal wallet.
+
+    Eligibility per ACTIVE region with ``owner_id`` set:
+      - owning User.subscription_tier == ``regional_owner``
+
+    Writes RegionalTreasuryEntry(CAUSE_TRANSFER_IN) so the reconciliation
+    sweep keeps SUM(delta) == treasury_balance. Returns total credits seeded.
+    """
+    from src.models.region import Region, RegionalTreasuryEntry, RegionStatus
+    from src.models.user import User
+
+    if REGION_OWNER_TREASURY_SEED_WEEKLY <= 0:
+        return 0
+
+    regions = (
+        db.query(Region)
+        .filter(
+            Region.owner_id.isnot(None),
+            Region.status == RegionStatus.ACTIVE,
+        )
+        .with_for_update()
+        .all()
+    )
+    total = 0
+    for region in regions:
+        user = db.query(User).filter(User.id == region.owner_id).first()
+        if user is None or user.subscription_tier != _REGION_OWNER_TIER:
+            continue
+        before = int(region.treasury_balance or 0)
+        after = before + REGION_OWNER_TREASURY_SEED_WEEKLY
+        region.treasury_balance = after
+        db.add(
+            RegionalTreasuryEntry(
+                region_id=region.id,
+                before_balance=before,
+                after_balance=after,
+                delta=REGION_OWNER_TREASURY_SEED_WEEKLY,
+                cause_type=RegionalTreasuryEntry.CAUSE_TRANSFER_IN,
+                reason="region_owner_weekly_treasury_seed",
+            )
+        )
+        total += REGION_OWNER_TREASURY_SEED_WEEKLY
+    db.flush()
+    return total
+
+
 def _select_faucet_candidate_ids(db) -> List[Any]:
     """Active player ids eligible for faucet grants.  Mirrors
     _select_decay_candidate_ids — only soft-deactivated accounts excluded."""
@@ -394,6 +452,8 @@ def run_weekly_faucet_sync() -> Dict[str, int]:
     not_due: Dict[str, int] = {
         "citizen_grants": 0,
         "total_credits": 0,
+        "treasury_seed_credits": 0,
+        "treasury_seed_regions": 0,
         "week": -1,
     }
 
@@ -420,10 +480,9 @@ def run_weekly_faucet_sync() -> Dict[str, int]:
 
         player_ids = _select_faucet_candidate_ids(db)
 
-        # Citizen perk only — the rep stipend is now the DAILY sweep's job.
-        # Any raise propagates, rolling back the whole transaction including
-        # the anchor advance.
+        # Citizen perk (player wallets) + Region Owner treasury seeding.
         citizen_credits = _apply_citizen_perks(db, player_ids)
+        treasury_seeded = _apply_region_owner_treasury_seeds(db)
 
         # Advance the durable anchor in the SAME transaction.
         state = dict(galaxy.state or {})
@@ -436,14 +495,23 @@ def run_weekly_faucet_sync() -> Dict[str, int]:
         result: Dict[str, int] = {
             "citizen_grants": citizen_credits // CITIZEN_WEEKLY_PERK if CITIZEN_WEEKLY_PERK else 0,
             "total_credits": citizen_credits,
+            "treasury_seed_credits": treasury_seeded,
+            "treasury_seed_regions": (
+                treasury_seeded // REGION_OWNER_TREASURY_SEED_WEEKLY
+                if REGION_OWNER_TREASURY_SEED_WEEKLY
+                else 0
+            ),
             "week": this_week,
         }
         logger.info(
             "economy-faucet (weekly): canonical week %d — citizen_perk=%d cr "
-            "over %d citizen(s) [rep stipend now on the DAILY sweep]",
+            "over %d citizen(s); region_owner_treasury_seed=%d cr over %d "
+            "region(s) [rep stipend now on the DAILY sweep]",
             this_week,
             citizen_credits,
             result["citizen_grants"],
+            treasury_seeded,
+            result["treasury_seed_regions"],
         )
         return result
 
@@ -470,7 +538,9 @@ CONSTANTS_FOR_RATIFICATION: Dict[str, Any] = {
                                "Reputation.current_value >= 50)",
     "CITIZEN_WEEKLY_PERK": CITIZEN_WEEKLY_PERK,
     "CITIZEN_WEEKLY_PERK_monthly_equiv": CITIZEN_WEEKLY_PERK * 4,  # ~10,000/mo
-    "weekly_cadence": "citizen perk: once per canonical week "
+    "REGION_OWNER_TREASURY_SEED_WEEKLY": REGION_OWNER_TREASURY_SEED_WEEKLY,
+    "REGION_OWNER_TREASURY_SEED_monthly_equiv": REGION_OWNER_TREASURY_SEED_WEEKLY * 4,  # ~100,000/mo
+    "weekly_cadence": "citizen perk + region-owner treasury seed: once per canonical week "
                       "(canonical_week_number advances at GAME_TIME_SCALE × "
                       "86400s / 7; on dev at scale 144 this is ~70 wall-clock "
                       "minutes per canonical week)",
