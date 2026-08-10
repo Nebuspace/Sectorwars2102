@@ -2576,6 +2576,24 @@ class MovementService:
         player.is_landed = False  # Player is no longer landed on a planet
         player.current_port_id = None  # Clear dangling port reference
         player.current_planet_id = None  # Clear dangling planet reference
+
+        # lifecycle.md activity levers: track foreign visits / pay home return stipend
+        try:
+            from src.models.region import Region as _Region
+            from src.services import regional_activity_levers_service as _levers
+            new_rid = destination_sector.region_id
+            if new_rid is not None and old_region_id is not None and new_rid != old_region_id:
+                home = getattr(player, "home_region_id", None)
+                if home is not None and str(new_rid) != str(home):
+                    _levers.note_foreign_region_visit(player, new_rid)
+                elif home is not None and str(new_rid) == str(home):
+                    home_region = self.db.query(_Region).filter(
+                        _Region.id == home
+                    ).with_for_update().first()
+                    _levers.try_pay_arbitrage_stipend(self.db, home_region, player)
+        except Exception:
+            logger.exception("regional activity lever hook failed (non-fatal)")
+
         # WO-DOCK-500 Leg 1: warping away from a port is an implicit undock, so
         # release the docking-slip occupancy too — otherwise the row orphans and
         # the next dock 500s on the UNIQUE player_id (the trading /undock path

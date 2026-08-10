@@ -1777,6 +1777,27 @@ async def dock_at_station(
         docking_service._realize_fee(db, station, docking_fee)
         slip_result["occupancy"].fee_paid = docking_fee
 
+        # lifecycle.md docking-fee subsidy: rebate resident from region treasury
+        docking_rebate = 0
+        try:
+            from src.models.region import Region as _Region
+            from src.services import regional_activity_levers_service as _levers
+            if station.region_id is not None:
+                _region = (
+                    db.query(_Region)
+                    .filter(_Region.id == station.region_id)
+                    .with_for_update()
+                    .first()
+                )
+                _fee_after, docking_rebate = _levers.apply_docking_fee_subsidy(
+                    db, _region, current_player, docking_fee
+                )
+                if docking_rebate:
+                    current_player.credits += docking_rebate
+        except Exception:
+            logger.exception("docking-fee subsidy hook failed (non-fatal)")
+            docking_rebate = 0
+
         # ARIA market-observation hook (WO-ARIA-MARKET-OBS): best-effort,
         # folds into this transaction's single commit below. Deliberately
         # does NOT call _ensure_market_prices first (unlike get_market_info)
@@ -1847,6 +1868,7 @@ async def dock_at_station(
             "turn_cost": DOCKING_TURN_COST,
             "turns_remaining": current_player.turns,
             "docking_fee": docking_fee,
+            "docking_fee_rebate": docking_rebate,
             "credits_remaining": current_player.credits,
             "slips": {
                 "capacity": slip_result["capacity"],

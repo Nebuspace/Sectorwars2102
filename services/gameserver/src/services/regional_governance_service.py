@@ -261,7 +261,11 @@ def enact_changes_onto_region(region: Region, proposed_changes: Dict[str, Any]) 
         # ADR-0062: trade_bonuses ALSO holds non-multiplier keys (e.g. tariff_rate,
         # a ~0.0 per-trade modifier). Clamping those into the [1.0,3.0] multiplier
         # band would corrupt them — skip reserved keys; only per-resource multipliers enact.
-        RESERVED_NON_MULTIPLIER = {"tariff_rate"}
+        RESERVED_NON_MULTIPLIER = {
+            "tariff_rate",
+            "docking_fee_subsidy",
+            "arbitrage_stipend",
+        }
         for resource, bonus in changes["trade_bonuses"].items():
             if resource in RESERVED_NON_MULTIPLIER:
                 continue
@@ -275,6 +279,12 @@ def enact_changes_onto_region(region: Region, proposed_changes: Dict[str, Any]) 
         if touched:
             region.trade_bonuses = merged
             applied["trade_bonuses"] = touched
+
+    # lifecycle.md activity levers — booleans in trade_bonuses (no migration).
+    from src.services.regional_activity_levers_service import apply_lever_flags
+    lever_applied = apply_lever_flags(region, changes)
+    if lever_applied:
+        applied.update(lever_applied)
 
     return applied
 
