@@ -1027,15 +1027,6 @@ async def get_galaxy_info(
                 if getattr(galaxy, "bang_snapshot", None) else None
             ),
         },
-        # Legacy support for frontend
-        "generation_config": {
-            "resource_distribution": galaxy.density.get("resource_distribution", "balanced"),
-            "hazard_levels": "moderate",
-            "connectivity": "normal",
-            "port_density": galaxy.density.get("port_density", 0.15) / 100,
-            "planet_density": galaxy.density.get("planet_density", 0.25) / 100,
-            "warp_tunnel_probability": galaxy.density.get("one_way_warp_percentage", 0.1) / 100
-        }
     }
 
 # POST /galaxy/generate removed (cycle-44 WO-CLEANUP-410-GONE-GALAXY-GENERATOR-STUB).
