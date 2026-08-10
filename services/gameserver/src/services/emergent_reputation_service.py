@@ -409,15 +409,15 @@ EMERGENT_ACTIONS: Dict[str, EmergentAction] = {
     # FactionType.EXPLORERS), no anti-symmetric matrix entry. Wired at the
     # first-visit (first-scan) surface in movement_service._execute_movement.
     #
-    # Live Sector.type research set: NEBULA, BLACK_HOLE, ANOMALY (Audit-27 #1).
-    # WARP_STORM remains design-only (orphaned SectorSpecialType only).
+    # Live Sector.type research set: NEBULA, BLACK_HOLE, ANOMALY, WARP_STORM
+    # (cycle-50 enum). RADIATION_ZONE is hazard-only (sector-presence.md).
     "NOVA_FIRST_SCAN_RESEARCH_SECTOR": EmergentAction(
         name="NOVA_FIRST_SCAN_RESEARCH_SECTOR",
         deltas=[FactionDelta(FactionType.EXPLORERS, 15)],
         doc_source=(
             "factions-and-teams.md NS: First-scan a NEBULA / BLACK_HOLE / "
-            "ANOMALY / WARP_STORM sector (+15) — NEBULA/BLACK_HOLE/ANOMALY wired; "
-            "WARP_STORM still design-only"
+            "ANOMALY / WARP_STORM sector (+15) — all four wired on Sector.type "
+            "(cycle-50 WARP_STORM enum)"
         ),
     ),
     # WO-NEBULA: Nova Scientific rep for nebula harvesting — PER-BLOCK (+1 per

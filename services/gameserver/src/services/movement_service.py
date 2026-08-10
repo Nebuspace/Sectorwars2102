@@ -2741,14 +2741,16 @@ class MovementService:
                 # Routed through the ADR-0032 dispatcher (the single canon entry
                 # point), flush-only, riding this method's single commit below —
                 # exactly like the KILL_PIRATE_NPC combat hook. Gated on the
-                # live Sector.type research values (NEBULA, BLACK_HOLE, ANOMALY
-                # — Audit-27 #1). WARP_STORM remains design-only / un-columned.
+                # live Sector.type research values (NEBULA, BLACK_HOLE, ANOMALY,
+                # WARP_STORM — cycle-50 hazard enum). RADIATION_ZONE is a hazard
+                # type on Sector.type but is not in the NS first-scan table.
                 # DOUBLE-FIRE SAFE: no prior faction-rep hook exists at this
                 # site (the ARIA/medal/formation hooks are disjoint signals).
                 if destination_sector.type in (
                     SectorType.NEBULA,
                     SectorType.BLACK_HOLE,
                     SectorType.ANOMALY,
+                    SectorType.WARP_STORM,
                 ):
                     try:
                         from src.services.emergent_reputation_service import (
