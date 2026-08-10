@@ -1898,7 +1898,7 @@ async def update_defenses(
 
 
 @router.post("/genesis/deploy")
-async def deploy_genesis_device_legacy(
+async def deploy_genesis_device(
     request: GenesisDeployRequest,
     player: Player = Depends(get_current_player),
     db: Session = Depends(get_db)
@@ -1906,11 +1906,10 @@ async def deploy_genesis_device_legacy(
     """
     Deploy a genesis device to create a new planet.
 
-    Despite the historical "_legacy" function name, this is the live route
-    the player-client actually calls (POST /planets/genesis/deploy — see
+    Live route the player-client calls (POST /planets/genesis/deploy —
     services/player-client/src/services/api.ts). The orphaned parallel
     POST /genesis/deploy route (src/api/routes/genesis.py) had zero callers
-    and was removed (2026-08-04) — this is now the sole genesis-deploy route.
+    and was removed (2026-08-04) — this is the sole genesis-deploy route.
     """
     from src.services.genesis_service import GenesisService
 
