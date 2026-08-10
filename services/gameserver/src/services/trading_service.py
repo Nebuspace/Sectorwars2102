@@ -21,29 +21,32 @@ logger = logging.getLogger(__name__)
 # ----------------------------------------------------------------------
 # Player-facing price modifiers (ADR-0062 E-D3 canonical stack)
 # ----------------------------------------------------------------------
-# The ratified trade-price stack (sw2102-docs ADR-0062 E-D3 /
-# SYSTEMS/market-pricing.md) is multiplicative, general -> specific:
+# The ratified *unit-price* stack (sw2102-docs FEATURES/economy/trading.md
+# §Price-stacking-order, Max-blessed 2026-06-14; routes/trading.py) is
+# multiplicative, general -> specific — tax is NOT in this stack:
 #
-#   final_price = station_price
+#   unit_price = station_price
 #     x faction_reputation_multiplier   (0.85 .. 1.50 — Exalted to Public Enemy)
 #     x personal_reputation_multiplier  (0.90 .. 1.20 — Legendary to Villain)
-#     x (1 - rank.trading_bonus / 100)  (handled in the routes via RankingService)
-#     x (1 + region.tax_rate)           (the routes apply the station tax_rate)
-#     x (1 + region.tariff_rate)        (NO-CANON wiring point — see note below)
+#     x (1 - rank.trading_bonus / 100)  (routes via RankingService)
+#     x (1 + region.tariff_rate)        (trade_bonuses JSONB; see helpers below)
 #     x (1 + station.price_adjustment_lever)  (same-owner skip per E-F1)
+#   …then clamp unit_price to the commodity band (FINAL).
 #
-# This helper covers the two player-relationship layers that were NOT yet
-# wired into the trade path — faction reputation and personal reputation —
-# plus the permanent +10% first-login negotiation bonus
-# (Player.settings.trade_bonus, set by first_login_service per ADR-0026 FL1:
-# "Applied at every port transaction for the lifetime of the character").
+# Region / station TAX is a separate treasury levy on the transaction TOTAL
+# after that clamp (buy: total + int(total×tax); sell: total − int(total×tax))
+# — never a per-unit stack factor. Do not re-fold tax into the unit formula
+# (WO-CANON-FIX-MARKET-PRICING-STACK-ORDER-AND-TAX; market-pricing.md has
+# drifted the other way and is the docs half of that WO).
 #
-# Rank discount, station tax, tariff, and the station price lever remain the
-# routes' responsibility (rank + tax already live there). Direction: all of
-# these multipliers express "what the player PAYS" — > 1.0 means a worse
-# deal. On a BUY the player pays final_price (multiplier applied as-is); on a
-# SELL the relationship flips (a favoured trader earns MORE), so the route
-# divides the station's buy_price by the player-pays multiplier.
+# This helper covers the two player-relationship layers — faction reputation
+# and personal reputation — plus the permanent +10% first-login negotiation
+# bonus (Player.settings.trade_bonus, first_login_service / ADR-0026 FL1).
+# Rank, tariff, and the station lever are composed in the routes alongside
+# compute_region_tariff_rate / compute_station_price_lever below.
+# Direction: multipliers express "what the player PAYS" — > 1.0 = worse deal.
+# On BUY apply as-is; on SELL the route divides station buy_price by the
+# player-pays multiplier (and inverts the rest of the stack).
 
 # Faction-reputation TRADE_MODIFIERS mirror faction_service.TRADE_MODIFIERS
 # (kept inline so this sync path needs no async FactionService bridge). Each
