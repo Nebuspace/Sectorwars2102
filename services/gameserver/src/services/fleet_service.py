@@ -40,20 +40,14 @@ SCOUT_FIRST_SHOT_MULT = 1.10
 SCOUT_DEFENSE_PENALTY_MULT = 1.05  # takes 5% more when targeted
 DEFENDER_ABSORPTION_MULT = 0.90    # existing Defender +10% absorption
 
-# In-battle repair mechanic (WO-BUILD-FLEET-SUPPORT-REPAIR-MECHANIC). No
-# in-battle regen mechanic previously existed AT ALL — fleet-tactics.md only
-# documents Support's "+5% repair regen to nearby members" MODIFIER, with no
-# base rate for it to modify. NO-CANON: BASE_REPAIR_REGEN_PCT is a
-# conservative invented baseline (2% of max_hull/round — slow enough that
-# repair alone can't out-heal sustained fire from an average ship's
-# attack_rating, matching the existing Defender/Scout multipliers' "meaningful
-# but not dominant" scale) flagged for a DECISIONS.md ruling. SUPPORT_REPAIR_
-# REGEN_MULT (+5%) IS canon-given; applied multiplicatively on the base rate,
-# mirroring how DEFENDER_ABSORPTION_MULT/SCOUT_DEFENSE_PENALTY_MULT are
-# multiplicative rather than additive. "Nearby members" has no positional/
-# distance system in fleet battles (ships don't have in-battle coordinates) —
-# interpreted as "any other active Support-role ship in the same fleet",
-# scoped fleet-wide like every other role bonus in this module.
+# In-battle repair mechanic (WO-BUILD-FLEET-SUPPORT-REPAIR-MECHANIC).
+# fleet-tactics.md documents Support's "+5% repair regen to nearby members"
+# modifier; BASE_REPAIR_REGEN_PCT supplies the missing base rate for that
+# modifier to act on. Ratified DECISIONS.md `support-fleet-repair-regen-magnitude`
+# (carte blanche 2026-08-06): 2%/tick base + 1.05× Support multiplier.
+# "Nearby members" has no positional/distance system in fleet battles —
+# interpreted as "any active Support-role ship in the same fleet", scoped
+# fleet-wide like every other role bonus in this module.
 BASE_REPAIR_REGEN_PCT = 0.02
 SUPPORT_REPAIR_REGEN_MULT = 1.05
 
@@ -1201,7 +1195,7 @@ class FleetService:
         its max_hull, clamped to max_hull; the whole fleet's regen is boosted
         by SUPPORT_REPAIR_REGEN_MULT if ANY active ship in the fleet is
         currently crewed by a Support-role member (fleet-wide, not per-ship —
-        see the module-level NO-CANON note on "nearby"). Runs AFTER both fire
+        see the module-level note on "nearby"). Runs AFTER both fire
         exchanges (destroyed ships are already excluded from ``active_ships``,
         so repair can never revive a kill this round). No-op on an empty
         fleet."""
