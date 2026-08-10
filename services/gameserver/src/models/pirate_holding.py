@@ -9,8 +9,9 @@ math and by the eligible-sector finder. Deliberately OMITTED (deferred to the
 raid/capture WO and to ECO-2's growth tick, which is entirely unbuilt at
 HEAD):
 
-- ``outlaw_base_id`` FK — the OutlawBase/NPCBarracks lodging tables don't
-  exist yet (see npc_character.py's module docstring, same deferral).
+- ``outlaw_base_id`` FK — OutlawBase table ships in WO-BUILD-NPC-LODGING-
+  FOUNDATION; wiring this FK onto PirateHolding remains a follow-on
+  (raid/capture slice).
 - ``interior_sector_ids`` / ``parent_holding_id`` / ``composition`` — spawn-
   algorithm state per pirate-holding-raid.md; nothing in this WO's scope
   writes or reads them.

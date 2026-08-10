@@ -19,8 +19,9 @@ Divergences from canon, on purpose, documented:
   anchor), so that constraint cannot hold against the live data shape.
   Uniqueness lives on ``bang_roster_ref`` instead, with a non-unique
   index on the canon triple — divergence FLAGGED for the docs repo.
-- Lodging FKs (home_barracks_id / home_outlaw_base_id) and the
-  NPCBarracks / OutlawBase tables are deferred to the lodging slice.
+- Lodging FKs (home_barracks_id / home_outlaw_base_id) point at
+  NPCBarracks / OutlawBase (WO-BUILD-NPC-LODGING-FOUNDATION). Nullable
+  until a roster's default_lodging_* is assigned at spawn.
 - Enum members follow this codebase's UPPERCASE name==value convention
   (see ShipStatus); canon spells the vocabularies lowercase.
 
@@ -199,6 +200,19 @@ class NPCCharacter(Base):
     # 24h schedule template + weekly overrides (SYSTEMS/npc-lifecycle.md
     # JSONB shape: timezone, shift_offset_hours, blocks[], weekly_overrides[]).
     daily_schedule = Column(JSONB, nullable=False, default=dict)
+    # Home lodging (DATA_MODELS/npc-lodging.md) — one of barracks / outlaw.
+    home_barracks_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("npc_barracks.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    home_outlaw_base_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("outlaw_bases.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     # Mutable squad role (ADR-0063): primary_marshal / backup_marshal / ...
     duty_role = Column(String(50), nullable=True)
     # ADR-0063: recruits ARE engagement-eligible; this gates `train`
@@ -283,10 +297,10 @@ class NPCRoster(Base):
     default_archetype = Column(Enum(NPCArchetype, name="npc_archetype"), nullable=False)
     # Base daily_schedule applied (with stagger offsets) to spawned NPCs.
     schedule_template = Column(JSONB, nullable=False, default=dict)
-    # Lodging deferred — kept for forward-compat with bang's roster shape
-    # (defaultLodgingId is always null today).
+    # Spawn-time lodging defaults → NPCCharacter.home_barracks_id /
+    # home_outlaw_base_id via npc_lodging_service.apply_roster_lodging_to_npc.
     default_lodging_id = Column(UUID(as_uuid=True), nullable=True)
-    default_lodging_type = Column(String(20), nullable=True)
+    default_lodging_type = Column(String(20), nullable=True)  # barracks | outlaw_base
     target_count = Column(Integer, nullable=False)
     # {"names": [...]} — bang emits a flat name array; canon's
     # first_names/surnames split is unused by bang output.
