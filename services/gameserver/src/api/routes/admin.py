@@ -1038,33 +1038,8 @@ async def get_galaxy_info(
         }
     }
 
-@router.post("/galaxy/generate", response_model=dict)
-async def generate_galaxy(
-    request: dict,
-    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
-):
-    """Deprecated: legacy Python galaxy generator removed in Phase 4 of the
-    sw2102-bang cutover. The synchronous, monolithic generator has been replaced
-    by the bang sidecar pipeline. Galaxy creation now flows through a job-based
-    API that supports preview, commit, live progress, and atomic multi-region
-    builds.
-
-    Use ``POST /api/v1/admin/galaxy/jobs`` instead. See
-    ``DOCS/PLANS/bang-integration.md`` for the new contract.
-    """
-    raise HTTPException(
-        status_code=status.HTTP_410_GONE,
-        detail={
-            "error": "endpoint_removed",
-            "message": (
-                "POST /api/admin/galaxy/generate was removed in the bang "
-                "integration cutover (Phase 4). Use POST /api/v1/admin/galaxy/jobs."
-            ),
-            "replacement": "/api/v1/admin/galaxy/jobs",
-            "docs": "DOCS/PLANS/bang-integration.md",
-        },
-    )
-
+# POST /galaxy/generate removed (cycle-44 WO-CLEANUP-410-GONE-GALAXY-GENERATOR-STUB).
+# Legacy bang cutover: use POST /api/v1/admin/galaxy/jobs. FastAPI 404s undefined paths.
 # Zone endpoints removed - zones concept eliminated
 # Architecture: Galaxy → Region → Cluster → Sector
 # Use /regions/{region_id}/clusters to get clusters in a region

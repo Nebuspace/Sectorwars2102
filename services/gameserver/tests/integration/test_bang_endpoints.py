@@ -7,9 +7,9 @@ admin endpoint tests in ``tests/integration/api/test_admin_endpoints.py``
 all use the sync client. The bang router uses async dependencies internally
 but TestClient handles the event loop transparently.
 
-Phase 4A confirmed the legacy ``POST /api/v1/admin/galaxy/generate`` is
-not removed — it returns ``410 Gone`` with a ``replacement`` field pointing
-to ``/api/v1/admin/galaxy/jobs``. There's a dedicated test for that here.
+The legacy ``POST /api/v1/admin/galaxy/generate`` stub was fully removed
+(cycle-44 WO-CLEANUP-410-GONE-GALAXY-GENERATOR-STUB); undefined paths 404.
+Use ``POST /api/v1/admin/galaxy/jobs`` instead.
 
 Coverage map (per the integration plan § Phase 1D):
     POST   /api/v1/admin/galaxy/jobs              -> create_bang_job
