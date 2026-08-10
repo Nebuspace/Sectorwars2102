@@ -108,9 +108,10 @@ class _FakeRegionReadQuery:
 
 
 class _FakeEmptyQuery:
-    """dispatch_terminated_cleanup's `db.query(Planet).filter(...).all()`
-    per-region planet scan -- no planet fixtures are exercised by this
-    module's tests, so this always yields an empty set."""
+    """dispatch_terminated_cleanup's per-region Planet/Station/Sector scans
+    -- no fixtures for those models are exercised by this module's tests, so
+    this always yields an empty set. Chains match the real Query shapes the
+    cascade uses (join / filter / populate_existing / with_for_update)."""
 
     def __init__(self, session):
         self._session = session
@@ -120,6 +121,19 @@ class _FakeEmptyQuery:
 
     def join(self, *args, **kwargs):
         return self
+
+    def populate_existing(self, *a, **k):
+        return self
+
+    def with_for_update(self, *a, **k):
+        return self
+
+    def order_by(self, *a, **k):
+        return self
+
+    def first(self):
+        self._session.queries += 1
+        return None
 
     def all(self):
         self._session.queries += 1
@@ -348,8 +362,8 @@ class TestAdvanceToTerminated:
 
 class TestDispatchTerminatedCleanup_feat:
     def test_eligible_region_dispatches_cascade_without_stamping(self, monkeypatch) -> None:
-        """Station termination is still discovery-only: do NOT stamp
-        cleanup_completed_at (WO-ESCALATE-CYCLE26-DESIGN-FLAGS)."""
+        """Station termination cascade runs; do NOT stamp cleanup_completed_at
+        until a future WO decides the marker semantics (cycle26-design-flags)."""
         region = FakeRegionRow(
             status=RegionStatus.TERMINATED,
             scheduled_hard_delete_at=_NOW - timedelta(hours=1),

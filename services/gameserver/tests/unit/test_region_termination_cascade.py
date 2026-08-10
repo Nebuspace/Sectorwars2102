@@ -38,6 +38,9 @@ class _FakePlayerQuery:
         self._lock_calls.append(self._id)
         return self
 
+    def populate_existing(self, *a, **k):
+        return self
+
     def first(self):
         assert self._locked, (
             "process_planet_termination's Player query must call "
@@ -342,3 +345,152 @@ def test_station_loss_compensation_deposits_to_bank():
     assert account.credits == 42_000
     assert account.ledger[-1]["type"] == "cascade_station_compensation"
     assert account.ledger[-1]["access_override"] is True
+
+
+# ---------------------------------------------------------------------------
+# WO-BUILD-REGION-TERMINATION-STATION-CASCADE — Path A/B relocate / loss
+# ---------------------------------------------------------------------------
+
+from types import SimpleNamespace
+from datetime import datetime, timezone
+
+
+def _make_station(
+    *,
+    owner_id,
+    treasury=0,
+    prepaid=False,
+    acquisition=1_000_000,
+    ledger=None,
+    tax_rate=0.10,
+):
+    sid = uuid.uuid4()
+    dest_sector_uuid = uuid.uuid4()
+    return SimpleNamespace(
+        id=sid,
+        owner_id=owner_id,
+        treasury_balance=treasury,
+        relocation_prepaid=prepaid,
+        capital_cost_ledger=list(ledger or []),
+        ownership={"acquisition_cost": acquisition},
+        acquisition_requirements={},
+        security={"tier": "premium"},
+        tax_rate=tax_rate,
+        sector_id=99,
+        sector_uuid=uuid.uuid4(),
+        region_id=uuid.uuid4(),
+        is_destroyed=False,
+        status=None,
+    )
+
+
+def _dest_sector():
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        sector_id=1,
+        region_id=uuid.uuid4(),
+    )
+
+
+def test_path_b_prepaid_relocates_without_fee_debit():
+    owner = _make_player(credits=50_000)
+    station = _make_station(owner_id=owner.id, treasury=80_000, prepaid=True)
+    dest = _dest_sector()
+    db = FakeSession([owner])
+    now = datetime.now(timezone.utc)
+
+    out = cascade._relocate_one_station(db, station, dest, now)
+
+    assert out["outcome"] == "relocated"
+    assert out["path"] == "B"
+    assert out["fee_paid"] == 0
+    assert station.treasury_balance == 80_000
+    assert owner.credits == 50_000
+    assert station.sector_id == dest.sector_id
+    assert station.tax_rate == 0.05
+    assert station.security == {"tier": "basic"}
+    assert station.relocation_prepaid is False
+
+
+def test_path_a_treasury_covers_fee():
+    owner = _make_player(credits=1_000)
+    # fee = 30% of 1_000_000 = 300_000
+    station = _make_station(owner_id=owner.id, treasury=400_000, acquisition=1_000_000)
+    dest = _dest_sector()
+    db = FakeSession([owner])
+    now = datetime.now(timezone.utc)
+
+    out = cascade._relocate_one_station(db, station, dest, now)
+
+    assert out["outcome"] == "relocated"
+    assert out["path"] == "A"
+    assert out["fee_paid"] == 300_000
+    assert station.treasury_balance == 100_000
+    assert owner.credits == 1_000
+    assert station.sector_id == dest.sector_id
+
+
+def test_path_a_wallet_covers_deficit():
+    owner = _make_player(credits=250_000)
+    station = _make_station(owner_id=owner.id, treasury=100_000, acquisition=1_000_000)
+    dest = _dest_sector()
+    db = FakeSession([owner])
+    now = datetime.now(timezone.utc)
+
+    out = cascade._relocate_one_station(db, station, dest, now)
+
+    assert out["outcome"] == "relocated"
+    assert out["path"] == "A"
+    assert station.treasury_balance == 0
+    assert owner.credits == 50_000  # 250k - 200k deficit
+
+
+def test_path_a_strip_upgrades_then_pay(monkeypatch):
+    owner = _make_player(credits=50_000)
+    # acquisition 100k + ledger 900k = basis 1M → fee 300k
+    # treasury 0 + wallet 50k insufficient until we strip the 900k ledger entry
+    # after strip: basis 100k → fee 30k → wallet covers
+    station = _make_station(
+        owner_id=owner.id,
+        treasury=0,
+        acquisition=100_000,
+        ledger=[{"source": "sec", "amount": 900_000, "at": "x"}],
+    )
+    dest = _dest_sector()
+    db = FakeSession([owner])
+    now = datetime.now(timezone.utc)
+
+    out = cascade._relocate_one_station(db, station, dest, now)
+
+    assert out["outcome"] == "relocated"
+    assert out["path"] == "A"
+    assert station.capital_cost_ledger == []
+    assert owner.credits == 20_000  # 50k - 30k fee
+    assert station.sector_id == dest.sector_id
+
+
+def test_path_a_loss_compensates_bank_not_wallet(monkeypatch):
+    owner = _make_player(credits=1_000)
+    station = _make_station(
+        owner_id=owner.id,
+        treasury=0,
+        acquisition=1_000_000,
+        ledger=[],
+    )
+    dest = _dest_sector()
+    db = FakeSession([owner])
+    now = datetime.now(timezone.utc)
+
+    monkeypatch.setattr(
+        cascade, "_station_revenue", lambda *a, **k: 10_000,
+    )
+
+    out = cascade._relocate_one_station(db, station, dest, now)
+
+    assert out["outcome"] == "lost"
+    # 50% of 1_000_000 + 10_000 = 510_000
+    assert out["compensation"] == 510_000
+    assert owner.credits == 1_000  # wallet untouched by compensation
+    assert station.is_destroyed is True
+    bank_acct = db.banks[owner.id]
+    assert bank_acct.credits == 510_000
