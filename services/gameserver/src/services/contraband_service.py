@@ -7,8 +7,9 @@ existing file is changed by this module.
 
 DEFERRED (NOT built here, per the brief §1 "Out of kernel"): credit laundering,
 Shadow-Syndicate fence venues, hidden-sector / abandoned-outpost discovery,
-stealth-route multipliers + Stealth Systems equipment, counterfeit goods, bounty
-placement. There is intentionally no syndicate fence.
+stealth-route *terrain* multipliers (nebula/asteroid), counterfeit goods, bounty
+placement. Stealth Systems equipment (−25% P(detected)) is wired (cycle-50).
+There is intentionally no syndicate fence.
 
 The four entry points (all server-authoritative):
 
@@ -136,6 +137,10 @@ DETECT_SECTOR_WEIGHT = 1.0     # sector_security · (1 − security_level / 10)
 DETECT_REP_WEIGHT = 1.0        # player_reputation · (1 − personal_reputation / 1000)
 DETECT_PROB_MIN = 0.0
 DETECT_PROB_MAX = 0.95         # never a guaranteed bust — the smuggler always has a chance
+# black-market.md Stealth Systems: flat −25% on P(detected) while installed.
+STEALTH_SYSTEMS_DETECTION_MULT = 0.75
+STEALTH_EQUIPMENT_KEYS = frozenset({"stealth_module", "stealth_systems"})
+STEALTH_MODULE_KEYS = frozenset({"stealth"})
 
 # Reference cargo capacity divisor for the cargo-visibility term when a ship has
 # no usable capacity figure (defensive; capacity always comes from the JSONB).
@@ -679,6 +684,7 @@ class ContrabandService:
             cargo_capacity=capacity,
             sector=sector,
             personal_reputation=player.personal_reputation or 0,
+            ship=ship,
         )
         detected = _RNG.random() < p_detect
 
@@ -875,6 +881,7 @@ class ContrabandService:
             cargo_capacity=self._cargo_capacity(cargo),
             destination_security=dest_security,
             personal_reputation=player.personal_reputation or 0,
+            ship=ship,
         )
         detected = _RNG.random() < p_detect
 
@@ -938,12 +945,45 @@ class ContrabandService:
     # ------------------------------------------------------------------
     # Detection
     # ------------------------------------------------------------------
+    @staticmethod
+    def _ship_has_stealth_systems(ship) -> bool:
+        """True when Stealth Systems equipment or lattice stealth module is installed.
+
+        cycle-50 WO-BUILD-BLACKMARKET-STEALTH-SYSTEMS-DETECTION — black-market.md
+        Stealth Systems: flat −25% on P(detected) while installed.
+        """
+        if ship is None:
+            return False
+        slots = getattr(ship, "equipment_slots", None) or {}
+        if isinstance(slots, dict):
+            for key in STEALTH_EQUIPMENT_KEYS:
+                if key in slots:
+                    return True
+        modules = getattr(ship, "modules", None) or {}
+        if not isinstance(modules, dict):
+            return False
+        installed = modules.get("installed") or {}
+        if isinstance(installed, dict):
+            for key in STEALTH_MODULE_KEYS:
+                if key in installed:
+                    return True
+        baked = modules.get("_baked") or {}
+        if isinstance(baked, dict) and baked.get("contraband_detection_mult"):
+            return True
+        return False
+
+    def _apply_stealth_systems_mult(self, p: float, ship) -> float:
+        if not self._ship_has_stealth_systems(ship):
+            return p
+        return self._clamp(p * STEALTH_SYSTEMS_DETECTION_MULT, DETECT_PROB_MIN, DETECT_PROB_MAX)
+
     def _detection_probability(
         self,
         illegal_value: int,
         cargo_capacity: int,
         sector: Optional[Sector],
         personal_reputation: int,
+        ship=None,
     ) -> float:
         """The brief §1.4 four-term ``P(detected)``, clamped to [0.0, 0.95]::
 
@@ -982,7 +1022,8 @@ class ContrabandService:
             + DETECT_SECTOR_WEIGHT * sector_term
             + DETECT_REP_WEIGHT * rep_term
         )
-        return self._clamp(p, DETECT_PROB_MIN, DETECT_PROB_MAX)
+        p = self._clamp(p, DETECT_PROB_MIN, DETECT_PROB_MAX)
+        return self._apply_stealth_systems_mult(p, ship)
 
     def _transit_detection_probability(
         self,
@@ -990,6 +1031,7 @@ class ContrabandService:
         cargo_capacity: int,
         destination_security: int,
         personal_reputation: int,
+        ship=None,
     ) -> float:
         """``P(detected)`` for the TRANSIT scan — the sell model with the sector
         term's polarity flipped, and nothing else changed::
@@ -1021,7 +1063,8 @@ class ContrabandService:
             + DETECT_SECTOR_WEIGHT * sector_term
             + DETECT_REP_WEIGHT * rep_term
         )
-        return self._clamp(p, DETECT_PROB_MIN, DETECT_PROB_MAX)
+        p = self._clamp(p, DETECT_PROB_MIN, DETECT_PROB_MAX)
+        return self._apply_stealth_systems_mult(p, ship)
 
     def _resolve_sector(self, player: Player) -> Optional[Sector]:
         """The player's current sector. ``Player.current_sector_id`` is the GLOBAL

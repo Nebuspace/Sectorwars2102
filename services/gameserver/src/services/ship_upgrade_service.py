@@ -266,14 +266,21 @@ class ShipUpgradeService:
             "effects": {"ecm_hit_penalty": 0.15},
         },
         "stealth_module": {
-            "name": "Stealth Module",
-            "description": "Signature dampers that raise effective evasion in combat",
+            "name": "Stealth Systems",
+            "description": (
+                "Signature dampers: combat evasion bonus + −25% contraband "
+                "detection probability while installed (black-market.md)"
+            ),
             "cost": 40000,
             "compatible_ships": [
                 ShipType.SCOUT_SHIP, ShipType.FAST_COURIER, ShipType.WARP_JUMPER,
             ],
-            # Flat evasion points folded into _calculate_ship_defense.
-            "effects": {"stealth_evasion_bonus": 15},
+            # Flat evasion points folded into _calculate_ship_defense;
+            # contraband_detection_mult applied by ContrabandService.
+            "effects": {
+                "stealth_evasion_bonus": 15,
+                "contraband_detection_mult": 0.75,
+            },
         },
         # Weapon-profile mounts (combat.md planned catalog + ship-systems.md §2.6):
         # these switch WEAPON_TYPES profile only — NEVER raw attack_rating /
@@ -580,14 +587,20 @@ class ShipUpgradeService:
         },
         "stealth": {
             "base_cost": 40000,
-            "base_effects": {"stealth_evasion_bonus": 15},
+            "base_effects": {
+                "stealth_evasion_bonus": 15,
+                "contraband_detection_mult": 0.75,
+            },
             "compatible_ships": [
                 ShipType.SCOUT_SHIP, ShipType.FAST_COURIER, ShipType.WARP_JUMPER,
             ],
             "requires": None,
             "slot_class": "combat",
-            "name": "Stealth Module",
-            "description": "Signature dampers that raise effective evasion in combat.",
+            "name": "Stealth Systems Module",
+            "description": (
+                "Signature dampers: combat evasion + −25% contraband detection "
+                "(black-market.md Stealth Systems)."
+            ),
         },
     }
 
