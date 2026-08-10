@@ -1242,6 +1242,36 @@ def get_defense_policy(station: Station) -> Dict[str, Any]:
     return normalize_defense_policy(raw if isinstance(raw, dict) else None)
 
 
+# cycle-50 WO-BUILD-STATION-DEFENSE-POLICY-COMBAT-WIRE — combat/NPC readers
+# share this so posture + drone_allocation_pct stay consistent. patrol_radius
+# is still deferred (always 0 from set_defense_policy); callers may read it
+# but must not invent patrol behavior until that WO ships.
+_POSTURE_FIRE_MULT = {
+    "passive": 0.7,
+    "active": 1.0,
+    "aggressive": 1.25,
+}
+
+
+def combat_modifiers_from_defense_policy(station: Station) -> Dict[str, Any]:
+    """Map persist-only defense_policy levers → combat scalars.
+
+    Returns ``drone_scale`` (0.0–1.0 from drone_allocation_pct),
+    ``posture_mult`` (passive/active/aggressive fire multiplier), and the
+    normalized ``policy`` dict for logging / future NPC patrol readers.
+    """
+    policy = get_defense_policy(station)
+    drone_pct = int(policy.get("drone_allocation_pct", 100) or 0)
+    drone_pct = max(0, min(100, drone_pct))
+    posture = str(policy.get("defender_posture", "passive") or "passive").lower()
+    return {
+        "drone_scale": drone_pct / 100.0,
+        "posture_mult": _POSTURE_FIRE_MULT.get(posture, 1.0),
+        "posture": posture,
+        "policy": policy,
+    }
+
+
 def set_defense_policy(
     db: Session,
     station: Station,
