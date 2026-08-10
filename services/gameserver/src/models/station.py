@@ -307,9 +307,8 @@ class Station(Base):
     # Classes OUTSIDE the canon 1-5 range — CLASS_0 (regional Capital /
     # Central Nexus Starport Prime / bang Stardock hub) and the premium
     # CLASS_6-11 tiers minted post-import — inherit the Class-5 (strongest
-    # defined) profile: canon is silent above Class 5, and these are
-    # hub/premium station types that warrant no less than the top
-    # canon-defined tier. Flagged NO-CANON pending orchestrator/human ruling.
+    # defined) profile. Ratified: sw2102-docs DECISIONS.md
+    # ``station-defense-class-0-6-11-drone-tiers`` (option a, 2026-08-06).
     #
     # Used explicitly by the two station-creation sites
     # (nexus_generation_service, bang_import_service) — the Column
@@ -329,8 +328,8 @@ class Station(Base):
 
         Accepts a :class:`StationClass` (or a raw int class value). Classes
         1-5 use the canon drone table; every other class value borrows the
-        Class-5 profile (see the block comment above the class-table for the
-        NO-CANON rationale). Returns a fresh dict each call — never a shared
+        Class-5 profile (DECISIONS ``station-defense-class-0-6-11-drone-tiers``).
+        Returns a fresh dict each call — never a shared
         reference — so callers can freely persist it per-row.
         """
         class_value = (
