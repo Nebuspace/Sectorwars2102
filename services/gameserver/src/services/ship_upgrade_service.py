@@ -6,7 +6,7 @@ Handles ship upgrades (engine, cargo, shields, etc.) and equipment installation.
 import logging
 import random
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional, List
 
 from sqlalchemy.orm import Session
@@ -16,6 +16,12 @@ from src.models.player import Player
 from src.models.ship import Ship, ShipType, ShipSpecification, UpgradeType
 
 logger = logging.getLogger(__name__)
+
+# Quantum Field Harvester install venue + timer (quantum-resources.md /
+# warp-gates.md). CLASS_7's enum *label* on tip is "Resource Exchange", not
+# "Technology Port" — gate on numeric class >= 7 (Class-7+), not the label.
+QUANTUM_HARVESTER_MIN_STATION_CLASS = 7
+QUANTUM_HARVESTER_INSTALL_HOURS = 24
 
 
 # SHIP-MODS WO-SM-3 STEP 4 — equipment-family module classes whose legacy
@@ -759,7 +765,9 @@ class ShipUpgradeService:
         """
         total = 0
         equipment_slots = getattr(ship, "equipment_slots", None) or {}
-        for eq_key in equipment_slots.keys():
+        for eq_key, eq_data in equipment_slots.items():
+            if eq_key == "quantum_harvester" and not ShipUpgradeService._quantum_harvester_equipment_ready(eq_data):
+                continue
             eq_def = ShipUpgradeService.EQUIPMENT_DEFINITIONS.get(eq_key)
             if not eq_def:
                 continue
@@ -776,16 +784,51 @@ class ShipUpgradeService:
         return total
 
     @staticmethod
+    def _parse_utc(iso_or_dt) -> Optional[datetime]:
+        if iso_or_dt is None:
+            return None
+        if isinstance(iso_or_dt, datetime):
+            dt = iso_or_dt
+        elif isinstance(iso_or_dt, str):
+            try:
+                dt = datetime.fromisoformat(iso_or_dt.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+        else:
+            return None
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+
+    @classmethod
+    def _quantum_harvester_equipment_ready(cls, eq_data: Any, *, now: Optional[datetime] = None) -> bool:
+        """True when equipment_slots.quantum_harvester has finished its 24h install.
+
+        Legacy rows with no ``ready_at`` (pre-residual-3 installs) are treated as
+        already ready so we don't brick ships that paid before the timer existed.
+        """
+        if not isinstance(eq_data, dict):
+            return True
+        ready_at = cls._parse_utc(eq_data.get("ready_at"))
+        if ready_at is None:
+            return True
+        now = now or datetime.now(timezone.utc)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        return now >= ready_at
+
+    @staticmethod
     def _sync_quantum_harvester_slot(ship) -> bool:
         """Set ``Ship.quantum_harvester_slot`` from equipment OR lattice modules.
 
-        True when either ``equipment_slots`` carries ``quantum_harvester`` or any
-        installed module record has ``class == "harvester"``. Used by the QR2
-        harvest gate (quantum_service) so lattice-only fits are not invisible.
-        Returns the new flag value.
+        True when either ``equipment_slots`` carries a *ready* ``quantum_harvester``
+        (24h install complete — WO residual 3) or any installed module record has
+        ``class == "harvester"``. Used by the QR2 harvest gate (quantum_service)
+        so lattice-only fits are not invisible. Returns the new flag value.
         """
         equipment_slots = getattr(ship, "equipment_slots", None) or {}
-        if "quantum_harvester" in equipment_slots:
+        eq = equipment_slots.get("quantum_harvester") if isinstance(equipment_slots, dict) else None
+        if eq is not None and ShipUpgradeService._quantum_harvester_equipment_ready(eq):
             ship.quantum_harvester_slot = True
             return True
         modules = getattr(ship, "modules", None) or {}
@@ -798,16 +841,58 @@ class ShipUpgradeService:
         ship.quantum_harvester_slot = False
         return False
 
+    def _require_quantum_harvester_install_venue(self, player) -> Optional[Dict[str, Any]]:
+        """Class-7+ dock required to install the Quantum Field Harvester.
+
+        Returns an error dict on failure, else None.
+        """
+        from src.models.station import Station
+
+        if not getattr(player, "is_docked", False) or not player.current_port_id:
+            return {
+                "success": False,
+                "message": (
+                    "Quantum Field Harvester requires docking at a Class-7+ "
+                    "station (Technology Port / Resource Exchange tier)"
+                ),
+            }
+        station = self.db.query(Station).filter(Station.id == player.current_port_id).first()
+        if not station:
+            return {"success": False, "message": "Docked station not found"}
+        raw = getattr(station, "station_class", None)
+        if raw is None:
+            return {
+                "success": False,
+                "message": "This station has no class rating; Class-7+ required for harvester install",
+            }
+        cls_val = raw.value if hasattr(raw, "value") else int(raw)
+        if cls_val < QUANTUM_HARVESTER_MIN_STATION_CLASS:
+            return {
+                "success": False,
+                "message": (
+                    f"Quantum Field Harvester installs only at Class-"
+                    f"{QUANTUM_HARVESTER_MIN_STATION_CLASS}+ stations; "
+                    f"{getattr(station, 'name', 'this station')} is Class {cls_val}"
+                ),
+                "station_class": cls_val,
+                "required_class": QUANTUM_HARVESTER_MIN_STATION_CLASS,
+            }
+        return None
+
     @staticmethod
     def get_equipment_effects(ship) -> Dict[str, Any]:
         """Read equipment_slots JSONB and return a merged dict of all active effects.
 
         Example return: {"passive_income": 100, "mining_efficiency": 1.5}
         Services can call this to apply bonuses from installed equipment.
+        Pending Quantum Field Harvester installs (ready_at in the future) are
+        skipped until the 24h timer completes.
         """
         equipment_slots = getattr(ship, 'equipment_slots', None) or {}
         merged: Dict[str, Any] = {}
         for eq_key, eq_data in equipment_slots.items():
+            if eq_key == "quantum_harvester" and not ShipUpgradeService._quantum_harvester_equipment_ready(eq_data):
+                continue
             effects = eq_data.get("effects", {}) if isinstance(eq_data, dict) else {}
             for effect_name, effect_value in effects.items():
                 if effect_name in merged:
@@ -1572,6 +1657,17 @@ class ShipUpgradeService:
                 "message": f"{eq_def['name']} is already installed on this ship"
             }
 
+        # WO-QUANTUM-HARVESTER residual (3): Class-7+ dock + 24h install timer.
+        pending_ready_at: Optional[str] = None
+        if equipment_key == "quantum_harvester":
+            venue_err = self._require_quantum_harvester_install_venue(player)
+            if venue_err:
+                return venue_err
+            now = datetime.now(timezone.utc)
+            pending_ready_at = (
+                now + timedelta(hours=QUANTUM_HARVESTER_INSTALL_HOURS)
+            ).isoformat()
+
         # Check credits
         cost = eq_def["cost"]
         if player.credits < cost:
@@ -1588,14 +1684,19 @@ class ShipUpgradeService:
         # Add to equipment_slots JSONB
         if not hasattr(ship, 'equipment_slots') or not ship.equipment_slots:
             ship.equipment_slots = {}
-        ship.equipment_slots[equipment_key] = {
-            "installed_at": datetime.utcnow().isoformat(),
+        slot_record: Dict[str, Any] = {
+            "installed_at": datetime.now(timezone.utc).isoformat(),
             "effects": eq_def["effects"],
         }
+        if pending_ready_at is not None:
+            slot_record["ready_at"] = pending_ready_at
+            slot_record["pending"] = True
+        ship.equipment_slots[equipment_key] = slot_record
         flag_modified(ship, 'equipment_slots')
 
         # WO-DBB-QR1 + WO-QUANTUM-HARVESTER-MODULE-LATTICE-WIRING: keep the
         # dedicated slot flag in sync with equipment AND lattice harvester fits.
+        # Residual (3): flag stays false until ready_at (sync enforces that).
         if equipment_key == "quantum_harvester":
             self._sync_quantum_harvester_slot(ship)
 
@@ -1604,16 +1705,27 @@ class ShipUpgradeService:
         logger.info(
             f"Player {player_id} installed {eq_def['name']} on ship {ship.name} "
             f"for {cost:,} credits"
+            + (f" (ready_at={pending_ready_at})" if pending_ready_at else "")
         )
 
-        return {
+        result: Dict[str, Any] = {
             "success": True,
-            "message": f"{eq_def['name']} installed successfully",
+            "message": (
+                f"{eq_def['name']} install started — ready in "
+                f"{QUANTUM_HARVESTER_INSTALL_HOURS}h"
+                if pending_ready_at
+                else f"{eq_def['name']} installed successfully"
+            ),
             "equipment": equipment_key,
             "cost_paid": cost,
             "remaining_credits": player.credits,
             "effects": eq_def["effects"],
         }
+        if pending_ready_at is not None:
+            result["ready_at"] = pending_ready_at
+            result["pending"] = True
+            result["active"] = False
+        return result
 
     def uninstall_equipment(self, ship_id: uuid.UUID, player_id: uuid.UUID, equipment_key: str) -> Dict[str, Any]:
         """Uninstall equipment and refund ``int(catalog_cost × SALVAGE_FRACTION)``.
