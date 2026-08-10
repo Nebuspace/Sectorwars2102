@@ -1479,6 +1479,19 @@ class CombatService:
         if attacker.current_sector_id != npc_ship.sector_id:
             return {"success": False, "message": "Target is not in your sector"}
 
+        # Barracks shielding (npc-lodging.md): docked_off_duty NPC ships at
+        # home lodging cannot be attacked.
+        from src.services.npc_lodging_service import (
+            ERR_NPC_SHIP_AT_BARRACKS,
+            is_npc_ship_barracks_shielded,
+        )
+        if is_npc_ship_barracks_shielded(self.db, npc_ship.id):
+            return {
+                "success": False,
+                "message": ERR_NPC_SHIP_AT_BARRACKS,
+                "error": ERR_NPC_SHIP_AT_BARRACKS,
+            }
+
         # WO-API-A1 cipher MEDIUM (hub-ruled Option B): the route's own
         # optimistic proximity pre-check reads pose BEFORE this method's
         # locks -- re-evaluate the SAME is_within_engage_range predicate
