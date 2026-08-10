@@ -910,7 +910,9 @@ async def buy_resource(
                 str(current_player.id),
                 ActivityEventType.TRADE_BUY,
                 {"total_value": total_cost, "commodity": trade_request.resource_type,
-                 "quantity": trade_request.quantity, "station_id": str(station.id)},
+                 "quantity": trade_request.quantity, "station_id": str(station.id),
+                 "sector_id": current_player.current_sector_id},
+                db=db,
             )
         except Exception:
             logger.warning("activity tracking failed (buy trade)", exc_info=True)
@@ -1307,7 +1309,9 @@ async def sell_resource(
                 str(current_player.id),
                 ActivityEventType.TRADE_SELL,
                 {"total_value": total_earnings, "commodity": trade_request.resource_type,
-                 "quantity": trade_request.quantity, "station_id": str(station.id)},
+                 "quantity": trade_request.quantity, "station_id": str(station.id),
+                 "sector_id": current_player.current_sector_id},
+                db=db,
             )
         except Exception:
             logger.warning("activity tracking failed (sell trade)", exc_info=True)
