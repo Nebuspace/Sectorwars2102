@@ -60,6 +60,20 @@ class TestDefenseVolumeForMonth:
         })
         assert po.defense_volume_for_month(station, cid, 1) == 7_000
 
+    def test_sums_friendly_trade_contracts(self):
+        cid = uuid4()
+        station = SimpleNamespace(ownership={
+            "defense_counters": [
+                {"type": "friendly_trade_contract", "campaign_id": str(cid),
+                 "month": 1, "defense_volume": 20_000, "ally_faction": "Federation"},
+                {"type": "counter_trade", "campaign_id": str(cid), "month": 1,
+                 "defense_volume": 5_000},
+                {"type": "friendly_trade_contract", "campaign_id": str(cid),
+                 "month": 2, "defense_volume": 99_000, "ally_team_id": "t1"},
+            ]
+        })
+        assert po.defense_volume_for_month(station, cid, 1) == 25_000
+
 
 class TestTickDefenseCounters:
     def test_restores_tax_when_tariff_cut_expires(self):
@@ -145,3 +159,82 @@ class TestActivateCounterTradeWritesMarketTransaction:
         assert counters[0]["defense_volume"] == 0
         assert counters[0]["market_transaction_id"] == str(tx.id)
         assert po.defense_volume_for_month(station, campaign_id, counters[0]["month"]) == 0
+
+
+class TestActivateFriendlyTradeContract:
+    def test_writes_synthetic_volume_with_ally(self):
+        owner_id = uuid4()
+        station_id = uuid4()
+        campaign_id = uuid4()
+        station = SimpleNamespace(
+            id=station_id, owner_id=owner_id, tax_rate=0.1, ownership={},
+        )
+        owner = SimpleNamespace(id=owner_id, credits=100_000)
+        campaign = SimpleNamespace(
+            id=campaign_id,
+            station_id=station_id,
+            status="building",
+            started_at=datetime.now(UTC),
+        )
+        db = MagicMock()
+        db.flush = MagicMock()
+
+        with patch.object(po, "_lock_station", return_value=station), \
+             patch.object(po, "tick_defense_counters"), \
+             patch.object(po, "_threat_campaign_for_defense", return_value=campaign):
+            result = po.activate_friendly_trade_contract(
+                db, station, owner, 15_000, ally_faction="Federation",
+            )
+
+        assert result["type"] == "friendly_trade_contract"
+        assert result["defense_volume"] == 15_000
+        assert result["ally_faction"] == "Federation"
+        assert owner.credits == 100_000  # no credit cost
+        counters = po.get_defense_counters(station)
+        assert len(counters) == 1
+        assert counters[0]["type"] == "friendly_trade_contract"
+        assert counters[0]["defense_volume"] == 15_000
+        assert po.defense_volume_for_month(
+            station, campaign_id, counters[0]["month"]
+        ) == 15_000
+
+    def test_requires_ally(self):
+        owner_id = uuid4()
+        station = SimpleNamespace(id=uuid4(), owner_id=owner_id, tax_rate=0.1, ownership={})
+        owner = SimpleNamespace(id=owner_id, credits=1_000)
+        db = MagicMock()
+        with patch.object(po, "_lock_station", return_value=station), \
+             patch.object(po, "tick_defense_counters"):
+            with pytest.raises(PortOwnershipError) as exc:
+                po.activate_friendly_trade_contract(db, station, owner, 1_000)
+        assert exc.value.status_code == 400
+
+    def test_rejects_duplicate_same_month(self):
+        owner_id = uuid4()
+        station_id = uuid4()
+        campaign_id = uuid4()
+        station = SimpleNamespace(
+            id=station_id, owner_id=owner_id, tax_rate=0.1, ownership={},
+        )
+        owner = SimpleNamespace(id=owner_id, credits=100_000)
+        campaign = SimpleNamespace(
+            id=campaign_id,
+            station_id=station_id,
+            status="eligible",
+            started_at=datetime.now(UTC),
+        )
+        db = MagicMock()
+        db.flush = MagicMock()
+
+        with patch.object(po, "_lock_station", return_value=station), \
+             patch.object(po, "tick_defense_counters"), \
+             patch.object(po, "_threat_campaign_for_defense", return_value=campaign):
+            po.activate_friendly_trade_contract(
+                db, station, owner, 10_000, ally_team_id=str(uuid4()),
+            )
+            with pytest.raises(PortOwnershipError) as exc:
+                po.activate_friendly_trade_contract(
+                    db, station, owner, 5_000, ally_faction="Federation",
+                )
+        assert exc.value.status_code == 400
+        assert "already active" in exc.value.detail
