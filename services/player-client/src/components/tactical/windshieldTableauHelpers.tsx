@@ -1,5 +1,18 @@
 import React from 'react';
-import { deriveIspPose, ispPhaseToTravelClass, type IspPose } from '../../services/intrasystemFlight';
+import {
+  deriveIspPose,
+  ispPhaseToTravelClass,
+  ISP_ACCEL_MS,
+  ISP_COAST_MS,
+  ISP_DECEL_MS,
+  ISP_FLIP_MS,
+  ISP_HALT_BRAKE_MS,
+  ISP_HALT_FLIP_MS,
+  ISP_MOVE_MS,
+  ISP_ORIENT_MS,
+  ISP_SETTLE_MS,
+  type IspPose,
+} from '../../services/intrasystemFlight';
 import type { HitMeta, ShipPresence, SystemBody, SystemStation } from './SolarSystemViewscreen';
 import {
   AU_SEMI_X_PCT,
