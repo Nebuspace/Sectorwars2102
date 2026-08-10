@@ -234,6 +234,10 @@ TARIFF_CUT_FRACTION = 0.5
 TARIFF_CUT_DURATION_HOURS = COUNTER_WINDOW_HOURS
 COUNTER_TRADE_CREDITS_PER_VOLUME = 1
 COUNTER_TRADE_MAX_ABSORB = 500_000
+# Friendly trade contract (cycle-50): contracted ally volume toward threshold
+# defense — synthetic defense_volume (no MarketTransaction). Cap mirrors
+# counter-trade. ⚠️ NO-CANON magnitude pending balance pass.
+FRIENDLY_TRADE_MAX_VOLUME = 500_000
 # Ledger commodity for defense MarketTransactions — one-sided BUY so the
 # absorb cannot self-cancel against an owner SELL in the same activation.
 COUNTER_TRADE_COMMODITY = "Equipment"
@@ -1470,21 +1474,22 @@ def _set_defense_counters(station: Station, counters: List[Dict[str, Any]]) -> N
 
 
 def defense_volume_for_month(station: Station, campaign_id, month_index: int) -> int:
-    """Sum of LEGACY synthetic counter_trade absorbs for campaign+month.
+    """Sum of synthetic defense volume for campaign+month.
 
-    Rows that carry ``market_transaction_id`` (post-conversion activations)
-    contribute 0 here — their volume is already in monthly_volume via the
-    MarketTransaction ledger. Only pre-conversion records with a positive
-    ``defense_volume`` and no MT id still dilute via this path.
+    Includes LEGACY counter_trade absorbs (no market_transaction_id) and
+    friendly_trade_contract rows (cycle-50). Rows that carry
+    ``market_transaction_id`` contribute 0 here — their volume is already in
+    monthly_volume via the MarketTransaction ledger.
     """
     cid = str(campaign_id)
     total = 0
     for rec in get_defense_counters(station):
-        if rec.get("type") != "counter_trade":
+        ctype = rec.get("type")
+        if ctype not in ("counter_trade", "friendly_trade_contract"):
             continue
         if str(rec.get("campaign_id")) != cid:
             continue
-        if rec.get("market_transaction_id"):
+        if ctype == "counter_trade" and rec.get("market_transaction_id"):
             continue
         try:
             if int(rec.get("month", -1)) != int(month_index):
@@ -1632,6 +1637,98 @@ def activate_tariff_cut(
         "prior_tax_rate": prior,
         "tax_rate": new_rate,
         "expires_at": _iso(expires),
+    }
+
+
+def activate_friendly_trade_contract(
+    db: Session,
+    station: Station,
+    owner: Player,
+    contracted_volume: int,
+    *,
+    ally_team_id: Optional[Any] = None,
+    ally_faction: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Owner lever: bind a friendly team/faction to contracted defense volume.
+
+    cycle-50 WO-BUILD-PORT-OWNERSHIP-FRIENDLY-TRADE-CONTRACT — port-ownership.md
+    § Takeover defense. Counts toward the owner's threshold defense via
+    ``defense_volume_for_month`` (synthetic absorb, no MarketTransaction).
+    Requires ``ally_team_id`` and/or ``ally_faction`` (at least one).
+    """
+    now = now or datetime.now(UTC)
+    station = _lock_station(db, station.id)
+    _require_owner(station, owner)
+    tick_defense_counters(db, station, now)
+
+    team_s = str(ally_team_id).strip() if ally_team_id is not None else ""
+    faction_s = str(ally_faction).strip() if ally_faction else ""
+    if not team_s and not faction_s:
+        raise PortOwnershipError(
+            400,
+            "friendly trade contract requires ally_team_id and/or ally_faction",
+        )
+
+    try:
+        volume = int(contracted_volume)
+    except (TypeError, ValueError):
+        raise PortOwnershipError(400, "contracted_volume must be an integer")
+    if volume <= 0:
+        raise PortOwnershipError(400, "contracted_volume must be positive")
+    if volume > FRIENDLY_TRADE_MAX_VOLUME:
+        raise PortOwnershipError(
+            400,
+            f"contracted_volume cannot exceed {FRIENDLY_TRADE_MAX_VOLUME:,}",
+        )
+
+    campaign = _threat_campaign_for_defense(db, station, now)
+    if campaign.status not in _DEFENSE_COUNTER_STATUSES:
+        raise PortOwnershipError(
+            400,
+            f"Friendly trade contract only allowed while campaign is "
+            f"building or eligible (current: {campaign.status})",
+        )
+
+    month_index = int(
+        game_time.canonical_hours_since(campaign.started_at, now) // MONTH_HOURS
+    )
+    counters = get_defense_counters(station)
+    for rec in counters:
+        if (
+            rec.get("type") == "friendly_trade_contract"
+            and str(rec.get("campaign_id")) == str(campaign.id)
+            and int(rec.get("month", -1)) == month_index
+        ):
+            raise PortOwnershipError(
+                400,
+                "A friendly trade contract is already active for this campaign month",
+            )
+
+    counters.append({
+        "type": "friendly_trade_contract",
+        "campaign_id": str(campaign.id),
+        "month": month_index,
+        "defense_volume": volume,
+        "ally_team_id": team_s or None,
+        "ally_faction": faction_s or None,
+        "activated_at": _iso(now),
+    })
+    _set_defense_counters(station, counters)
+    db.flush()
+    logger.info(
+        "Station %s friendly_trade_contract volume=%s team=%s faction=%s "
+        "(campaign %s) by %s",
+        station.id, volume, team_s or "-", faction_s or "-", campaign.id, owner.id,
+    )
+    return {
+        "station_id": str(station.id),
+        "campaign_id": str(campaign.id),
+        "type": "friendly_trade_contract",
+        "defense_volume": volume,
+        "month": month_index,
+        "ally_team_id": team_s or None,
+        "ally_faction": faction_s or None,
     }
 
 
