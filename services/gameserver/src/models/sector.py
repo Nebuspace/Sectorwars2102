@@ -47,6 +47,10 @@ class SectorType(enum.Enum):
     # Audit-cycle-27 #1 / generation.md: spatial oddity; ~1–2% of generated
     # sectors; one-time investigation loot (anomaly_service, reward 250).
     ANOMALY = "ANOMALY"
+    # cycle-50 / sector-presence.md: hazard sector types on live Sector.type
+    # (were orphaned on SectorSpecialType only). Gameplay hooks wire per canon.
+    RADIATION_ZONE = "RADIATION_ZONE"  # Damages ships over time
+    WARP_STORM = "WARP_STORM"  # Disrupts warp tunnels
 
 
 class Sector(Base):
