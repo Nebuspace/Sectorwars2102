@@ -378,8 +378,9 @@ class TestBuySellExecution:
         )
 
         assert result["transaction"]["unit_price"] == 30
-        assert result["transaction"]["total_cost"] == 300
-        assert player.credits == 10_000 - 300
+        assert result["transaction"]["total_cost"] == 300  # goods; fee is a separate line
+        assert result["transaction"]["total_with_tax"] == 306  # +2% Class-0 platform fee
+        assert player.credits == 10_000 - 306
         assert ship.cargo["used"] == 10
         assert ship.cargo["contents"]["ore"] == 10
         assert db.commit_calls == 1
@@ -397,8 +398,9 @@ class TestBuySellExecution:
         )
 
         assert result["transaction"]["unit_price"] == 20
-        assert result["transaction"]["total_earnings"] == 200
-        assert player.credits == 1_000 + 200
+        assert result["transaction"]["total_earnings"] == 200  # goods; fee withheld separately
+        assert result["transaction"]["net_earnings"] == 196  # -2% Class-0 platform fee
+        assert player.credits == 1_000 + 196
         assert ship.cargo["used"] == 0
         assert "ore" not in ship.cargo["contents"]
 
@@ -497,8 +499,9 @@ class TestBuySellExecution:
             db=db_sell, current_user=None, current_player=player,
         )
 
-        # 10 * (30 - 20) = 100 cr net cost -- the spread margin, exactly.
-        assert starting_credits - player.credits == 100
+        # Goods spread 10*(30-20)=100, plus Class-0 2% fee both ways:
+        # buy fee int(300*0.02)=6, sell fee int(200*0.02)=4 → net 110.
+        assert starting_credits - player.credits == 110
 
     async def test_buy_rejects_insufficient_credits_with_zero_mutation(self):
         player = _neutral_player(credits=100)
@@ -576,7 +579,8 @@ class TestFirstLoginTradeBonusPricing:
         # never interferes.
         assert result["transaction"]["unit_price"] == 27
         assert result["transaction"]["total_cost"] == 270
-        assert player.credits == 10_000 - 270
+        assert result["transaction"]["total_with_tax"] == 275  # +int(270*0.02) fee
+        assert player.credits == 10_000 - 275
 
     async def test_sell_pays_10pct_more_for_bonus_player_than_neutral_twin(self):
         player = _bonus_player(credits=1_000)
@@ -596,7 +600,8 @@ class TestFirstLoginTradeBonusPricing:
         # MORE): int(20 / 0.9) == 22.
         assert result["transaction"]["unit_price"] == 22
         assert result["transaction"]["total_earnings"] == 220
-        assert player.credits == 1_000 + 220
+        assert result["transaction"]["net_earnings"] == 216  # -int(220*0.02) fee
+        assert player.credits == 1_000 + 216
 
 
 class TestNeutralPlayerIsTheLegacyNoBonusShape:

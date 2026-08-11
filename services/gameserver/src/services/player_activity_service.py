@@ -13,12 +13,14 @@ Both tables already existed (created for this purpose) but had zero writers
 until this writeback -- see ``retention_service.py``'s "SIGNAL DATA-SOURCE
 STATUS" note.
 
-The mirror writes at LOGIN and LOGOUT only (not per-action) -- matching the
-one existing low-frequency hook in the auth flow, not a new one. A synchronous
-``Session`` (not ``AsyncSession``) is accepted because the only production
-caller (``src/api/routes/auth.py``) already holds a sync ``Session`` from
-``get_db``; the writeback is fully best-effort/non-fatal, mirroring the
-existing (previously dead) ``last_game_login`` refresh block it replaces.
+The mirror writes at LOGIN and LOGOUT (session boundaries) and, as of
+WO-BUILD-RETENTION-SIGNALS-TRADE-SQL-INSERT, on ``trade_buy`` / ``trade_sell``
+when the caller passes a sync ``Session`` — so ``RetentionService``'s
+``economic_loss_streak`` SELECT is no longer structurally empty. A synchronous
+``Session`` (not ``AsyncSession``) is accepted because production callers
+(``auth.py``, ``trading.py``) already hold sync ``Session`` from ``get_db``.
+Writebacks are best-effort/non-fatal (savepoint on the trade path so a failed
+activity insert cannot poison the trade transaction).
 """
 
 import json
@@ -257,6 +259,7 @@ class PlayerActivityService:
         player_id: str,
         event_type: str,
         details: Optional[Dict[str, Any]] = None,
+        db: Optional[Session] = None,
     ) -> None:
         """
         Record a gameplay event and update the running session counters.
@@ -269,6 +272,12 @@ class PlayerActivityService:
             One of ActivityEventType constants.
         details : dict, optional
             Additional context (e.g. commodity, quantity, sector_id).
+        db : Session, optional
+            Sync SQLAlchemy session. When provided for ``trade_buy`` /
+            ``trade_sell``, also inserts a durable ``PlayerActivity`` row
+            (WO-BUILD-RETENTION-SIGNALS-TRADE-SQL-INSERT) so retention's
+            ``economic_loss_streak`` can see credit flow. Caller owns commit;
+            insert uses a savepoint so failure cannot poison the trade txn.
         """
         redis = await self._get_redis()
 
@@ -297,8 +306,54 @@ class PlayerActivityService:
 
             await redis.cache_set(session_key, session, ttl=_SESSION_TTL)
 
-        # Record individual event
+        # Record individual event (Redis)
         await self._record_event(player_id, event_type, details)
+
+        # Durable trade mirror for economic_loss_streak (Postgres)
+        if (
+            db is not None
+            and event_type in (ActivityEventType.TRADE_BUY, ActivityEventType.TRADE_SELL)
+        ):
+            try:
+                from src.models.player_analytics import PlayerActivity
+
+                credits = int((details or {}).get("total_value", 0) or 0)
+                session_uuid = None
+                if session and session.get("db_session_id"):
+                    try:
+                        import uuid as _uuid
+                        session_uuid = _uuid.UUID(str(session["db_session_id"]))
+                    except (ValueError, TypeError):
+                        session_uuid = None
+                sector_id = (details or {}).get("sector_id")
+                if sector_id is not None:
+                    try:
+                        sector_id = int(sector_id)
+                    except (TypeError, ValueError):
+                        sector_id = None
+                with db.begin_nested():
+                    db.add(
+                        PlayerActivity(
+                            player_id=player_id,
+                            session_id=session_uuid,
+                            activity_type=event_type,
+                            sector_id=sector_id,
+                            credits_involved=credits,
+                            items_involved={
+                                k: (details or {}).get(k)
+                                for k in ("commodity", "quantity", "station_id")
+                                if (details or {}).get(k) is not None
+                            }
+                            or None,
+                            timestamp=datetime.utcnow(),
+                        )
+                    )
+            except Exception as e:
+                logger.warning(
+                    "Could not persist trade PlayerActivity for %s: %s",
+                    player_id,
+                    e,
+                )
 
     # ------------------------------------------------------------------
     # Analytics queries

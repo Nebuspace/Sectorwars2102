@@ -31,6 +31,7 @@ from __future__ import annotations
 import heapq
 import logging
 import math
+import random
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -68,6 +69,16 @@ NEUTRAL_SAFETY = 0.5
 # (Dijkstra by turn cost); MIN_RISK additionally penalises low-safety hops.
 OBJECTIVE_MIN_TIME = "min_time"
 OBJECTIVE_MIN_RISK = "min_risk"
+
+# Lattice conjectural-hop accuracy (ADR-0093 item 29 / ADR-0092 §6 addendum).
+# Tier 1–2 cannot plot into unknown space; Awakened+ may extend with
+# conjectural hops. Failed roll → astray to a random adjacent unknown sector.
+LATTICE_MIN_CONSCIOUSNESS = 3  # Awakened
+LATTICE_HOP_SUCCESS_BY_TIER = {
+    3: 0.60,  # Awakened
+    4: 0.75,  # Sentient
+    5: 0.85,  # Transcendent
+}
 
 # Ceiling on the server-computed depth bound for GET /nav/chart?bounded=true
 # (WO-NAV-REACH-BACKEND).  NO-CANON kernel — mirrors the player-client's own
@@ -610,8 +621,22 @@ class NavService:
                 "total_turns": 0,
             }
 
-        # Target must be on the routing surface (known or ring-1 exit)
+        # Target must be on the routing surface (known or ring-1 exit), OR
+        # eligible for lattice conjectural extension (Awakened+, ADR-0093 #29).
         if target_sector_id not in routing_ids:
+            aria_level = int(player.aria_consciousness_level or 1)
+            if aria_level >= LATTICE_MIN_CONSCIOUSNESS:
+                lattice = self._plot_with_lattice(
+                    player=player,
+                    start_sid=start_sid,
+                    target_sector_id=target_sector_id,
+                    target_sector=target_sector,
+                    known_ids=known_ids,
+                    objective=objective,
+                    aria_level=aria_level,
+                )
+                if lattice is not None:
+                    return lattice
             nearest = self._nearest_known_sector_euclidean(target_sector, known_ids)
             return {
                 "success": True,
@@ -729,6 +754,168 @@ class NavService:
             "target_sector_id": target_sector_id,
             "hops": hops,
             "total_turns": total_turns,
+        }
+
+    # ------------------------------------------------------------------
+    # Lattice inference (WO-BUILD-COURSE-PLOTTING-LATTICE-INFERENCE)
+    # ------------------------------------------------------------------
+
+    def _plot_with_lattice(
+        self,
+        player: Player,
+        start_sid: int,
+        target_sector_id: int,
+        target_sector: Sector,
+        known_ids: Set[int],
+        objective: str,
+        aria_level: int,
+        rng: Optional[random.Random] = None,
+    ) -> Optional[Dict]:
+        """Extend a plot into uncharted space via conjectural hops.
+
+        Builds the *full* warp/tunnel graph (not known-filtered), Dijkstra from
+        start→target, then resolves each hop beyond ``known_ids`` with the
+        tier success roll. Failure astrays to a random adjacent unknown
+        neighbour. Returns None when even the full graph has no path (caller
+        falls through to the ordinary uncharted response).
+        """
+        rng = rng or random.Random()
+        success_rate = LATTICE_HOP_SUCCESS_BY_TIER.get(
+            aria_level, LATTICE_HOP_SUCCESS_BY_TIER[LATTICE_MIN_CONSCIOUSNESS]
+        )
+
+        all_sids = {row[0] for row in self.db.query(Sector.sector_id).all()}
+        if target_sector_id not in all_sids or start_sid not in all_sids:
+            return None
+
+        full_graph, edge_meta = self._build_known_graph(all_sids)
+        sid_safety = self._build_safety_by_sid(player)
+
+        if objective == OBJECTIVE_MIN_RISK:
+            def weight_fn(neighbour_sid: int, edge_cost: int, _via_tunnel: bool) -> float:
+                safety = sid_safety.get(neighbour_sid, NEUTRAL_SAFETY)
+                if safety is None:
+                    safety = NEUTRAL_SAFETY
+                return edge_cost + RISK_WEIGHT * (1.0 - safety)
+        else:
+            weight_fn = None
+
+        path_sids, costs, via_tunnel_flags = self._dijkstra(
+            full_graph, edge_meta, start_sid, target_sector_id, weight_fn=weight_fn
+        )
+        if path_sids is None:
+            return None
+
+        hops_sids = path_sids[1:]
+        if len(hops_sids) > MAX_HOPS:
+            return {
+                "success": False,
+                "message": (
+                    f"Computed route is {len(hops_sids)} hops, which exceeds the "
+                    f"{MAX_HOPS}-hop safety limit.  Break the journey into legs."
+                ),
+            }
+
+        # Resolve intended hops; apply astray rolls on conjectural legs.
+        resolved_sids: List[int] = []
+        resolved_costs: List[int] = []
+        resolved_via: List[bool] = []
+        resolved_conjectural: List[bool] = []
+        resolved_confidence: List[Optional[float]] = []
+        astray_count = 0
+        cursor = start_sid
+
+        for i, intended in enumerate(hops_sids):
+            via_tun = via_tunnel_flags[i] if i < len(via_tunnel_flags) else False
+            edge_cost = costs[i] if i < len(costs) else 1
+            is_conjectural = intended not in known_ids
+
+            if not is_conjectural:
+                resolved_sids.append(intended)
+                resolved_costs.append(edge_cost)
+                resolved_via.append(via_tun)
+                resolved_conjectural.append(False)
+                resolved_confidence.append(None)
+                cursor = intended
+                continue
+
+            if rng.random() < success_rate:
+                arrived = intended
+            else:
+                # Astray: random adjacent unknown neighbour of cursor (or
+                # intended's neighbours), excluding known space and cursor.
+                candidates = [
+                    n for (n, _tc, _vt) in full_graph.get(cursor, [])
+                    if n not in known_ids and n != cursor
+                ]
+                if not candidates:
+                    candidates = [
+                        n for (n, _tc, _vt) in full_graph.get(intended, [])
+                        if n not in known_ids and n != cursor
+                    ]
+                if not candidates:
+                    arrived = intended  # nowhere to astray — keep intended
+                else:
+                    arrived = rng.choice(candidates)
+                    astray_count += 1
+                    # Recost the edge if we have a direct link; else keep
+                    # the intended edge's turn cost as physics placeholder.
+                    for n, tc, vt in full_graph.get(cursor, []):
+                        if n == arrived:
+                            edge_cost, via_tun = tc, vt
+                            break
+
+            resolved_sids.append(arrived)
+            resolved_costs.append(edge_cost)
+            resolved_via.append(via_tun)
+            resolved_conjectural.append(True)
+            resolved_confidence.append(success_rate)
+            cursor = arrived
+            # If we astrayed off the intended corridor, stop extending — the
+            # plot ends at the astray sector (player must re-plot from there).
+            if arrived != intended:
+                break
+
+        hop_sectors = (
+            self.db.query(Sector)
+            .filter(Sector.sector_id.in_(resolved_sids))
+            .all()
+        )
+        sector_map: Dict[int, Sector] = {s.sector_id: s for s in hop_sectors}
+
+        hops: List[Dict] = []
+        for i, sid in enumerate(resolved_sids):
+            sec = sector_map.get(sid)
+            if sec is None:
+                logger.warning(
+                    "nav_service lattice: sector %d missing during hop assembly", sid
+                )
+                continue
+            visited = sid in sid_safety
+            hops.append({
+                "sector_id": sec.sector_id,
+                "name": sec.name,
+                "turn_cost": resolved_costs[i],
+                "visited": visited,
+                "safety_rating": sid_safety.get(sid) if visited else None,
+                "via_tunnel": resolved_via[i],
+                "conjectural": resolved_conjectural[i],
+                "confidence": resolved_confidence[i],
+            })
+
+        return {
+            "success": True,
+            "reachable": True,
+            "target_sector_id": target_sector_id,
+            "hops": hops,
+            "total_turns": sum(h["turn_cost"] for h in hops),
+            "lattice": True,
+            "lattice_tier": aria_level,
+            "lattice_success_rate": success_rate,
+            "lattice_astray_count": astray_count,
+            "lattice_reached_target": (
+                bool(resolved_sids) and resolved_sids[-1] == target_sector_id
+            ),
         }
 
     # ------------------------------------------------------------------

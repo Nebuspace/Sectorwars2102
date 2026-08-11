@@ -116,5 +116,109 @@ def test_run_weekly_faucet_sync_skips_when_lock_not_held(monkeypatch):
 
     result = faucet.run_weekly_faucet_sync()
 
-    assert result == {"citizen_grants": 0, "total_credits": 0, "week": -1}
+    assert result == {
+        "citizen_grants": 0,
+        "total_credits": 0,
+        "treasury_seed_credits": 0,
+        "treasury_seed_regions": 0,
+        "week": -1,
+    }
     db.close.assert_called()
+
+
+def test_apply_region_owner_treasury_seeds_credits_active_owned_region(monkeypatch):
+    from src.models.region import RegionalTreasuryEntry, RegionStatus
+    from uuid import uuid4
+
+    region_id = uuid4()
+    owner_id = uuid4()
+    region = types.SimpleNamespace(
+        id=region_id,
+        owner_id=owner_id,
+        treasury_balance=1_000,
+        status=RegionStatus.ACTIVE,
+    )
+    user = types.SimpleNamespace(id=owner_id, subscription_tier="regional_owner")
+
+    added = []
+
+    class _Q:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def filter(self, *a, **k):
+            return self
+
+        def with_for_update(self):
+            return self
+
+        def all(self):
+            return self._rows
+
+        def first(self):
+            return self._rows[0] if self._rows else None
+
+    db = MagicMock()
+
+    def _query(model):
+        name = getattr(model, "__name__", str(model))
+        if "Region" in name and "Entry" not in name:
+            return _Q([region])
+        if "User" in name:
+            return _Q([user])
+        return _Q([])
+
+    db.query.side_effect = _query
+    db.add.side_effect = added.append
+
+    total = faucet._apply_region_owner_treasury_seeds(db)
+
+    assert total == faucet.REGION_OWNER_TREASURY_SEED_WEEKLY
+    assert region.treasury_balance == 1_000 + faucet.REGION_OWNER_TREASURY_SEED_WEEKLY
+    assert len(added) == 1
+    entry = added[0]
+    assert entry.cause_type == RegionalTreasuryEntry.CAUSE_TRANSFER_IN
+    assert entry.delta == faucet.REGION_OWNER_TREASURY_SEED_WEEKLY
+    assert entry.reason == "region_owner_weekly_treasury_seed"
+
+
+def test_apply_region_owner_treasury_seeds_skips_wrong_tier():
+    from src.models.region import RegionStatus
+    from uuid import uuid4
+
+    region = types.SimpleNamespace(
+        id=uuid4(),
+        owner_id=uuid4(),
+        treasury_balance=500,
+        status=RegionStatus.ACTIVE,
+    )
+    user = types.SimpleNamespace(id=region.owner_id, subscription_tier="galactic_citizen")
+
+    class _Q:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def filter(self, *a, **k):
+            return self
+
+        def with_for_update(self):
+            return self
+
+        def all(self):
+            return self._rows
+
+        def first(self):
+            return self._rows[0] if self._rows else None
+
+    db = MagicMock()
+
+    def _query(model):
+        name = getattr(model, "__name__", str(model))
+        if "Region" in name and "Entry" not in name:
+            return _Q([region])
+        return _Q([user])
+
+    db.query.side_effect = _query
+
+    assert faucet._apply_region_owner_treasury_seeds(db) == 0
+    assert region.treasury_balance == 500

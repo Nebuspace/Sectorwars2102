@@ -739,6 +739,73 @@ def _run_retention_sweep_sync() -> Dict[str, int]:
         db.close()
 
 
+def _run_multi_account_detection_sweep_sync() -> Dict[str, int]:
+    """Hourly multi-account detection sweep (WO-BUILD-MULTI-ACCOUNT-DETECTION-SWEEP).
+
+    Scores HARD (shared PayPal subscription id) and SOFT (shared IP / device
+    fingerprint) signals into ``MultiAccountCluster`` / ``MultiAccountFlag``.
+    Soft-tier participation discount stays out of scope — only HARD flags
+    affect ``participation_weight``.
+
+    Interval-gated via durable Galaxy.state anchor + advisory lock so two
+    instances cannot double-insert. Returns zeros when not yet due / lock held.
+    """
+    from src.core.database import SessionLocal
+    from src.services.multi_account_detection_service import run_detection_sweep
+    from src.services.scheduler._common import (
+        MULTI_ACCOUNT_DETECTION_SWEEP_SECONDS,
+        _MULTI_ACCOUNT_DETECTION_LOCK_KEY,
+        _MULTI_ACCOUNT_DETECTION_STATE_KEY,
+    )
+
+    not_due = {
+        "clusters_created": 0,
+        "clusters_refreshed": 0,
+        "hard_signal_groups": 0,
+        "soft_signal_groups": 0,
+    }
+
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _MULTI_ACCOUNT_DETECTION_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return not_due
+
+        now = datetime.now(UTC)
+        if not _sweep_due_and_advance(
+            db,
+            _MULTI_ACCOUNT_DETECTION_STATE_KEY,
+            MULTI_ACCOUNT_DETECTION_SWEEP_SECONDS,
+            now,
+        ):
+            db.rollback()
+            return not_due
+
+        result = run_detection_sweep(db, now=now)
+        db.commit()
+        logger.info(
+            "multi-account-detection: created=%d refreshed=%d hard_groups=%d "
+            "soft_groups=%d",
+            result.get("clusters_created", 0),
+            result.get("clusters_refreshed", 0),
+            result.get("hard_signal_groups", 0),
+            result.get("soft_signal_groups", 0),
+        )
+        return result
+    except Exception:
+        logger.exception(
+            "multi-account-detection: pass failed — interval not advanced "
+            "(idempotent retry next due wake)"
+        )
+        db.rollback()
+        return not_due
+    finally:
+        db.close()
+
+
 def _run_citizen_rebake_sweep_sync() -> Dict[str, int]:
     """Nightly citizen-conditional ship RE-BAKE sweep (WO-GC-C leg 4) — FULLY
     SYNCHRONOUS, day-gated on a durable canonical-day anchor in ``Galaxy.state``

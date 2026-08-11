@@ -260,18 +260,10 @@ def test_admin_faction_endpoints(admin_token):
     else:
         print(f"Error: {response.text}")
     
-    # Clean up test faction
+    # DELETE /admin/factions/{id} retired (WO-CLEANUP-MINOR-DEAD-ADMIN-ENDPOINTS-BATCH);
+    # no UI caller — leave test faction in place for manual cleanup if needed.
     if test_faction_id:
-        print(f"\n6. Deleting test faction:")
-        response = requests.delete(
-            f"{BASE_URL}/admin/factions/{test_faction_id}",
-            headers=headers
-        )
-        print(f"Status: {response.status_code}")
-        if response.status_code == 200:
-            print("  Test faction deleted successfully")
-        else:
-            print(f"Error: {response.text}")
+        print(f"\n6. Skip delete — admin faction DELETE route retired (id={test_faction_id})")
 
 
 def main():

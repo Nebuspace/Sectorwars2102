@@ -12,9 +12,9 @@ the audit log even after content removal." Before this WO,
   2. every player-facing read in message_service.py (inbox, unread count,
      team messages, conversations/thread listing) excludes a
      moderation_status='deleted' row (Accept #3);
-  3. the admin `/admin/messages/all` route (admin_messages.py, untouched by
-     this WO) still surfaces a moderation_status='deleted' row -- full
-     visibility is preserved there BY CONSTRUCTION, since that file carries
+  3. the admin message list helper (HTTP GET /all retired; /flagged remains)
+     still surfaces a moderation_status='deleted' row -- full
+     visibility is preserved there BY CONSTRUCTION, since that helper carries
      no moderation_status filter (Accept #4);
   4. the 'flag'/'unflag' moderate_message branches are byte-unchanged
      (Accept #5);
@@ -535,19 +535,19 @@ async def test_conversations_drops_thread_whose_only_message_is_deleted():
 
 
 # --------------------------------------------------------------------------- #
-# (6) Admin `/admin/messages/all` (admin_messages.py, untouched by this WO)
+# (6) Admin message list helper (HTTP GET /all retired; /flagged is the route)
 #     still surfaces a moderation_status='deleted' row -- full visibility.
 # --------------------------------------------------------------------------- #
 
 @pytest.mark.asyncio
 async def test_admin_all_messages_still_sees_moderated_deleted_row():
-    from src.api.routes.admin_messages import get_all_messages
+    from src.api.routes.admin_messages import _list_admin_messages
 
     visible = _msg()
     deleted = _msg(moderation_status="deleted", moderated_at=datetime(2026, 7, 8), moderated_by=uuid.uuid4())
     db = FakeDB(messages=[visible, deleted])
 
-    result = await get_all_messages(page=1, flagged=None, admin=SimpleNamespace(), db=db)
+    result = await _list_admin_messages(page=1, flagged=None, db=db)
 
     ids = {m["id"] for m in result["messages"]}
     assert str(visible.id) in ids

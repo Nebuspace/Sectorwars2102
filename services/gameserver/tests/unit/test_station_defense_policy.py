@@ -62,6 +62,35 @@ class TestNormalizeDefensePolicy:
         assert policy["docking_access"] == "open"
 
 
+class TestCombatModifiersFromDefensePolicy:
+    def test_defaults_full_drones_passive(self):
+        mods = po.combat_modifiers_from_defense_policy(_station())
+        assert mods["drone_scale"] == 1.0
+        assert mods["posture_mult"] == 0.7
+        assert mods["posture"] == "passive"
+
+    def test_drone_allocation_scales(self):
+        station = _station(ownership={
+            "defense_policy": {
+                "drone_allocation_pct": 50,
+                "defender_posture": "active",
+            }
+        })
+        mods = po.combat_modifiers_from_defense_policy(station)
+        assert mods["drone_scale"] == 0.5
+        assert mods["posture_mult"] == 1.0
+
+    def test_aggressive_posture_boosts_fire(self):
+        station = _station(ownership={
+            "defense_policy": {
+                "drone_allocation_pct": 100,
+                "defender_posture": "aggressive",
+            }
+        })
+        mods = po.combat_modifiers_from_defense_policy(station)
+        assert mods["posture_mult"] == 1.25
+
+
 class TestPublicDefensePolicyFields:
     def test_never_exposes_hostility_list(self):
         visitor = str(uuid4())

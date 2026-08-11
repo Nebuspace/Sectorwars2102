@@ -29,13 +29,11 @@ SIEGE_MORALE_LOSS_PER_TURN = 5  # Morale % lost per turn under siege
 SIEGE_PRODUCTION_PENALTY = 0.25 # 25% production reduction during siege
 
 # Siege resource theft (defense.md "Resource theft" — "a fraction of generated
-# commodities should transfer to the besieger"; previously 📐 Design-only —
-# the production PENALTY above was applied but no transfer ever happened).
-# NO-CANON: the doc gives no figure, only the mechanic — 0.15 (15% of each
-# tick's newly-produced fuel/organics/equipment, ON TOP OF the existing 25%
-# production penalty, i.e. the planet nets 0.75 × 0.85 ≈ 63.75% of its
-# unbesieged output) is a conservative implementer default, flagged for a
-# DECISIONS.md ruling. Applied in _apply_siege_resource_theft below.
+# commodities should transfer to the besieger"). Canon production-diversion
+# fraction: 0.15 (15% of each tick's newly-produced fuel/organics/equipment,
+# ON TOP OF the existing 25% production penalty → planet nets ≈63.75% of
+# unbesieged output). Distinct from SIEGE_STOCKPILE_SKIM_FRACTION (stockpile
+# plunder). Applied in _apply_siege_resource_theft below.
 SIEGE_RESOURCE_THEFT_FRACTION = 0.15
 
 # Low-habitability resource-cost penalty (WO-F5; canon anchor
@@ -57,29 +55,27 @@ SIEGE_RESOURCE_THEFT_FRACTION = 0.15
 LOW_HABITABILITY_THRESHOLD = 30
 LOW_HABITABILITY_PRODUCTION_PENALTY = 0.20
 
-# --- PL4b TAX-RATE BOUNDS (DEFERRED, COLUMN-ONLY — I11) ----------------------
-# Planet.tax_rate ships as a NULLABLE, INERT column (migration d7a2f1c9e3b5).
-# Its taxable event — a team-mate withdrawing stockpiled resources from a planet
-# into ship cargo — has NO route in code yet (the one resource-egress route,
-# citadel withdraw-commodity, is owner-only), so NO tax logic is wired this
-# slice (PL4b master §1 / §7). These bounds CODIFY the canon clamp for the
-# follow-on WO that first builds the withdrawal route, then taxes the skim:
-#   - NULL ⇒ 0.0 (backward-compatible: every existing planet is untaxed, I1)
-#   - any explicit value is clamped fail-CLOSED to [0.00, 0.20] (canon
-#     colonization.md:249; reject out-of-range rather than silently truncate).
-# clamp_tax_rate is a PURE, INERT helper — it is intentionally NOT called from
-# any live path (there is no setter route this slice); it exists so the follow-on
-# reuses one bounds definition instead of re-deriving it.
+# --- PL4b TAX-RATE BOUNDS (colonization.md Tax rate) -------------------------
+# Planet.tax_rate (nullable Float). Taxable event = team-mate stockpile→cargo
+# withdraw via PlanetaryService.withdraw_stockpile_to_cargo:
+#   - NULL ⇒ 0.0 (backward-compatible: untaxed default)
+#   - any explicit value is clamped fail-CLOSED to [0.00, 0.20]
+# Owner withdraws are never taxed; skim (when rate > 0) deposits into the
+# owner's citadel safe (citadel vocabulary keys).
 TAX_RATE_MIN = 0.00
 TAX_RATE_MAX = 0.20
 
+# Planet stockpile columns that may be withdrawn to ship cargo (same set as
+# citadel commodity safe — NOT gourmet_food / legacy resources JSONB).
+STOCKPILE_WITHDRAW_COMMODITIES = frozenset({"fuel_ore", "organics", "equipment"})
+
 
 def clamp_tax_rate(value: Optional[float]) -> float:
-    """Resolve a planet tax_rate to a valid, in-bounds float (PL4b, DEFERRED).
+    """Resolve a planet tax_rate to a valid, in-bounds float (PL4b).
 
-    NULL/None ⇒ 0.0 (the untaxed backward-compatible default, I1). Any explicit
-    value is bounded to [TAX_RATE_MIN, TAX_RATE_MAX]. PURE + INERT — not wired to
-    any live skim this slice; the taxable event does not exist yet (master §7)."""
+    NULL/None ⇒ 0.0 (untaxed backward-compatible default). Any explicit value
+    is bounded to [TAX_RATE_MIN, TAX_RATE_MAX]. Used by
+    withdraw_stockpile_to_cargo for the production-tax skim."""
     if value is None:
         return 0.0
     return max(TAX_RATE_MIN, min(TAX_RATE_MAX, float(value)))
@@ -190,13 +186,11 @@ SIEGE_TURN_HOURS = 24.0
 # so the skim is idempotent across Loop-A re-reads / scheduler sweeps: no
 # double-skim, no skim per Loop-A pass.
 #
-# NO-CANON: defense.md says "a fraction" but gives no number. SIEGE_STOCKPILE_
-# SKIM_FRACTION = 0.05 (5% of each stockpile commodity per applied siege turn) is
-# a deliberately CONSERVATIVE choice — at 5%/day a stockpile decays geometrically
-# (≈ half drained after ~14 siege turns), so a sustained siege meaningfully bleeds
-# the colony without instantly emptying it on the first applied turn. FLAGGED for
-# DECISIONS; easier to raise than to claw back an over-tuned plunder faucet.
-SIEGE_STOCKPILE_SKIM_FRACTION = 0.05  # NO-CANON: stockpile fraction skimmed per applied siege turn
+# Ratified 2026-08-06 (DECISIONS.md siege-stockpile-skim-fraction): 0.05
+# (5% of each stockpile commodity per applied siege turn). Deliberately
+# conservative — ≈ half drained after ~14 siege turns. Distinct from the
+# already-canon SIEGE_RESOURCE_THEFT_FRACTION production diversion.
+SIEGE_STOCKPILE_SKIM_FRACTION = 0.05
 # The three plunderable planetary stockpile columns and the cargo-contents key
 # each maps to (matching combat_service._transfer_cargo's commodity contents).
 SIEGE_STOCKPILE_COMMODITIES = (
@@ -512,25 +506,14 @@ def storage_cap_for(citadel_level: int) -> int:
     Cap source — CITADEL_LEVELS[level]["safe_storage"]: the only concrete,
     shipped per-level capacity figure in code (L1 100k → L5 50M, mirroring how
     `max_colonists_for` reads `max_population` from the same table). Applied as a
-    PER-RESOURCE cap, matching the per-commodity `cap_fuel/cap_organics/
-    cap_equipment` shape of the canon formula (production-tick.md:142-144,178-180).
+    PER-RESOURCE cap. Ratified 2026-08-09 (DECISIONS.md `storage-cap-formula-mismatch`)
+    — the old `base_cap * (1 + storage_level * 0.5)` formula is retired; there is
+    no storage-building/`storage_level` model. `safe_storage` is the permanent cap.
 
-    [NO-CANON divergence — FLAGGED, not invented]: the canon "Storage caps"
-    formula is `cap = base_cap * (1 + storage_level * 0.5)`, parameterised by a
-    `base_cap` and a *storage-building* `storage_level`. Neither a base_cap
-    constant nor a storage-building model/level exists in code today, so there is
-    no way to evaluate that formula. This helper substitutes the in-code
-    `safe_storage` per-tier figure as the cap until a storage-building tier lands
-    (at which point the canon multiplier `(1 + storage_level * 0.5)` can layer on
-    top of this base). Propose DECISIONS entry: ratify safe_storage as the
-    commodity storage base_cap, or define the missing base_cap/storage_level.
-
-    Edge case (production-tick.md:223): a non-positive cap "due to
-    misconfiguration" is treated as no cap (return 0 → callers skip clamping).
-    An un-citadeled planet (level 0, safe_storage 0) is therefore left UNCAPPED,
-    which reproduces today's behaviour exactly for citadel-less colonies — the
-    cap only binds once a player has actually built a citadel (level ≥ 1, where
-    safe_storage is positive). This avoids the destructive alternative of
+    Edge case (production-tick.md Failure modes): a non-positive cap is treated
+    as no cap (return 0 → callers skip clamping). An un-citadeled planet
+    (level 0, safe_storage 0) is therefore left UNCAPPED — the cap only binds
+    once a player has actually built a citadel (level ≥ 1). This avoids
     clamping a producing L0 colony to ~0 and discarding all of its output.
     """
     from src.services.citadel_service import CITADEL_LEVELS
@@ -1271,6 +1254,187 @@ class PlanetaryService:
             planet.id, besieger.id, ship.id,
             {canonical_commodity(c): a for c, a in stolen.items() if a > 0},
         )
+
+    def withdraw_stockpile_to_cargo(
+        self,
+        planet_id: UUID,
+        player_id: UUID,
+        commodity: str,
+        amount: int,
+    ) -> Dict[str, Any]:
+        """Move production stockpile units into the caller's ship cargo.
+
+        Owner or same-team teammates may withdraw while landed on the planet.
+        Teammates pay Planet.tax_rate (clamped) skimmed into the owner's
+        citadel safe; the owner pays 0%. FLUSH only — the route commits.
+
+        Fail-closed when tax > 0 and the owner's safe cannot accept the skim
+        (no citadel / capacity) so the teammate never receives untaxed goods.
+        """
+        from src.core.commodity_economy import canonical_commodity
+        from src.services.citadel_service import (
+            CITADEL_LEVELS,
+            COMMODITY_CREDIT_VALUE,
+            CitadelService,
+        )
+
+        if commodity not in STOCKPILE_WITHDRAW_COMMODITIES:
+            valid = ", ".join(sorted(STOCKPILE_WITHDRAW_COMMODITIES))
+            return {
+                "success": False,
+                "message": f"Unknown commodity '{commodity}'. Valid: {valid}",
+            }
+        if amount <= 0:
+            return {"success": False, "message": "Withdrawal amount must be positive"}
+
+        planet = (
+            self.db.query(Planet)
+            .filter(Planet.id == planet_id)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
+        if not planet:
+            return {"success": False, "message": "Planet not found"}
+
+        player = (
+            self.db.query(Player)
+            .filter(Player.id == player_id)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
+        if not player:
+            return {"success": False, "message": "Player not found"}
+
+        if not player.is_landed or player.current_planet_id != planet.id:
+            return {
+                "success": False,
+                "message": "You must be landed on this planet to withdraw stockpile",
+            }
+
+        is_owner = planet.owner_id == player.id
+        if not is_owner:
+            owner = (
+                self.db.query(Player).filter(Player.id == planet.owner_id).first()
+                if planet.owner_id
+                else None
+            )
+            same_team = (
+                owner is not None
+                and owner.team_id is not None
+                and player.team_id == owner.team_id
+            )
+            if not same_team:
+                return {
+                    "success": False,
+                    "message": "You do not own this planet and are not on the owner's team",
+                }
+
+        ship = (
+            self.db.query(Ship)
+            .filter(Ship.id == player.current_ship_id, Ship.owner_id == player.id)
+            .first()
+        )
+        if not ship:
+            return {"success": False, "message": "No active ship found"}
+
+        on_hand = int(getattr(planet, commodity, 0) or 0)
+        if on_hand < amount:
+            return {
+                "success": False,
+                "message": (
+                    f"Not enough {commodity.replace('_', ' ')} on the planet. "
+                    f"Have {on_hand:,}, need {amount:,}."
+                ),
+            }
+
+        rate = 0.0 if is_owner else clamp_tax_rate(getattr(planet, "tax_rate", None))
+        tax = int(amount * rate) if rate > 0 else 0
+        if tax > amount:
+            tax = amount
+        net = amount - tax
+
+        cargo = dict(ship.cargo or {})
+        contents: Dict[str, int] = dict(cargo.get("contents") or {})
+        capacity = effective_cargo_capacity(ship)
+        used = sum(int(q) for q in contents.values() if isinstance(q, (int, float)))
+        free = max(0, int(capacity) - int(used))
+        if net > free:
+            return {
+                "success": False,
+                "message": (
+                    f"Insufficient cargo space. Have {free} free, need {net} "
+                    f"(after {tax} tax skim)."
+                    if tax
+                    else f"Insufficient cargo space. Have {free} free, need {net}."
+                ),
+            }
+
+        citadel = CitadelService(self.db)
+        safe_commodities: Dict[str, int] = citadel._get_safe_commodities(planet)
+        if tax > 0:
+            level = int(getattr(planet, "citadel_level", 0) or 0)
+            if level < 1:
+                return {
+                    "success": False,
+                    "message": (
+                        "Owner citadel required to collect tax skim — "
+                        "cannot withdraw while tax_rate > 0 without a citadel"
+                    ),
+                }
+            unit_value = COMMODITY_CREDIT_VALUE[commodity]
+            capacity_cr = CITADEL_LEVELS[level]["safe_storage"]
+            added_value = tax * unit_value
+            if citadel._safe_total_value(planet) + added_value > capacity_cr:
+                room = max(0, capacity_cr - citadel._safe_total_value(planet))
+                return {
+                    "success": False,
+                    "message": (
+                        f"Owner safe cannot accept tax skim. "
+                        f"Room for {room // unit_value:,} more "
+                        f"{commodity.replace('_', ' ')}."
+                    ),
+                }
+            safe_commodities[commodity] = int(safe_commodities.get(commodity, 0)) + tax
+            citadel._set_safe_commodities(planet, safe_commodities)
+
+        setattr(planet, commodity, on_hand - amount)
+        if net > 0:
+            key = canonical_commodity(commodity)
+            contents[key] = int(contents.get(key, 0)) + net
+            cargo["contents"] = contents
+            cargo["used"] = sum(int(q) for q in contents.values())
+            ship.cargo = cargo
+            if hasattr(ship, "_sa_instance_state"):
+                flag_modified(ship, "cargo")
+
+        self.db.flush()
+
+        logger.info(
+            "Stockpile withdraw: planet %s player %s %s amount=%s tax=%s net=%s",
+            planet_id,
+            player_id,
+            commodity,
+            amount,
+            tax,
+            net,
+        )
+        return {
+            "success": True,
+            "message": (
+                f"Withdrew {net:,} {commodity.replace('_', ' ')} to cargo"
+                + (f" ({tax:,} tax skimmed to owner safe)." if tax else ".")
+            ),
+            "commodity": commodity,
+            "amount_requested": amount,
+            "amount_to_cargo": net,
+            "tax_skimmed": tax,
+            "tax_rate": rate,
+            "planet_stockpile": int(getattr(planet, commodity, 0) or 0),
+            "safe_commodities": {k: v for k, v in safe_commodities.items() if v > 0},
+            "cargo_contents": dict(contents),
+        }
 
     def realize_production(self, planet: Planet, *, _via_settle: bool = False) -> bool:
         """Force-advance one planet's commodity production to the canonical now.

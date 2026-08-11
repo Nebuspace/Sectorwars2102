@@ -1898,7 +1898,7 @@ async def update_defenses(
 
 
 @router.post("/genesis/deploy")
-async def deploy_genesis_device_legacy(
+async def deploy_genesis_device(
     request: GenesisDeployRequest,
     player: Player = Depends(get_current_player),
     db: Session = Depends(get_db)
@@ -1906,11 +1906,10 @@ async def deploy_genesis_device_legacy(
     """
     Deploy a genesis device to create a new planet.
 
-    Despite the historical "_legacy" function name, this is the live route
-    the player-client actually calls (POST /planets/genesis/deploy — see
+    Live route the player-client calls (POST /planets/genesis/deploy —
     services/player-client/src/services/api.ts). The orphaned parallel
     POST /genesis/deploy route (src/api/routes/genesis.py) had zero callers
-    and was removed (2026-08-04) — this is now the sole genesis-deploy route.
+    and was removed (2026-08-04) — this is the sole genesis-deploy route.
     """
     from src.services.genesis_service import GenesisService
 
@@ -2002,7 +2001,7 @@ async def get_siege_status(
         raise HTTPException(status_code=404, detail=str(e))
 
 
-# Citadel Endpoints
+# Stockpile → ship cargo (taxable for teammates) + Citadel Endpoints
 
 class CitadelDepositRequest(BaseModel):
     amount: int = Field(..., gt=0)
@@ -2015,6 +2014,39 @@ class CitadelWithdrawRequest(BaseModel):
 class CitadelCommodityRequest(BaseModel):
     commodity: str = Field(..., pattern="^(fuel_ore|organics|equipment)$")
     amount: int = Field(..., gt=0)
+
+
+class StockpileWithdrawRequest(BaseModel):
+    commodity: str = Field(..., pattern="^(fuel_ore|organics|equipment)$")
+    amount: int = Field(..., gt=0)
+
+
+@router.post("/{planetId}/stockpile/withdraw")
+async def stockpile_withdraw(
+    planetId: str,
+    request: StockpileWithdrawRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Withdraw production stockpile into ship cargo (owner tax-free; teammates skimmed)."""
+    try:
+        planet_id = UUID(planetId)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid planet ID format")
+
+    service = PlanetaryService(db)
+    result = service.withdraw_stockpile_to_cargo(
+        planet_id, player.id, request.commodity, request.amount
+    )
+    if not result.get("success"):
+        msg = result.get("message", "Withdrawal failed")
+        # Ownership / team ACL → 403; everything else → 400
+        if "do not own" in msg or "not on the owner's team" in msg:
+            raise HTTPException(status_code=403, detail=msg)
+        raise HTTPException(status_code=400, detail=msg)
+    db.commit()
+    return result
+
 
 
 class CitadelAutoDepositRequest(BaseModel):

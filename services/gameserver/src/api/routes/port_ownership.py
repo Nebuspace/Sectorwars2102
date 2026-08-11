@@ -31,7 +31,7 @@ detail) on invalid actions. The router owns commit/rollback:
 """
 import logging
 import uuid as _uuid
-from typing import Literal
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -87,6 +87,13 @@ class DefensePolicyRequest(BaseModel):
 class CounterTradeRequest(BaseModel):
     # Synthetic absorb volume (credits of trade); cost = volume * CREDITS_PER_VOLUME.
     defense_volume: int = Field(..., ge=1, le=500_000)
+
+
+class FriendlyTradeContractRequest(BaseModel):
+    # Bind ally team/faction contracted volume toward threshold defense.
+    contracted_volume: int = Field(..., ge=1, le=500_000)
+    ally_team_id: Optional[str] = None
+    ally_faction: Optional[str] = None
 
 
 class ShareInviteRequest(BaseModel):
@@ -521,6 +528,38 @@ async def activate_counter_trade(
         "message": (
             f"Counter-trade absorb {result['defense_volume']:,} at {station.name} "
             f"(cost {result['cost']:,} cr)"
+        ),
+        **result,
+    }
+
+
+@router.post("/stations/{station_id}/takeover/defense/friendly-trade")
+async def activate_friendly_trade_contract(
+    station_id: str,
+    request: FriendlyTradeContractRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player),
+):
+    """Owner lever: bind friendly team/faction contracted volume to threshold defense."""
+    station = _get_station_or_404(db, station_id)
+    try:
+        result = port_ownership_service.activate_friendly_trade_contract(
+            db,
+            station,
+            current_player,
+            request.contracted_volume,
+            ally_team_id=request.ally_team_id,
+            ally_faction=request.ally_faction,
+        )
+        db.commit()
+    except PortOwnershipError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return {
+        "message": (
+            f"Friendly trade contract {result['defense_volume']:,} volume "
+            f"at {station.name}"
         ),
         **result,
     }

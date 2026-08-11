@@ -1533,46 +1533,6 @@ async def get_teams_comprehensive(
         logger.error(f"Error in get_teams_comprehensive: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch teams: {str(e)}")
 
-# Helper Functions
-
-def calculate_reputation_level(value: int) -> str:
-    """Calculate reputation level from value"""
-    if value >= 701:
-        return "Exalted"
-    elif value >= 601:
-        return "Revered"
-    elif value >= 501:
-        return "Honored"
-    elif value >= 401:
-        return "Valued"
-    elif value >= 301:
-        return "Respected"
-    elif value >= 201:
-        return "Trusted"
-    elif value >= 101:
-        return "Acknowledged"
-    elif value >= 1:
-        return "Recognized"
-    elif value == 0:
-        return "Neutral"
-    elif value >= -100:
-        return "Questionable"
-    elif value >= -200:
-        return "Suspicious"
-    elif value >= -300:
-        return "Untrustworthy"
-    elif value >= -400:
-        return "Smuggler"
-    elif value >= -500:
-        return "Pirate"
-    elif value >= -600:
-        return "Outlaw"
-    elif value >= -700:
-        return "Criminal"
-    else:
-        return "Public Enemy"
-
-
 # Analytics Endpoints
 
 @router.get("/analytics/real-time", response_model=Dict[str, Any])

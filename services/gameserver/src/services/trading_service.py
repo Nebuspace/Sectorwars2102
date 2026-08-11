@@ -21,29 +21,32 @@ logger = logging.getLogger(__name__)
 # ----------------------------------------------------------------------
 # Player-facing price modifiers (ADR-0062 E-D3 canonical stack)
 # ----------------------------------------------------------------------
-# The ratified trade-price stack (sw2102-docs ADR-0062 E-D3 /
-# SYSTEMS/market-pricing.md) is multiplicative, general -> specific:
+# The ratified *unit-price* stack (sw2102-docs FEATURES/economy/trading.md
+# §Price-stacking-order, Max-blessed 2026-06-14; routes/trading.py) is
+# multiplicative, general -> specific — tax is NOT in this stack:
 #
-#   final_price = station_price
+#   unit_price = station_price
 #     x faction_reputation_multiplier   (0.85 .. 1.50 — Exalted to Public Enemy)
 #     x personal_reputation_multiplier  (0.90 .. 1.20 — Legendary to Villain)
-#     x (1 - rank.trading_bonus / 100)  (handled in the routes via RankingService)
-#     x (1 + region.tax_rate)           (the routes apply the station tax_rate)
-#     x (1 + region.tariff_rate)        (NO-CANON wiring point — see note below)
+#     x (1 - rank.trading_bonus / 100)  (routes via RankingService)
+#     x (1 + region.tariff_rate)        (trade_bonuses JSONB; see helpers below)
 #     x (1 + station.price_adjustment_lever)  (same-owner skip per E-F1)
+#   …then clamp unit_price to the commodity band (FINAL).
 #
-# This helper covers the two player-relationship layers that were NOT yet
-# wired into the trade path — faction reputation and personal reputation —
-# plus the permanent +10% first-login negotiation bonus
-# (Player.settings.trade_bonus, set by first_login_service per ADR-0026 FL1:
-# "Applied at every port transaction for the lifetime of the character").
+# Region / station TAX is a separate treasury levy on the transaction TOTAL
+# after that clamp (buy: total + int(total×tax); sell: total − int(total×tax))
+# — never a per-unit stack factor. Do not re-fold tax into the unit formula
+# (WO-CANON-FIX-MARKET-PRICING-STACK-ORDER-AND-TAX; market-pricing.md has
+# drifted the other way and is the docs half of that WO).
 #
-# Rank discount, station tax, tariff, and the station price lever remain the
-# routes' responsibility (rank + tax already live there). Direction: all of
-# these multipliers express "what the player PAYS" — > 1.0 means a worse
-# deal. On a BUY the player pays final_price (multiplier applied as-is); on a
-# SELL the relationship flips (a favoured trader earns MORE), so the route
-# divides the station's buy_price by the player-pays multiplier.
+# This helper covers the two player-relationship layers — faction reputation
+# and personal reputation — plus the permanent +10% first-login negotiation
+# bonus (Player.settings.trade_bonus, first_login_service / ADR-0026 FL1).
+# Rank, tariff, and the station lever are composed in the routes alongside
+# compute_region_tariff_rate / compute_station_price_lever below.
+# Direction: multipliers express "what the player PAYS" — > 1.0 = worse deal.
+# On BUY apply as-is; on SELL the route divides station buy_price by the
+# player-pays multiplier (and inverts the rest of the stack).
 
 # Faction-reputation TRADE_MODIFIERS mirror faction_service.TRADE_MODIFIERS
 # (kept inline so this sync path needs no async FactionService bridge). Each
@@ -578,6 +581,61 @@ def clamp_to_commodity_band(commodity_name: str, price: int) -> int:
 SELL_SPREAD = 1.15   # Station sell price is 15% above dynamic midpoint
 BUY_SPREAD = 0.85    # Station buy price is 15% below dynamic midpoint
 
+# TradeDock premium spreads (FEATURES/economy/tradedock-shipyard.md:44-60).
+# Canon gives ranges; midpoints keep a single deterministic engine value.
+TRADEDOCK_SELL_SPREAD = 1.075  # mid of 1.05–1.10
+TRADEDOCK_BUY_SPREAD = 0.925   # mid of 0.90–0.95
+# Canon Class-0 platform fee is 2% (tradedock-shipyard.md:48). Activated
+# 2026-08-11 (WO-FIX-STANDARD-PORT-TRANSACTION-FEE-ACTIVATE): player AND NPC
+# trader buy/sell at non-TradeDock ports pay this via transaction_fee_rate()
+# (npc_trading_service.run_trade_stop mirrors routes/trading.py totals).
+# TradeDocks stay 0%. Max canon 2026-08-11: NPCs never get a free ride —
+# same fees/taxes/penalties as human players.
+STANDARD_TRANSACTION_FEE = 0.02
+TRADEDOCK_INVENTORY_CAP_MULT = 10
+TRADEDOCK_BULK_DISCOUNT_PER_1000 = 0.05
+TRADEDOCK_BULK_DISCOUNT_CAP = 0.20
+
+
+def is_tradedock(station: Station) -> bool:
+    """True when Station.tradedock_tier is set (A/B/C/…), else ordinary port."""
+    return getattr(station, "tradedock_tier", None) is not None
+
+
+def spreads_for(station: Station) -> Tuple[float, float]:
+    """Return (sell_spread, buy_spread) for this station."""
+    if is_tradedock(station):
+        return TRADEDOCK_SELL_SPREAD, TRADEDOCK_BUY_SPREAD
+    return SELL_SPREAD, BUY_SPREAD
+
+
+def transaction_fee_rate(station: Station) -> float:
+    """Platform transaction fee fraction (0 for TradeDocks, 2% otherwise)."""
+    return 0.0 if is_tradedock(station) else STANDARD_TRANSACTION_FEE
+
+
+def inventory_capacity_for(station: Station, base_capacity: int) -> int:
+    """Effective stock ceiling — TradeDocks get 10× the commodity capacity."""
+    cap = max(1, int(base_capacity or 1))
+    if is_tradedock(station):
+        return cap * TRADEDOCK_INVENTORY_CAP_MULT
+    return cap
+
+
+def tradedock_bulk_discount_fraction(quantity: int) -> float:
+    """5% per 1,000 units on TradeDock buys, capped at 20% (canon ladder)."""
+    try:
+        qty = int(quantity)
+    except (TypeError, ValueError):
+        return 0.0
+    if qty < 1000:
+        return 0.0
+    return min(
+        TRADEDOCK_BULK_DISCOUNT_CAP,
+        (qty // 1000) * TRADEDOCK_BULK_DISCOUNT_PER_1000,
+    )
+
+
 # Station-class premium multipliers, applied at transaction-price time so
 # they survive every dynamic reprice. Values are the trading.md
 # #class-8--class-9-premium-pricing design target (+20% buy / +25% sell,
@@ -650,6 +708,9 @@ class TradingService:
             return 0
 
         quantity = commodity.get("quantity", 0)
+        # Supply-ratio uses the commodity's stored capacity (not the TradeDock
+        # 10× production ceiling) so a half-full dock prices like a half-full
+        # port; the 10× multiplier only raises tick_production's hard ceiling.
         capacity = commodity.get("capacity", 1)
         base_price = commodity.get("base_price", 0)
 
@@ -683,13 +744,14 @@ class TradingService:
         npc_nudge = 1.0 + max(-0.15, min(0.15, (npc_factor - 1.0) * 0.15))
         midpoint *= npc_nudge
 
-        # Apply spread based on transaction direction
+        # Apply spread based on transaction direction (TradeDock vs Class-0+)
+        sell_spread, buy_spread = spreads_for(station)
         if transaction_type == "sell":
             # Station sells TO player — player pays more
-            raw_price = midpoint * SELL_SPREAD
+            raw_price = midpoint * sell_spread
         elif transaction_type == "buy":
             # Station buys FROM player — player receives less
-            raw_price = midpoint * BUY_SPREAD
+            raw_price = midpoint * buy_spread
         else:
             raw_price = midpoint
 
@@ -1155,7 +1217,9 @@ class TradingService:
                 continue
 
             quantity = commodity_data.get("quantity", 0)
-            capacity = commodity_data.get("capacity", 0)
+            capacity = inventory_capacity_for(
+                station, commodity_data.get("capacity", 0)
+            )
 
             if quantity >= capacity:
                 # Already at per-commodity capacity — no production

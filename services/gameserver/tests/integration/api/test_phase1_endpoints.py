@@ -63,7 +63,7 @@ def test_admin_message_endpoints():
     """Test admin message moderation endpoints"""
     print("\nTesting admin message endpoints...")
     
-    response = requests.get(f"{BASE_URL}/admin/messages/all")
+    response = requests.get(f"{BASE_URL}/admin/messages/flagged")
     assert response.status_code in [401, 403]
     print("✅ Admin messages endpoint requires auth")
 
