@@ -585,12 +585,13 @@ BUY_SPREAD = 0.85    # Station buy price is 15% below dynamic midpoint
 # Canon gives ranges; midpoints keep a single deterministic engine value.
 TRADEDOCK_SELL_SPREAD = 1.075  # mid of 1.05–1.10
 TRADEDOCK_BUY_SPREAD = 0.925   # mid of 0.90–0.95
-# Canon Class-0 platform fee is 2% (tradedock-shipyard.md:48). That levy was
-# never a separate live charge before this WO (only station/region tax_rate).
-# Flipping it on here would reprice every NPC trade overnight — leave at 0.0
-# until a dedicated fee-activation pass; TradeDock still resolves through
-# transaction_fee_rate() → 0.0 so the branch is wired.
-STANDARD_TRANSACTION_FEE = 0.0
+# Canon Class-0 platform fee is 2% (tradedock-shipyard.md:48). Activated
+# 2026-08-11 (WO-FIX-STANDARD-PORT-TRANSACTION-FEE-ACTIVATE): player AND NPC
+# trader buy/sell at non-TradeDock ports pay this via transaction_fee_rate()
+# (npc_trading_service.run_trade_stop mirrors routes/trading.py totals).
+# TradeDocks stay 0%. Max canon 2026-08-11: NPCs never get a free ride —
+# same fees/taxes/penalties as human players.
+STANDARD_TRANSACTION_FEE = 0.02
 TRADEDOCK_INVENTORY_CAP_MULT = 10
 TRADEDOCK_BULK_DISCOUNT_PER_1000 = 0.05
 TRADEDOCK_BULK_DISCOUNT_CAP = 0.20
