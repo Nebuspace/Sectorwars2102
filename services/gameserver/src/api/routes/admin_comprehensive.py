@@ -29,8 +29,8 @@ from src.services.admin_action_log_service import log_admin_action
 from src.services.admin_action_attempt import admin_action_attempt
 from src.models.player import Player
 from src.models.ship import Ship
-from src.models.planet import Planet
-from src.models.station import Station, StationStatus
+from src.models.planet import Planet, PlanetType, PlanetStatus
+from src.models.station import Station, StationClass, StationStatus, StationType
 from src.models.sector import Sector
 from src.models.cluster import Cluster
 from src.models.region import Region
@@ -1631,8 +1631,6 @@ async def update_all_port_stock_levels(
     This ensures ports have appropriate inventory for the commodities they trade.
     """
     try:
-        from src.models.station import Station
-        
         # Get all ports
         ports = db.query(Station).all()
         
@@ -2091,9 +2089,6 @@ async def create_planet_in_sector(
             if existing_planet:
                 raise HTTPException(status_code=400, detail="Sector already has a planet")
         
-            # Import and validate planet type
-            from src.models.planet import Planet, PlanetType, PlanetStatus
-        
             try:
                 planet_type = PlanetType(planet_data.type)
             except ValueError:
@@ -2177,7 +2172,6 @@ async def update_planet(
 
             for field, value in update_data.items():
                 if field == "type" and value:
-                    from src.models.planet import PlanetType
                     try:
                         planet.type = PlanetType(value)
                     except ValueError:
@@ -2230,7 +2224,6 @@ async def delete_planet(
             if not planet:
                 raise HTTPException(status_code=404, detail="Planet not found")
 
-            from src.models.planet import PlanetStatus
             _inhabited = {
                 PlanetStatus.COLONIZED,
                 PlanetStatus.DEVELOPED,
@@ -2321,9 +2314,6 @@ async def create_port_in_sector(
 
             if existing_station:
                 raise HTTPException(status_code=400, detail="Sector already has a port")
-
-            # Import and validate enums
-            from src.models.station import Station, StationClass, StationType, StationStatus
 
             try:
                 port_class = StationClass(station_data.station_class)
@@ -2956,9 +2946,6 @@ async def create_port(
         payload={},
     ) as attempt:
         try:
-            # Import and validate enums
-            from src.models.station import Station, StationClass, StationType, StationStatus
-
             # Validate required fields
             if not port_data.get("name"):
                 raise HTTPException(status_code=400, detail="Station name is required")
