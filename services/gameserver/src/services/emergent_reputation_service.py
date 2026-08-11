@@ -952,11 +952,10 @@ def apply_emergent_action(
 # emergent_reputation_service the single tuning surface for capture rep, mirroring
 # how the EMERGENT_ACTIONS table is the single surface for fixed-faction rep.
 #
-# MAGNITUDE IS NO-CANON: −50 is PROPOSED, mirroring the canon
-# ``attacked_chartered_planet`` personal-rep penalty (−50). The factions canon
-# (factions-and-teams.md reputation-triggers / ADR-0032) does NOT list a
-# capture-a-faction-planet trigger, so this number is flagged for human and is
-# the smallest sensible intervention until canon lands.
+# CANON (ratified 2026-08-10, DECISIONS.md planet-capture-faction-rep-penalty)
+# — −50, mirroring the canon ``attacked_chartered_planet`` personal-rep
+# penalty. factions-and-teams.md / ADR-0032 do not list a capture trigger;
+# the ruling ratified the shipped magnitude as-is.
 #
 # WIRING REALITY: the Planet model has no faction-owner field (planets are owned
 # only by human Players via the player_planets join table, else unowned), so the
@@ -965,7 +964,7 @@ def apply_emergent_action(
 # planet faction-owner signal lands — no double-fire risk because nothing calls
 # it yet (matching the EMERGENT_ACTIONS "defined-but-unwired" pattern).
 # ---------------------------------------------------------------------------
-PLANET_CAPTURE_FACTION_PENALTY = -50  # NO-CANON (proposed; mirrors chartered −50)
+PLANET_CAPTURE_FACTION_PENALTY = -50  # ratified — mirrors chartered −50
 
 
 def apply_planet_capture_faction_penalty(

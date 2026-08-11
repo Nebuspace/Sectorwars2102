@@ -206,9 +206,10 @@ class ARIAPersonalIntelligenceService:
         
         return intelligence
 
-    # Canonical dedup window (WO-ARIA-MARKET-OBS, NO-CANON -- flagged for the
-    # DECISIONS batch): one market observation per (player, station,
-    # commodity) per 10 CANONICAL minutes, spanning every hook site that
+    # Canonical dedup window (WO-ARIA-MARKET-OBS; ratified 2026-08-10,
+    # DECISIONS.md aria-market-observation-dedup-window): one market
+    # observation per (player, station, commodity) per 10 CANONICAL minutes,
+    # spanning every hook site that
     # calls record_market_observation_sync for that station visit (dock,
     # market view, ...). Uses game_time.scaled_elapsed -- CANONICAL, not
     # wall-clock, matching this codebase's established clock-domain

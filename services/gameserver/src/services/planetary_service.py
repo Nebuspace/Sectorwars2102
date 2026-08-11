@@ -332,11 +332,11 @@ SECONDS_PER_DAY = 86400.0
 # cr/day — deliberately near the LOW edge of the canon band (easier to raise
 # than to claw back an over-minted faucet).
 #
-# NO-CANON: the exact per-colonist surplus rate is not specified — canon gives
-# only the cr/day TARGET band, not a pioneers/colonist coefficient. This value
-# is FLAGGED for DECISIONS; it is bounded by, and consistent with, the canon
-# target band above. See WO-PL3-v2 report.
-SURPLUS_PIONEER_RATE_PER_DAY = 0.0005  # NO-CANON: pioneers/colonist/day (faucet)
+# CANON (ratified 2026-08-10, DECISIONS.md surplus-pioneer-accrual-rate) —
+# 0.0005 pioneers/colonist/day. Canon gives the cr/day TARGET band, not a
+# pioneers/colonist coefficient; this rate sits at the low edge of that band
+# (50k colonists → 25 pioneers/day ≈ 1,375 cr/day). See WO-PL3-v2 report.
+SURPLUS_PIONEER_RATE_PER_DAY = 0.0005  # ratified — pioneers/colonist/day (faucet)
 
 # Habitability ZERO-CROSSING for natural population growth (WO-AH, human-ruled:
 # "growth is a function of habitability — ABOVE a threshold → GROW, BELOW it →

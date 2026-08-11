@@ -369,7 +369,8 @@ class ShipUpgradeService:
     # §4.1 supercharge multiplier (flat) — a module installed in a supercharged
     # slot has its effects multiplied by this. Snapshotted as `super_at_install`
     # on the slot record so a later slot-layout re-tune never silently re-buffs a
-    # fielded ship. [NO-CANON — human-blessed launch value.]
+    # fielded ship. CANON (ratified 2026-08-10, DECISIONS.md
+    # ship-module-supercharge-multiplier) — 1.6x as shipped.
     SUPERCHARGE_MULT = 1.6
 
     # §4.2 stacking cap — FLAT best-3 per effect: of all same-effect contributions
