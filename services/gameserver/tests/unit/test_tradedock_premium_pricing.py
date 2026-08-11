@@ -41,7 +41,7 @@ def test_is_tradedock_and_spreads():
     assert is_tradedock(dock)
     assert spreads_for(port) == (SELL_SPREAD, BUY_SPREAD)
     assert spreads_for(dock) == (TRADEDOCK_SELL_SPREAD, TRADEDOCK_BUY_SPREAD)
-    assert transaction_fee_rate(port) == pytest.approx(0.0)  # Class-0 2% deferred
+    assert transaction_fee_rate(port) == pytest.approx(0.02)  # Class-0 canon 2%
     assert transaction_fee_rate(dock) == 0.0
     assert inventory_capacity_for(port, 100) == 100
     assert inventory_capacity_for(dock, 100) == 1000
@@ -90,8 +90,14 @@ def test_buy_totals_bulk_and_zero_fee_on_tradedock():
     assert totals["fee_amount"] == 0
     assert totals["total_with_tax"] == 320_000
 
-    # Ordinary port: no bulk, 2% fee
+    # Ordinary port: no bulk, 2% fee (matches STANDARD_TRANSACTION_FEE)
     ordinary = compute_buy_totals(100, 100, 0.0, transaction_fee_rate=0.02)
     assert ordinary["total_cost"] == 10_000
     assert ordinary["fee_amount"] == 200
     assert ordinary["total_with_tax"] == 10_200
+
+
+def test_standard_transaction_fee_constant_matches_canon():
+    from src.services.trading_service import STANDARD_TRANSACTION_FEE
+
+    assert STANDARD_TRANSACTION_FEE == pytest.approx(0.02)
