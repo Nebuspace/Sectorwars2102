@@ -2001,7 +2001,7 @@ async def get_siege_status(
         raise HTTPException(status_code=404, detail=str(e))
 
 
-# Citadel Endpoints
+# Stockpile → ship cargo (taxable for teammates) + Citadel Endpoints
 
 class CitadelDepositRequest(BaseModel):
     amount: int = Field(..., gt=0)
@@ -2014,6 +2014,39 @@ class CitadelWithdrawRequest(BaseModel):
 class CitadelCommodityRequest(BaseModel):
     commodity: str = Field(..., pattern="^(fuel_ore|organics|equipment)$")
     amount: int = Field(..., gt=0)
+
+
+class StockpileWithdrawRequest(BaseModel):
+    commodity: str = Field(..., pattern="^(fuel_ore|organics|equipment)$")
+    amount: int = Field(..., gt=0)
+
+
+@router.post("/{planetId}/stockpile/withdraw")
+async def stockpile_withdraw(
+    planetId: str,
+    request: StockpileWithdrawRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Withdraw production stockpile into ship cargo (owner tax-free; teammates skimmed)."""
+    try:
+        planet_id = UUID(planetId)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid planet ID format")
+
+    service = PlanetaryService(db)
+    result = service.withdraw_stockpile_to_cargo(
+        planet_id, player.id, request.commodity, request.amount
+    )
+    if not result.get("success"):
+        msg = result.get("message", "Withdrawal failed")
+        # Ownership / team ACL → 403; everything else → 400
+        if "do not own" in msg or "not on the owner's team" in msg:
+            raise HTTPException(status_code=403, detail=msg)
+        raise HTTPException(status_code=400, detail=msg)
+    db.commit()
+    return result
+
 
 
 class CitadelAutoDepositRequest(BaseModel):
