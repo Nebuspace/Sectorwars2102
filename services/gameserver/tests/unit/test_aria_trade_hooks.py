@@ -416,7 +416,7 @@ class TestAriaWriteNeverBlocksTrade:
 
         # Trade completed normally despite the memory write raising.
         assert result["transaction"]["total_cost"] == 300
-        assert player.credits == 10_000 - 300
+        assert player.credits == 10_000 - 306  # goods 300 + 2% Class-0 fee
         assert db.commit_calls == 1
         # The observation write is independent -- it still ran.
         assert len(fake_aria.observation_calls) == 1
@@ -436,7 +436,7 @@ class TestAriaWriteNeverBlocksTrade:
 
         # Trade completed normally despite the observation write raising.
         assert result["transaction"]["total_earnings"] == 200
-        assert player.credits == 1_000 + 200
+        assert player.credits == 1_000 + 196  # goods 200 - 2% Class-0 fee
         assert db.commit_calls == 1
         # The memory write is independent -- it still ran.
         assert len(fake_aria.memory_calls) == 1
