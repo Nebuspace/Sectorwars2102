@@ -44,6 +44,13 @@ class SectorType(enum.Enum):
     AGRICULTURAL = "AGRICULTURAL"  # Food production
     FORBIDDEN = "FORBIDDEN"  # Restricted access
     WORMHOLE = "WORMHOLE"  # Special warping mechanics
+    # Audit-cycle-27 #1 / generation.md: spatial oddity; ~1–2% of generated
+    # sectors; one-time investigation loot (anomaly_service, reward 250).
+    ANOMALY = "ANOMALY"
+    # cycle-50 / sector-presence.md: hazard sector types on live Sector.type
+    # (were orphaned on SectorSpecialType only). Gameplay hooks wire per canon.
+    RADIATION_ZONE = "RADIATION_ZONE"  # Damages ships over time
+    WARP_STORM = "WARP_STORM"  # Disrupts warp tunnels
 
 
 class Sector(Base):
@@ -118,13 +125,19 @@ class Sector(Base):
         "team_id": None,
         "mines": 0,
         "mine_owner_id": None,
-        "patrol_ships": []
+        "patrol_ships": [],
+        # Off-duty NPC ship parking (npc-lodging.md) — populated by
+        # npc_lodging_service; docked_off_duty entries are combat-shielded.
+        "docked_npc_ships": [],
     })
     
     # Canon (police-forces.md "Sector protection flag"): breach of a
     # protected Nexus sector (warp-gate Phase 1, hostile combat) triggers
     # the Sentinel response. Default false; flagged by operator/import.
     is_nexus_protected = Column(Boolean, nullable=False, default=False)
+    # Lodging sector flags (DATA_MODELS/npc-lodging.md / galaxy.md).
+    is_outlaw_zone = Column(Boolean, nullable=False, default=False)
+    is_npc_barracks_sector = Column(Boolean, nullable=False, default=False)
 
     controlling_faction = Column(String, nullable=True)  # Null means uncontrolled or contested
     controlling_team_id = Column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=True)

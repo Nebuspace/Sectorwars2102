@@ -32,13 +32,6 @@ class CreateDroneRequest(BaseModel):
     team_id: Optional[UUID] = None
 
 
-class DeployDroneRequest(BaseModel):
-    """Request to deploy a drone."""
-    sector_id: UUID
-    deployment_type: str = "defense"
-    target_id: Optional[UUID] = None
-
-
 class DeployDronesRequest(BaseModel):
     """Request to deploy multiple drones (API contract version)."""
     sectorId: str
@@ -224,44 +217,6 @@ async def get_drone(
         )
         
     return drone
-
-
-@router.post("/{drone_id}/deploy", response_model=DroneDeploymentResponse)
-async def deploy_drone(
-    drone_id: UUID,
-    request: DeployDroneRequest,
-    current_player: Player = Depends(get_current_player),
-    db: AsyncSession = Depends(get_async_session)
-):
-    """Deploy a drone to a sector.
-
-    DEPRECATED (ADR-0094 endpoint-canonicalization) — no known frontend caller;
-    use POST /drones/deploy (batch) instead, which is the canonical Player UI
-    endpoint.
-    """
-    # Verify drone ownership
-    drone = await db.get(Drone, drone_id)
-    if not drone or drone.player_id != current_player.id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Drone not found or not owned by you"
-        )
-        
-    service = DroneService(db)
-    
-    try:
-        deployment = await service.deploy_drone(
-            drone_id=drone_id,
-            sector_id=request.sector_id,
-            deployment_type=request.deployment_type,
-            target_id=request.target_id
-        )
-        return deployment
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
 
 
 @router.post("/{drone_id}/recall")

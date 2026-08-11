@@ -9,8 +9,8 @@ mirrored in FEATURES/galaxy/sectors.md "Owned port defenses"): Class 1: 50
 drones, Class 2: 100, Class 3: 200, Class 4: 300 + auto-turrets, Class 5:
 500 + advanced grid (realized via the existing `defense_grid` boolean — see
 the helper's docstring). Classes outside 1-5 (CLASS_0 hub/capital and the
-premium CLASS_6-11 tiers) borrow the Class-5 profile — NO-CANON, flagged in
-the helper's block comment.
+premium CLASS_6-11 tiers) borrow the Class-5 profile — ratified in
+DECISIONS.md ``station-defense-class-0-6-11-drone-tiers``.
 
 DB-free: exercises the pure static helper directly, and the two
 station-creation sites' wiring is proven by asserting the helper is called

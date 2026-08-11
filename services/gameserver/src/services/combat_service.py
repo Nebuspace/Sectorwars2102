@@ -1479,6 +1479,19 @@ class CombatService:
         if attacker.current_sector_id != npc_ship.sector_id:
             return {"success": False, "message": "Target is not in your sector"}
 
+        # Barracks shielding (npc-lodging.md): docked_off_duty NPC ships at
+        # home lodging cannot be attacked.
+        from src.services.npc_lodging_service import (
+            ERR_NPC_SHIP_AT_BARRACKS,
+            is_npc_ship_barracks_shielded,
+        )
+        if is_npc_ship_barracks_shielded(self.db, npc_ship.id):
+            return {
+                "success": False,
+                "message": ERR_NPC_SHIP_AT_BARRACKS,
+                "error": ERR_NPC_SHIP_AT_BARRACKS,
+            }
+
         # WO-API-A1 cipher MEDIUM (hub-ruled Option B): the route's own
         # optimistic proximity pre-check reads pose BEFORE this method's
         # locks -- re-evaluate the SAME is_within_engage_range predicate
@@ -4874,6 +4887,12 @@ class CombatService:
         columns / no migration); ``.get`` defaults match the additive JSONB
         default in models/station.py so legacy rows are equally formidable.
 
+        cycle-50 WO-BUILD-STATION-DEFENSE-POLICY-COMBAT-WIRE: owner
+        ``defense_policy`` levers modulate the JSONB baseline —
+        ``drone_allocation_pct`` scales the defense_drones contribution;
+        ``defender_posture`` (passive/active/aggressive) scales fire output.
+        ``patrol_radius`` remains deferred (set_defense_policy rejects >0).
+
         GATING: ``port_captured`` is still *computed* (so a future, human-blessed
         takeover design can build on a true value rather than a hard-coded
         lie), but capture requires grinding ``hull_armor`` (default 5000) to
@@ -4903,6 +4922,14 @@ class CombatService:
         station_drones = int(defenses.get("defense_drones", 0) or 0)
         patrol_ships = int(defenses.get("patrol_ships", 0) or 0)
 
+        # Owner defense_policy levers (port-ownership.md § Defense system).
+        from src.services.port_ownership_service import (
+            combat_modifiers_from_defense_policy,
+        )
+        mods = combat_modifiers_from_defense_policy(port)
+        effective_drones = int(station_drones * mods["drone_scale"])
+        posture_mult = float(mods["posture_mult"])
+
         # Per-round damage CEILING the attacker can ever deliver to the station
         # (after shields). This is the deterrent linchpin: even an absurd drone
         # swarm cannot grind a 5000-hull station to zero within the 8-round
@@ -4913,8 +4940,14 @@ class CombatService:
         per_round_damage_ceiling = 150
 
         # Station's combined anti-swarm output per round. Strong enough to gut a
-        # large swarm in a couple of rounds.
-        station_fire_power = defensive_fire + station_drones * 3 + patrol_ships * 8
+        # large swarm in a couple of rounds. Policy scales the drone slice +
+        # overall fire via posture.
+        raw_fire = defensive_fire + effective_drones * 3 + patrol_ships * 8
+        station_fire_power = max(1, int(raw_fire * posture_mult))
+        # Effective drone count for the hull-maul branch below.
+        station_drones = effective_drones
+        # Scale base defensive_fire for the no-swarm hull branch too.
+        defensive_fire = max(1, int(defensive_fire * posture_mult))
 
         # Track combat details (contract preserved for the dormant caller).
         round_number = 0

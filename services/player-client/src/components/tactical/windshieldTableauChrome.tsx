@@ -2,8 +2,21 @@ import React, { type RefObject } from 'react';
 import type { SectorWreck } from '../../services/api';
 import type { SpecialFormationSummary } from '../../contexts/GameContext';
 import type { HitMeta } from './SolarSystemViewscreen';
+import {
+  WARP_ARRIVE_MS,
+  WARP_LAUNCH_MS,
+  WARP_MIN_CHARGE_MS,
+} from '../../services/warpCinematicBus';
 import { scanPosition, type HazardArc, type PctPoint, type StarAnchor } from './windshieldTableauLayout';
 import { arcPath, orbitEllipse, type MessageBeaconSummary, type TravelPhase } from './windshieldTableauHelpers';
+
+/** CSS custom-prop bundle so solar-system-viewscreen.css animations track
+ *  warpCinematicBus timing constants (single source of truth). */
+const warpDurationStyle = {
+  '--warp-charge-ms': `${WARP_MIN_CHARGE_MS}ms`,
+  '--warp-launch-ms': `${WARP_LAUNCH_MS}ms`,
+  '--warp-arrive-ms': `${WARP_ARRIVE_MS}ms`,
+} as React.CSSProperties;
 
 /**
  * windshieldTableauChrome — WO-AAA-SOLAR-TABLEAU phase 3 module split.
@@ -225,7 +238,7 @@ export function PlayerShipAndWarpLayer({
       <div
         ref={shipMkRef}
         className={`shipmk${burning ? ' burning' : ''}${travelPhase !== 'idle' ? ` travel-${travelPhase}` : ''}${warpPhase === 'turning' ? ' warp-turning' : ''}${warpPhase === 'launch' ? ' warp-launching' : ''}${warpPhase === 'arriving' ? ' warp-arriving' : ''}`}
-        style={{ left: `${shipPos.xPct}%`, top: `${shipPos.yPct}%`, '--hdg': `${heading.toFixed(0)}deg`, '--warp-bearing': `${warpBearing.toFixed(0)}deg`, '--arrival-bearing': `${arrivalBearing.toFixed(0)}deg` } as React.CSSProperties}
+        style={{ left: `${shipPos.xPct}%`, top: `${shipPos.yPct}%`, '--hdg': `${heading.toFixed(0)}deg`, '--warp-bearing': `${warpBearing.toFixed(0)}deg`, '--arrival-bearing': `${arrivalBearing.toFixed(0)}deg`, ...warpDurationStyle } as React.CSSProperties}
       >
         ➤
         {/* RCS attitude jets fire for every attitude change: initial local
@@ -250,7 +263,7 @@ export function PlayerShipAndWarpLayer({
       {warpPhase !== 'idle' && warpPhase !== 'turning' && (
         <div
           className={`ssv-warp warp-${warpPhase}`}
-          style={{ left: `${shipPos.xPct}%`, top: `${shipPos.yPct}%`, '--warp-bearing': `${warpBearing.toFixed(0)}deg`, '--arrival-bearing': `${arrivalBearing.toFixed(0)}deg` } as React.CSSProperties}
+          style={{ left: `${shipPos.xPct}%`, top: `${shipPos.yPct}%`, '--warp-bearing': `${warpBearing.toFixed(0)}deg`, '--arrival-bearing': `${arrivalBearing.toFixed(0)}deg`, ...warpDurationStyle } as React.CSSProperties}
           aria-hidden="true"
         >
           <span className="ssv-warp-bubble" />
@@ -258,7 +271,7 @@ export function PlayerShipAndWarpLayer({
         </div>
       )}
       {(warpPhase === 'launch' || warpPhase === 'arriving') && (
-        <div className="ssv-warp-flash" aria-hidden="true" />
+        <div className="ssv-warp-flash" style={warpDurationStyle} aria-hidden="true" />
       )}
     </>
   );

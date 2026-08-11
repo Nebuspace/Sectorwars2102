@@ -35,7 +35,8 @@ every other multi-hour window in this codebase (port_ownership_service's
 GRACE_HOURS / COUNTER_WINDOW_HOURS / MILITARY_DECLARATION_HOURS), so the
 security ladder scales the same way as every other timed system on dev.
 
-DOCUMENTED INTERPRETATIONS (NO-CANON, flagged for bless):
+DOCUMENTED INTERPRETATIONS (operational shape; magnitudes for the tractor
+surrender flow ratified 2026-08-06 — DECISIONS.md station-tractor-surrender-magnitudes):
   * Pending-op shape — station.security carries "upgrade_to" (target tier
     string) + "upgrade_completes_at" (ISO datetime) for a pending upgrade,
     or "downgrade_completes_at" (ISO datetime) alone for a pending downgrade
@@ -516,9 +517,9 @@ TRACTOR_STRENGTH_BY_TIER = {
 # turn... expected break time ~10 turns" describes the STATISTICAL outcome
 # of repeated attempts, each costing the pinned turns, not a scheduler-level
 # mechanic this WO builds). Immobilizing has no canon engine%/turns of its
-# own (only "0% chance... cannot escape under any circumstances"); NO-CANON:
-# reuses Strong's 90%/20 cost profile since it is the adjacent guarded tier
-# and canon gives no third number to pin -- flagged for bless.
+# own (only "0% chance... cannot escape under any circumstances"); ratified
+# 2026-08-06 (DECISIONS.md station-tractor-surrender-magnitudes) to reuse
+# Strong's 90%/20 cost profile as the adjacent guarded tier.
 TRACTOR_BREAK_PARAMS = {
     "weak":         {"success_chance": 0.25, "engine_pct": 75, "turns": 10},
     "strong":       {"success_chance": 0.10, "engine_pct": 90, "turns": 20},
@@ -530,9 +531,8 @@ TRACTOR_BREAK_PARAMS = {
 # column default.
 DEFAULT_WANTED_THRESHOLD = -500
 
-# NO-CANON pins (flagged for bless): canon states a "10-25% of cargo value"
-# RANGE for the surrender fine without specifying resolution, and a
-# "reputation hit" with no magnitude at all.
+# Ratified 2026-08-06 (DECISIONS.md station-tractor-surrender-magnitudes):
+# midpoint of canon's 10-25% cargo-value fine range.
 SURRENDER_FINE_PCT = 0.15
 # Matches PersonalReputationService.REPUTATION_TRIGGERS["attack_innocent"]
 # (-100) -- surrendering a stolen/wanted ship to station security is treated
@@ -541,10 +541,10 @@ SURRENDER_REPUTATION_PENALTY = -100
 SURRENDER_REPUTATION_REASON = "station_tractor_surrender"
 
 # Arrest/detention on surrender (station-protection.md:99, 1–6h range).
-# [NO-CANON] exact hours within canon range — stolen hull = top of band,
-# wanted pilot = mid. deny_listed is station-owner preference, not a
-# criminal arrest → no detention. Durations are CANONICAL hours through
-# game_time.scaled_deadline (same as security upgrade windows).
+# Ratified 2026-08-06 (DECISIONS.md station-tractor-surrender-magnitudes):
+# stolen hull = top of band, wanted pilot = mid; deny_listed is owner
+# preference, not criminal arrest → no detention. Durations are CANONICAL
+# hours through game_time.scaled_deadline (same as security upgrade windows).
 DETENTION_HOURS_BY_REASON = {
     "stolen_ship": 6,
     "wanted_pilot": 3,

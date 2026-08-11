@@ -26,9 +26,11 @@ This module provides three surfaces:
     (global lock order Player → Station → Ship → NPC → Sector), stock
     dual-written to Station.commodities JSONB AND the MarketPrice row,
     MarketTransaction rows recorded (npc_id set, player_id NULL), and
-    a TradingService reprice after the stop. Market participation
+    a TradingService reprice after the stop.     Market participation
     (npc-traders.md § Market participation): each leg carries the SAME
-    region tariff (trading_service.compute_region_tariff_multiplier) and
+    region tariff (trading_service.compute_region_tariff_multiplier), the
+    SAME Class-0 platform fee (transaction_fee_rate / STANDARD_TRANSACTION_FEE),
+    the SAME region tax (compute_region_tax_rate / realize_region_tax), and
     the SAME station owner tax (realized 40/30/30 via
     port_ownership_service.realize_port_revenue) a player trade pays, and
     accrues port-takeover hostility into a SEPARATE, CAPPED NPC sub-ledger
@@ -76,6 +78,10 @@ from src.services.scheduler._common import (
 from src.services.trading_service import (
     TradingService,
     compute_region_tariff_multiplier,
+    compute_region_tax_rate,
+    fallback_credit_region_tax,
+    realize_region_tax,
+    transaction_fee_rate,
 )
 
 logger = logging.getLogger(__name__)
@@ -402,9 +408,11 @@ def _drift_notoriety(npc: NPCCharacter, station: Station) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Market participation: region tariff + station tax + NPC-driven hostility
-# (npc-traders.md § Market participation — "A trader trade is treated
-#  identically to a player transaction wherever it touches the shared market.")
+# Market participation: region tariff + Class-0 platform fee + region tax +
+# station tax + NPC-driven hostility (npc-traders.md § Market participation —
+# "A trader trade is treated identically to a player transaction wherever it
+# touches the shared market." Max 2026-08-11: NPCs never get a free ride —
+# same fees/taxes/penalties as human players.)
 # ---------------------------------------------------------------------------
 
 def _station_tax_rate(station: Station) -> float:
@@ -546,19 +554,22 @@ def run_trade_stop(
 
     # Market participation (npc-traders.md § Market participation): a trader
     # trade is treated identically to a player transaction wherever it touches
-    # the shared market. Reuse the SAME region-tariff helper the player buy/sell
-    # path uses (routes/trading.py via trading_service.compute_region_tariff_
-    # multiplier) so an NPC trade carries the region tariff like a player trade.
-    # Read once per stop (the rate is per-region, not per-commodity); defensive —
-    # the helper degrades to a neutral (1.0, 0.0) on any lookup failure.
+    # the shared market. Reuse the SAME region-tariff / platform-fee / region-tax
+    # / station-tax helpers the player buy/sell path uses so an NPC never gets
+    # a free ride on levies a human would pay.
     tariff_mult, _ = compute_region_tariff_multiplier(db, station)
     tax_rate = _station_tax_rate(station)
+    fee_rate = transaction_fee_rate(station)
+    region_tax_rate = compute_region_tax_rate(station)
     # Tax is ACCUMULATED across all legs and realized ONCE at the end (after the
     # main flush). realize_port_revenue re-locks the station with
     # populate_existing(), which would discard this method's un-flushed
     # commodities / ownership mutations if called mid-loop — so it must run only
     # after those changes are persisted (see the realization site below).
+    # Region tax is likewise accumulated and realized once post-flush (mirrors
+    # routes/trading.py's realize_region_tax after the commit path's debit).
     total_tax = 0
+    total_region_tax = 0
     npc_hostility_value = 0  # gross NPC trade value this stop (for the isolated ledger)
 
     # --- SELL: everything in the hold this station buys. ---
@@ -590,15 +601,18 @@ def run_trade_stop(
         )
 
         gross_payout = unit_price * held
-        # Station tax (owner lever): withheld from the trader's proceeds and
-        # realized to the station's treasury per the 40/30/30 split — the SAME
-        # treatment a player sell receives (unowned stations levy none). The tax
-        # is accumulated and realized once after the main flush (see total_tax).
+        # Station tax + Class-0 platform fee + region tax: withheld from the
+        # trader's proceeds exactly like compute_sell_totals + region levy on
+        # the player sell path. Station tax is realized 40/30/30; region tax
+        # via realize_region_tax; platform fee is a sink (same as player).
         tax_amount = int(gross_payout * tax_rate)
-        net_payout = gross_payout - tax_amount
+        fee_amount = int(gross_payout * fee_rate)
+        region_tax_amount = int(gross_payout * region_tax_rate)
+        net_payout = gross_payout - tax_amount - fee_amount - region_tax_amount
 
         npc.credits = (npc.credits or 0) + net_payout
         total_tax += tax_amount
+        total_region_tax += region_tax_amount
         npc_hostility_value += gross_payout
         contents.pop(commodity_name, None)
         cargo["used"] = max(0, int(cargo.get("used", 0)) - held)
@@ -646,16 +660,19 @@ def run_trade_stop(
             max(1, int(base_unit_price * tariff_mult))
             if tariff_mult > 0 else base_unit_price
         )
-        # Station tax (owner lever) is charged ON TOP of the goods cost — the
-        # SAME as a player buy (total_with_tax = total_cost + tax). The per-unit
-        # all-in cost gates affordability so the trader never overspends its
-        # wallet. Round the per-unit tax UP (ceil) so the bound is a CONSERVATIVE
-        # upper estimate: per-unit flooring could otherwise let the once-floored
-        # aggregate tax (int(total_cost*tax_rate)) exceed quantity*all_in_per_unit
-        # and edge the wallet negative. all_in_per_unit is used ONLY for the
-        # affordability bound, not the charged price.
+        # Station tax + platform fee + region tax charged ON TOP of goods cost
+        # (mirrors compute_buy_totals + region levy). Per-unit all-in gates
+        # affordability so the trader never overspends its wallet. Round each
+        # per-unit levy UP (ceil) so the bound is a CONSERVATIVE upper estimate.
         per_unit_tax_ceil = math.ceil(unit_price * tax_rate) if tax_rate > 0 else 0
-        all_in_per_unit = max(1, unit_price + per_unit_tax_ceil)
+        per_unit_fee_ceil = math.ceil(unit_price * fee_rate) if fee_rate > 0 else 0
+        per_unit_region_ceil = (
+            math.ceil(unit_price * region_tax_rate) if region_tax_rate > 0 else 0
+        )
+        all_in_per_unit = max(
+            1,
+            unit_price + per_unit_tax_ceil + per_unit_fee_ceil + per_unit_region_ceil,
+        )
 
         free_space = max(
             0, int(cargo.get("capacity", 0)) - int(cargo.get("used", 0))
@@ -667,7 +684,9 @@ def run_trade_stop(
 
         total_cost = unit_price * quantity
         tax_amount = int(total_cost * tax_rate)
-        total_with_tax = total_cost + tax_amount
+        fee_amount = int(total_cost * fee_rate)
+        region_tax_amount = int(total_cost * region_tax_rate)
+        total_with_tax = total_cost + tax_amount + fee_amount + region_tax_amount
         # Final guard: never let rounding push the wallet negative (trim 1 unit
         # if the aggregate all-in cost edged past the wallet). Defensive belt-and-
         # suspenders on top of the conservative per-unit bound above.
@@ -675,12 +694,15 @@ def run_trade_stop(
             quantity -= 1
             total_cost = unit_price * quantity
             tax_amount = int(total_cost * tax_rate)
-            total_with_tax = total_cost + tax_amount
+            fee_amount = int(total_cost * fee_rate)
+            region_tax_amount = int(total_cost * region_tax_rate)
+            total_with_tax = total_cost + tax_amount + fee_amount + region_tax_amount
         if quantity <= 0:
             continue
 
         npc.credits = (npc.credits or 0) - total_with_tax
         total_tax += tax_amount
+        total_region_tax += region_tax_amount
         npc_hostility_value += total_cost
         contents[commodity_name] = contents.get(commodity_name, 0) + quantity
         cargo["used"] = int(cargo.get("used", 0)) + quantity
@@ -747,6 +769,17 @@ def run_trade_stop(
     # also uses, so a split hiccup can never break the trade.
     if total_tax > 0:
         _realize_station_tax(db, station, total_tax)
+        db.flush()
+
+    if total_region_tax > 0:
+        try:
+            realize_region_tax(db, station, total_region_tax)
+        except Exception:
+            logger.warning(
+                "realize_region_tax failed (npc trade); falling back to region treasury",
+                exc_info=True,
+            )
+            fallback_credit_region_tax(db, station, total_region_tax)
         db.flush()
 
     # Reprice from the post-trade stock (station row already locked in

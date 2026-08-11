@@ -79,6 +79,8 @@ from src.models.npc_character import (
     NPCRoster,
     NPCDeathLog,
 )
+from src.models.npc_barracks import NPCBarracks, NPCLodgingLocationType
+from src.models.outlaw_base import OutlawBase
 from src.models.construction import ConstructionReservation
 from src.models.port_ownership import StationListing, PurchaseOffer, TakeoverCampaign
 from src.models.warp_gate import WarpGate, WarpGateBeacon, WarpGateStatus, WarpGateBeaconStatus

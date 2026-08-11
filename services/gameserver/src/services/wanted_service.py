@@ -16,13 +16,8 @@ now schema-only) is the fix, mirroring `suspect_until`'s pattern
 cap complexity -- ranking.md never describes escalating Wanted duration for
 repeat busts, so each bust simply refreshes a flat window.
 
-NO-CANON: the duration itself. No shipped or design-only doc gives a
-number for this specific trigger. WANTED_DURATION borrows the 24-hour
-magnitude already used elsewhere in the SAME canon file (black-market.md's
-"Fence closure on raid: 24 real-time hours") as the closest available
-precedent for a serious-consequence duration, rather than inventing an
-unrelated number. Flagged here and in FEATURES/gameplay/ranking.md for a
-future DECISIONS.md ruling.
+Duration ratified 2026-08-06 (DECISIONS.md `wanted-black-market-bust-duration`):
+flat 24h window matching black-market.md's fence-closure-on-raid precedent.
 """
 from __future__ import annotations
 
@@ -36,9 +31,7 @@ from src.models.player import Player
 
 logger = logging.getLogger(__name__)
 
-# NO-CANON (see module docstring): 24h borrows black-market.md's fence-
-# closure-on-raid precedent as the nearest documented serious-consequence
-# duration in this same feature area.
+# Ratified 2026-08-06 (DECISIONS.md wanted-black-market-bust-duration).
 WANTED_DURATION = timedelta(hours=24)
 
 

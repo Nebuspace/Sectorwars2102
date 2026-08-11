@@ -897,6 +897,8 @@ def _fill_roster_deficit(
             spawned_at=now,
             last_seen_at=now,
         )
+        from src.services.npc_lodging_service import apply_roster_lodging_to_npc
+        apply_roster_lodging_to_npc(npc, roster)
         db.add(npc)
         db.flush()
         has_primary = True
@@ -999,13 +1001,18 @@ def _join_squad(
 # ---------------------------------------------------------------------------
 
 def run_loop_c(db: Session) -> List[Dict[str, Any]]:
-    """Canon rotation (~20% off-duty, 4-8h rest) needs the lodging slice
-    (NPCBarracks/OutlawBase) so off-duty NPCs have somewhere to be —
-    graceful no-op until then. The presence reconciliation sweep rides
-    this cadence instead."""
-    reconcile_presence(db)
-    return []
+    """Canon off-duty rotation — lodging occupancy sleep/wake + presence reconcile.
 
+    WO-BUILD-NPC-LODGING-FOUNDATION wires sleep/wake into NPCBarracks /
+    OutlawBase + Sector.defenses.docked_npc_ships. Full ~20% rotation
+    selection remains a follow-on; this pass keeps occupancy consistent
+    with current_activity.
+    """
+    from src.services.npc_lodging_service import sync_loop_c_occupancy
+
+    stats = sync_loop_c_occupancy(db)
+    reconcile_presence(db)
+    return [{"loop": "C", "lodging": stats}]
 
 def reconcile_presence(db: Session) -> int:
     """Periodic insurance against players_present drift (lost JSONB

@@ -336,30 +336,58 @@ def compute_effective_unit_price(
     return clamp_to_commodity_band(commodity, int(price))
 
 
-def compute_buy_totals(unit_price: int, quantity: int, tax_rate: float) -> Dict[str, int]:
+def compute_buy_totals(
+    unit_price: int,
+    quantity: int,
+    tax_rate: float,
+    *,
+    transaction_fee_rate: float = 0.0,
+    bulk_discount: float = 0.0,
+) -> Dict[str, int]:
     """Shared buy-side money math (WO-API-B1): the SAME arithmetic /buy's
     commit path and /quote's read-only preview both call, so a quote can
     never drift from what the next real buy actually charges. tax_amount
     truncates (Python ``int()``), matching the commit path's existing
-    convention."""
-    total_cost = unit_price * quantity
+    convention.
+
+    TradeDock premium (cycle-51): optional ``bulk_discount`` (0–0.20) reduces
+    the unit price before totals; ``transaction_fee_rate`` is the Class-0
+    2% platform fee (0 on TradeDocks).
+    """
+    discount = max(0.0, min(0.20, float(bulk_discount or 0.0)))
+    fee_rate = max(0.0, float(transaction_fee_rate or 0.0))
+    effective_unit = int(round(unit_price * (1.0 - discount)))
+    total_cost = effective_unit * quantity
     tax_amount = int(total_cost * tax_rate)
+    fee_amount = int(total_cost * fee_rate)
     return {
+        "unit_price": effective_unit,
         "total_cost": total_cost,
         "tax_amount": tax_amount,
-        "total_with_tax": total_cost + tax_amount,
+        "fee_amount": fee_amount,
+        "bulk_discount": discount,
+        "total_with_tax": total_cost + tax_amount + fee_amount,
     }
 
 
-def compute_sell_totals(unit_price: int, quantity: int, tax_rate: float) -> Dict[str, int]:
+def compute_sell_totals(
+    unit_price: int,
+    quantity: int,
+    tax_rate: float,
+    *,
+    transaction_fee_rate: float = 0.0,
+) -> Dict[str, int]:
     """Shared sell-side money math (WO-API-B1) — mirrors compute_buy_totals
     for payouts; see its docstring."""
+    fee_rate = max(0.0, float(transaction_fee_rate or 0.0))
     total_earnings = unit_price * quantity
     tax_amount = int(total_earnings * tax_rate)
+    fee_amount = int(total_earnings * fee_rate)
     return {
         "total_earnings": total_earnings,
         "tax_amount": tax_amount,
-        "net_earnings": total_earnings - tax_amount,
+        "fee_amount": fee_amount,
+        "net_earnings": total_earnings - tax_amount - fee_amount,
     }
 
 
@@ -696,10 +724,28 @@ async def buy_resource(
     # gap to one RTT, not zero. Closing that residual fully needs a server-
     # side price/version token (mack follow-on, tracked by the hub) — not
     # done here.
-    _buy_totals = compute_buy_totals(effective_buy_price, trade_request.quantity, tax_rate)
+    from src.services.trading_service import (
+        is_tradedock,
+        transaction_fee_rate,
+        tradedock_bulk_discount_fraction,
+    )
+    bulk = (
+        tradedock_bulk_discount_fraction(trade_request.quantity)
+        if is_tradedock(station)
+        else 0.0
+    )
+    _buy_totals = compute_buy_totals(
+        effective_buy_price,
+        trade_request.quantity,
+        tax_rate,
+        transaction_fee_rate=transaction_fee_rate(station),
+        bulk_discount=bulk,
+    )
     total_cost = _buy_totals["total_cost"]
     tax_amount = _buy_totals["tax_amount"]
+    fee_amount = _buy_totals["fee_amount"]
     total_with_tax = _buy_totals["total_with_tax"]
+    effective_buy_price = _buy_totals["unit_price"]
 
     # WO-BUILD-REGION-TAX-RATE-WIRING: Region.tax_rate is a SEPARATE levy from
     # the station tax above (governance-set, applies regardless of station
@@ -910,7 +956,9 @@ async def buy_resource(
                 str(current_player.id),
                 ActivityEventType.TRADE_BUY,
                 {"total_value": total_cost, "commodity": trade_request.resource_type,
-                 "quantity": trade_request.quantity, "station_id": str(station.id)},
+                 "quantity": trade_request.quantity, "station_id": str(station.id),
+                 "sector_id": current_player.current_sector_id},
+                db=db,
             )
         except Exception:
             logger.warning("activity tracking failed (buy trade)", exc_info=True)
@@ -1077,9 +1125,16 @@ async def sell_resource(
     )
     # WO-API-B1: compute_sell_totals is the SAME callable /quote uses — see
     # compute_buy_totals's comment on the buy side.
-    _sell_totals = compute_sell_totals(effective_sell_price, trade_request.quantity, tax_rate)
+    from src.services.trading_service import transaction_fee_rate
+    _sell_totals = compute_sell_totals(
+        effective_sell_price,
+        trade_request.quantity,
+        tax_rate,
+        transaction_fee_rate=transaction_fee_rate(station),
+    )
     total_earnings = _sell_totals["total_earnings"]
     tax_amount = _sell_totals["tax_amount"]
+    fee_amount = _sell_totals["fee_amount"]
     net_earnings = _sell_totals["net_earnings"]
 
     # WO-BUILD-REGION-TAX-RATE-WIRING: Region.tax_rate withheld from sale
@@ -1307,7 +1362,9 @@ async def sell_resource(
                 str(current_player.id),
                 ActivityEventType.TRADE_SELL,
                 {"total_value": total_earnings, "commodity": trade_request.resource_type,
-                 "quantity": trade_request.quantity, "station_id": str(station.id)},
+                 "quantity": trade_request.quantity, "station_id": str(station.id),
+                 "sector_id": current_player.current_sector_id},
+                db=db,
             )
         except Exception:
             logger.warning("activity tracking failed (sell trade)", exc_info=True)
@@ -1450,12 +1507,35 @@ async def get_trade_quote(
         station.tax_rate if (station.owner_id is not None and station.tax_rate is not None) else 0.0
     )
 
+    from src.services.trading_service import (
+        is_tradedock,
+        transaction_fee_rate,
+        tradedock_bulk_discount_fraction,
+    )
+    fee_rate = transaction_fee_rate(station)
     if action == "buy":
-        totals = compute_buy_totals(unit_price, quote_request.quantity, tax_rate)
+        bulk = (
+            tradedock_bulk_discount_fraction(quote_request.quantity)
+            if is_tradedock(station)
+            else 0.0
+        )
+        totals = compute_buy_totals(
+            unit_price,
+            quote_request.quantity,
+            tax_rate,
+            transaction_fee_rate=fee_rate,
+            bulk_discount=bulk,
+        )
         subtotal = totals["total_cost"]
         total = totals["total_with_tax"]
+        unit_price = totals["unit_price"]
     else:
-        totals = compute_sell_totals(unit_price, quote_request.quantity, tax_rate)
+        totals = compute_sell_totals(
+            unit_price,
+            quote_request.quantity,
+            tax_rate,
+            transaction_fee_rate=fee_rate,
+        )
         subtotal = totals["total_earnings"]
         total = totals["net_earnings"]
 
@@ -1468,6 +1548,9 @@ async def get_trade_quote(
         "subtotal": subtotal,
         "tax_rate": tax_rate,
         "tax": totals["tax_amount"],
+        "fee": totals.get("fee_amount", 0),
+        "fee_rate": fee_rate,
+        "bulk_discount": totals.get("bulk_discount", 0.0),
         "total": total,
     }
 
@@ -1773,6 +1856,27 @@ async def dock_at_station(
         docking_service._realize_fee(db, station, docking_fee)
         slip_result["occupancy"].fee_paid = docking_fee
 
+        # lifecycle.md docking-fee subsidy: rebate resident from region treasury
+        docking_rebate = 0
+        try:
+            from src.models.region import Region as _Region
+            from src.services import regional_activity_levers_service as _levers
+            if station.region_id is not None:
+                _region = (
+                    db.query(_Region)
+                    .filter(_Region.id == station.region_id)
+                    .with_for_update()
+                    .first()
+                )
+                _fee_after, docking_rebate = _levers.apply_docking_fee_subsidy(
+                    db, _region, current_player, docking_fee
+                )
+                if docking_rebate:
+                    current_player.credits += docking_rebate
+        except Exception:
+            logger.exception("docking-fee subsidy hook failed (non-fatal)")
+            docking_rebate = 0
+
         # ARIA market-observation hook (WO-ARIA-MARKET-OBS): best-effort,
         # folds into this transaction's single commit below. Deliberately
         # does NOT call _ensure_market_prices first (unlike get_market_info)
@@ -1843,6 +1947,7 @@ async def dock_at_station(
             "turn_cost": DOCKING_TURN_COST,
             "turns_remaining": current_player.turns,
             "docking_fee": docking_fee,
+            "docking_fee_rebate": docking_rebate,
             "credits_remaining": current_player.credits,
             "slips": {
                 "capacity": slip_result["capacity"],

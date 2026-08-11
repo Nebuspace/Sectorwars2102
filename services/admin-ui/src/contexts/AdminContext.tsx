@@ -35,16 +35,6 @@ export interface GalaxyStats {
   genesis_count: number;
 }
 
-export interface GalaxyGenerationConfig {
-  resource_distribution?: 'balanced' | 'clustered' | 'random';
-  hazard_levels?: 'low' | 'moderate' | 'high' | 'extreme';
-  connectivity?: 'sparse' | 'normal' | 'dense';
-  station_density?: number;
-  planet_density?: number;
-  warp_tunnel_probability?: number;
-  faction_territory_size?: number;
-}
-
 export interface SectorGenerationConfig {
   region_id?: string;
   cluster_id?: string;
@@ -61,14 +51,6 @@ export interface GalaxyState {
     age_in_days: number;
     economic_health: number;
     exploration_percentage: number;
-  };
-  generation_config?: {
-    resource_distribution: string;
-    hazard_levels: string;
-    connectivity: string;
-    station_density: number;
-    planet_density: number;
-    warp_tunnel_probability: number;
   };
 }
 

@@ -361,10 +361,11 @@ def _scanner_range_bonus_spacings(db: Session, ship: Ship) -> float:
 
     The canonical scanner range lives on ShipSpecification.scanner_range;
     ShipUpgradeService.effective_scanner_range adds the Sensor-upgrade scan-range
-    bonus (+1 sector / level — NO-CANON kernel, ship-systems.md §2.5 marks the
-    exact figure 📐 Design-only). The bonus is the difference between the
-    upgraded effective range and the hull's base, mapped 1 scanner sector → 1
-    spacing so each Sensor level widens the quantum scan cone by one hop-unit.
+    bonus (+1 sector / level — CANON, ship-systems.md §2.5 ✅ Shipped; ratified
+    2026-08-09 DECISIONS.md no-canon-magnitudes-batch-remainder). The bonus is the
+    difference between the upgraded effective range and the hull's base, mapped
+    1 scanner sector → 1 spacing so each Sensor level widens the quantum scan
+    cone by one hop-unit.
     """
     spec = (
         db.query(ShipSpecification)

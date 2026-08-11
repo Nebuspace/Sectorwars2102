@@ -24,8 +24,7 @@ Security model (brief §5):
   * **Per-owner caps** bound swarm size at the mint side (brief §5 Threat 1/2):
     ≤ MAX_ACTIVE_INVITES_PER_OWNER_PER_REGION active invites per owner per region,
     and ≤ MAX_REDEMPTIONS_PER_OWNER_PER_WINDOW redemptions per owner per rolling
-    window. **These numbers are NO-CANON (invented in brief D4) — flagged for human
-    to ratify in sw2102-docs/DECISIONS.md.**
+    window. Ratified 2026-08-06 (DECISIONS.md ``region-invite-swarm-caps``).
   * **Validate fails closed** on status≠active / uses≥max_uses / now≥expires_at /
     region gone / **owner no longer owns the region** (brief §5 Threat 3/4).
   * **Consume is race-safe**: ``SELECT ... FOR UPDATE`` on the invite row, the
@@ -63,9 +62,9 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Invented numbers (NO-CANON — brief §6 D2/D3/D4). Flagged for human to ratify in
-# sw2102-docs/DECISIONS.md. Kept as module constants so a single ruling change
-# is one edit, and so the unit tests pin the documented kernel, not magic ints.
+# Ratified 2026-08-06 (DECISIONS.md region-invite-swarm-caps) — brief §6
+# D2/D3/D4 numbers kept as module constants so a single ruling change is
+# one edit, and unit tests pin the documented kernel, not magic ints.
 # ---------------------------------------------------------------------------
 
 # D3 — mandatory TTL; default 7 days when the caller does not specify expires_at.
@@ -76,7 +75,7 @@ DEFAULT_INVITE_TTL = timedelta(days=7)
 DEFAULT_MAX_USES = 1
 MAX_MAX_USES = 10
 
-# D4 — per-owner caps (NO-CANON). Bound swarm size at the mint side.
+# D4 — per-owner caps. Bound swarm size at the mint side.
 #   * active = status='active' AND not expired AND uses < max_uses.
 MAX_ACTIVE_INVITES_PER_OWNER_PER_REGION = 10
 #   * redemptions counted across a rolling window (per owner, all their regions).

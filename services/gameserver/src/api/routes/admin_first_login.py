@@ -3,16 +3,16 @@ Admin routes for First Login conversation management and debugging
 """
 
 from typing import List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, desc
+from sqlalchemy import desc
 from sqlalchemy.orm import Session, joinedload
 from pydantic import BaseModel
 
 from src.core.database import get_db
 from src.auth.admin_scopes import PLAYERS_VIEW
 from src.auth.dependencies import require_scope
-from src.models.first_login import FirstLoginSession, DialogueExchange, DialogueOutcome
+from src.models.first_login import FirstLoginSession, DialogueExchange
 from src.models.player import Player
 
 router = APIRouter(
@@ -75,16 +75,6 @@ class ConversationDetail(BaseModel):
 
     class Config:
         from_attributes = True
-
-
-class ConversationStats(BaseModel):
-    total_sessions: int
-    completed_sessions: int
-    success_rate: float
-    average_questions: float
-    total_cost_usd: float
-    ai_provider_breakdown: dict
-    outcome_breakdown: dict
 
 
 # Endpoints
@@ -234,87 +224,4 @@ async def get_conversation_detail(
         session=summary,
         exchanges=exchange_details,
         guard_personality=guard_personality
-    )
-
-
-@router.get("/stats", response_model=ConversationStats)
-async def get_conversation_stats(
-    days: int = Query(30, ge=1, le=365),
-    db: Session = Depends(get_db)
-):
-    """
-    Get aggregate statistics for first login conversations
-    """
-    cutoff_date = datetime.utcnow() - timedelta(days=days)
-
-    # Total sessions
-    total_sessions = db.query(func.count(FirstLoginSession.id)).filter(
-        FirstLoginSession.started_at >= cutoff_date
-    ).scalar()
-
-    # Completed sessions
-    completed_sessions = db.query(func.count(FirstLoginSession.id)).filter(
-        FirstLoginSession.started_at >= cutoff_date,
-        FirstLoginSession.completed_at.isnot(None)
-    ).scalar()
-
-    # Success rate (SUCCESS outcome)
-    successful_sessions = db.query(func.count(FirstLoginSession.id)).filter(
-        FirstLoginSession.started_at >= cutoff_date,
-        FirstLoginSession.outcome == DialogueOutcome.SUCCESS
-    ).scalar()
-
-    success_rate = (successful_sessions / completed_sessions * 100) if completed_sessions > 0 else 0.0
-
-    # Average questions per session
-    avg_questions_result = db.query(
-        func.avg(
-            db.query(func.count(DialogueExchange.id)).filter(
-                DialogueExchange.session_id == FirstLoginSession.id,
-                DialogueExchange.player_response != ""
-            ).scalar_subquery()
-        )
-    ).filter(
-        FirstLoginSession.started_at >= cutoff_date
-    ).scalar()
-
-    average_questions = float(avg_questions_result) if avg_questions_result else 0.0
-
-    # Total cost
-    total_cost = db.query(func.sum(DialogueExchange.estimated_cost_usd)).join(
-        FirstLoginSession
-    ).filter(
-        FirstLoginSession.started_at >= cutoff_date
-    ).scalar() or 0.0
-
-    # AI provider breakdown
-    provider_counts = db.query(
-        DialogueExchange.ai_provider,
-        func.count(DialogueExchange.id)
-    ).join(FirstLoginSession).filter(
-        FirstLoginSession.started_at >= cutoff_date,
-        DialogueExchange.ai_provider.isnot(None)
-    ).group_by(DialogueExchange.ai_provider).all()
-
-    ai_provider_breakdown = {provider: count for provider, count in provider_counts}
-
-    # Outcome breakdown
-    outcome_counts = db.query(
-        FirstLoginSession.outcome,
-        func.count(FirstLoginSession.id)
-    ).filter(
-        FirstLoginSession.started_at >= cutoff_date,
-        FirstLoginSession.outcome.isnot(None)
-    ).group_by(FirstLoginSession.outcome).all()
-
-    outcome_breakdown = {outcome.name: count for outcome, count in outcome_counts if outcome}
-
-    return ConversationStats(
-        total_sessions=total_sessions or 0,
-        completed_sessions=completed_sessions or 0,
-        success_rate=round(success_rate, 2),
-        average_questions=round(average_questions, 2),
-        total_cost_usd=round(total_cost, 4),
-        ai_provider_breakdown=ai_provider_breakdown,
-        outcome_breakdown=outcome_breakdown
     )

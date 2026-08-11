@@ -212,11 +212,17 @@ class TestSharedTotalsHelpers:
     def test_buy_totals_truncates_tax_with_int(self):
         totals = compute_buy_totals(30, 7, 0.07)
         # 30*7=210; 210*0.07=14.7 -> int() truncates to 14, NOT rounds to 15.
-        assert totals == {"total_cost": 210, "tax_amount": 14, "total_with_tax": 224}
+        assert totals["total_cost"] == 210
+        assert totals["tax_amount"] == 14
+        assert totals["fee_amount"] == 0
+        assert totals["total_with_tax"] == 224
 
     def test_sell_totals_withholds_tax_from_gross(self):
         totals = compute_sell_totals(20, 6, 0.10)
-        assert totals == {"total_earnings": 120, "tax_amount": 12, "net_earnings": 108}
+        assert totals["total_earnings"] == 120
+        assert totals["tax_amount"] == 12
+        assert totals["fee_amount"] == 0
+        assert totals["net_earnings"] == 108
 
 
 class TestPriceBandInvariantSurvivesTax:
@@ -267,9 +273,15 @@ class TestPriceBandInvariantSurvivesTax:
 
     def test_zero_tax_is_pure_passthrough_regression(self):
         totals_buy = compute_buy_totals(50, 4, tax_rate=0.0)
-        assert totals_buy == {"total_cost": 200, "tax_amount": 0, "total_with_tax": 200}
+        assert totals_buy["total_cost"] == 200
+        assert totals_buy["tax_amount"] == 0
+        assert totals_buy["fee_amount"] == 0
+        assert totals_buy["total_with_tax"] == 200
         totals_sell = compute_sell_totals(50, 4, tax_rate=0.0)
-        assert totals_sell == {"total_earnings": 200, "tax_amount": 0, "net_earnings": 200}
+        assert totals_sell["total_earnings"] == 200
+        assert totals_sell["tax_amount"] == 0
+        assert totals_sell["fee_amount"] == 0
+        assert totals_sell["net_earnings"] == 200
 
 
 @pytest.mark.asyncio
@@ -293,7 +305,8 @@ class TestQuoteEqualsChargeBuy:
         assert quote["unit_price"] == 30
         assert quote["subtotal"] == 300
         assert quote["tax"] == 0
-        assert quote["total"] == 300
+        assert quote["fee"] == 6  # 2% Class-0 platform fee
+        assert quote["total"] == 306
 
         result = await buy_resource(
             trade_request=TradeRequest(station_id=str(station.id), resource_type="ore", quantity=10),
@@ -307,7 +320,7 @@ class TestQuoteEqualsChargeBuy:
     async def test_taxed_station_truncation_tier_quote_matches_charge(self):
         """7% tax on a 210-cr subtotal (30/unit x 7) truncates to 14, not 15
         -- the exact edge case compute_buy_totals's own unit test pins;
-        proven here end to end through both routes."""
+        proven here end to end through both routes. Platform fee stacks on top."""
         player = _neutral_player(credits=10_000)
         station = _taxed_station(tax_rate=0.07)
         ship = _ship(capacity=100)
@@ -322,7 +335,8 @@ class TestQuoteEqualsChargeBuy:
         assert quote["unit_price"] == 30
         assert quote["subtotal"] == 210
         assert quote["tax"] == 14
-        assert quote["total"] == 224
+        assert quote["fee"] == 4  # int(210 * 0.02)
+        assert quote["total"] == 228
 
         result = await buy_resource(
             trade_request=TradeRequest(station_id=str(station.id), resource_type="ore", quantity=7),
@@ -332,7 +346,7 @@ class TestQuoteEqualsChargeBuy:
         assert result["transaction"]["total_cost"] == quote["subtotal"]
         assert result["transaction"]["tax"] == quote["tax"]
         assert result["transaction"]["total_with_tax"] == quote["total"]
-        assert player.credits == 10_000 - 224
+        assert player.credits == 10_000 - 228
 
     async def test_band_clamp_ceiling_quote_matches_charge(self):
         """Posted sell_price (999) is far above ore's canon max (45) --
@@ -350,7 +364,8 @@ class TestQuoteEqualsChargeBuy:
             db=_quote_session(station, mp), current_user=None, current_player=player,
         )
         assert quote["unit_price"] == 45
-        assert quote["total"] == 135
+        assert quote["fee"] == 2  # int(135 * 0.02)
+        assert quote["total"] == 137
 
         result = await buy_resource(
             trade_request=TradeRequest(station_id=str(station.id), resource_type="ore", quantity=3),
@@ -378,7 +393,8 @@ class TestQuoteEqualsChargeSell:
         assert quote["unit_price"] == 20
         assert quote["subtotal"] == 200
         assert quote["tax"] == 0
-        assert quote["total"] == 200
+        assert quote["fee"] == 4  # 2% Class-0 platform fee
+        assert quote["total"] == 196
 
         result = await sell_resource(
             trade_request=TradeRequest(station_id=str(station.id), resource_type="ore", quantity=10),
@@ -401,8 +417,7 @@ class TestQuoteEqualsChargeSell:
             ),
             db=_quote_session(station, mp), current_user=None, current_player=player,
         )
-        # 20*6=120; 10% tax = 12 (exact, no truncation edge here -- the
-        # truncation tier is pinned on the buy side above); net=108.
+        # 20*6=120; 10% tax = 12; 2% platform fee = 2; net=106.
         assert quote == {
             "station_id": str(station.id),
             "resource_type": "ore",
@@ -412,7 +427,10 @@ class TestQuoteEqualsChargeSell:
             "subtotal": 120,
             "tax_rate": 0.10,
             "tax": 12,
-            "total": 108,
+            "fee": 2,
+            "fee_rate": 0.02,
+            "bulk_discount": 0.0,
+            "total": 106,
         }
 
         result = await sell_resource(
@@ -423,7 +441,7 @@ class TestQuoteEqualsChargeSell:
         assert result["transaction"]["total_earnings"] == quote["subtotal"]
         assert result["transaction"]["tax"] == quote["tax"]
         assert result["transaction"]["net_earnings"] == quote["total"]
-        assert player.credits == 1_000 + 108
+        assert player.credits == 1_000 + 106
 
     async def test_band_clamp_floor_quote_matches_charge(self):
         """Posted buy_price (5) is far below ore's canon min (15) -- the
@@ -440,7 +458,8 @@ class TestQuoteEqualsChargeSell:
             db=_quote_session(station, mp), current_user=None, current_player=player,
         )
         assert quote["unit_price"] == 15
-        assert quote["total"] == 90
+        assert quote["fee"] == 1  # int(90 * 0.02)
+        assert quote["total"] == 89
 
         result = await sell_resource(
             trade_request=TradeRequest(station_id=str(station.id), resource_type="ore", quantity=6),
@@ -558,7 +577,8 @@ class TestQuoteStockCheckMirrorsBuy:
             db=_quote_session(station, mp), current_user=None, current_player=player,
         )
         assert quote["unit_price"] == 20
-        assert quote["total"] == 120
+        assert quote["fee"] == 2  # int(120 * 0.02)
+        assert quote["total"] == 118
 
         result = await sell_resource(
             trade_request=TradeRequest(station_id=str(station.id), resource_type="ore", quantity=6),
@@ -598,7 +618,8 @@ class TestQuotePeeksHaggleWithoutConsuming:
         )
         # int(round(22.4)) = 22, inside [15, 45] -- no band interference.
         assert quote["unit_price"] == 22
-        assert quote["total"] == 110
+        assert quote["fee"] == 2  # int(110 * 0.02)
+        assert quote["total"] == 112
 
         # Peek must NOT have consumed the session -- still "accepted".
         assert player.settings["haggle"]["sessions"][haggle_key]["status"] == "accepted"

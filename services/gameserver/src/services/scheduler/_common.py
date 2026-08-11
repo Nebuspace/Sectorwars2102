@@ -822,6 +822,17 @@ _LOOP_CRASH_CATCHUP_LOCK_KEY = _mnemonic_lock_key("LCUP")
 # Player retention-SIGNAL sweep (WO-RE2) — distinct from the unrelated
 # RouteOptimizationRun retention job just above (_ROUTE_RUNS_RETENTION_LOCK_KEY).
 _RETENTION_SWEEP_LOCK_KEY = _mnemonic_lock_key("RETN")
+# Multi-account detection sweep (WO-BUILD-MULTI-ACCOUNT-DETECTION-SWEEP).
+# Hourly soft+hard signal scoring → MultiAccountCluster/Flag rows for the
+# admin review queue. Own key so two instances don't double-insert flags.
+# 'MACD' = Multi-ACcount Detection.
+_MULTI_ACCOUNT_DETECTION_LOCK_KEY = _mnemonic_lock_key("MACD")
+_MULTI_ACCOUNT_DETECTION_STATE_KEY = "multi_account_detection_last_run_at"
+# Canon: soft signals "run as a periodic batch every hour"
+# (OPERATIONS/multi-account-detection.md). Env-overridable.
+MULTI_ACCOUNT_DETECTION_SWEEP_SECONDS = int(
+    os.environ.get("MULTI_ACCOUNT_DETECTION_SWEEP_SECONDS", str(60 * 60))
+)
 # Suspect auto-clear sweep (WO-CMB-SUSPECT-LIFE-1 held wiring) — own key,
 # not the global one. suspect_service.clear_expired_suspects only writes
 # already-expired rows (a second instance racing the sweep finds zero

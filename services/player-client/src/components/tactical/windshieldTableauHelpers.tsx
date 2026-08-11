@@ -1,5 +1,18 @@
 import React from 'react';
-import { deriveIspPose, ispPhaseToTravelClass, type IspPose } from '../../services/intrasystemFlight';
+import {
+  deriveIspPose,
+  ispPhaseToTravelClass,
+  ISP_ACCEL_MS,
+  ISP_COAST_MS,
+  ISP_DECEL_MS,
+  ISP_FLIP_MS,
+  ISP_HALT_BRAKE_MS,
+  ISP_HALT_FLIP_MS,
+  ISP_MOVE_MS,
+  ISP_ORIENT_MS,
+  ISP_SETTLE_MS,
+  type IspPose,
+} from '../../services/intrasystemFlight';
 import type { HitMeta, ShipPresence, SystemBody, SystemStation } from './SolarSystemViewscreen';
 import {
   AU_SEMI_X_PCT,
@@ -98,18 +111,19 @@ export const ENGAGE_RANGE_EM = DOCK_RANGE_EM * 3;
 // the engine burn, RCS jets, and the retrograde flip layered on as a timed
 // track. The hull keeps coasting at speed through the flip — momentum, never a
 // dead stop to turn. Phase boundaries only retoggle visuals / retime the NEXT
-// rotation; they never restart the running position glide. TRAVEL_MOVE_MS must
-// equal the 6.4s position duration in solar-system-viewscreen.css.
-export const TRAVEL_ORIENT_MS = 1000;
-export const TRAVEL_ACCEL_MS = 1800;
-export const TRAVEL_COAST_MS = 1100;
-export const TRAVEL_FLIP_MS = 1300;
-export const TRAVEL_DECEL_MS = 2200;
-export const TRAVEL_SETTLE_MS = 800;
-export const TRAVEL_MOVE_MS = TRAVEL_ACCEL_MS + TRAVEL_COAST_MS + TRAVEL_FLIP_MS + TRAVEL_DECEL_MS;
+// rotation; they never restart the running position glide. TRAVEL_* aliases
+// ISP_* from intrasystemFlight (lockstep with gameserver) so the two clocks
+// cannot drift — same SSOT pattern as warpCinematicBus → CSS.
+export const TRAVEL_ORIENT_MS = ISP_ORIENT_MS;
+export const TRAVEL_ACCEL_MS = ISP_ACCEL_MS;
+export const TRAVEL_COAST_MS = ISP_COAST_MS;
+export const TRAVEL_FLIP_MS = ISP_FLIP_MS;
+export const TRAVEL_DECEL_MS = ISP_DECEL_MS;
+export const TRAVEL_SETTLE_MS = ISP_SETTLE_MS;
+export const TRAVEL_MOVE_MS = ISP_MOVE_MS;
 /** Emergency Halt: flip then burn — shorter than a planned approach brake. */
-export const TRAVEL_HALT_FLIP_MS = 1800;
-export const TRAVEL_HALT_BRAKE_MS = 1600;
+export const TRAVEL_HALT_FLIP_MS = ISP_HALT_FLIP_MS;
+export const TRAVEL_HALT_BRAKE_MS = ISP_HALT_BRAKE_MS;
 /** How far ahead (as a fraction of remaining path) the hull coasts while flipping. */
 export const TRAVEL_HALT_COAST_FRAC = 0.38;
 /** Mid-course redirect: RCS turn while the path arcs onto the new bearing. */

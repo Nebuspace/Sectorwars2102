@@ -48,6 +48,7 @@ from src.services.scheduler._common import (
     PRICE_ALERT_SWEEP_SECONDS,
     PRICE_HISTORY_SWEEP_SECONDS,
     ROUTE_RUNS_RETENTION_SWEEP_SECONDS,
+    MULTI_ACCOUNT_DETECTION_SWEEP_SECONDS,
     PRESENCE_SWEEP_CHECK_SECONDS,
     MINING_HARVEST_SWEEP_SECONDS,
     _broadcast_events,
@@ -63,6 +64,7 @@ from src.services.scheduler.presence_helpers import (
     _relocate_stranded_npcs_sync,
     _disperse_law_patrols_sync,
     _run_retention_sweep_sync,
+    _run_multi_account_detection_sweep_sync,
     _run_citizen_rebake_sweep_sync,
     _run_presence_sweep_sync,
     _run_aria_prune_async,
@@ -944,6 +946,34 @@ async def _npc_scheduler_main_loop() -> None:
                 raise
             except Exception:
                 logger.exception("NPC scheduler: retention sweep pass crashed (loop continues)")
+
+        # Multi-account detection sweep (WO-BUILD-MULTI-ACCOUNT-DETECTION-SWEEP)
+        # — hourly HARD/SOFT signal scoring into MultiAccountCluster/Flag.
+        # Soft-tier participation discount stays out of scope; HARD flags feed
+        # participation_weight. SYNC Session via asyncio.to_thread.
+        if elapsed % MULTI_ACCOUNT_DETECTION_SWEEP_SECONDS == 0:
+            try:
+                mac = await asyncio.to_thread(_run_multi_account_detection_sweep_sync)
+                if (
+                    mac.get("clusters_created", 0)
+                    or mac.get("clusters_refreshed", 0)
+                    or mac.get("hard_signal_groups", 0)
+                    or mac.get("soft_signal_groups", 0)
+                ):
+                    logger.info(
+                        "NPC scheduler: multi-account detection — created %d, "
+                        "refreshed %d (hard_groups=%d soft_groups=%d)",
+                        mac.get("clusters_created", 0),
+                        mac.get("clusters_refreshed", 0),
+                        mac.get("hard_signal_groups", 0),
+                        mac.get("soft_signal_groups", 0),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "NPC scheduler: multi-account detection sweep crashed (loop continues)"
+                )
 
         # Citizen-conditional ship RE-BAKE sweep (WO-GC-C leg 4) — THE FIREWALL
         # trigger. Re-bakes every hull carrying a citizen-conditional slot (today

@@ -224,49 +224,6 @@ async def update_faction(
         )
 
 
-@router.delete("/{faction_id}")
-async def delete_faction(
-    faction_id: UUID,
-    db: Session = Depends(get_db),
-    admin_user: User = Depends(require_scope(GALAXY_MANAGE))
-):
-    """Delete a faction (admin only)."""
-    with admin_action_attempt(
-        db,
-        actor=admin_user,
-        scope_used=GALAXY_MANAGE,
-        action="faction_delete",
-        target_type="faction",
-        target_id=str(faction_id),
-    ) as attempt:
-        service = FactionService(db)
-        faction = await service.get_faction_by_id(faction_id)
-
-        if not faction:
-            raise HTTPException(status_code=404, detail="Faction not found")
-
-        # Don't allow deletion of core factions
-        core_faction_names = [
-            "United Space Federation",
-            "Independent Traders Alliance",
-            "Shadow Syndicate",
-            "Merchant Guild",
-            "Stellar Cartographers",
-            "Colonial Defense Force",
-        ]
-
-        if faction.name in core_faction_names:
-            raise HTTPException(
-                status_code=400,
-                detail="Cannot delete core game factions",
-            )
-
-        name = faction.name
-        db.delete(faction)
-        attempt.succeed(payload={"name": name})
-
-        return {"success": True, "message": f"Faction '{name}' deleted"}
-
 
 @router.put("/{faction_id}/territory")
 async def update_faction_territory(
