@@ -227,7 +227,7 @@ IMPORTANT: Write as natural speech, NOT numbered lists or bullet points. Just th
 
         contradictions_text = ""
         if detected_contradictions:
-            contradictions_text = f"\n\nCONTRADICTIONS DETECTED:\n" + "\n".join(f"- {c}" for c in detected_contradictions)
+            contradictions_text = "\n\nCONTRADICTIONS DETECTED:\n" + "\n".join(f"- {c}" for c in detected_contradictions)
 
         # Get ship specifications for context
         # Ensure claimed_ship is human-readable (may arrive as enum name or display name)

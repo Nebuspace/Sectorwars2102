@@ -323,7 +323,7 @@ class NexusGenerationService:
         )
         session.add(nexus_zone)
         await session.flush()
-        logger.info(f"Created 'The Expanse' zone for Central Nexus (sectors 1-5000)")
+        logger.info("Created 'The Expanse' zone for Central Nexus (sectors 1-5000)")
         return nexus_zone
 
     async def _create_nexus_clusters(self, session: AsyncSession, region_id: str) -> List[Cluster]:

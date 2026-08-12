@@ -1611,7 +1611,7 @@ async def create_analytics_snapshot(
         
         return {
             "success": True,
-            "message": f"Analytics snapshot created successfully",
+            "message": "Analytics snapshot created successfully",
             "snapshot_id": str(snapshot.id),
             "timestamp": snapshot.snapshot_time.isoformat()
         }

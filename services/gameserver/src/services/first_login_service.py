@@ -595,7 +595,7 @@ class FirstLoginService:
                     session.fallback_to_rules = False
                     logger.info(f"[FirstLogin:Scene] AI generation successful with {provider_used.value}")
                 else:
-                    logger.info(f"[FirstLogin:Scene] AI generation returned None, using fallback")
+                    logger.info("[FirstLogin:Scene] AI generation returned None, using fallback")
             except Exception as e:
                 logger.warning(f"[FirstLogin:Scene] AI generation failed: {e}, using fallback")
 
@@ -603,7 +603,7 @@ class FirstLoginService:
         if not initial_prompt:
             initial_prompt = INITIAL_GUARD_PROMPT
             session.fallback_to_rules = True
-            logger.info(f"[FirstLogin:Scene] Using template fallback")
+            logger.info("[FirstLogin:Scene] Using template fallback")
 
         # Localize narration into the player's preferred language (defensive)
         initial_prompt = await self._localize_for_player(session.player_id, initial_prompt)
@@ -1558,7 +1558,7 @@ Description: {ship_specs.get('description', 'N/A')}
             "Good luck out there."
         )
 
-        logger.info(f"Escape pod auto-approved - granted immediately")
+        logger.info("Escape pod auto-approved - granted immediately")
 
         # Localize the guard response into the player's preferred language (defensive)
         guard_response = await self._localize_for_player(session.player_id, guard_response)
@@ -1578,9 +1578,9 @@ Description: {ship_specs.get('description', 'N/A')}
 
     async def _evaluate_dialogue_outcome(self, session: FirstLoginSession) -> Dict[str, Any]:
         """Evaluate the dialogue outcome based on the player's performance"""
-        logger.info(f"=" * 60)
+        logger.info("=" * 60)
         logger.info(f"EVALUATING DIALOGUE OUTCOME FOR SESSION {session.id}")
-        logger.info(f"=" * 60)
+        logger.info("=" * 60)
 
         # Get all exchanges for the session
         exchanges = self.db.query(DialogueExchange).filter_by(
@@ -1598,7 +1598,7 @@ Description: {ship_specs.get('description', 'N/A')}
         avg_confidence = sum(confidence_scores) / len(confidence_scores) if confidence_scores else 0.5
         avg_consistency = sum(consistency_scores) / len(consistency_scores) if consistency_scores else 0.5
 
-        logger.info(f"Average Scores:")
+        logger.info("Average Scores:")
         logger.info(f"  Persuasiveness: {avg_persuasiveness:.4f} (from {persuasiveness_scores})")
         logger.info(f"  Confidence: {avg_confidence:.4f} (from {confidence_scores})")
         logger.info(f"  Consistency: {avg_consistency:.4f} (from {consistency_scores})")
@@ -1667,7 +1667,7 @@ Description: {ship_specs.get('description', 'N/A')}
 
         logger.info(f"Claimed Ship: {claimed_ship.name}")
         if ship_config:
-            logger.info(f"Ship Config Thresholds:")
+            logger.info("Ship Config Thresholds:")
             logger.info(f"  WEAK: {ship_config.weak_threshold}")
             logger.info(f"  AVERAGE: {ship_config.average_threshold}")
             logger.info(f"  STRONG: {ship_config.strong_threshold}")
@@ -1753,13 +1753,13 @@ Description: {ship_specs.get('description', 'N/A')}
         if not session.completed_at:
             session.completed_at = datetime.now()
 
-        logger.info(f"=" * 60)
+        logger.info("=" * 60)
         logger.info(f"FINAL OUTCOME: {outcome.name}")
         logger.info(f"  Awarded Ship: {awarded_ship.name}")
         logger.info(f"  Starting Credits: {starting_credits}")
         logger.info(f"  Negotiation Bonus: {negotiation_bonus_flag}")
         logger.info(f"  Notoriety Penalty: {notoriety_penalty}")
-        logger.info(f"=" * 60)
+        logger.info("=" * 60)
 
         self.db.commit()
         self.db.refresh(session)
