@@ -220,3 +220,80 @@ def test_is_player_online_sync_true_false_and_exception(monkeypatch):
 
     client.get.side_effect = RuntimeError("redis down")
     assert bank.is_player_online_sync(pid) is None
+
+
+def _station(*, starport_prime: bool = True):
+    sid = uuid.uuid4()
+    return types.SimpleNamespace(id=sid, is_starport_prime=starport_prime)
+
+
+def test_withdraw_credits_at_starport_prime_moves_wallet():
+    db = FakeSession()
+    player = _player(credits=100)
+    player.is_docked = True
+    station = _station(starport_prime=True)
+    player.current_port_id = station.id
+
+    bank.deposit_credits(
+        db,
+        player.id,
+        500,
+        entry_type=bank.ENTRY_CASCADE_SAFE_TRANSFER,
+        source="test",
+    )
+    account = bank.withdraw_credits(db, player, station, 200)
+
+    assert account.credits == 300
+    assert player.credits == 300
+    assert account.ledger[-1]["type"] == bank.ENTRY_WITHDRAW_CREDITS
+
+
+def test_withdraw_credits_non_starport_uses_override_only():
+    db = FakeSession()
+    player = _player(credits=0)
+    player.is_docked = True
+    station = _station(starport_prime=False)
+    player.current_port_id = station.id
+
+    bank.deposit_credits(
+        db,
+        player.id,
+        400,
+        entry_type=bank.ENTRY_CASCADE_SAFE_TRANSFER,
+        source="override",
+        access_override=True,
+    )
+    bank.deposit_credits(
+        db,
+        player.id,
+        100,
+        entry_type=bank.ENTRY_CASCADE_SAFE_TRANSFER,
+        source="locked",
+        access_override=False,
+    )
+
+    account = bank.withdraw_credits(db, player, station, 150)
+    assert account.credits == 350
+    assert player.credits == 150
+    assert account.ledger[0]["remaining_amount"] == 250
+    assert not account.ledger[0].get("consumed")
+
+
+def test_withdraw_credits_non_starport_rejects_beyond_override():
+    db = FakeSession()
+    player = _player()
+    player.is_docked = True
+    station = _station(starport_prime=False)
+    player.current_port_id = station.id
+    bank.deposit_credits(
+        db,
+        player.id,
+        50,
+        entry_type=bank.ENTRY_CASCADE_SAFE_TRANSFER,
+        source="override",
+        access_override=True,
+    )
+
+    with pytest.raises(bank.CentralBankError) as exc:
+        bank.withdraw_credits(db, player, station, 100)
+    assert "access-override" in exc.value.message
