@@ -1190,29 +1190,12 @@ class EnhancedWebSocketService:
     
     async def _log_aria_interaction(self, player_id: str, user_input: str,
                                    response: Dict[str, Any], db: AsyncSession):
-        """Log ARIA interaction for learning and improvement"""
-        try:
-            # Store in ARIA personal memory for learning
-            from src.services.aria_personal_intelligence_service import get_aria_intelligence_service
-            get_aria_intelligence_service()
-            
-            # Create memory of this interaction
-            {
-                "type": "conversation",
-                "input": user_input,
-                "response_summary": response.get("response", "")[:200],  # First 200 chars
-                "confidence": response.get("confidence", 0),
-                "actions_suggested": len(response.get("actions", [])),
-                "timestamp": datetime.now(UTC).isoformat()
-            }
-            
-            # This would store in the ARIA personal memory system
-            # await aria_intel._create_memory(player_id, "conversation", memory_content, 0.5, db)
-            
-            logger.info(f"ARIA interaction logged for player {player_id}")
-            
-        except Exception as e:
-            logger.error(f"Error logging ARIA interaction: {e}")
+        """Hook for future ARIA conversation memory persistence.
+
+        WebSocket chat responses are not yet stored in ARIA personal memory;
+        callers keep this hook so wiring _create_memory later stays localized.
+        """
+        return
 
 
 # Global enhanced service instance
