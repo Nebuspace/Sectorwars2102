@@ -89,7 +89,7 @@ def create_default_admin(db: Session, max_retries: int = 3) -> None:
                 ).first()
                 
                 if not admin_creds:
-                    logger.warning(f"Admin user exists but has no credentials! Creating credentials...")
+                    logger.warning("Admin user exists but has no credentials! Creating credentials...")
                     try:
                         hashed_password = get_password_hash(admin_password)
                         admin_creds = AdminCredentials(

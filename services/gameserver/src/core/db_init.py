@@ -52,7 +52,7 @@ def get_alembic_config():
     
     # Set the database URL - this overrides what's in alembic.ini
     if db_url:
-        logger.info(f"Setting Alembic database URL (hidden for security)")
+        logger.info("Setting Alembic database URL (hidden for security)")
         alembic_cfg.set_main_option("sqlalchemy.url", db_url)
     else:
         logger.error("Cannot set database URL for Alembic")
