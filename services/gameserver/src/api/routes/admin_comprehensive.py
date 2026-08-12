@@ -28,7 +28,7 @@ from src.models.user import User
 from src.services.admin_action_log_service import log_admin_action
 from src.services.admin_action_attempt import admin_action_attempt
 from src.models.player import Player
-from src.models.ship import Ship
+from src.models.ship import Ship, ShipType
 from src.models.planet import Planet, PlanetType, PlanetStatus
 from src.models.station import Station, StationClass, StationStatus, StationType
 from src.models.sector import Sector
@@ -507,7 +507,6 @@ async def get_ships_comprehensive(
         # Apply filters
         if filter_type:
             try:
-                from src.models.ship import ShipType
                 ship_type_enum = ShipType(filter_type)
                 query = query.filter(Ship.type == ship_type_enum)
             except ValueError:
@@ -665,7 +664,6 @@ async def create_ship(
             if not sector:
                 raise HTTPException(status_code=404, detail="Sector not found")
 
-            from src.models.ship import ShipType
             new_ship = Ship(
                 id=new_ship_id,
                 name=ship_data.name,
