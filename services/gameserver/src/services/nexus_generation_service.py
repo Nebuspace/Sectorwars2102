@@ -303,7 +303,10 @@ class NexusGenerationService:
                 "secondary_color": "#553c9a",
                 "style": "futuristic",
                 "atmosphere": "cosmopolitan"
-            }
+            },
+            # Gateway Plaza first sector — central-nexus-clusters.md § Nexus Capital
+            # (ADR-0005 region-local capital_sector_number; not random for Nexus).
+            capital_sector_number=2251,
         )
 
         session.add(nexus_region)
