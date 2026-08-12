@@ -1645,23 +1645,3 @@ async def create_enhanced_ai_assistant(db: AsyncSession, player_id: uuid.UUID,
     db.add(audit_log)
     
     return assistant
-
-
-def validate_ai_permission(assistant: AIComprehensiveAssistant, required_permission: str) -> bool:
-    """
-    Validate AI assistant has required permission for operation
-    """
-    return assistant.has_permission(required_permission)
-
-
-def get_security_clearance_level(security_level: SecurityLevel) -> int:
-    """
-    Get numeric security clearance level for access control
-    """
-    levels = {
-        SecurityLevel.BASIC: 1,
-        SecurityLevel.STANDARD: 2,
-        SecurityLevel.PREMIUM: 3,
-        SecurityLevel.ENTERPRISE: 4
-    }
-    return levels.get(security_level, 1)
