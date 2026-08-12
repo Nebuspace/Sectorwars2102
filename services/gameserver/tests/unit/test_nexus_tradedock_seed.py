@@ -441,9 +441,18 @@ class TestStarportPrimeSecurityWiring:
 
     def test_starport_prime_row_carries_premium_tier(self):
         service = NexusGenerationService()
-        row = service._generate_port_for_sector(1, str(uuid.uuid4()))
+        row = service._build_starport_prime_station_row(
+            sector_id=2551, region_id=str(uuid.uuid4())
+        )
         assert row["is_starport_prime"] is True
         assert row["security"]["tier"] == "premium"
+
+    def test_legacy_sector_one_branch_delegates_to_builder(self):
+        service = NexusGenerationService()
+        region_id = str(uuid.uuid4())
+        assert service._generate_port_for_sector(1, region_id) == service._build_starport_prime_station_row(
+            sector_id=1, region_id=region_id
+        )
 
     def test_matches_the_shared_helper_directly(self):
         assert (
@@ -497,6 +506,29 @@ class TestSeedNexusTradedocksWiring:
         source = inspect.getsource(NexusGenerationService.generate_central_nexus)
         assert 'generation_stats["tradedocks_created"]' in source
         assert 'generation_stats["tradedock_placement_warnings"]' in source
+
+
+class TestGatewayPlazaCapitalStationWiring:
+    """WO-BUILD-NEXUS-CAPITAL-STATION-GATEWAY-PLAZA — Starport Prime lands at
+    Gateway Plaza's first live-generator sector, after TradeDocks, before market
+    prices."""
+
+    def test_gateway_plaza_capital_sector_is_2551(self):
+        assert NexusGenerationService._gateway_plaza_capital_sector_number() == 2551
+
+    def test_generate_central_nexus_calls_capital_seed_after_tradedocks_before_market_prices(
+        self,
+    ):
+        source = inspect.getsource(NexusGenerationService.generate_central_nexus)
+        tradedock_idx = source.index("self._seed_nexus_tradedocks(")
+        capital_idx = source.index("self._seed_nexus_capital_station(")
+        market_idx = source.index("self._create_market_prices_for_nexus_stations(")
+        assert tradedock_idx < capital_idx < market_idx
+
+    def test_seed_nexus_capital_station_inserts_starport_prime_row(self):
+        source = inspect.getsource(NexusGenerationService._seed_nexus_capital_station)
+        assert "self._build_starport_prime_station_row(" in source
+        assert "insert(Station)" in source
 
 
 class TestArchRes2ePathUntouched:

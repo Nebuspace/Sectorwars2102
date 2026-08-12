@@ -42,6 +42,11 @@ logger = logging.getLogger(__name__)
 # not a majority of frontier space and not vanishingly rare either.
 BLACK_MARKET_FRONTIER_CHANCE = 0.04
 
+# Live Central Nexus generation numbers sectors from 301 upward (Terran Space
+# occupies 1–300 in the shared region). Gateway Plaza is cluster index 9.
+NEXUS_FIRST_SECTOR_NUM = 301
+GATEWAY_PLAZA_CLUSTER_INDEX = 9
+
 
 def _synthesize_cluster_nebula_fields(cluster: Cluster, nebula_sector_count: int) -> None:
     """WO-GWQ-NEXUS-NEBULA-FIELDS: give a nexus-generated cluster the same
@@ -127,7 +132,24 @@ class NexusGenerationService:
         self.port_density = 0.05  # 5% of sectors have ports (vs 15% standard)
         self.planet_density = 0.10  # 10% of sectors have planets (vs 25% standard)
         self.warp_density_multiplier = 0.3  # 70% fewer warp tunnels than standard regions
-    
+
+    @classmethod
+    def _gateway_plaza_capital_sector_number(
+        cls,
+        *,
+        total_sectors: int = 5000,
+        cluster_count: int = 20,
+        first_sector: int = NEXUS_FIRST_SECTOR_NUM,
+    ) -> int:
+        """First sector of the Gateway Plaza cluster in the live generator.
+
+        galaxy-generation.md documents Gateway Plaza as 2551–2800 for the
+        current 301-based numbering; central-nexus-clusters.md's 2251 table
+        assumes Nexus-local 1..5000 without the Terran offset.
+        """
+        sectors_per_cluster = total_sectors // cluster_count
+        return first_sector + GATEWAY_PLAZA_CLUSTER_INDEX * sectors_per_cluster
+
     async def generate_central_nexus(self, session: AsyncSession) -> Dict[str, Any]:
         """Generate the complete Central Nexus - a sparse 5000-sector galactic hub
 
@@ -167,7 +189,7 @@ class NexusGenerationService:
             # Generate sectors for each cluster
             sectors_per_cluster = self.total_sectors // self.cluster_count
             # Start Central Nexus sectors at 301 (after Terran Space sectors 1-300)
-            current_sector_num = 301
+            current_sector_num = NEXUS_FIRST_SECTOR_NUM
 
             for idx, cluster in enumerate(nexus_clusters):
                 logger.info(f"Generating sectors for cluster {idx + 1}/{self.cluster_count}: {cluster.name}")
@@ -233,6 +255,23 @@ class NexusGenerationService:
                 "tradedock_placement_warnings"
             ]
             logger.info(f"Seeded {tradedock_stats['tradedocks_created']} TradeDocks")
+
+            # WO-BUILD-NEXUS-CAPITAL-STATION-GATEWAY-PLAZA: the Starport Prime
+            # row builder lived on the dead sector_num==1 branch; seed it at
+            # Gateway Plaza's first sector before the market-price sweep.
+            logger.info("Seeding Central Nexus Starport Prime at Gateway Plaza...")
+            capital_stats = await self._seed_nexus_capital_station(
+                session, str(nexus_region.id)
+            )
+            generation_stats["capital_station_seeded"] = capital_stats[
+                "capital_station_seeded"
+            ]
+            generation_stats["capital_sector_number"] = capital_stats["capital_sector"]
+            logger.info(
+                "Gateway Plaza capital station: sector %s, seeded=%s",
+                capital_stats["capital_sector"],
+                capital_stats["capital_station_seeded"],
+            )
 
             # Create MarketPrice entries for all generated stations
             logger.info("Creating market prices for Central Nexus stations...")
@@ -304,9 +343,9 @@ class NexusGenerationService:
                 "style": "futuristic",
                 "atmosphere": "cosmopolitan"
             },
-            # Gateway Plaza first sector — central-nexus-clusters.md § Nexus Capital
-            # (ADR-0005 region-local capital_sector_number; not random for Nexus).
-            capital_sector_number=2251,
+            # Gateway Plaza first sector — live generator numbering (2551 for
+            # default 5000/20 @ 301 start); see _gateway_plaza_capital_sector_number.
+            capital_sector_number=self._gateway_plaza_capital_sector_number(),
         )
 
         session.add(nexus_region)
@@ -606,46 +645,11 @@ class NexusGenerationService:
         """
         from src.models.station import StationClass, StationType, StationStatus
 
-        # Sector 1 gets a special starter station
+        # Legacy Terran-sector-1 special case (dead in live Nexus generation).
         if sector_num == 1:
-            return {
-                "name": "Central Nexus Starport Prime",
-                "sector_id": sector_num,
-                "region_id": region_id,
-                "station_class": StationClass.CLASS_0,  # Highest quality
-                "type": StationType.TRADING,
-                "status": StationStatus.OPERATIONAL,
-                "size": 10,  # Maximum size
-                # Starport Prime discriminator (FEATURES/economy/docking-slips):
-                # this is THE Central Nexus Starport Prime — 200 transient / 50
-                # long-term docking slips, distinct from a regional Capital
-                # (also CLASS_0, but 80 / 30). docking_service reads this flag.
-                "is_starport_prime": True,
-                # WO-CMB-PORT-DEF-SEED-1: class-scaled defenses (replaces the
-                # flat Column default). CLASS_0 borrows the Class-5 profile —
-                # see Station._STATION_DEFENSE_BY_CLASS docstring.
-                "defenses": Station.default_defenses_for_class(StationClass.CLASS_0),
-                # WO-TD-NEXGEN-1: Central Nexus's CLASS_0 hub is one of
-                # canon's three literal Standard/Premium anchors ("Nexus
-                # Starport Prime") — _derive_station_security_tier resolves
-                # this to "premium" unconditionally for
-                # region_type="central_nexus" (cluster_type doesn't affect
-                # the anchor branches, so None is safe here). NOTE: this
-                # branch (sector_num == 1) is currently DEAD in the live
-                # generate-route call chain — Central Nexus sector numbering
-                # starts at 301 (generate_central_nexus's
-                # current_sector_num), so sector_num never equals 1 here;
-                # see this WO's report.
-                "security": {
-                    "tier": _derive_station_security_tier(
-                        region_type="central_nexus",
-                        cluster_type=None,
-                        station_class=StationClass.CLASS_0,
-                        is_spacedock=False,
-                        tradedock_tier=None,
-                    )
-                },
-            }
+            return self._build_starport_prime_station_row(
+                sector_id=sector_num, region_id=region_id
+            )
 
         # Random port types for other sectors
         port_type = random.choice([
@@ -1211,6 +1215,60 @@ class NexusGenerationService:
         return {
             "tradedocks_created": len(batch_stations),
             "tradedock_placement_warnings": warnings,
+        }
+
+    @classmethod
+    def _build_starport_prime_station_row(
+        cls, *, sector_id: int, region_id: str
+    ) -> Dict[str, Any]:
+        """Central Nexus Starport Prime — CLASS_0 hub at Gateway Plaza capital."""
+        from src.models.station import StationClass, StationType, StationStatus
+
+        return {
+            "name": "Central Nexus Starport Prime",
+            "sector_id": sector_id,
+            "region_id": region_id,
+            "station_class": StationClass.CLASS_0,
+            "type": StationType.TRADING,
+            "status": StationStatus.OPERATIONAL,
+            "size": 10,
+            "is_starport_prime": True,
+            "defenses": Station.default_defenses_for_class(StationClass.CLASS_0),
+            "security": {
+                "tier": _derive_station_security_tier(
+                    region_type="central_nexus",
+                    cluster_type=None,
+                    station_class=StationClass.CLASS_0,
+                    is_spacedock=False,
+                    tradedock_tier=None,
+                )
+            },
+        }
+
+    async def _seed_nexus_capital_station(
+        self, session: AsyncSession, region_id: str
+    ) -> Dict[str, Any]:
+        """Seed Starport Prime at Gateway Plaza's first sector if absent."""
+        capital_sector = self._gateway_plaza_capital_sector_number()
+        existing = await session.execute(
+            select(Station).where(
+                Station.region_id == region_id,
+                Station.sector_id == capital_sector,
+            )
+        )
+        if existing.scalar_one_or_none() is not None:
+            return {
+                "capital_station_seeded": 0,
+                "capital_sector": capital_sector,
+            }
+
+        row = self._build_starport_prime_station_row(
+            sector_id=capital_sector, region_id=region_id
+        )
+        await session.execute(insert(Station), [row])
+        return {
+            "capital_station_seeded": 1,
+            "capital_sector": capital_sector,
         }
 
     async def _generate_warp_tunnels(self, session: AsyncSession, region_id: str) -> int:
