@@ -108,6 +108,22 @@ class TestNexusClusterTable:
         )
 
 
+class TestNexusRegionCapitalSectorNumber:
+    """WO-FIX-NEXUS-REGION-CAPITAL-SECTOR-NUMBER-UNSET: Nexus row must declare
+    Gateway Plaza's first sector as capital (canon default 2251)."""
+
+    @pytest.fixture
+    def nexus_service(self):
+        return NexusGenerationService()
+
+    @pytest.mark.asyncio
+    async def test_create_nexus_region_sets_capital_sector_number(self, nexus_service):
+        session = AsyncMock()
+        region = await nexus_service._create_nexus_region(session)
+        assert region.capital_sector_number == 2251
+        session.add.assert_called_once_with(region)
+
+
 class TestGenerateCentralNexusExistingShortCircuit:
     """Regression test for WO-LIVE-SUITE-TRIAGE (2026-07-02).
 
