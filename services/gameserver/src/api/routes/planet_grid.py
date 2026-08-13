@@ -124,6 +124,47 @@ def _ensure_seeded(planet: Planet, db: Session) -> None:
         structures_svc.seed(planet, db=db)
 
 
+def _ct1_kind(kind: str):
+    """CT1 combat key for a catalog kind, or None if this placement is not a defense building
+    combat_service._read_defense_buildings understands.
+
+    ADR-0094 point-2: /grid/place is the canonical construct surface, but combat still reads
+    ``active_events["defense_buildings"]`` (snake_case counts). Catalog rows with
+    ``effect.kind == "ct1_defense"`` carry ``ct1_kind`` (e.g. TURRET_NETWORK → turret_network).
+    """
+    spec = building_catalog.get(kind) or {}
+    effect = spec.get("effect") if isinstance(spec.get("effect"), dict) else {}
+    if effect.get("kind") != "ct1_defense":
+        return None
+    ct1 = effect.get("ct1_kind")
+    return str(ct1) if ct1 else None
+
+
+def _bump_ct1_defense(planet: Planet, kind: str, delta: int) -> bool:
+    """± operational CT1 defense count on ``planet.active_events``. Returns True if mutated.
+
+    Does NOT ``flag_modified`` — caller does, after a successful place/decommission commit path.
+    Delta +1 on place, −1 on decommission. Clamps at 0 (never stores a negative count).
+    Non-ct1 kinds are a no-op.
+    """
+    ct1 = _ct1_kind(kind)
+    if not ct1 or int(delta) == 0:
+        return False
+    events = planet.active_events if isinstance(planet.active_events, dict) else {}
+    events = dict(events)
+    buildings = dict(events.get("defense_buildings") or {}) if isinstance(
+        events.get("defense_buildings"), dict
+    ) else {}
+    new_count = int(buildings.get(ct1, 0) or 0) + int(delta)
+    if new_count > 0:
+        buildings[ct1] = new_count
+    else:
+        buildings.pop(ct1, None)
+    events["defense_buildings"] = buildings
+    planet.active_events = events
+    return True
+
+
 def _charge_materials(planet: Planet, cost: dict) -> list:
     """Charge the per-planet MATERIALS in a cost row from the matching ``Planet`` integer columns
     (``fuel_ore`` / ``organics`` / ``equipment`` / ...) when straightforward; return a list of
@@ -303,6 +344,9 @@ async def place_building(
     locked_player.credits = int(locked_player.credits or 0) - cost_credits
     planet.structures = structures
     flag_modified(planet, "structures")
+    # ADR-0094: grid placement is the canonical construct path — keep CT1 combat counts in sync.
+    if _bump_ct1_defense(planet, kind, +1):
+        flag_modified(planet, "active_events")
     db.commit()
 
     payload = _grid_payload(planet)
@@ -364,6 +408,9 @@ async def decommission_building(
 
     planet.structures = structures
     flag_modified(planet, "structures")
+    removed = res.get("removed") if isinstance(res.get("removed"), dict) else {}
+    if _bump_ct1_defense(planet, str(removed.get("kind") or ""), -1):
+        flag_modified(planet, "active_events")
     db.commit()
 
     payload = _grid_payload(planet)
