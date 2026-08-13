@@ -19,7 +19,7 @@ vi.mock('../apiClient', () => ({
 }));
 
 import apiClient from '../apiClient';
-import { citadelAPI, combatAPI, greyStatusAPI, miningAPI, navAPI, playerAPI, sectorAPI, shipRegistryAPI, tradeAPI } from '../api';
+import { centralBankAPI, citadelAPI, combatAPI, greyStatusAPI, miningAPI, navAPI, playerAPI, sectorAPI, shipRegistryAPI, tradeAPI } from '../api';
 
 const get = apiClient.get as ReturnType<typeof vi.fn>;
 const post = apiClient.post as ReturnType<typeof vi.fn>;
@@ -265,6 +265,35 @@ describe('apiRequest via trade/combat/grey wrappers', () => {
       jsonHeaders,
     );
     expect(post.mock.calls.some((c) => String(c[0]).includes('/buildings/construct'))).toBe(false);
+  });
+
+  it('centralBankAPI.getBalance GETs /central-bank/balance', async () => {
+    get.mockResolvedValue({ data: { credits: 500, commodities: { fuel: 10 } } });
+    const out = await centralBankAPI.getBalance();
+    expect(out).toEqual({ credits: 500, commodities: { fuel: 10 } });
+    expect(get).toHaveBeenCalledWith('/api/v1/central-bank/balance', jsonHeaders);
+  });
+
+  it('centralBankAPI.withdrawCredits POSTs amount', async () => {
+    post.mockResolvedValue({ data: { withdrawn: 50, bank_credits_remaining: 450, wallet_credits: 1050 } });
+    const out = await centralBankAPI.withdrawCredits(50);
+    expect(out).toEqual({ withdrawn: 50, bank_credits_remaining: 450, wallet_credits: 1050 });
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/central-bank/withdraw/credits',
+      JSON.stringify({ amount: 50 }),
+      jsonHeaders,
+    );
+  });
+
+  it('centralBankAPI.withdrawCommodity POSTs commodity + quantity', async () => {
+    post.mockResolvedValue({ data: { commodity: 'fuel', quantity: 20, turn_cost: 1, bank_commodities_remaining: {} } });
+    const out = await centralBankAPI.withdrawCommodity('fuel', 20);
+    expect(out).toEqual({ commodity: 'fuel', quantity: 20, turn_cost: 1, bank_commodities_remaining: {} });
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/central-bank/withdraw/commodity',
+      JSON.stringify({ commodity: 'fuel', quantity: 20 }),
+      jsonHeaders,
+    );
   });
 
   it('citadelAPI.constructBuilding maps planet_minefield → PLANET_MINEFIELD', async () => {
