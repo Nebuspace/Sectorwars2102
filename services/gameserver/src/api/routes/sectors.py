@@ -97,6 +97,7 @@ class StationResponse(BaseModel):
     faction_affiliation: str | None = None
     is_spacedock: bool = False
     tradedock_tier: str | None = None
+    is_starport_prime: bool = False
 
 class SectorPlanetsResponse(BaseModel):
     planets: List[PlanetResponse]
@@ -252,6 +253,7 @@ async def get_sector_stations(
             station_class=station.station_class.value if hasattr(station.station_class, 'value') else station.station_class,
             is_spacedock=bool(station.is_spacedock),
             tradedock_tier=station.tradedock_tier,
+            is_starport_prime=bool(station.is_starport_prime),
             type=station.type.value if hasattr(station.type, 'value') else str(station.type),
             status=station.status.value if hasattr(station.status, 'value') else str(station.status),
             sector_id=station.sector_id,

@@ -113,6 +113,8 @@ export interface Station {
   faction_affiliation?: string;
   station_class?: string | number;
   is_spacedock?: boolean;
+  /** Central Nexus Starport Prime discriminator (GET /sectors/{id}/stations). */
+  is_starport_prime?: boolean;
 }
 
 export interface MoveOption {

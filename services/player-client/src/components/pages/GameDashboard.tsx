@@ -27,6 +27,7 @@ import DeckPageTabs from '../cockpit/DeckPageTabs';
 import type { ProductionLine } from '../cockpit/ProductionPanel';
 import type { PerColonistRates, ProdRole } from '../cockpit/CoupledColonistSliders';
 import SafeVaultPanel from '../cockpit/SafeVaultPanel';
+import BankPanel, { isStarportPrimeStation, shipCargoFree } from '../cockpit/BankPanel';
 import { miningAPI, navAPI, playerAPI, type NavChartResponse, sectorAPI, type SectorWreck } from '../../services/api';
 import { projectedWarpBearing, subscribeWarpDepart, WARP_TURN_MS } from '../../services/warpCinematicBus';
 import { useResourceCatalog } from '../../hooks/useResourceCatalog';
@@ -798,7 +799,7 @@ const GameDashboardInner: React.FC = () => {
 
   // Docked trading-station terminal: trade desk or the Port Office registry.
   // SpaceDocks/TradeDocks reach the Port Office through their own venue hub.
-  const [stationTerminal, setStationTerminal] = useState<'trade' | 'portoffice' | 'contracts'>('trade');
+  const [stationTerminal, setStationTerminal] = useState<'trade' | 'portoffice' | 'contracts' | 'bank'>('trade');
   useEffect(() => {
     setStationTerminal('trade');
   }, [playerState?.current_port_id]);
@@ -2928,6 +2929,15 @@ const GameDashboardInner: React.FC = () => {
                       >
                         📋 CONTRACTS
                       </button>
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={stationTerminal === 'bank'}
+                        className={`venue-tab${stationTerminal === 'bank' ? ' active' : ''}`}
+                        onClick={() => setStationTerminal('bank')}
+                      >
+                        🏦 BANK
+                      </button>
                     </div>
                   )}
                   {/* UNDOCK & LAUNCH — for regular (non-SpaceDock) stations.
@@ -2970,6 +2980,15 @@ const GameDashboardInner: React.FC = () => {
                       credits={playerState?.credits ?? 0}
                       onCreditsSet={() => { refreshPlayerState(); }}
                       onBack={() => setStationTerminal('trade')}
+                    />
+                  ) : stationTerminal === 'bank' ? (
+                    <BankPanel
+                      isDocked={!!playerState?.is_docked}
+                      isStarportPrime={isStarportPrimeStation(dockedStation)}
+                      playerCredits={playerState?.credits ?? 0}
+                      playerTurns={playerState?.turns ?? 0}
+                      cargoFree={shipCargoFree(currentShip)}
+                      onAfterWithdraw={() => { void refreshPlayerState(); }}
                     />
                   ) : (
                     <TradingInterface onClose={() => {}} />

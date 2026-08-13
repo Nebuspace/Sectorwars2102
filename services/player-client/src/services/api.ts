@@ -1708,6 +1708,24 @@ export const pioneerAPI = {
     }),
 };
 
+// Central Nexus Bank — withdraw at Starport Prime (ADR-0050 / monetization.md).
+// Balance is readable anywhere; withdraw routes enforce dock + Prime/override.
+export const centralBankAPI = {
+  getBalance: () => apiRequest('/api/v1/central-bank/balance'),
+
+  withdrawCredits: (amount: number) =>
+    apiRequest('/api/v1/central-bank/withdraw/credits', {
+      method: 'POST',
+      body: JSON.stringify({ amount }),
+    }),
+
+  withdrawCommodity: (commodity: string, quantity: number) =>
+    apiRequest('/api/v1/central-bank/withdraw/commodity', {
+      method: 'POST',
+      body: JSON.stringify({ commodity, quantity }),
+    }),
+};
+
 // Storage lockers — multi-trip contract fulfillment (FEATURES/economy/storage-lockers.md).
 // Rent is idempotent per (player, contract); deposit auto-completes when
 // accumulated deposits reach the contract quantity.
