@@ -48,6 +48,17 @@ NEXUS_FIRST_SECTOR_NUM = 301
 GATEWAY_PLAZA_CLUSTER_INDEX = 9
 
 
+def nexus_expanse_sector_range(total_sectors: int) -> tuple[int, int]:
+    """Inclusive sector range for the Nexus 'The Expanse' Zone.
+
+    Live cluster seeding starts at ``NEXUS_FIRST_SECTOR_NUM`` (after Terran
+    Space 1–300) and spans ``total_sectors`` numbers. Default 5000 → 301–5300.
+    """
+    start = NEXUS_FIRST_SECTOR_NUM
+    end = NEXUS_FIRST_SECTOR_NUM + int(total_sectors) - 1
+    return start, end
+
+
 def _synthesize_cluster_nebula_fields(cluster: Cluster, nebula_sector_count: int) -> None:
     """WO-GWQ-NEXUS-NEBULA-FIELDS: give a nexus-generated cluster the same
     canon nebula fields bang import derives, so quantum_service.harvest_nebula
@@ -353,19 +364,29 @@ class NexusGenerationService:
         return nexus_region
 
     async def _create_nexus_zone(self, session: AsyncSession, region_id: str) -> Zone:
-        """Create 'The Expanse' zone for Central Nexus (covers all 5000 sectors)"""
+        """Create 'The Expanse' zone for Central Nexus.
+
+        Sector numbers match the live cluster loop (``nexus_expanse_sector_range``),
+        not Terran Space's 1–300 block. Hardcoding 1–5000 left the Zone 300
+        sectors off every Nexus sector assignment / ``contains`` check.
+        """
+        start_sector, end_sector = nexus_expanse_sector_range(self.total_sectors)
         nexus_zone = Zone(
             region_id=region_id,
             name="The Expanse",
             zone_type="EXPANSE",
-            start_sector=1,
-            end_sector=5000,
+            start_sector=start_sector,
+            end_sector=end_sector,
             policing_level=3,  # Light policing (sparse region)
             danger_rating=6    # Moderate danger
         )
         session.add(nexus_zone)
         await session.flush()
-        logger.info("Created 'The Expanse' zone for Central Nexus (sectors 1-5000)")
+        logger.info(
+            "Created 'The Expanse' zone for Central Nexus (sectors %s-%s)",
+            start_sector,
+            end_sector,
+        )
         return nexus_zone
 
     async def _create_nexus_clusters(self, session: AsyncSession, region_id: str) -> List[Cluster]:
