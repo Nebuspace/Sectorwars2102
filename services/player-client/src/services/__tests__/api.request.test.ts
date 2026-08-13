@@ -19,7 +19,7 @@ vi.mock('../apiClient', () => ({
 }));
 
 import apiClient from '../apiClient';
-import { combatAPI, greyStatusAPI, miningAPI, navAPI, playerAPI, sectorAPI, shipRegistryAPI, tradeAPI } from '../api';
+import { citadelAPI, combatAPI, greyStatusAPI, miningAPI, navAPI, playerAPI, sectorAPI, shipRegistryAPI, tradeAPI } from '../api';
 
 const get = apiClient.get as ReturnType<typeof vi.fn>;
 const post = apiClient.post as ReturnType<typeof vi.fn>;
@@ -241,5 +241,40 @@ describe('apiRequest via trade/combat/grey wrappers', () => {
       bodies: [],
     });
     expect(get).toHaveBeenCalledWith('/api/v1/sectors/100/contents', jsonHeaders);
+  });
+
+  it('citadelAPI.constructBuilding places via /grid/place not /buildings/construct', async () => {
+    get.mockResolvedValue({
+      data: {
+        plots: [
+          { x: 0, y: 0, cleared: false },
+          { x: 1, y: 0, cleared: true, building_id: 'b_1' },
+          { x: 2, y: 0, cleared: true, hazard: { kind: 'quake' } },
+          { x: 3, y: 1, cleared: true },
+        ],
+      },
+    });
+    post.mockResolvedValue({ data: { success: true, building: { kind: 'TURRET_NETWORK' } } });
+
+    const out = await citadelAPI.constructBuilding('planet-9', 'turret_network');
+    expect(out).toEqual({ success: true, building: { kind: 'TURRET_NETWORK' } });
+    expect(get).toHaveBeenCalledWith('/api/v1/planets/planet-9/grid', jsonHeaders);
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/planets/planet-9/grid/place',
+      JSON.stringify({ kind: 'TURRET_NETWORK', x: 3, y: 1, level: 1 }),
+      jsonHeaders,
+    );
+    expect(post.mock.calls.some((c) => String(c[0]).includes('/buildings/construct'))).toBe(false);
+  });
+
+  it('citadelAPI.constructBuilding maps planet_minefield → PLANET_MINEFIELD', async () => {
+    get.mockResolvedValue({ data: { plots: [{ x: 0, y: 0, cleared: true }] } });
+    post.mockResolvedValue({ data: { success: true } });
+    await citadelAPI.constructBuilding('p1', 'planet_minefield');
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/planets/p1/grid/place',
+      JSON.stringify({ kind: 'PLANET_MINEFIELD', x: 0, y: 0, level: 1 }),
+      jsonHeaders,
+    );
   });
 });

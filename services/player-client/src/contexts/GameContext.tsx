@@ -1267,8 +1267,8 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  // Construct a defense building — citadelAPI.constructBuilding (same URL;
-  // still refresh player state).
+  // Construct a defense building — citadelAPI.constructBuilding now places via
+  // POST /grid/place (ADR-0094); still refresh player state.
   const buildDefenseBuilding = async (planetId: string, buildingType: string) => {
     if (!user || !playerState) throw new Error('Not authenticated');
     try {

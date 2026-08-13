@@ -1,6 +1,6 @@
 """SEC-DEFBUILD-MATERIALS: proves the live-exploit gap in
-``CitadelService.build_defense_building`` (POST /planets/{id}/buildings/construct)
-is closed.
+``CitadelService.build_defense_building`` (internal; HTTP construct retired to
+POST /planets/{id}/grid/place per ADR-0094) is closed.
 
 Two independent gaps were live in ``construct_defense_building`` /
 ``build_defense_building`` before this fix:
