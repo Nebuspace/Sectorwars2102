@@ -54,7 +54,7 @@ describe('isStarportPrimeStation / shipCargoFree', () => {
 describe('BankPanel', () => {
   let container: HTMLElement;
   let root: ReturnType<typeof createRoot>;
-  let onAfterWithdraw: ReturnType<typeof vi.fn>;
+  let onAfterWithdraw: ReturnType<typeof vi.fn<() => void>>;
 
   const renderPanel = async (overrides: Partial<React.ComponentProps<typeof BankPanel>> = {}) => {
     await act(async () => {
@@ -78,7 +78,7 @@ describe('BankPanel', () => {
     getBalance.mockResolvedValue({ credits: 400, commodities: { fuel: 50 } });
     withdrawCredits.mockResolvedValue({ withdrawn: 400, bank_credits_remaining: 0, wallet_credits: 1400 });
     withdrawCommodity.mockResolvedValue({ commodity: 'fuel', quantity: 50, turn_cost: 1, bank_commodities_remaining: {} });
-    onAfterWithdraw = vi.fn();
+    onAfterWithdraw = vi.fn<() => void>();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);

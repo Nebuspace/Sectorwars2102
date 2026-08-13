@@ -22,8 +22,10 @@ export function shipCargoFree(
   if (typeof cargo.used === 'number' && Number.isFinite(cargo.used)) {
     used = cargo.used;
   } else if (cargo.contents && typeof cargo.contents === 'object') {
-    used = Object.values(cargo.contents as Record<string, unknown>)
-      .reduce((sum, v) => sum + (Number(v) || 0), 0);
+    used = Object.values(cargo.contents as Record<string, unknown>).reduce<number>(
+      (sum, v) => sum + (Number(v) || 0),
+      0,
+    );
   } else {
     const skip = new Set(['capacity', 'used', 'contents']);
     used = Object.entries(cargo)
