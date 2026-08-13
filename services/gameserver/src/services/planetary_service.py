@@ -2816,12 +2816,23 @@ class PlanetaryService:
                     .first()
                 )
                 if owner is not None:
-                    from src.services.research_service import active_overclock_multiplier
+                    from src.services.research_service import (
+                        active_overclock_multiplier,
+                        tech_modifier,
+                    )
                     overclock_multiplier = active_overclock_multiplier(owner, planet.id)
                     if overclock_multiplier != 1.0:
                         fuel_rate *= overclock_multiplier
                         organics_rate *= overclock_multiplier
                         equipment_rate *= overclock_multiplier
+                    # Point-of-use tech-tree modifier (t.production.yield.1 →
+                    # production_rate +0.05). Leaf-discipline: read the ledger
+                    # here, never write a buff onto the planet.
+                    prod_mod = tech_modifier(owner, "production_rate")
+                    if prod_mod:
+                        fuel_rate *= (1.0 + prod_mod)
+                        organics_rate *= (1.0 + prod_mod)
+                        equipment_rate *= (1.0 + prod_mod)
             except Exception:
                 logger.debug(
                     "Overclock production-read skipped on planet %s (non-fatal)",

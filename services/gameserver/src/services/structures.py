@@ -741,6 +741,64 @@ def can_place(structures: dict, kind: str, x: int, y: int) -> tuple:
     return True, "ok"
 
 
+def survey_plot(structures: dict, x: int, y: int) -> tuple:
+    """Mark one plot surveyed (ADR-0091 fog/reveal). Returns (ok, reason). Mutates in place."""
+    plots = _plot_index(structures)
+    plot = plots.get((int(x), int(y)))
+    if plot is None:
+        return False, f"cell ({x},{y}) off-grid"
+    plot["surveyed"] = True
+    return True, "ok"
+
+
+def clear_plot(structures: dict, x: int, y: int) -> tuple:
+    """Clear uncleared non-hazard land. Returns (ok, reason). Mutates in place.
+
+    Hazard plots must go through ``clear_hazard`` — land clearance does not
+    silently eat radiation/toxin markers.
+    """
+    plots = _plot_index(structures)
+    plot = plots.get((int(x), int(y)))
+    if plot is None:
+        return False, f"cell ({x},{y}) off-grid"
+    if plot.get("hazard") is not None:
+        return False, f"cell ({x},{y}) has a hazard — use hazard clearance"
+    if plot.get("cleared"):
+        return False, f"cell ({x},{y}) already cleared"
+    plot["cleared"] = True
+    return True, "ok"
+
+
+def clear_hazard(structures: dict, x: int, y: int) -> tuple:
+    """Remove a plot hazard and leave the cell cleared. Returns (ok, reason). Mutates in place."""
+    plots = _plot_index(structures)
+    plot = plots.get((int(x), int(y)))
+    if plot is None:
+        return False, f"cell ({x},{y}) off-grid"
+    if plot.get("hazard") is None:
+        return False, f"cell ({x},{y}) has no hazard"
+    plot["hazard"] = None
+    plot["cleared"] = True
+    return True, "ok"
+
+
+def terraform_intensity_for_player(player) -> str:
+    """Map ``gate_value('terraform_intensity')`` onto a ``terraform_grid_tick`` key.
+
+    Catalog floor=1 → today's default ``standard``; unlocking Aggressive
+    Terraforming (gate 2) raises the ceiling to ``aggressive``. Conservative
+    remains available below the ceiling (a gate raises UP, never OUT).
+    """
+    if player is None:
+        return "standard"
+    try:
+        from src.services.research_service import gate_value
+        gate = gate_value(player, "terraform_intensity", floor=1)
+        return "aggressive" if int(gate) >= 2 else "standard"
+    except Exception:
+        return "standard"
+
+
 def _next_building_id(structures: dict) -> str:
     existing = [b.get("id", "") for b in structures.get("buildings", []) if isinstance(b, dict)]
     n = 0
@@ -1738,7 +1796,7 @@ def reclass_planet_type(planet) -> Optional[str]:
     return None
 
 
-def _advance_grid_field(planet, structures: dict) -> int:
+def _advance_grid_field(planet, structures: dict, intensity: str = "standard") -> int:
     """K1b-2 CUTOVER: advance the terraform grid field by the CANONICAL hours elapsed since its own
     wall-clock inner anchor ``terraform_meta.last_grid_tick_at`` — 1 tick = GRID_TICK_PERIOD_HOURS
     canonical hours, capped at GRID_TICK_CAP. OWN-ANCHOR-GATED + idempotent (a caught-up planet
@@ -1759,11 +1817,13 @@ def _advance_grid_field(planet, structures: dict) -> int:
         return 0                                                    # caught-up: no mutation
     ticks = min(ticks, GRID_TICK_CAP)
     pt = _planet_type_name(planet)
+    if intensity not in TERRA_INTENSITY_MULT:
+        intensity = "standard"
     # T1.5-7: thread the live `planet` into the tick so decay_pressure() can scope the per-plot decay
     # rate (done/banded/frontier/contested) and stamp the post-siege breadcrumb. `now` anchors the
     # post-siege-tail cooldown comparison to the wall-clock instant this advance runs.
     for _ in range(ticks):
-        terraform_grid_tick(structures, pt, "standard", planet=planet, now=_canonical_now())
+        terraform_grid_tick(structures, pt, intensity, planet=planet, now=_canonical_now())
     wall_hours_consumed = (ticks * GRID_TICK_PERIOD_HOURS) / (GAME_TIME_SCALE or 1.0)
     tmeta["last_grid_tick_at"] = (anchor + timedelta(hours=wall_hours_consumed)).isoformat()
     structures["terraform_meta"] = tmeta
@@ -1904,7 +1964,17 @@ def _step2_terraform(planet, ts) -> bool:
     try:
         st = planet.structures if isinstance(planet.structures, dict) else None
         if st is not None and grid_habitability(st) is not None:
-            applied_ticks = _advance_grid_field(planet, st)   # flags structures itself when it mutates
+            owner = None
+            db = getattr(ts, "db", None)
+            if getattr(planet, "owner_id", None) is not None and db is not None:
+                try:
+                    from src.models.player import Player
+                    owner = db.query(Player).filter(Player.id == planet.owner_id).first()
+                except Exception:
+                    owner = None
+            applied_ticks = _advance_grid_field(
+                planet, st, intensity=terraform_intensity_for_player(owner)
+            )   # flags structures itself when it mutates
             # K1b-5 biome capstone: maintain the hold-tick counter ONLY for ticks actually applied
             # (a caught-up/duplicate settle applies 0 → must not double-count the hold).
             _maintain_biome_hold(planet, st, applied_ticks)
