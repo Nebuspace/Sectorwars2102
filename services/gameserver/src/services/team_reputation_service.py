@@ -75,23 +75,16 @@ class TeamReputationCooldownError(TeamReputationError):
 
 METHOD_SWITCH_COOLDOWN = timedelta(days=7)  # factions-and-teams.md:399
 
-# [NO-CANON]: canon says nothing about recalculation CADENCE, only that a
-# standing exists and updates. Daily is a reasonable default -- frequent
-# enough that a member's reputation swing is felt within a day, coarse
-# enough that a 4-member team's faction standings aren't churning every
-# tick. Flagged for DECISIONS.
+# CANON (ratified 2026-08-10, DECISIONS.md team-reputation-recalculation-cadence)
+# — daily (24h) interval. Canon says standings update but is silent on cadence;
+# option (a) ratified the shipped default.
 RECALCULATION_INTERVAL = timedelta(days=1)
 
-# Advisory-lock key mnemonic, pre-declared for the future scheduler wiring
-# (npc_scheduler_service.py is HELD this wave -- see the WO). Packed
-# exactly like npc_scheduler_service._mnemonic_lock_key('GCRB'/'PRSW'):
-# four ASCII bytes, big-endian, always non-negative and well inside the
-# signed-63-bit pg_try_advisory_xact_lock(bigint) range. 'TREP' = Team
-# REPutation. NOT referenced by any live pg_try_advisory_xact_lock call
-# yet -- that's the scheduler-wiring step, out of this module's reach
-# while the file is held. Defined here so the eventual wiring is "one
-# import away" (`from src.services.team_reputation_service import
-# TEAM_REPUTATION_SWEEP_LOCK_KEY, sweep_due_team_reputations`).
+# Advisory-lock key mnemonic for the team-reputation sweep (now wired via
+# scheduler/core_loop.py _run_team_reputation_sweep_sync). Packed exactly
+# like npc_scheduler_service._mnemonic_lock_key('GCRB'/'PRSW'): four ASCII
+# bytes, big-endian, always non-negative and well inside the signed-63-bit
+# pg_try_advisory_xact_lock(bigint) range. 'TREP' = Team REPutation.
 TEAM_REPUTATION_SWEEP_LOCK_KEY = int.from_bytes(b"TREP", "big")
 
 # Mirrors faction_service.FactionService._calculate_reputation_level's
@@ -196,7 +189,7 @@ def _member_values_for_faction(
 def _aggregate_value(method: str, values: List[int], leader_value: Optional[int]) -> int:
     """Pure core: apply AVERAGE/LOWEST/LEADER to one faction's member
     values. An empty team (zero members) degrades to NEUTRAL (0) --
-    [NO-CANON], there's no sensible standing for a team with no members.
+    CANON (ratified 2026-08-10, DECISIONS.md team-reputation-zero-member-edge-case).
     LEADER with no leader Reputation row for this faction -> NEUTRAL (0),
     per the WO's explicit instruction -- ``leader_value`` is already
     resolved to that default by the caller before reaching here."""
@@ -371,16 +364,13 @@ def get_team_reputation(db: Session, team: Team, *, now: Optional[datetime] = No
     row for a team that's never been computed, and recalculates INLINE if
     the stored snapshot is past its ``next_recalculation`` due date.
 
-    [NO-CANON, pragmatic interim]: the scheduler sweep this WO's sync core
-    targets (``sweep_due_team_reputations``) is HELD pending
-    npc_scheduler_service.py freeing up -- without this read-triggers-
-    refresh-if-due fallback, a fresh team's standings would sit
-    empty/stale indefinitely with no sweep to populate them. A freshly
-    created row's ``next_recalculation`` is set to its own creation
-    timestamp (see ``_get_or_create_team_reputation``), so a team's very
-    first read always self-heals into a real computation. Once the sweep
-    is wired, this fallback becomes a rare cold-start path instead of the
-    primary trigger, not a redundant one -- it stays as defense-in-depth.
+    The scheduler sweep (``sweep_due_team_reputations``) is wired via
+    ``scheduler/core_loop.py``. This read-triggers-refresh-if-due fallback
+    remains the cold-start path: a freshly created row's
+    ``next_recalculation`` is set to its own creation timestamp (see
+    ``_get_or_create_team_reputation``), so a team's very first read always
+    self-heals into a real computation. With the sweep live, this fallback
+    is defense-in-depth (cold-start / missed-tick), not the primary trigger.
     """
     now = _now(now)
     team_rep = _get_or_create_team_reputation(db, team, now=now)
@@ -467,10 +457,9 @@ def switch_method(
 
 
 # ---------------------------------------------------------------------------
-# Scheduler sweep -- HELD. npc_scheduler_service.py is mid-wave this
-# session; this is the tested sync core only. Wiring it behind
-# TEAM_REPUTATION_SWEEP_LOCK_KEY (pg_try_advisory_xact_lock) into the
-# scheduler's tick loop is the reported open item, not built here.
+# Scheduler sweep sync core. Wired via scheduler/core_loop.py
+# (_run_team_reputation_sweep_sync) behind TEAM_REPUTATION_SWEEP_LOCK_KEY.
+# This function stays flush-only; the wrapper owns SessionLocal + commit.
 # ---------------------------------------------------------------------------
 
 def sweep_due_team_reputations(db: Session, *, now: Optional[datetime] = None) -> Dict[str, int]:

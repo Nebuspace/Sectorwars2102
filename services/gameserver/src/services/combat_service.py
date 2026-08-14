@@ -36,18 +36,13 @@ logger = logging.getLogger(__name__)
 # this faucet lives ONLY in attack_npc_ship and is gated on a genuine NPC-hull
 # destruction.
 #
-# ⚠️ NO-CANON NUMBERS — FLAGGED FOR MAX (lifecycle.md marks loot tables /
-# per-region scaling "📐 Design-only" with no committed magnitudes):
-#   * the 5–15% band endpoints, and
-#   * the per-encounter credit ceiling,
-# are conservative placeholders chosen to seed the documented faucet without
-# enabling a farm loop. The band matches the canon "≈ 5–15%" wording; the cap
-# is deliberately low (one weak-NPC kill yields little, and even a fat-hull
-# kill cannot exceed the ceiling), so repeatedly grinding weak NPCs hits a
-# hard credit ceiling per encounter. Tune once human sets canon.
-NPC_KILL_LOOT_MINT_MIN_PCT = 0.05  # NO-CANON, flagged — lifecycle.md "≈ 5%"
-NPC_KILL_LOOT_MINT_MAX_PCT = 0.15  # NO-CANON, flagged — lifecycle.md "≈ 15%"
-NPC_KILL_LOOT_MINT_CAP = 5000      # NO-CANON, flagged — per-encounter ceiling
+# CANON (ratified 2026-08-10, DECISIONS.md npc-kill-loot-mint-rate) — 5–15%
+# band + 5,000 cr per-encounter cap, as shipped. lifecycle.md's "≈ 5–15%"
+# wording is the band; the cap keeps a fat-hull kill from minting unbounded
+# credits. Values unchanged by the ruling.
+NPC_KILL_LOOT_MINT_MIN_PCT = 0.05  # ratified — lifecycle.md "≈ 5%"
+NPC_KILL_LOOT_MINT_MAX_PCT = 0.15  # ratified — lifecycle.md "≈ 15%"
+NPC_KILL_LOOT_MINT_CAP = 5000      # ratified — per-encounter ceiling
 
 # ── NPC quantum-shard drop table (WO-CMB-QDROP-NPC-1 / FEATURES/galaxy/
 # quantum-resources.md §3 "Combat salvage"): "Quantum Smuggler NPC" kill →
@@ -55,21 +50,16 @@ NPC_KILL_LOOT_MINT_CAP = 5000      # NO-CANON, flagged — per-encounter ceiling
 # 1-3 shards. The percentages/ranges themselves ARE canon — not NO-CANON
 # numbers.
 #
-# ⚠️ NO-CANON MAPPING — FLAGGED FOR MAX: canon names two NPC kinds that do
-# not exist as spawn kinds in npc_spawn_service.py. Existing substrate:
-# NPCArchetype.TRADER personas draw a persona TITLE from
-# TRADER_TITLES_BY_TIER["NOTORIOUS"] (npc_spawn_service.py), which includes
-# "Smuggler" and "Black Marketeer"; NPCArchetype.RESEARCHER is declared but
-# never spawned (npc_spawn_service.py only spawns TRADER / HOSTILE_RAIDER /
-# LAW_ENFORCEMENT today). We bridge the canon table onto this vocabulary: a
-# Smuggler/Black-Marketeer-titled TRADER kill rolls the 5%/1-2 row; a
-# RESEARCHER-archetype kill (currently unspawned, so this row is inert
-# until a future npc_spawn_service WO) rolls the 15%/1-3 row; every other
-# NPC never drops. If human prefers dedicated QUANTUM_SMUGGLER /
-# ROGUE_SCIENTIST spawn kinds instead, that is a follow-up
-# npc_spawn_service WO, not a rename here. Destroyed-gate drops
-# (quantum-resources.md's third salvage row) stay 0% — no gate-destruction
-# combat path exists yet.
+# CANON (ratified 2026-08-10, DECISIONS.md npc-quantum-drop-kind-mapping) —
+# TRADER/RESEARCHER bridge: canon names "Quantum Smuggler" / "Rogue Scientist"
+# kinds that are not spawn kinds. Existing substrate: NPCArchetype.TRADER
+# personas draw a TITLE from TRADER_TITLES_BY_TIER["NOTORIOUS"] (includes
+# "Smuggler" and "Black Marketeer"); NPCArchetype.RESEARCHER is declared but
+# not spawned today. A Smuggler/Black-Marketeer-titled TRADER kill rolls the
+# 5%/1-2 row; a RESEARCHER-archetype kill rolls the 15%/1-3 row; every other
+# NPC never drops. Dedicated QUANTUM_SMUGGLER / ROGUE_SCIENTIST spawn kinds
+# would be a follow-up npc_spawn_service WO, not a rename here.
+# Destroyed-gate drops stay 0% — no gate-destruction combat path exists yet.
 NPC_QUANTUM_DROP_SMUGGLER_TITLES = frozenset({"Smuggler", "Black Marketeer"})
 NPC_QUANTUM_DROP_SMUGGLER_CHANCE = 0.05
 NPC_QUANTUM_DROP_SMUGGLER_MIN = 1
@@ -84,9 +74,9 @@ def _roll_npc_quantum_drop(looted_npc: Optional["NPCCharacter"]) -> int:  # noqa
     (quantum-resources.md §3 "Combat salvage"). Returns the shard count to
     award — 0 if ``looted_npc`` is None or its archetype/title isn't one of
     the two mapped rows (every non-mapped NPC never drops). See the
-    NO-CANON mapping note on the NPC_QUANTUM_DROP_* constants above for why
-    a TRADER persona title and the RESEARCHER archetype stand in for
-    canon's "Quantum Smuggler" / "Rogue Scientist" kinds. Uses the same
+    npc-quantum-drop-kind-mapping note on the NPC_QUANTUM_DROP_* constants
+    above for why a TRADER persona title and the RESEARCHER archetype stand
+    in for canon's "Quantum Smuggler" / "Rogue Scientist" kinds. Uses the same
     random.random() gate + random.randint() magnitude idiom as the rest of
     this module's combat rolls, so tests can seed/script it consistently.
     """
@@ -1649,8 +1639,7 @@ class CombatService:
                         logger.info(
                             "NPC-kill loot faucet: minted %d cr (%.1f%% of hull "
                             "value %d, capped at %d) to player %s for destroying "
-                            "NPC ship %s (NO-CANON band/cap, lifecycle.md §1.2; "
-                            "flagged for human)",
+                            "NPC ship %s (npc-kill-loot-mint-rate, lifecycle.md §1.2)",
                             minted_loot, loot_pct * 100, hull_value,
                             NPC_KILL_LOOT_MINT_CAP, attacker.id, npc_ship.id,
                         )

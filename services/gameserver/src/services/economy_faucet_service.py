@@ -137,7 +137,7 @@ GLOBAL_DAILY_STIPEND_CAP: int = 100  # ⚠️ NO-CANON — ~3,000/mo at cap, und
 CITIZEN_WEEKLY_PERK: int = 2_500  # ⚠️ NO-CANON — paid perk, ~10,000 cr/mo
 # lifecycle.md §1.6: Region Owner treasury seeding ≈ 100,000 cr/mo into the
 # *region treasury* (not the owner wallet). Weekly slice ≈ 25,000.
-REGION_OWNER_TREASURY_SEED_WEEKLY: int = 25_000  # ⚠️ NO-CANON — ≈100k/mo
+REGION_OWNER_TREASURY_SEED_WEEKLY: int = 25_000  # ratified 2026-08-10, DECISIONS.md region-owner-treasury-seed-weekly — ≈100k/mo
 _REGION_OWNER_TIER: str = "regional_owner"
 
 # Player.settings JSONB key for the durable PER-PLAYER daily-stipend anchor —
