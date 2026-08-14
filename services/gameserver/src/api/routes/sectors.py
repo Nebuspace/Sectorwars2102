@@ -156,6 +156,10 @@ class SectorContentsResponse(BaseModel):
     # sole writer; this is a direct, zero-query read of the already-loaded
     # Sector row, same shape/convention as live_ships above).
     message_beacons: List[Dict[str, Any]] = []
+    # Lodging sector flags (npc-lodging.md) — player-info surface for
+    # OutlawBase / sector-location NPCBarracks presence.
+    is_outlaw_zone: bool = False
+    is_npc_barracks_sector: bool = False
     # Server-authoritative ENGAGE proximity threshold, in REFERENCE_BAND em
     # (WO-API-A1) -- intrasystem_movement_service.ENGAGE_RANGE_EM, the SAME
     # value POST /combat/engage now enforces server-side. Published here
@@ -557,5 +561,7 @@ async def get_sector_contents(
         wrecks=wrecks,
         warp_gates=SectorStructuresResponse(**gates),
         message_beacons=sector.message_beacons or [],
+        is_outlaw_zone=bool(getattr(sector, "is_outlaw_zone", False)),
+        is_npc_barracks_sector=bool(getattr(sector, "is_npc_barracks_sector", False)),
         engage_range_em=isp.ENGAGE_RANGE_EM,
     )
