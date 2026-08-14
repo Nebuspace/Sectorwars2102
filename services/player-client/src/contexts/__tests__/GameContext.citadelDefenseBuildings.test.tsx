@@ -160,7 +160,7 @@ describe('GameContext citadelAPI defense buildings', () => {
     expect(mockConstructBuilding).toHaveBeenCalledWith('planet-9', 'turret_network');
     expect(result).toEqual({ success: true, buildingType: 'turret_network' });
     const rawPosts = mockPost.mock.calls.filter((c) =>
-      String(c[0]).includes('/buildings/construct'),
+      String(c[0]).includes('/buildings/construct') || String(c[0]).includes('/grid/place'),
     );
     expect(rawPosts).toHaveLength(0);
   });

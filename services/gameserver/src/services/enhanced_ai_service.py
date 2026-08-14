@@ -568,7 +568,7 @@ class EnhancedAIService:
                     id=str(uuid.uuid4()),
                     category=AISystemType.COMBAT,
                     recommendation_type="tactical_advice",
-                    title=f"Battle Tactical Analysis",
+                    title="Battle Tactical Analysis",
                     summary="AI tactical recommendation for active combat scenario",
                     detailed_analysis={
                         "battle_id": str(battle.id),

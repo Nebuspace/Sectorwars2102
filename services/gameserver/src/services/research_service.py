@@ -537,8 +537,8 @@ def player_has_tech(player: Player, node_id: str) -> bool:
 def has_tool(player: Player, tool_key: str) -> bool:
     """True iff the player has unlocked any node whose effect is a matching tool.
 
-    Inert in K0 (no consumer calls it yet); the placeholder tool nodes wire here
-    at K1b. Pure read.
+    Point-of-use: grid fog/reveal (``grid_survey``), plot clearance
+    (``plot_clear``), hazard remediation (``hazard_clear``). Pure read.
     """
     unlocked = set(ledger_of(player).get("unlocked", []))
     for nid in unlocked:
@@ -555,7 +555,7 @@ def gate_value(player: Player, gate_key: str, floor: int = 1) -> int:
     """Return the highest unlocked gate ceiling for ``gate_key``, else ``floor``.
 
     A gate raises a stage/intensity ceiling UP, never OUT (CRT-MASTER §K1b).
-    Inert in K0. Pure read.
+    Point-of-use: ``terraform_intensity`` caps settle-tick intensity. Pure read.
     """
     best = floor
     for nid in ledger_of(player).get("unlocked", []):
@@ -572,7 +572,8 @@ def tech_modifier(player: Player, modifier_key: str, base: float = 0.0) -> float
     """Return the SUMMED modifier magnitude for ``modifier_key`` (additive on base).
 
     e.g. ``rate = base_rate * (1 + tech_modifier(player, "production_rate"))``.
-    Inert in K0 (no consumer calls it yet). Pure read.
+    Point-of-use: planetary production tick (``production_rate``) and warp
+    turn-cost calc (``turn_cost``). Pure read.
     """
     total = base
     for nid in ledger_of(player).get("unlocked", []):

@@ -15,6 +15,7 @@ from src.services.ranking_service import RankingService
 from src.services.ship_service import ShipService
 from src.services.bounty_service import BountyService
 from src.services import turn_service
+from src.services.ship_ownership_query import owned_ships_filter
 
 router = APIRouter(
     prefix="/player",
@@ -75,8 +76,8 @@ class ShipResponse(BaseModel):
     mining_laser_level: int | None = None
     # ship-registry.md "Hatch pin lock": "The owner sees it in their ship
     # panel from minute one." Populated ONLY on this owner-scoped listing
-    # (GET /players/ships already filters Ship.owner_id == the caller) --
-    # never add this field to a response shape another player's client can
+    # (GET /player/ships filters via owned_ships_filter / registered_owner_id)
+    # -- never add this field to a response shape another player's client can
     # see, since it's the boarding secret for the ship.
     hatch_pin_code: str | None = None
 
@@ -307,8 +308,12 @@ async def get_player_ships(
     player: Player = Depends(get_current_player),
     db: Session = Depends(get_db)
 ):
-    """Get all ships owned by the current player"""
-    ships = db.query(Ship).filter(Ship.owner_id == player.id).all()
+    """Get all ships owned by the current player.
+
+    Ownership is ``registered_owner_id`` (canon); ``owner_id`` is only a
+    fallback when ``registered_owner_id`` was never backfilled (NULL).
+    """
+    ships = db.query(Ship).filter(owned_ships_filter(player.id)).all()
 
     ship_responses = []
     for ship in ships:

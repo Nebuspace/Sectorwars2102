@@ -29,8 +29,8 @@ Orchestrator's bless (K0-style); tune via these constants, no structural change.
 
 Kernel set (this WO): economy MINE/FARM/FABRICATOR/POWER_PLANT/STORAGE_SILO/SPACEPORT · civic
 HAB_DOME/LAB/LOGISTICS_OFFICE · defense TURRET_NETWORK/ORBITAL_PLATFORM/SCANNER_ARRAY (the 3 shipped)
-+ RAIL_GUN/DEFENSE_GRID (the K0-cashed design-only pair). REFINERY/BIO_PROCESSOR/Districts/fortress
-tiers/monument Wonders are T2+.
++ RAIL_GUN/DEFENSE_GRID (the K0-cashed design-only pair) + PLANET_MINEFIELD (ADR-0094 point-2;
+was construct-route-only). REFINERY/BIO_PROCESSOR/Districts/fortress tiers/monument Wonders are T2+.
 """
 
 from typing import Any, Dict, Optional
@@ -163,7 +163,8 @@ BUILDING_CATALOG: Dict[str, Dict[str, Any]] = {
     "TURRET_NETWORK": {
         "kind": "TURRET_NETWORK", "domain": "defense", "name": "Turret Network",
         "footprint": [1, 1], "max_level": 1,
-        "build_hours": {1: 72}, "cost": {1: {"credits": 150000}},
+        # defense.md / DEFENSE_BUILDINGS: 150,000 cr + 8,000 equipment (SEC-DEFBUILD-MATERIALS).
+        "build_hours": {1: 72}, "cost": {1: {"credits": 150000, "equipment": 8000}},
         "power_draw": {1: 15}, "crew": {1: 3},
         "upkeep": {"credits": 300, "materials": {}}, "tech_gate": None,
         "min_citadel_level": 3, "terrain_bonus": {},
@@ -173,6 +174,7 @@ BUILDING_CATALOG: Dict[str, Dict[str, Any]] = {
     "ORBITAL_PLATFORM": {
         "kind": "ORBITAL_PLATFORM", "domain": "defense", "name": "Orbital Platform",
         "footprint": [1, 1], "max_level": 1,
+        # credits-only per defense.md's 2026-08-04 correction — no materials.
         "build_hours": {1: 168}, "cost": {1: {"credits": 500000}},
         "power_draw": {1: 40}, "crew": {1: 6},
         "upkeep": {"credits": 800, "materials": {}}, "tech_gate": None,
@@ -183,7 +185,8 @@ BUILDING_CATALOG: Dict[str, Dict[str, Any]] = {
     "SCANNER_ARRAY": {
         "kind": "SCANNER_ARRAY", "domain": "defense", "name": "Scanner Array",
         "footprint": [1, 1], "max_level": 1,
-        "build_hours": {1: 48}, "cost": {1: {"credits": 75000}},
+        # defense.md / DEFENSE_BUILDINGS: 75,000 cr + 10,000 equipment.
+        "build_hours": {1: 48}, "cost": {1: {"credits": 75000, "equipment": 10000}},
         "power_draw": {1: 10}, "crew": {1: 2},
         "upkeep": {"credits": 150, "materials": {}}, "tech_gate": None,
         "min_citadel_level": 2, "terrain_bonus": {},
@@ -194,7 +197,8 @@ BUILDING_CATALOG: Dict[str, Dict[str, Any]] = {
     "RAIL_GUN": {
         "kind": "RAIL_GUN", "domain": "defense", "name": "Rail Gun Battery",
         "footprint": [1, 1], "max_level": 1,
-        "build_hours": {1: 72}, "cost": {1: {"credits": 150000}},
+        # defense.md: 150,000 cr + 20,000 ore + 10,000 equipment (ore → Planet.fuel_ore).
+        "build_hours": {1: 72}, "cost": {1: {"credits": 150000, "fuel_ore": 20000, "equipment": 10000}},
         "power_draw": {1: 40}, "crew": {1: 4},
         "upkeep": {"credits": 400, "materials": {}}, "tech_gate": "t.def.railgun.1",
         "min_citadel_level": 4, "terrain_bonus": {},
@@ -204,11 +208,25 @@ BUILDING_CATALOG: Dict[str, Dict[str, Any]] = {
     "DEFENSE_GRID": {
         "kind": "DEFENSE_GRID", "domain": "defense", "name": "Planetary Defense Grid",
         "footprint": [2, 1], "max_level": 1,
-        "build_hours": {1: 96}, "cost": {1: {"credits": 200000}},
+        # L1 materials (15,000 equipment). Grid has no tier_materials; L2-as-2nd-placement
+        # also pays L1 materials (slightly stricter than CitadelService's credits-only L2).
+        "build_hours": {1: 96}, "cost": {1: {"credits": 200000, "equipment": 15000}},
         "power_draw": {1: 60}, "crew": {1: 5},
         "upkeep": {"credits": 500, "materials": {}}, "tech_gate": "t.def.grid.1",
         "min_citadel_level": 3, "terrain_bonus": {},
         "effect": {"kind": "ct1_defense", "ct1_kind": "planetary_defense_grid"},
+        "signature": False, "prereqs": [],
+    },
+    # ADR-0094 point-2: minefield was construct-route-only (DEFENSE_BUILDINGS) — add the
+    # catalog kind so /grid/place is the sole construct surface, including minefields.
+    "PLANET_MINEFIELD": {
+        "kind": "PLANET_MINEFIELD", "domain": "defense", "name": "Planetary Minefield",
+        "footprint": [1, 1], "max_level": 1,
+        "build_hours": {1: 48}, "cost": {1: {"credits": 100000, "equipment": 10000}},
+        "power_draw": {1: 8}, "crew": {1: 2},
+        "upkeep": {"credits": 200, "materials": {}}, "tech_gate": None,
+        "min_citadel_level": 3, "terrain_bonus": {},
+        "effect": {"kind": "ct1_defense", "ct1_kind": "planet_minefield"},
         "signature": False, "prereqs": [],
     },
 

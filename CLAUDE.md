@@ -128,7 +128,7 @@ Defaults: heartbeat `--idle-threshold 1200` (20min), `--cadence 300` (5min).
 | **Cursor Agent** | **Shell tool**, `block_until_ms: 0` (background), **`required_permissions: ["all"]`**, and **`notify_on_output` required** so stdout wakes this session. Plain `command &` / background-without-notify is **forbidden** — the process will look ALIVE in `coord-status.sh` while the agent stays deaf. |
 
 **Cursor `notify_on_output` (copy these):**
-- Monitor — `pattern`: `COORD ▼|HEARTBEAT DOWN|ASSIGN-IDENTITY|HANDOFF|DEPLOY-WINDOW` · `reason`: `Coord inbox peer message` · `debounce_ms`: `5000`
+- Monitor — `pattern`: `COORD ▼|IDLE-KICK|HEARTBEAT DOWN|ASSIGN-IDENTITY|HANDOFF|PING|DEPLOY-WINDOW-OPEN|DEPLOY-WINDOW-CLOSED` · `reason`: `Coord inbox peer message` · `debounce_ms`: `5000` (2026-08-11: added `IDLE-KICK` — own-file self-nudge prints `┃ IDLE-KICK ▼`, not `┃ COORD ▼`; tightened bare `DEPLOY-WINDOW` to `OPEN|CLOSED`; added `PING` with PING-PONG-LIVENESS — belt-and-suspenders, `COORD ▼` already covers hub PINGs)
 - Heartbeat — `pattern`: `WATCHER-DOWN|exit 42|HEARTBEAT DOWN` · `reason`: `Heartbeat dead-man alert` · `debounce_ms`: `5000`
 
 On a notify wake: read the new tail of `orchestrator.md` (or the emitted block), act, do **not** re-arm a still-ALIVE monitor. Re-arm ONLY the dead one (kill by recorded PID — never `pkill -f`), then `coord-status.sh` → BOTH ALIVE. On `💓 HEARTBEAT` wake: if mid-task CONTINUE; if queue empty, stand by.

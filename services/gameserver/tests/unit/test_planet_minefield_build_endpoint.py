@@ -1,16 +1,10 @@
-"""Tests for WO-P5-planets-minefield-wiring's build-endpoint half:
-planet_minefield was defined-but-unreachable (citadel_service.DEFENSE_BUILDINGS
-had the catalog entry since WO-G7, but routes/planets.py's ConstructBuildingRequest
-regex never allowed the type through, and no test exercised
-CitadelService.build_defense_building's generic queue/settle flow for it).
+"""Tests for WO-P5-planets-minefield-wiring's CitadelService build half:
+planet_minefield queue/settle + citadel-level gate (3+) and capacity ladder
+(1@L3 / 2@L4 / 3@L5, defense.md).
 
-Two halves:
-  (1) the route-level Pydantic gate now accepts "planet_minefield".
-  (2) CitadelService.build_defense_building / _settle_build_queue — already
-      fully generic/data-driven (confirmed by reading the source: validated
-      only against DEFENSE_BUILDINGS, no type-specific branching) — behave
-      correctly for planet_minefield's specific citadel-level gate (3+) and
-      capacity ladder (1@L3 / 2@L4 / 3@L5, defense.md).
+ADR-0094 point-2 retired POST /buildings/construct (ConstructBuildingRequest).
+HTTP construct is now POST /planets/{id}/grid/place + catalog kind PLANET_MINEFIELD.
+These tests keep covering the internal CitadelService path (genesis/admin).
 
 FakeSession mirrors test_research_unlock_route.py's _FakeQuery/_FakeSession
 shape, extended to route by SQLAlchemy model class since build_defense_building
@@ -22,28 +16,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.api.routes.planets import ConstructBuildingRequest
 from src.models.planet import Planet
 from src.models.player import Player
 from src.services.citadel_service import CitadelService, DEFENSE_BUILDINGS
 
 
 # --------------------------------------------------------------------------- #
-# (1) Route-level Pydantic gate.
-# --------------------------------------------------------------------------- #
-
-def test_route_request_model_now_accepts_planet_minefield():
-    req = ConstructBuildingRequest(buildingType="planet_minefield")
-    assert req.buildingType == "planet_minefield"
-
-
-def test_route_request_model_still_rejects_garbage_types():
-    with pytest.raises(Exception):
-        ConstructBuildingRequest(buildingType="not_a_real_building")
-
-
-# --------------------------------------------------------------------------- #
-# (2) CitadelService.build_defense_building / _settle_build_queue.
+# CitadelService.build_defense_building / _settle_build_queue.
+# ADR-0094 retired ConstructBuildingRequest / POST /buildings/construct;
+# HTTP construct is POST /grid/place + catalog kind PLANET_MINEFIELD.
 # --------------------------------------------------------------------------- #
 
 class _FakeQuery:

@@ -1734,11 +1734,6 @@ async def get_defense_pricing(
     }
 
 
-class ConstructBuildingRequest(BaseModel):
-    """Defense building construction request."""
-    buildingType: str = Field(..., pattern="^(orbital_platform|turret_network|scanner_array|rail_gun|planetary_defense_grid|planet_minefield)$")
-
-
 @router.get("/{planet_id}/buildings/available")
 async def get_available_buildings(
     planet_id: str,
@@ -1755,41 +1750,6 @@ async def get_available_buildings(
     result = service.get_available_buildings(pid)
     if not result.get("success"):
         raise HTTPException(status_code=400, detail=result.get("message", "Failed"))
-    return result
-
-
-@router.post("/{planet_id}/buildings/construct")
-async def construct_defense_building(
-    planet_id: str,
-    request: ConstructBuildingRequest,
-    player: Player = Depends(get_current_player),
-    db: Session = Depends(get_db)
-):
-    """Construct a defense building on a planet.
-
-    DEPRECATED (ADR-0094 endpoint-canonicalization) — overlaps
-    POST /planets/{planet_id}/grid/place, which is the canonical route: it
-    sources defense kinds (TURRET_NETWORK/ORBITAL_PLATFORM/SCANNER_ARRAY) from
-    the same unified building_catalog this route's CitadelService call does not
-    consult. CitadelService.build_defense_building enforces its OWN research
-    gate (CRT WO-K0-3) and, as of SEC-DEFBUILD-MATERIALS, its own per-planet
-    material charge — parity restored via two independent implementations
-    rather than a shared call, since the two catalogs' cost/level/tier shapes
-    differ enough that delegating would change this route's response
-    contract (player-client GameContext.tsx is still a live caller). Still not
-    safe to remove; migrate that caller to grid/place before deleting this
-    route.
-    """
-    from src.services.citadel_service import CitadelService
-    try:
-        pid = UUID(planet_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid planet ID format")
-    service = CitadelService(db)
-    result = service.build_defense_building(pid, player.id, request.buildingType)
-    if not result.get("success"):
-        raise HTTPException(status_code=400, detail=result.get("message", "Construction failed"))
-    db.commit()
     return result
 
 

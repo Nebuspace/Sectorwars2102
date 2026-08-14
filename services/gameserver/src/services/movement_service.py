@@ -1189,7 +1189,7 @@ class MovementService:
 
         # Check if direct warp exists
         can_warp, warp_cost, warp_message = self._check_direct_warp(
-            current_sector_id, destination_sector_id, player.current_ship
+            current_sector_id, destination_sector_id, player.current_ship, player=player
         )
 
         if can_warp:
@@ -1485,7 +1485,7 @@ class MovementService:
         for connected_sector in current_sector.outgoing_warps:
             if connected_sector.id in outgoing_turn_cost_by_dest:
                 warp_cost = self._warp_cost_from_turn_cost(
-                    outgoing_turn_cost_by_dest[connected_sector.id], ship
+                    outgoing_turn_cost_by_dest[connected_sector.id], ship, player=player
                 )
             else:
                 # Defensive fallback (should be unreachable -- the batched
@@ -1552,7 +1552,7 @@ class MovementService:
             # row IS the definitive sector_warps edge (this is exactly the
             # reverse-direction row _calculate_warp_cost's fallback lookup
             # would find) -- its turn_cost is used directly, no re-query.
-            warp_cost = self._warp_cost_from_turn_cost(row.turn_cost, ship)
+            warp_cost = self._warp_cost_from_turn_cost(row.turn_cost, ship, player=player)
             direct_warps.append({
                 "sector_id": origin.sector_id,
                 "name": origin.name,
@@ -2080,7 +2080,13 @@ class MovementService:
         ).first()
         return reverse_row is not None
 
-    def _check_direct_warp(self, current_sector_id: int, destination_sector_id: int, ship: Ship) -> Tuple[bool, int, str]:
+    def _check_direct_warp(
+        self,
+        current_sector_id: int,
+        destination_sector_id: int,
+        ship: Ship,
+        player: Optional[Player] = None,
+    ) -> Tuple[bool, int, str]:
         """Check if a direct warp is possible and calculate turn cost."""
         # Get sector objects
         current_sector = self.db.query(Sector).filter(Sector.sector_id == current_sector_id).first()
@@ -2095,7 +2101,9 @@ class MovementService:
             return False, 0, "Sectors are not directly connected"
 
         # Calculate turn cost
-        turn_cost = self._calculate_warp_cost(current_sector, destination_sector, ship)
+        turn_cost = self._calculate_warp_cost(
+            current_sector, destination_sector, ship, player=player
+        )
 
         return True, turn_cost, "Direct warp available"
 
@@ -2350,14 +2358,21 @@ class MovementService:
             logger.error("Maintenance speed-band read failed (cost unchanged): %s", e)
             return 1.0
 
-    def _calculate_warp_cost(self, from_sector: Sector, to_sector: Sector, ship: Optional[Ship]) -> int:
+    def _calculate_warp_cost(
+        self,
+        from_sector: Sector,
+        to_sector: Sector,
+        ship: Optional[Ship],
+        player: Optional[Player] = None,
+    ) -> int:
         """Calculate turn cost for a direct warp between sectors.
 
         Uniform per-warp cost (movement.md:13, movement.md:24): 'Ship.current_speed
         does not change the turn cost of any traversal' and 'A Scout (speed 2.5)
         and a Cargo Hauler (speed 0.5) both pay the same'. Every hull type pays
         warp.turn_cost, adjusted only by the ship's maintenance-band speed
-        factor (ships.md:89) — never by ship type or current_speed.
+        factor (ships.md:89) — never by ship type or current_speed. Optional
+        ``player`` applies the point-of-use ``turn_cost`` tech modifier.
         """
         # Find the warp connection details. Try the forward direction first;
         # if missing, try the reverse direction with is_bidirectional=true
@@ -2378,9 +2393,14 @@ class MovementService:
         if not warp:
             return 999  # Very high cost if no direct connection (should not happen)
 
-        return self._warp_cost_from_turn_cost(warp.turn_cost, ship)
+        return self._warp_cost_from_turn_cost(warp.turn_cost, ship, player=player)
 
-    def _warp_cost_from_turn_cost(self, raw_turn_cost: Optional[int], ship: Optional[Ship]) -> int:
+    def _warp_cost_from_turn_cost(
+        self,
+        raw_turn_cost: Optional[int],
+        ship: Optional[Ship],
+        player: Optional[Player] = None,
+    ) -> int:
         """Pure cost computation shared by ``_calculate_warp_cost`` (which
         queries ``sector_warps`` for ``raw_turn_cost``) and WO-QTI-MOVES-
         BATCH's listing loops (which already hold the row's turn_cost from a
@@ -2388,7 +2408,9 @@ class MovementService:
 
         ``raw_turn_cost`` is the edge's raw ``sector_warps.turn_cost``
         (falls back to 1 if falsy, matching the pre-existing
-        ``warp.turn_cost if warp.turn_cost else 1``).
+        ``warp.turn_cost if warp.turn_cost else 1``). Optional ``player``
+        applies ``tech_modifier(..., "turn_cost")`` (Drive Efficiency) —
+        still no extra I/O; the ledger lives on the player object.
         """
         # Get base turn cost from the warp
         base_cost = raw_turn_cost if raw_turn_cost else 1
@@ -2400,6 +2422,17 @@ class MovementService:
         # adjustment to the uniform warp.turn_cost (movement.md:13/:24) —
         # never ship type or current_speed.
         base_cost = int(base_cost * self._maintenance_speed_multiplier(ship))
+
+        if player is not None:
+            try:
+                from src.services.research_service import tech_modifier
+                turn_mod = tech_modifier(player, "turn_cost")
+                if turn_mod:
+                    base_cost = int(round(base_cost * (1.0 + turn_mod)))
+            except Exception:
+                logger.debug(
+                    "turn_cost tech-modifier skipped (non-fatal)", exc_info=True
+                )
 
         # No turn cost can be less than 1
         return max(1, base_cost)
