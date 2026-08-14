@@ -13,7 +13,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
-from src.models.npc_barracks import NPCBarracks
+from src.models.npc_barracks import NPCBarracks, NPCLodgingLocationType
 from src.models.npc_character import NPCActivity, NPCCharacter
 from src.models.outlaw_base import OutlawBase
 from src.models.sector import Sector
@@ -24,6 +24,69 @@ LODGING_TYPE_BARRACKS = "barracks"
 LODGING_TYPE_OUTLAW_BASE = "outlaw_base"
 DOCKED_OFF_DUTY = "docked_off_duty"
 ERR_NPC_SHIP_AT_BARRACKS = "ERR_NPC_SHIP_AT_BARRACKS"
+
+
+def sync_sector_lodging_flags(
+    db: Session, sector_ids: Optional[List[int]] = None
+) -> Dict[str, int]:
+    """Recompute ``Sector.is_outlaw_zone`` / ``is_npc_barracks_sector``.
+
+    Canon (DATA_MODELS/npc-lodging.md): outlaw flag tracks OutlawBase rows;
+    barracks flag tracks NPCBarracks with ``location_type=sector``. Idempotent
+    backfill — call after lodging place/move/delete, or with ``sector_ids=None``
+    to refresh every sector that hosts lodging or already carries a flag.
+    """
+    outlaw_q = db.query(OutlawBase.sector_id)
+    barracks_q = (
+        db.query(NPCBarracks.sector_id)
+        .filter(NPCBarracks.location_type == NPCLodgingLocationType.SECTOR)
+        .filter(NPCBarracks.sector_id.isnot(None))
+    )
+    if sector_ids is not None:
+        sid_filter = list({int(s) for s in sector_ids})
+        if not sid_filter:
+            return {"sectors_checked": 0, "sectors_updated": 0}
+        outlaw_q = outlaw_q.filter(OutlawBase.sector_id.in_(sid_filter))
+        barracks_q = barracks_q.filter(NPCBarracks.sector_id.in_(sid_filter))
+        targets = set(sid_filter)
+    else:
+        targets = set()
+
+    outlaw_sectors = {int(sid) for (sid,) in outlaw_q.all() if sid is not None}
+    barracks_sectors = {int(sid) for (sid,) in barracks_q.all() if sid is not None}
+
+    if sector_ids is None:
+        flagged = (
+            db.query(Sector.sector_id)
+            .filter(
+                (Sector.is_outlaw_zone.is_(True))
+                | (Sector.is_npc_barracks_sector.is_(True))
+            )
+            .all()
+        )
+        targets = outlaw_sectors | barracks_sectors | {int(sid) for (sid,) in flagged}
+
+    updated = 0
+    for sid in targets:
+        sector = db.query(Sector).filter(Sector.sector_id == sid).first()
+        if sector is None:
+            continue
+        want_outlaw = sid in outlaw_sectors
+        want_barracks = sid in barracks_sectors
+        if (
+            bool(getattr(sector, "is_outlaw_zone", False)) != want_outlaw
+            or bool(getattr(sector, "is_npc_barracks_sector", False)) != want_barracks
+        ):
+            sector.is_outlaw_zone = want_outlaw
+            sector.is_npc_barracks_sector = want_barracks
+            updated += 1
+
+    return {"sectors_checked": len(targets), "sectors_updated": updated}
+
+
+def refresh_sector_lodging_flags(db: Session, *sector_ids: int) -> Dict[str, int]:
+    """Incremental hook for lodging place/move/delete paths."""
+    return sync_sector_lodging_flags(db, sector_ids=list(sector_ids))
 
 
 def _now() -> datetime:
@@ -210,4 +273,12 @@ def sync_loop_c_occupancy(db: Session) -> Dict[str, int]:
             if leave_sleep(db, npc):
                 left += 1
 
-    return {"entered": entered, "left": left}
+    # Keep Sector lodging flags aligned with OutlawBase / sector-location
+    # NPCBarracks rows (WO-BUILD-SECTOR-IS-OUTLAW-ZONE-IS-NPC-BARRACKS-SECTOR).
+    flag_stats = sync_sector_lodging_flags(db)
+    return {
+        "entered": entered,
+        "left": left,
+        "lodging_flags_checked": flag_stats["sectors_checked"],
+        "lodging_flags_updated": flag_stats["sectors_updated"],
+    }
