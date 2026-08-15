@@ -315,7 +315,8 @@ class FleetService:
         member"). This is the single shared removal path for BOTH a manual
         removal (fleets.py route) and a combat KIA (_record_ship_casualty),
         so hooking succession here covers both triggers without duplication.
-        See _promote_flagship_successor for the NO-CANON seniority kernel.
+        See _promote_flagship_successor for the seniority kernel
+        (DECISIONS.md fleet-flagship-seniority-definition).
 
         commit (WO-FLEET-ROUND-INTEGRITY sub-part (b)): True (default) issues
         an immediate self.db.commit() here — the manual-removal route
@@ -377,12 +378,11 @@ class FleetService:
         the prior flagship's FleetMember row was removed (destroyed OR
         manually removed — see remove_ship_from_fleet, the single caller).
 
-        NO-CANON KERNEL (flagged for a DECISIONS.md ruling): fleet-tactics.md
-        only says "leadership transitions to the next-most-senior member"
-        (target spec) without defining "seniority". This kernel treats
-        seniority as earliest FleetMember.joined_at, ties broken by the
-        lowest member id (str-compared UUID — a stable, deterministic
-        tie-break, not a canon ruling). Swapping the definition later is a
+        CANON (ratified 2026-08-10, DECISIONS.md fleet-flagship-seniority-definition)
+        — seniority is earliest FleetMember.joined_at, ties broken by the
+        lowest member id (str-compared UUID). fleet-tactics.md only says
+        "leadership transitions to the next-most-senior member"; this is the
+        ratified definition of seniority. Swapping the definition later is a
         one-line change to the sort key below.
 
         If the fallen flagship's pilot (fallen_pilot_id — the removed
@@ -489,15 +489,14 @@ class FleetService:
 
     # Fleet Supply Methods
 
-    # ---- Resupply kernel constants (NO-CANON — FLAGGED for DECISIONS Pending) ----
+    # ---- Resupply kernel constants (ratified 2026-08-10, DECISIONS.md
+    # fleet-station-resupply-cost-rate) ----
     #
-    # fleet-tactics.md "Supply" states only: "Supply replenishes when the fleet
+    # fleet-tactics.md "Supply" states: "Supply replenishes when the fleet
     # is docked at a friendly station, at a rate proportional to station class."
-    # It is explicitly marked 📐 design-only and gives NO credit cost and NO
-    # per-class numbers. The values below are a SENSIBLE KERNEL, not canon, and
-    # must be reconciled with a human ruling (see report → DECISIONS Pending
-    # "fleet-station-resupply cost+rate"). They are intentionally named so a
-    # future canon swap is a one-line change.
+    # Credit cost + per-class restore ceiling were unstated; option (a) ratified
+    # the shipped 50 / 20 / 8 / 100 constants as-is. Named so a future canon
+    # swap is a one-line change.
     SUPPLY_MAX = 100                      # Fleet.supply_level upper bound (model: 0-100)
     RESUPPLY_COST_PER_POINT = 50         # credits charged per supply POINT restored
     # "rate proportional to station class": a single resupply visit can raise
@@ -511,7 +510,7 @@ class FleetService:
     def _max_restore_for_station(self, station: "Station") -> int:
         """Per-visit restore CEILING for a station, scaling with its class.
 
-        NO-CANON kernel (see RESUPPLY_* constants). station_class is a
+        See RESUPPLY_* (fleet-station-resupply-cost-rate). station_class is a
         StationClass enum whose .value is the 0-11 integer class.
         """
         try:
@@ -543,7 +542,7 @@ class FleetService:
             and that station is in the fleet's sector (the fleet is at the dock).
           - The player has enough credits for the restore being purchased.
 
-        Cost + restore-rate numbers are a NO-CANON kernel (see RESUPPLY_*).
+        Cost + restore-rate numbers: DECISIONS.md fleet-station-resupply-cost-rate.
 
         Returns: {fleet_id, supply_level (new), supply_restored, credits_spent,
                   station_id, station_class, credits_remaining}.

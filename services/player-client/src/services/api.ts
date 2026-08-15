@@ -810,6 +810,57 @@ export const bountyAPI = {
     apiRequest(`/api/v1/ranking/bounties/available?limit=${limit}`),
 };
 
+// ADR-0094 point-2: defense construct is POST /grid/place, not the retired
+// /buildings/construct. Map CitadelService snake_case types → catalog KINDs.
+const DEFENSE_TYPE_TO_KIND: Record<string, string> = {
+  turret_network: 'TURRET_NETWORK',
+  orbital_platform: 'ORBITAL_PLATFORM',
+  scanner_array: 'SCANNER_ARRAY',
+  rail_gun: 'RAIL_GUN',
+  planetary_defense_grid: 'DEFENSE_GRID',
+  planet_minefield: 'PLANET_MINEFIELD',
+};
+
+function firstClearedEmptyPlot(gridView: {
+  plots?: Array<{
+    x?: number;
+    y?: number;
+    cleared?: boolean;
+    hazard?: unknown;
+    building_id?: string | null;
+    buildingId?: string | null;
+  }>;
+}): { x: number; y: number } | null {
+  const plots = Array.isArray(gridView?.plots) ? gridView.plots : [];
+  for (const p of plots) {
+    const occupied = p.building_id ?? p.buildingId ?? null;
+    if (occupied) continue;
+    if (p.cleared !== true) continue;
+    if (p.hazard != null) continue;
+    const x = Number(p.x);
+    const y = Number(p.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    return { x, y };
+  }
+  return null;
+}
+
+async function placeDefenseBuildingOnGrid(planetId: string, buildingType: string) {
+  const kind = DEFENSE_TYPE_TO_KIND[buildingType] ?? String(buildingType || '').toUpperCase();
+  if (!kind) {
+    throw new Error('Unknown defense building type');
+  }
+  const grid = await apiRequest(`/api/v1/planets/${planetId}/grid`);
+  const plot = firstClearedEmptyPlot(grid || {});
+  if (!plot) {
+    throw new Error('No empty cleared grid plot available for defense construction');
+  }
+  return apiRequest(`/api/v1/planets/${planetId}/grid/place`, {
+    method: 'POST',
+    body: JSON.stringify({ kind, x: plot.x, y: plot.y, level: 1 }),
+  });
+}
+
 // Citadel APIs
 export const citadelAPI = {
   getInfo: (planetId: string) =>
@@ -860,17 +911,16 @@ export const citadelAPI = {
     }),
 
   // Defense buildings unlockable at the planet's current citadel level
-  // (CitadelService.get_available_buildings).
+  // (CitadelService.get_available_buildings). Listing stays on this route;
+  // construction migrated to /grid/place (ADR-0094 point 2).
   getAvailableBuildings: (planetId: string) =>
     apiRequest(`/api/v1/planets/${planetId}/buildings/available`),
 
-  // Construct a defense building — body key is camelCase buildingType
-  // (ConstructBuildingRequest / CitadelService.build_defense_building).
+  // Construct a defense building via the canonical grid place endpoint
+  // (ADR-0094). Maps DEFENSE_BUILDINGS snake_case types → catalog KINDs,
+  // picks the first cleared empty plot, then POST /grid/place.
   constructBuilding: (planetId: string, buildingType: string) =>
-    apiRequest(`/api/v1/planets/${planetId}/buildings/construct`, {
-      method: 'POST',
-      body: JSON.stringify({ buildingType }),
-    }),
+    placeDefenseBuildingOnGrid(planetId, buildingType),
 };
 
 // Planet Grid APIs (CRT-2) — the authoritative citadel grid the player manages.
@@ -1655,6 +1705,24 @@ export const pioneerAPI = {
   cancelContract: (contractId: string) =>
     apiRequest(`/api/v1/pioneer/contracts/${contractId}/cancel`, {
       method: 'POST',
+    }),
+};
+
+// Central Nexus Bank — withdraw at Starport Prime (ADR-0050 / monetization.md).
+// Balance is readable anywhere; withdraw routes enforce dock + Prime/override.
+export const centralBankAPI = {
+  getBalance: () => apiRequest('/api/v1/central-bank/balance'),
+
+  withdrawCredits: (amount: number) =>
+    apiRequest('/api/v1/central-bank/withdraw/credits', {
+      method: 'POST',
+      body: JSON.stringify({ amount }),
+    }),
+
+  withdrawCommodity: (commodity: string, quantity: number) =>
+    apiRequest('/api/v1/central-bank/withdraw/commodity', {
+      method: 'POST',
+      body: JSON.stringify({ commodity, quantity }),
     }),
 };
 

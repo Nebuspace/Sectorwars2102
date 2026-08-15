@@ -65,6 +65,7 @@ from src.api.routes.ranking import router as ranking_router
 from src.api.routes.quantum import router as quantum_router
 from src.api.routes.refining import router as refining_router
 from src.api.routes.recovery import router as recovery_router
+from src.api.routes.central_bank import router as central_bank_router
 from src.api.routes.gc_lapse import router as gc_lapse_router
 from src.api.routes.expeditions import router as expeditions_router
 from src.api.routes.warp_gates import router as warp_gates_router
@@ -186,6 +187,8 @@ api_router.include_router(refining_router, tags=["refining"])
 # 24h cooldown) + Warp Jumper Slipdrive (quantum_jump_capable hulls, charge +
 # fuel-scaled escape) (router carries its own /recovery prefix)
 api_router.include_router(recovery_router, tags=["recovery"])
+# Central Nexus Bank withdrawals at Starport Prime (region-lifecycle.md)
+api_router.include_router(central_bank_router, tags=["central-bank"])
 # ADR-0054 X-D3 -- GC-lapse 7-day liquidation window self-service (router
 # carries its own /players prefix, matching the ADR's literal path)
 api_router.include_router(gc_lapse_router, tags=["gc-lapse"])

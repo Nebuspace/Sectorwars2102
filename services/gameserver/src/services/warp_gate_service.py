@@ -520,6 +520,15 @@ def deploy_beacon(db: Session, player: Player, destination_sector_number: int) -
                 "prohibited in Sentinel-protected sectors — a Sentinel "
                 "squad has been dispatched",
             )
+    # Outlaw zones (npc-lodging.md): player gate construction rejected when
+    # either endpoint hosts an OutlawBase (Sector.is_outlaw_zone).
+    for endpoint in (source, destination):
+        if getattr(endpoint, "is_outlaw_zone", False):
+            raise WarpGateError(
+                403,
+                "ERR_OUTLAW_ZONE: warp-gate construction is prohibited "
+                "in outlaw zones",
+            )
     _check_special_features(source, "Source")
     _check_special_features(destination, "Destination")
     _check_same_region(db, player, source, "Source")

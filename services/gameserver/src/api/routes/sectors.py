@@ -97,6 +97,7 @@ class StationResponse(BaseModel):
     faction_affiliation: str | None = None
     is_spacedock: bool = False
     tradedock_tier: str | None = None
+    is_starport_prime: bool = False
 
 class SectorPlanetsResponse(BaseModel):
     planets: List[PlanetResponse]
@@ -155,6 +156,10 @@ class SectorContentsResponse(BaseModel):
     # sole writer; this is a direct, zero-query read of the already-loaded
     # Sector row, same shape/convention as live_ships above).
     message_beacons: List[Dict[str, Any]] = []
+    # Lodging sector flags (npc-lodging.md) — player-info surface for
+    # OutlawBase / sector-location NPCBarracks presence.
+    is_outlaw_zone: bool = False
+    is_npc_barracks_sector: bool = False
     # Server-authoritative ENGAGE proximity threshold, in REFERENCE_BAND em
     # (WO-API-A1) -- intrasystem_movement_service.ENGAGE_RANGE_EM, the SAME
     # value POST /combat/engage now enforces server-side. Published here
@@ -252,6 +257,7 @@ async def get_sector_stations(
             station_class=station.station_class.value if hasattr(station.station_class, 'value') else station.station_class,
             is_spacedock=bool(station.is_spacedock),
             tradedock_tier=station.tradedock_tier,
+            is_starport_prime=bool(station.is_starport_prime),
             type=station.type.value if hasattr(station.type, 'value') else str(station.type),
             status=station.status.value if hasattr(station.status, 'value') else str(station.status),
             sector_id=station.sector_id,
@@ -555,5 +561,7 @@ async def get_sector_contents(
         wrecks=wrecks,
         warp_gates=SectorStructuresResponse(**gates),
         message_beacons=sector.message_beacons or [],
+        is_outlaw_zone=bool(getattr(sector, "is_outlaw_zone", False)),
+        is_npc_barracks_sector=bool(getattr(sector, "is_npc_barracks_sector", False)),
         engage_range_em=isp.ENGAGE_RANGE_EM,
     )

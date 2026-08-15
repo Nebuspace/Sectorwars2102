@@ -21,8 +21,7 @@ The penalty-free distinction (player-grey = only good-standing attackers go
 penalty-free; station-grey = anyone goes penalty-free) is driven by the cached
 ``grey_kind`` column, so the predicate never has to reconstruct the offense.
 
-⚠️ NO-CANON NUMBERS (proposed kernel — flagged for human / DECISIONS.md
-"grey-flag-pvp-status"):
+CANON (ratified 2026-08-10, DECISIONS.md grey-flag-pvp-status):
   - GOOD-STANDING threshold    : personal_reputation >= 0
   - player-attack grey duration: 3600 s   (1 hour)
   - station-attack grey duration: 86400 s  (1 day)
@@ -48,7 +47,7 @@ logger = logging.getLogger(__name__)
 GREY_KIND_PLAYER_ATTACK = "player_attack"
 GREY_KIND_STATION_ATTACK = "station_attack"
 
-# ⚠️ NO-CANON — proposed kernel, flagged for human.
+# CANON (ratified 2026-08-10, DECISIONS.md grey-flag-pvp-status).
 GOOD_STANDING_MIN_REPUTATION = 0  # personal_reputation >= 0 == "good standing"
 
 GREY_DURATION_SECONDS = {
@@ -83,7 +82,7 @@ def _as_aware(dt: Optional[datetime]) -> Optional[datetime]:
 def is_good_standing(player: Player) -> bool:
     """A player is in GOOD STANDING iff personal_reputation >= the threshold.
 
-    NO-CANON: threshold == 0 (proposed). Used both to decide whether attacking a
+    Threshold == 0 (grey-flag-pvp-status). Used both to decide whether attacking a
     target sets the attacker grey (only attacks on good-standing players do) and
     whether an attacker qualifies for the player-grey penalty-free exemption."""
     return (player.personal_reputation or 0) >= GOOD_STANDING_MIN_REPUTATION

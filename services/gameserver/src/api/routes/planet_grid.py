@@ -17,6 +17,9 @@ Endpoints (all owner-only; 404 missing planet, 403 not owner):
   GET  /planets/{planet_id}/grid                — read the grid (seeds if structures is null)
   POST /planets/{planet_id}/grid/place          — research-gated, cost-charged placement
   POST /planets/{planet_id}/grid/decommission   — teardown with partial credit refund
+  POST /planets/{planet_id}/grid/survey         — has_tool('grid_survey') fog/reveal one plot
+  POST /planets/{planet_id}/grid/clear-plot     — has_tool('plot_clear') clear uncleared land
+  POST /planets/{planet_id}/grid/clear-hazard   — has_tool('hazard_clear') remediate a hazard plot
 
 Cost / refund / lock handling:
   * Cost credits come from ``building_catalog.get(kind)["cost"][level]["credits"]``, charged from
@@ -32,6 +35,7 @@ Cost / refund / lock handling:
 """
 
 import logging
+from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -67,6 +71,12 @@ class GridDecommissionRequest(BaseModel):
     building_id: str = Field(..., min_length=1, max_length=64)
 
 
+class GridPlotActionRequest(BaseModel):
+    """Survey / clear / hazard-clear one plot at (x, y)."""
+    x: int = Field(..., ge=0)
+    y: int = Field(..., ge=0)
+
+
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
@@ -99,7 +109,40 @@ def _researched_set(player: Player):
         return set()
 
 
-def _grid_payload(planet: Planet) -> dict:
+_FOG_KEYS = ("hazard", "terrain", "axes")
+
+
+def _apply_survey_fog(plots, player: Optional[Player]):
+    """Redact unsurveyed plot intel unless the owner has ``grid_survey``.
+
+    Orbital Survey Suite (has_tool) reveals the whole grid; without it only
+    plots already marked ``surveyed`` keep hazard/terrain/axes.
+    """
+    if not isinstance(plots, list):
+        return plots
+    try:
+        from src.services.research_service import has_tool
+        if player is not None and has_tool(player, "grid_survey"):
+            return plots
+    except Exception:
+        logger.debug("grid_survey fog read failed — failing closed to fog", exc_info=True)
+    fogged = []
+    for plot in plots:
+        if not isinstance(plot, dict):
+            fogged.append(plot)
+            continue
+        if plot.get("surveyed"):
+            fogged.append(plot)
+            continue
+        redacted = dict(plot)
+        for key in _FOG_KEYS:
+            redacted.pop(key, None)
+        redacted["fog"] = True
+        fogged.append(redacted)
+    return fogged
+
+
+def _grid_payload(planet: Planet, player: Optional[Player] = None) -> dict:
     """The read-shape returned by every endpoint: grid dims, plots, buildings, the derived citadel
     level, the size cap, and (for placement) which research the owning player has. Pure read of the
     (already-seeded) ``planet.structures``."""
@@ -107,7 +150,7 @@ def _grid_payload(planet: Planet) -> dict:
     grid = st.get("grid") if isinstance(st.get("grid"), dict) else {"cols": 0, "rows": 0}
     return {
         "grid": {"cols": int(grid.get("cols", 0) or 0), "rows": int(grid.get("rows", 0) or 0)},
-        "plots": st.get("plots", []) or [],
+        "plots": _apply_survey_fog(st.get("plots", []) or [], player),
         "buildings": st.get("buildings", []) or [],
         "citadel_level": structures_svc.derive_citadel_level(st),
         "max_citadel_level": structures_svc.max_citadel_level_for_size(
@@ -122,6 +165,47 @@ def _ensure_seeded(planet: Planet, db: Session) -> None:
     st = planet.structures
     if not (isinstance(st, dict) and isinstance(st.get("grid"), dict) and isinstance(st.get("plots"), list)):
         structures_svc.seed(planet, db=db)
+
+
+def _ct1_kind(kind: str):
+    """CT1 combat key for a catalog kind, or None if this placement is not a defense building
+    combat_service._read_defense_buildings understands.
+
+    ADR-0094 point-2: /grid/place is the canonical construct surface, but combat still reads
+    ``active_events["defense_buildings"]`` (snake_case counts). Catalog rows with
+    ``effect.kind == "ct1_defense"`` carry ``ct1_kind`` (e.g. TURRET_NETWORK → turret_network).
+    """
+    spec = building_catalog.get(kind) or {}
+    effect = spec.get("effect") if isinstance(spec.get("effect"), dict) else {}
+    if effect.get("kind") != "ct1_defense":
+        return None
+    ct1 = effect.get("ct1_kind")
+    return str(ct1) if ct1 else None
+
+
+def _bump_ct1_defense(planet: Planet, kind: str, delta: int) -> bool:
+    """± operational CT1 defense count on ``planet.active_events``. Returns True if mutated.
+
+    Does NOT ``flag_modified`` — caller does, after a successful place/decommission commit path.
+    Delta +1 on place, −1 on decommission. Clamps at 0 (never stores a negative count).
+    Non-ct1 kinds are a no-op.
+    """
+    ct1 = _ct1_kind(kind)
+    if not ct1 or int(delta) == 0:
+        return False
+    events = planet.active_events if isinstance(planet.active_events, dict) else {}
+    events = dict(events)
+    buildings = dict(events.get("defense_buildings") or {}) if isinstance(
+        events.get("defense_buildings"), dict
+    ) else {}
+    new_count = int(buildings.get(ct1, 0) or 0) + int(delta)
+    if new_count > 0:
+        buildings[ct1] = new_count
+    else:
+        buildings.pop(ct1, None)
+    events["defense_buildings"] = buildings
+    planet.active_events = events
+    return True
 
 
 def _charge_materials(planet: Planet, cost: dict) -> list:
@@ -204,7 +288,7 @@ async def get_planet_grid(
         flag_modified(planet, "structures")
         db.commit()
 
-    payload = _grid_payload(planet)
+    payload = _grid_payload(planet, player)
     return {
         "planet_id": str(planet.id),
         "grid": payload["grid"],
@@ -303,9 +387,12 @@ async def place_building(
     locked_player.credits = int(locked_player.credits or 0) - cost_credits
     planet.structures = structures
     flag_modified(planet, "structures")
+    # ADR-0094: grid placement is the canonical construct path — keep CT1 combat counts in sync.
+    if _bump_ct1_defense(planet, kind, +1):
+        flag_modified(planet, "active_events")
     db.commit()
 
-    payload = _grid_payload(planet)
+    payload = _grid_payload(planet, player)
     response = {
         "success": True,
         "building": building,
@@ -364,9 +451,12 @@ async def decommission_building(
 
     planet.structures = structures
     flag_modified(planet, "structures")
+    removed = res.get("removed") if isinstance(res.get("removed"), dict) else {}
+    if _bump_ct1_defense(planet, str(removed.get("kind") or ""), -1):
+        flag_modified(planet, "active_events")
     db.commit()
 
-    payload = _grid_payload(planet)
+    payload = _grid_payload(planet, player)
     return {
         "success": True,
         "removed": res.get("removed"),
@@ -381,3 +471,98 @@ async def decommission_building(
         "citadel_level": payload["citadel_level"],
         "remaining_credits": int(locked_player.credits or 0),
     }
+
+
+def _require_tool(player: Player, tool_key: str) -> None:
+    """403 if the owner lacks the named tech-tree tool."""
+    try:
+        from src.services.research_service import has_tool
+        ok = has_tool(player, tool_key)
+    except Exception:
+        logger.exception("has_tool(%s) failed for player %s — gating closed",
+                         tool_key, getattr(player, "id", "?"))
+        ok = False
+    if not ok:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Research tool {tool_key!r} is not unlocked",
+        )
+
+
+def _mutate_plot(planet: Planet, db: Session, player: Player, mutator) -> dict:
+    """Run a pure structures mutator on one plot, persist, return the fresh grid."""
+    structures = planet.structures if isinstance(planet.structures, dict) else {}
+    ok, reason = mutator(structures)
+    if not ok:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=reason)
+    planet.structures = structures
+    flag_modified(planet, "structures")
+    db.commit()
+    payload = _grid_payload(planet, player)
+    return {
+        "success": True,
+        "grid": payload["grid"],
+        "plots": payload["plots"],
+        "buildings": payload["buildings"],
+        "citadel_level": payload["citadel_level"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# 4. POST /planets/{planet_id}/grid/survey — fog/reveal (has_tool grid_survey)
+# ---------------------------------------------------------------------------
+@router.post("/{planet_id}/grid/survey")
+async def survey_plot(
+    planet_id: str,
+    body: GridPlotActionRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Reveal one unsurveyed plot. Requires Orbital Survey Suite (grid_survey). Owner-only."""
+    _require_tool(player, "grid_survey")
+    planet = _load_owned_planet(planet_id, player, db, lock=True)
+    _ensure_seeded(planet, db)
+    return _mutate_plot(
+        planet, db, player,
+        lambda st: structures_svc.survey_plot(st, body.x, body.y),
+    )
+
+
+# ---------------------------------------------------------------------------
+# 5. POST /planets/{planet_id}/grid/clear-plot — has_tool plot_clear
+# ---------------------------------------------------------------------------
+@router.post("/{planet_id}/grid/clear-plot")
+async def clear_plot(
+    planet_id: str,
+    body: GridPlotActionRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Clear uncleared non-hazard land. Requires Land Clearance (plot_clear). Owner-only."""
+    _require_tool(player, "plot_clear")
+    planet = _load_owned_planet(planet_id, player, db, lock=True)
+    _ensure_seeded(planet, db)
+    return _mutate_plot(
+        planet, db, player,
+        lambda st: structures_svc.clear_plot(st, body.x, body.y),
+    )
+
+
+# ---------------------------------------------------------------------------
+# 6. POST /planets/{planet_id}/grid/clear-hazard — has_tool hazard_clear
+# ---------------------------------------------------------------------------
+@router.post("/{planet_id}/grid/clear-hazard")
+async def clear_hazard(
+    planet_id: str,
+    body: GridPlotActionRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Remediate a hazard plot. Requires Hazard Remediation (hazard_clear). Owner-only."""
+    _require_tool(player, "hazard_clear")
+    planet = _load_owned_planet(planet_id, player, db, lock=True)
+    _ensure_seeded(planet, db)
+    return _mutate_plot(
+        planet, db, player,
+        lambda st: structures_svc.clear_hazard(st, body.x, body.y),
+    )

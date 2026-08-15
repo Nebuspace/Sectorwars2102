@@ -332,11 +332,11 @@ SECONDS_PER_DAY = 86400.0
 # cr/day — deliberately near the LOW edge of the canon band (easier to raise
 # than to claw back an over-minted faucet).
 #
-# NO-CANON: the exact per-colonist surplus rate is not specified — canon gives
-# only the cr/day TARGET band, not a pioneers/colonist coefficient. This value
-# is FLAGGED for DECISIONS; it is bounded by, and consistent with, the canon
-# target band above. See WO-PL3-v2 report.
-SURPLUS_PIONEER_RATE_PER_DAY = 0.0005  # NO-CANON: pioneers/colonist/day (faucet)
+# CANON (ratified 2026-08-10, DECISIONS.md surplus-pioneer-accrual-rate) —
+# 0.0005 pioneers/colonist/day. Canon gives the cr/day TARGET band, not a
+# pioneers/colonist coefficient; this rate sits at the low edge of that band
+# (50k colonists → 25 pioneers/day ≈ 1,375 cr/day). See WO-PL3-v2 report.
+SURPLUS_PIONEER_RATE_PER_DAY = 0.0005  # ratified — pioneers/colonist/day (faucet)
 
 # Habitability ZERO-CROSSING for natural population growth (WO-AH, human-ruled:
 # "growth is a function of habitability — ABOVE a threshold → GROW, BELOW it →
@@ -2816,12 +2816,23 @@ class PlanetaryService:
                     .first()
                 )
                 if owner is not None:
-                    from src.services.research_service import active_overclock_multiplier
+                    from src.services.research_service import (
+                        active_overclock_multiplier,
+                        tech_modifier,
+                    )
                     overclock_multiplier = active_overclock_multiplier(owner, planet.id)
                     if overclock_multiplier != 1.0:
                         fuel_rate *= overclock_multiplier
                         organics_rate *= overclock_multiplier
                         equipment_rate *= overclock_multiplier
+                    # Point-of-use tech-tree modifier (t.production.yield.1 →
+                    # production_rate +0.05). Leaf-discipline: read the ledger
+                    # here, never write a buff onto the planet.
+                    prod_mod = tech_modifier(owner, "production_rate")
+                    if prod_mod:
+                        fuel_rate *= (1.0 + prod_mod)
+                        organics_rate *= (1.0 + prod_mod)
+                        equipment_rate *= (1.0 + prod_mod)
             except Exception:
                 logger.debug(
                     "Overclock production-read skipped on planet %s (non-fatal)",
