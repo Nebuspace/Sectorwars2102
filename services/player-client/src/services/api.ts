@@ -293,7 +293,34 @@ export const planetaryAPI = {
     apiRequest(`/api/v1/planets/${planetId}/shields/upgrade`, { method: 'POST' }),
 
   getSiegeStatus: (planetId: string) =>
-    apiRequest(`/api/v1/planets/${planetId}/siege-status`)
+    apiRequest(`/api/v1/planets/${planetId}/siege-status`),
+
+  // Owner-only landing-rights ACL (colonization.md five modes; WO LEG-155).
+  // Body matches gameserver LandingRightsRequest — lists always accepted so
+  // mode flips stay lossless server-side even when the UI omits list editing.
+  setLandingRights: (
+    planetId: string,
+    body: {
+      mode: 'public' | 'team_only' | 'private' | 'whitelist' | 'denylist';
+      whitelist?: string[];
+      denylist?: string[];
+    },
+  ): Promise<{
+    success: boolean;
+    message: string;
+    planet_id: string;
+    mode: string;
+    whitelist: string[];
+    denylist: string[];
+  }> =>
+    apiRequest(`/api/v1/planets/${planetId}/landing-rights`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        mode: body.mode,
+        whitelist: body.whitelist ?? [],
+        denylist: body.denylist ?? [],
+      }),
+    }),
 };
 
 /** Station-protection tractor lock (Guarantee #2) — player responses. */
