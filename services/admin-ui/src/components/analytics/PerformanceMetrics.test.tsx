@@ -116,6 +116,26 @@ describe('PerformanceMetrics (LEG-114)', () => {
     expect(card.textContent).not.toContain('downtime/year');
   });
 
+  it('reports the 30-day cap as a bound, not as an exact process age', async () => {
+    // The endpoint computes uptime as min(100, age / 30 days), so a postmaster
+    // older than 30 days is indistinguishable from one exactly 30 days old.
+    vi.mocked(api.get).mockResolvedValue({
+      data: { ...livePayload, system: { ...livePayload.system, uptime: 100.0 } },
+    });
+
+    render(<PerformanceMetrics />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Postgres Process Age')).toBeTruthy();
+    });
+
+    const card = cardFor('Postgres Process Age')!;
+    expect(card.textContent).toContain('≥30d');
+    // A capped reading must not be dressed up as a precise measurement.
+    expect(card.textContent).not.toContain('30d 0h');
+    expect(card.textContent).not.toContain('100.00%');
+  });
+
   it('renders unmeasurable fields as n/a in a neutral state, never as a healthy zero', async () => {
     vi.mocked(api.get).mockResolvedValue({ data: livePayload });
 

@@ -116,7 +116,11 @@ const UnavailableStat: React.FC<{ label: string; reason: string }> = ({ label, r
 // The endpoint reports Postgres uptime as the postmaster's age expressed as a
 // share of a 30-day window (capped at 100), NOT as an availability percentage.
 // Recover the underlying age so the card can say what it actually measured.
+// At the cap the true age is unknowable from the payload — anything at or past
+// 30 days arrives as exactly 100 — so report the bound, not a precise "30d 0h".
 const formatPostgresAge = (windowPct: number) => {
+  if (windowPct >= 100) return '≥30d';
+
   const totalMinutes = Math.max(0, Math.round((windowPct / 100) * 30 * 24 * 60));
   const days = Math.floor(totalMinutes / 1440);
   const hours = Math.floor((totalMinutes % 1440) / 60);
@@ -396,7 +400,9 @@ export const PerformanceMetrics: React.FC = () => {
                   <span className="metric-label">Postgres Process Age</span>
                   <span className="metric-value">{formatPostgresAge(systemMetrics.uptime)}</span>
                   <span className="metric-note">
-                    {systemMetrics.uptime.toFixed(2)}% of a 30-day window — process age, not an availability SLA
+                    {systemMetrics.uptime >= 100
+                      ? 'at or past the endpoint\u2019s 30-day cap — process age, not an availability SLA'
+                      : `${systemMetrics.uptime.toFixed(2)}% of a 30-day window — process age, not an availability SLA`}
                   </span>
                 </div>
               </div>
