@@ -8,3 +8,4 @@ export { GenesisDeployment } from './GenesisDeployment';
 // ColonySpecialization modal retired (WO-RETIRE-COLONY-SPECIALIZATION-MODAL);
 // SpecializationDrawer + useColonySpecialization remain the live path.
 export { SiegeStatusMonitor } from './SiegeStatusMonitor';
+export { LandingRightsControl } from './LandingRightsControl';
