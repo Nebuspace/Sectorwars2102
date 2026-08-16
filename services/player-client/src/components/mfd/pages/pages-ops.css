@@ -825,3 +825,57 @@
     transform: none;
   }
 }
+
+/* LEG-32 bounty board on Reputation MFD */
+.mfd-bounty-board {
+  margin-top: 1rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid rgba(255, 215, 0, 0.25);
+}
+.mfd-bounty-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: flex-end;
+  margin: 0.5rem 0;
+}
+.mfd-bounty-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.65rem;
+}
+.mfd-bounty-form input {
+  min-width: 10rem;
+  background: #111;
+  color: #eee;
+  border: 1px solid #444;
+  padding: 0.25rem 0.4rem;
+}
+.mfd-bounty-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.mfd-bounty-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.3rem 0;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  font-size: 0.7rem;
+}
+.mfd-ops-subtitle {
+  margin: 0.6rem 0 0.25rem;
+  font-size: 0.7rem;
+  letter-spacing: 0.12em;
+  color: #FFD700;
+}
+.mfd-ops-hint {
+  font-size: 0.6rem;
+  opacity: 0.75;
+}
+.mfd-ops-error {
+  color: #ff6b6b;
+  font-size: 0.65rem;
+}

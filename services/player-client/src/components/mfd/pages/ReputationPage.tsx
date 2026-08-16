@@ -28,6 +28,7 @@ import { useGame } from '../../../contexts/GameContext';
 import { useWebSocket } from '../../../contexts/WebSocketContext';
 import { factionAPI } from '../../../services/api';
 import { MFDPageHeader, MFDPageBody, MFDField, MFDEmpty, MFDInsufficient } from '../atoms';
+import BountyBoardPanel from './BountyBoardPanel';
 import './pages-ops.css';
 
 const ACCENT = '#FFD700';
@@ -256,6 +257,8 @@ const ReputationPage: React.FC = () => {
                 ))}
               </ul>
             )}
+
+            <BountyBoardPanel />
           </>
         )}
       </MFDPageBody>
