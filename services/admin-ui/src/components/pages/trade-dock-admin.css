@@ -10,60 +10,39 @@
   padding: 0.4rem 0.6rem;
 }
 
-.trade-dock-slip-grid {
+.trade-dock-pool-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
   gap: 0.75rem;
   margin: 1rem 0 1.5rem;
 }
 
-.trade-dock-slip {
+.trade-dock-pool {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
   gap: 0.2rem;
-  text-align: left;
   padding: 0.75rem;
   border: 1px solid var(--border-color, #334155);
   border-radius: 0.35rem;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  min-height: 6.5rem;
 }
 
-.trade-dock-slip:disabled {
-  cursor: default;
-  opacity: 0.85;
-}
-
-.trade-dock-slip.empty {
-  border-style: dashed;
-  opacity: 0.7;
-}
-
-.trade-dock-slip.occupied {
+.trade-dock-pool.total {
   border-color: var(--accent, #38bdf8);
 }
 
-.trade-dock-slip.arrears {
-  border-color: var(--danger, #f87171);
-}
-
-.trade-dock-slip-index {
+.trade-dock-pool-label {
   font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   opacity: 0.75;
 }
 
-.trade-dock-slip-ship {
+.trade-dock-pool-value {
   font-weight: 600;
-  font-size: 0.95rem;
+  font-size: 1.15rem;
 }
 
-.trade-dock-slip-meta,
-.trade-dock-slip-state {
+.trade-dock-pool-meta {
   font-size: 0.8rem;
   opacity: 0.85;
 }
