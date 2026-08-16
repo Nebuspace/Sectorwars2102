@@ -68,6 +68,8 @@ class PlayerMedalsResponse(BaseModel):
     available: List[AvailableMedal]
     total_earned: int
     total_available: int
+    # LEG-90: same source as PUT /me/pin — settings.medal_privacy.pinned_medal_id
+    pinned_medal_id: Optional[str] = None
 
 
 class UnviewedAwardsResponse(BaseModel):
@@ -121,11 +123,13 @@ async def get_my_medals(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=result.get("error") or "Failed to get medals",
         )
+    identity = public_medal_identity(player)
     return PlayerMedalsResponse(
         earned=[EarnedMedal(**m) for m in result["earned"]],
         available=[AvailableMedal(**m) for m in result["available"]],
         total_earned=result["total_earned"],
         total_available=result["total_available"],
+        pinned_medal_id=identity["pinned_medal_id"],
     )
 
 
