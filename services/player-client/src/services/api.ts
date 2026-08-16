@@ -1858,6 +1858,34 @@ export const warpGatesAPI = {
     }),
 };
 
+/** Quantum Crystal / Lumen Crystal refining (DISTINCT from quantum refine-charge). */
+export const refiningAPI = {
+  /** 5 Shards + 10,000 cr → 1 Quantum Crystal (instant; Class-3+/SpaceDock). */
+  refine: () =>
+    apiRequest('/api/v1/refining/refine', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+
+  startLumen: () =>
+    apiRequest('/api/v1/refining/refine-lumen/start', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+
+  lumenStatus: (): Promise<{
+    pending: boolean;
+    ready_at: string | null;
+    collectible: boolean;
+  }> => apiRequest('/api/v1/refining/refine-lumen/status'),
+
+  collectLumen: () =>
+    apiRequest('/api/v1/refining/refine-lumen/collect', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+};
+
 // Port Office — station ownership, sealed-bid sales, tariffs, takeovers.
 export const portOwnershipAPI = {
   getListings: () => apiRequest('/api/v1/port-ownership/listings'),
@@ -1973,6 +2001,7 @@ export const gameAPI = {
   storage: storageAPI,
   trade: tradeAPI,
   quantum: quantumAPI,
+  refining: refiningAPI,
   warpGates: warpGatesAPI,
   helm: helmAPI,
   portOwnership: portOwnershipAPI,
