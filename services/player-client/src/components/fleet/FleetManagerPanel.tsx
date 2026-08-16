@@ -1,5 +1,5 @@
 /**
- * FleetManagerPanel — LEG-INI-01 + LEG-61
+ * FleetManagerPanel — LEG-INI-01 + LEG-61 + LEG-133
  *
  * Player-facing fleet coordination surface over existing `/api/v1/fleets`
  * endpoints: roster list, composition, create, add/remove ship, formation,
@@ -7,19 +7,24 @@
  * Roster uses team fleets (`GET /`), not `my-fleets` (member-ship filter
  * would hide a just-created empty formation).
  *
- * Move destination reuses the cockpit current-sector pattern: LEG-49's body
- * needs the Sector row UUID (`currentSector.id` from SectorResponse), not the
- * integer sector_number used by player/move / available-moves. Adjacent hop
- * UUIDs are not on MoveOption — residual for gameserver if a full warp picker
- * is required later.
+ * Move destination: Sector row UUID via `fleetAPI.move`. Adjacent hops come
+ * from GameContext `availableMoves` keyed by `MoveOption.id` (LEG-132/133).
+ * Current-sector UUID remains an optional stay/relocate option. Numeric
+ * `sector_id` is NAV/player-move only — never POSTed to fleet move.
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { fleetAPI } from '../../services/api';
-import { useGame } from '../../contexts/GameContext';
+import { useGame, type MoveOption } from '../../contexts/GameContext';
 import CockpitInstrument from '../cockpit/CockpitInstrument';
 import { useEmbedded } from '../cockpit/EmbeddedContext';
 import './fleet-manager.css';
+
+type HopChoice = {
+  id: string;
+  label: string;
+  kind: 'warp' | 'tunnel';
+};
 
 export interface FleetSummary {
   id: string;
@@ -87,8 +92,24 @@ const FleetShell: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   );
 };
 
+const hopLabel = (kind: 'warp' | 'tunnel', move: MoveOption): string => {
+  const num = move.sector_number ?? move.sector_id;
+  const nameBit = move.name ? ` (${move.name})` : '';
+  const prefix = kind === 'warp' ? 'Warp' : 'Tunnel';
+  return `${prefix} — Sector ${num}${nameBit} · ${move.turn_cost}t`;
+};
+
+const toHopChoice = (kind: 'warp' | 'tunnel', move: MoveOption): HopChoice | null => {
+  if (!move.can_afford) return null;
+  const raw = move.id;
+  if (raw == null) return null;
+  const id = String(raw);
+  if (!isUuid(id)) return null;
+  return { id, label: hopLabel(kind, move), kind };
+};
+
 export const FleetManagerPanel: React.FC = () => {
-  const { ships, currentSector } = useGame();
+  const { ships, currentSector, availableMoves } = useGame();
   const [fleets, setFleets] = useState<FleetSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [members, setMembers] = useState<FleetMemberRow[]>([]);
@@ -110,15 +131,41 @@ export const FleetManagerPanel: React.FC = () => {
     return isUuid(asStr) ? asStr : null;
   }, [currentSector?.id]);
 
-  const moveLabel = useMemo(() => {
+  const currentMoveLabel = useMemo(() => {
     if (!currentSector || !currentSectorUuid) return null;
     const num = currentSector.sector_number ?? currentSector.sector_id;
     return `Current — Sector ${num}${currentSector.name ? ` (${currentSector.name})` : ''}`;
   }, [currentSector, currentSectorUuid]);
 
+  const adjacentHops = useMemo(() => {
+    const warps = (availableMoves?.warps ?? [])
+      .map((m) => toHopChoice('warp', m))
+      .filter((h): h is HopChoice => h != null);
+    const tunnels = (availableMoves?.tunnels ?? [])
+      .map((m) => toHopChoice('tunnel', m))
+      .filter((h): h is HopChoice => h != null);
+    // Prefer first occurrence if a sector appears in both lists.
+    const seen = new Set<string>();
+    const out: HopChoice[] = [];
+    for (const hop of [...warps, ...tunnels]) {
+      if (seen.has(hop.id)) continue;
+      seen.add(hop.id);
+      out.push(hop);
+    }
+    return out;
+  }, [availableMoves]);
+
+  const hasMoveDestinations = adjacentHops.length > 0 || currentSectorUuid != null;
+
   useEffect(() => {
-    setMoveDest(currentSectorUuid ?? '');
-  }, [currentSectorUuid]);
+    const preferred = adjacentHops[0]?.id ?? currentSectorUuid ?? '';
+    setMoveDest((prev) => {
+      if (prev && (adjacentHops.some((h) => h.id === prev) || prev === currentSectorUuid)) {
+        return prev;
+      }
+      return preferred;
+    });
+  }, [adjacentHops, currentSectorUuid]);
 
   const refresh = useCallback(async () => {
     setBusy('load');
@@ -308,13 +355,26 @@ export const FleetManagerPanel: React.FC = () => {
                 <select
                   data-testid="fleet-move-dest"
                   value={moveDest}
-                  disabled={busy !== null || inBattle || !currentSectorUuid}
+                  disabled={busy !== null || inBattle || !hasMoveDestinations}
                   onChange={(e) => setMoveDest(e.target.value)}
                 >
-                  {!currentSectorUuid ? (
-                    <option value="">Current sector unavailable</option>
+                  {!hasMoveDestinations ? (
+                    <option value="">No destinations available</option>
                   ) : (
-                    <option value={currentSectorUuid}>{moveLabel}</option>
+                    <>
+                      {currentSectorUuid && currentMoveLabel && (
+                        <option value={currentSectorUuid}>{currentMoveLabel}</option>
+                      )}
+                      {adjacentHops.map((hop) => (
+                        <option
+                          key={`${hop.kind}-${hop.id}`}
+                          value={hop.id}
+                          data-testid={`fleet-move-hop-${hop.kind}-${hop.id}`}
+                        >
+                          {hop.label}
+                        </option>
+                      ))}
+                    </>
                   )}
                 </select>
               </label>
@@ -322,13 +382,17 @@ export const FleetManagerPanel: React.FC = () => {
                 type="button"
                 data-testid="fleet-move-submit"
                 disabled={
-                  busy !== null || inBattle || !moveDest || !isUuid(moveDest)
+                  busy !== null ||
+                  inBattle ||
+                  !moveDest ||
+                  !isUuid(moveDest) ||
+                  !hasMoveDestinations
                 }
                 onClick={() =>
                   run('move', async () => {
                     if (!isUuid(moveDest)) {
                       throw new Error(
-                        'Move destination needs a Sector UUID (current sector).'
+                        'Move destination needs a Sector UUID (adjacent hop or current sector).'
                       );
                     }
                     await fleetAPI.move(selected.id, moveDest);
@@ -348,10 +412,10 @@ export const FleetManagerPanel: React.FC = () => {
                 Cannot move a fleet during battle (server rejects IN_BATTLE).
               </p>
             )}
-            {!currentSectorUuid && !inBattle && (
+            {!hasMoveDestinations && !inBattle && (
               <p className="fleet-manager-muted" data-testid="fleet-move-no-sector">
-                Current sector UUID not loaded — open the cockpit NAV / wait for
-                sector sync, then move the fleet here.
+                No adjacent hops with Sector UUIDs and current sector not loaded —
+                open NAV / wait for available-moves sync, then move the fleet here.
               </p>
             )}
 
