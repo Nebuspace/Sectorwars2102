@@ -50,23 +50,30 @@ npc_movement_service and the combat path.
 """
 
 import logging
-import random
 import uuid
 from collections import deque
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from sqlalchemy.orm import Session
 
 from src.core.game_time import scaled_deadline
-from src.models.npc_character import NPCCharacter, NPCArchetype, NPCStatus
-from src.models.pending_engagement import PendingEngagement, EngagementStatus
+from src.models.npc_character import NPCArchetype, NPCCharacter, NPCStatus
+from src.models.pending_engagement import EngagementStatus, PendingEngagement
 from src.models.player import Player
 from src.models.region import Region
 from src.models.sector import Sector, sector_warps
 from src.models.ship import Ship
 from src.models.warp_tunnel import WarpTunnel, WarpTunnelStatus
 from src.services import npc_movement_service
+from src.services.npc_scheduler_config import (
+    CAPTAIN_MAX_HOPS,
+    MARSHAL_MAX_HOPS,
+    PIRATE_LORD_MAX_HOPS,
+    hop_cap_or_default,
+    resolve_npc_scheduler_tuning,
+    sample_grace_seconds,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,15 +81,13 @@ logger = logging.getLogger(__name__)
 ARRIVAL_TURN_DELAY = 2
 OFFENSE_COOLDOWN_TURNS = 5
 ENGAGEMENT_EXPIRY_HOURS = 24
+# Grace band endpoints — also mirrored in npc_scheduler_config (LEG-78).
 GRACE_MIN_MINUTES = 5
 GRACE_MAX_MINUTES = 15
 
 # ADR-0063 N-I1 routing caps (warp-graph hops; no QJ pursuit).
 # npc-scheduler.md NPC_CLASS_ROUTING_DISTANCE defaults.
-MARSHAL_MAX_HOPS = 5
-CAPTAIN_MAX_HOPS = 8
-PIRATE_LORD_MAX_HOPS = 3
-
+# Overridable per roster/env via route_engagement_max_distance_hops (LEG-78).
 NPC_CLASS_ROUTING_DISTANCE = {
     "sector_marshal": MARSHAL_MAX_HOPS,
     "faction_patrol_captain": CAPTAIN_MAX_HOPS,
@@ -215,13 +220,24 @@ def _is_pirate_lord(npc: NPCCharacter) -> bool:
     return (npc.title or "") == "Pirate Lord"
 
 
-def hop_cap_for_npc(npc: NPCCharacter) -> int:
-    """Per-class pursuit hop cap from ``NPC_CLASS_ROUTING_DISTANCE``."""
+def hop_cap_for_npc(
+    npc: NPCCharacter,
+    *,
+    roster_config: Optional[Dict[str, Any]] = None,
+    role: Optional[str] = None,
+) -> int:
+    """Per-class pursuit hop cap, optionally overridden via LEG-78 tuning."""
     if _is_pirate_lord(npc):
-        return PIRATE_LORD_MAX_HOPS
-    if _is_captain(npc):
-        return CAPTAIN_MAX_HOPS
-    return MARSHAL_MAX_HOPS
+        class_default = PIRATE_LORD_MAX_HOPS
+    elif _is_captain(npc):
+        class_default = CAPTAIN_MAX_HOPS
+    else:
+        class_default = MARSHAL_MAX_HOPS
+    tuning = resolve_npc_scheduler_tuning(
+        roster_config=roster_config,
+        role=role,
+    )
+    return hop_cap_or_default(tuning, class_default)
 
 
 def _federation_squad_size(player: Player) -> Tuple[int, bool]:
@@ -262,13 +278,41 @@ def _pick_squad(
     if not candidates:
         return []
 
-    distances = _hop_distances(db, offense_sector_id, _MAX_ROUTING_HOPS)
+    from src.models.npc_character import NPCRoster
+
+    roster_by_ref: Dict[str, Any] = {}
+    refs = {n.bang_roster_ref for n in candidates if n.bang_roster_ref}
+    if refs:
+        for row in (
+            db.query(NPCRoster)
+            .filter(NPCRoster.bang_roster_ref.in_(refs))
+            .all()
+        ):
+            roster_by_ref[row.bang_roster_ref] = row
+
+    max_hops = _MAX_ROUTING_HOPS
+    for npc in candidates:
+        roster = roster_by_ref.get(npc.bang_roster_ref or "")
+        cap = hop_cap_for_npc(
+            npc,
+            roster_config=(roster.config if roster is not None else None),
+            role=(roster.role if roster is not None else None),
+        )
+        if cap > max_hops:
+            max_hops = cap
+
+    distances = _hop_distances(db, offense_sector_id, max_hops)
 
     def in_range(npc: NPCCharacter) -> Optional[int]:
         hops = distances.get(npc.current_sector_id)
         if hops is None:
             return None
-        cap = hop_cap_for_npc(npc)
+        roster = roster_by_ref.get(npc.bang_roster_ref or "")
+        cap = hop_cap_for_npc(
+            npc,
+            roster_config=(roster.config if roster is not None else None),
+            role=(roster.role if roster is not None else None),
+        )
         return hops if hops <= cap else None
 
     ranked = sorted(
@@ -321,13 +365,49 @@ def _pick_pirate_lord_responders(
     if not candidates:
         return []
 
-    distances = _hop_distances(db, offense_sector_id, PIRATE_LORD_MAX_HOPS)
+    from src.models.npc_character import NPCRoster
+
+    roster_by_ref: Dict[str, Any] = {}
+    refs = {n.bang_roster_ref for n in candidates if n.bang_roster_ref}
+    if refs:
+        for row in (
+            db.query(NPCRoster)
+            .filter(NPCRoster.bang_roster_ref.in_(refs))
+            .all()
+        ):
+            roster_by_ref[row.bang_roster_ref] = row
+
+    max_hops = PIRATE_LORD_MAX_HOPS
+    for npc in candidates:
+        roster = roster_by_ref.get(npc.bang_roster_ref or "")
+        cap = hop_cap_for_npc(
+            npc,
+            roster_config=(roster.config if roster is not None else None),
+            role=(roster.role if roster is not None else None),
+        )
+        if cap > max_hops:
+            max_hops = cap
+
+    distances = _hop_distances(db, offense_sector_id, max_hops)
     ranked = sorted(
         (
             (hops, npc)
             for npc in candidates
             if (hops := distances.get(npc.current_sector_id)) is not None
-            and hops <= PIRATE_LORD_MAX_HOPS
+            and hops
+            <= hop_cap_for_npc(
+                npc,
+                roster_config=(
+                    roster_by_ref.get(npc.bang_roster_ref or "").config
+                    if roster_by_ref.get(npc.bang_roster_ref or "") is not None
+                    else None
+                ),
+                role=(
+                    roster_by_ref.get(npc.bang_roster_ref or "").role
+                    if roster_by_ref.get(npc.bang_roster_ref or "") is not None
+                    else None
+                ),
+            )
         ),
         key=lambda pair: (pair[0], str(pair[1].id)),
     )
@@ -416,7 +496,11 @@ def _route_engagement_inner(
         arrival_turn_threshold=(turn_count + ARRIVAL_TURN_DELAY) if squad else None,
         status=EngagementStatus.PENDING,
         grace_expires_at=None if squad else scaled_deadline(
-            random.randint(GRACE_MIN_MINUTES, GRACE_MAX_MINUTES) / 60.0, start=now
+            sample_grace_seconds(
+                resolve_npc_scheduler_tuning(role=None)
+            )
+            / 3600.0,
+            start=now,
         ),
         expires_at=scaled_deadline(ENGAGEMENT_EXPIRY_HOURS, start=now),
     )
