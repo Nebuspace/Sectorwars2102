@@ -1,0 +1,93 @@
+.trade-dock-admin .trade-dock-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  max-width: 28rem;
+  font-size: 0.9rem;
+}
+
+.trade-dock-admin .trade-dock-picker select {
+  padding: 0.4rem 0.6rem;
+}
+
+.trade-dock-slip-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
+  gap: 0.75rem;
+  margin: 1rem 0 1.5rem;
+}
+
+.trade-dock-slip {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.2rem;
+  text-align: left;
+  padding: 0.75rem;
+  border: 1px solid var(--border-color, #334155);
+  border-radius: 0.35rem;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  min-height: 6.5rem;
+}
+
+.trade-dock-slip:disabled {
+  cursor: default;
+  opacity: 0.85;
+}
+
+.trade-dock-slip.empty {
+  border-style: dashed;
+  opacity: 0.7;
+}
+
+.trade-dock-slip.occupied {
+  border-color: var(--accent, #38bdf8);
+}
+
+.trade-dock-slip.arrears {
+  border-color: var(--danger, #f87171);
+}
+
+.trade-dock-slip-index {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.75;
+}
+
+.trade-dock-slip-ship {
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.trade-dock-slip-meta,
+.trade-dock-slip-state {
+  font-size: 0.8rem;
+  opacity: 0.85;
+}
+
+.trade-dock-queue-title {
+  margin: 0.5rem 0;
+  font-size: 1rem;
+}
+
+.trade-dock-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+  gap: 0.75rem 1.25rem;
+  margin: 0;
+}
+
+.trade-dock-detail-grid dt {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.7;
+  margin: 0;
+}
+
+.trade-dock-detail-grid dd {
+  margin: 0.15rem 0 0;
+}
