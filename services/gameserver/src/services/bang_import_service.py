@@ -53,6 +53,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
 from src.core.commodity_economy import base_price as _commodity_base_price
+from src.core.faction_profiles import (
+    area_weighted_galaxy_influence,
+    influence_for_cluster,
+)
 from src.core.market_bootstrap import build_market_prices
 from src.core.station_class_map import apply_class_pattern
 
@@ -1251,6 +1255,10 @@ class BangImportService:
                     attachment_by_region.get(spoke_rt), nexus_attachment,
                 )
 
+        # LEG-INI-02 / bang-import-pipeline.md §15: Galaxy.faction_influence
+        # is the area-weighted average of every cluster just seeded.
+        self._apply_galaxy_faction_influence_from_plans(galaxy, plan.regions)
+
         # Final state flip lives on the same transaction as the inserts so
         # there is no observable partial state.
         galaxy.import_state = GalaxyImportState.READY  # type: ignore[assignment]
@@ -1381,6 +1389,10 @@ class BangImportService:
         })
         snapshot["additional_regions"] = additional
         galaxy.bang_snapshot = snapshot  # type: ignore[assignment]
+
+        # LEG-INI-02: recompute galaxy influence across all snapshot regions
+        # (pre-existing + the region just appended).
+        await self._recompute_galaxy_faction_influence(session, galaxy)
 
         await session.flush()
         return new_gate
@@ -1687,6 +1699,8 @@ class BangImportService:
         galaxy.generation_warnings = plan.generation_warnings  # type: ignore[assignment]
         if plan.galaxy_name:
             galaxy.name = plan.galaxy_name  # type: ignore[assignment]
+        # LEG-INI-02 / bang-import-pipeline.md §15
+        self._apply_galaxy_faction_influence_from_plans(galaxy, plan.regions)
         galaxy.import_state = GalaxyImportState.READY  # type: ignore[assignment]
         await session.flush()
         return galaxy
@@ -1824,6 +1838,68 @@ class BangImportService:
                 )
                 await session.commit()
 
+    @staticmethod
+    def _apply_galaxy_faction_influence_from_plans(
+        galaxy: Galaxy,
+        regions: Dict[RegionType, RegionInsertPlan],
+    ) -> None:
+        """Set ``galaxy.faction_influence`` from plan cluster specs (LEG-INI-02)."""
+        weighted_rows: List[Tuple[int, Dict[str, Any]]] = []
+        for region_plan in regions.values():
+            for cs in region_plan.clusters:
+                infl = influence_for_cluster(
+                    region_plan.region_type,
+                    cs.sector_range_start,
+                    cs.sector_range_end,
+                    region_plan.total_sectors,
+                )
+                count = cs.sector_count or max(
+                    0, cs.sector_range_end - cs.sector_range_start + 1
+                )
+                weighted_rows.append((count, infl))
+        galaxy.faction_influence = area_weighted_galaxy_influence(  # type: ignore[assignment]
+            weighted_rows
+        )
+
+    async def _recompute_galaxy_faction_influence(
+        self,
+        session: AsyncSession,
+        galaxy: Galaxy,
+    ) -> None:
+        """Recompute Galaxy.faction_influence from persisted clusters (LEG-INI-02).
+
+        Region ids come from ``galaxy.bang_snapshot`` (orchestrator-owned
+        region metadata + ``additional_regions``).
+        """
+        snapshot = galaxy.bang_snapshot or {}
+        region_ids: List[uuid.UUID] = []
+        for meta in (snapshot.get("regions") or {}).values():
+            if isinstance(meta, dict) and meta.get("region_id") is not None:
+                rid = meta["region_id"]
+                region_ids.append(
+                    rid if isinstance(rid, uuid.UUID) else uuid.UUID(str(rid))
+                )
+        for add in snapshot.get("additional_regions") or []:
+            if isinstance(add, dict) and add.get("region_id") is not None:
+                rid = add["region_id"]
+                region_ids.append(
+                    rid if isinstance(rid, uuid.UUID) else uuid.UUID(str(rid))
+                )
+        if not region_ids:
+            return
+        result = await session.execute(
+            select(Cluster.sector_count, Cluster.faction_influence).where(
+                Cluster.region_id.in_(region_ids)
+            )
+        )
+        rows = [
+            (int(sc or 0), dict(infl or {}))
+            for sc, infl in result.all()
+        ]
+        galaxy.faction_influence = area_weighted_galaxy_influence(  # type: ignore[assignment]
+            rows
+        )
+
     async def _apply_region(
         self,
         session: AsyncSession,
@@ -1847,6 +1923,14 @@ class BangImportService:
         cluster_uuid_by_int: Dict[int, uuid.UUID] = {}
         _sk17_t0 = time.monotonic()
         for cs in region_plan.clusters:
+            # LEG-INI-02 / bang-import-pipeline.md §15: seed Cluster.faction_influence
+            # from the per-zone profile (gameserver-side; bang does not emit it).
+            faction_influence = influence_for_cluster(
+                region_plan.region_type,
+                cs.sector_range_start,
+                cs.sector_range_end,
+                region_plan.total_sectors,
+            )
             cluster = Cluster(
                 region_id=region_id,
                 name=cs.name,
@@ -1861,6 +1945,7 @@ class BangImportService:
                 is_discovered=cs.is_discovered,
                 is_hidden=cs.is_hidden,
                 special_features=cs.special_features,
+                faction_influence=faction_influence,
                 # WO-DBB-QR4: structured cluster nebula (dominant/representative,
                 # derived from member sectors in _translate_region). Per
                 # WO-SB-QH2, nebula_type/color_hex are density-derived canon
