@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 from pydantic import BaseModel
+import logging
 
 from src.core.database import get_db
 from src.auth.admin_scopes import PLAYERS_ADJUST_REP
@@ -28,6 +29,8 @@ from src.services.medal_service import (
     set_pinned_medal_id,
 )
 from src.services.medal_catalog import get_catalog_entry
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/medals",
@@ -191,6 +194,21 @@ async def pin_my_medal(
     identity = public_medal_identity(
         player, medal_count=count_earned_medals(db, player.id)
     )
+    # LEG-75 — keep live WS sector_players in sync without requiring reconnect.
+    try:
+        from src.services.websocket_service import connection_manager
+
+        meta = connection_manager.connection_metadata.get(str(player.user_id))
+        if meta is not None:
+            user_data = meta.setdefault("user_data", {})
+            user_data["pinned_medal_id"] = identity["pinned_medal_id"]
+            user_data["medal_count"] = identity["medal_count"]
+    except Exception:
+        logger.debug(
+            "LEG-75: could not refresh WS medal fields after pin for player %s",
+            player.id,
+            exc_info=True,
+        )
     return PinMedalResponse(
         pinned_medal_id=identity["pinned_medal_id"],
         medal_count=identity["medal_count"],

@@ -994,7 +994,12 @@ class ConnectionManager:
                 # so both presence paths agree.
                 "rep_bucket": player_rep_bucket(reputation_tier),
                 "name_color": user_data.get("name_color", "#FFFFFF"),
-                "military_rank": user_data.get("military_rank", "Recruit")
+                "military_rank": user_data.get("military_rank", "Recruit"),
+                # LEG-75 — mirror REST medal identity (seeded at connect /
+                # refreshed on PUT /medals/me/pin). Client already tolerates
+                # missing keys; null when unset.
+                "pinned_medal_id": user_data.get("pinned_medal_id"),
+                "medal_count": user_data.get("medal_count"),
             })
 
         return players

@@ -94,6 +94,11 @@ async def websocket_endpoint(
             return
         
         # Prepare user data for connection
+        from src.services.medal_service import count_earned_medals, public_medal_identity
+
+        medal_fields = public_medal_identity(
+            player, medal_count=count_earned_medals(db, player.id)
+        )
         user_data = {
             "user_id": str(user.id),
             "username": user.username,
@@ -108,7 +113,10 @@ async def websocket_endpoint(
             "personal_reputation": player.personal_reputation,
             "reputation_tier": player.reputation_tier,
             "name_color": player.name_color,
-            "military_rank": player.military_rank
+            "military_rank": player.military_rank,
+            # LEG-75 — public medal identity for WS sector_players (mirrors REST)
+            "pinned_medal_id": medal_fields["pinned_medal_id"],
+            "medal_count": medal_fields["medal_count"],
         }
         
         # Connect to WebSocket manager
