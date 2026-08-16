@@ -130,6 +130,7 @@ vi.mock('../../../services/api', () => ({
     updateFormation: vi.fn(),
     disbandFleet: vi.fn(),
     resupplyFleet: vi.fn(),
+    move: vi.fn(),
   },
 }));
 

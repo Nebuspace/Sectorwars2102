@@ -1,15 +1,20 @@
 /**
- * FleetManagerPanel — LEG-INI-01
+ * FleetManagerPanel — LEG-INI-01 + LEG-61
  *
  * Player-facing fleet coordination surface over existing `/api/v1/fleets`
  * endpoints: roster list, composition, create, add/remove ship, formation,
- * disband, resupply. Roster uses team fleets (`GET /`), not `my-fleets`
- * (member-ship filter would hide a just-created empty formation).
- * Move-as-one is NOT wired — gameserver has no `/move` route (canon
- * fleet-coordination.md still lists it; escalate to gameserver).
+ * disband, resupply, move-as-one (`POST /fleets/{id}/move`, LEG-49).
+ * Roster uses team fleets (`GET /`), not `my-fleets` (member-ship filter
+ * would hide a just-created empty formation).
+ *
+ * Move destination reuses the cockpit current-sector pattern: LEG-49's body
+ * needs the Sector row UUID (`currentSector.id` from SectorResponse), not the
+ * integer sector_number used by player/move / available-moves. Adjacent hop
+ * UUIDs are not on MoveOption — residual for gameserver if a full warp picker
+ * is required later.
  */
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { fleetAPI } from '../../services/api';
 import { useGame } from '../../contexts/GameContext';
 import CockpitInstrument from '../cockpit/CockpitInstrument';
@@ -29,6 +34,8 @@ export interface FleetSummary {
   morale: number;
   supply_level: number;
   commander_name?: string | null;
+  /** Sector row UUID when known (FleetResponse.sector_id). */
+  sector_id?: string | null;
   sector_name?: string | null;
   member_count: number;
 }
@@ -62,10 +69,14 @@ type Busy =
   | 'remove'
   | 'disband'
   | 'resupply'
+  | 'move'
   | null;
 
 const errMsg = (e: unknown): string =>
   e instanceof Error ? e.message : 'Fleet request failed';
+
+const isUuid = (value: string): boolean =>
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 
 const FleetShell: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   useEmbedded();
@@ -77,7 +88,7 @@ const FleetShell: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 };
 
 export const FleetManagerPanel: React.FC = () => {
-  const { ships } = useGame();
+  const { ships, currentSector } = useGame();
   const [fleets, setFleets] = useState<FleetSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [members, setMembers] = useState<FleetMemberRow[]>([]);
@@ -87,8 +98,27 @@ export const FleetManagerPanel: React.FC = () => {
   const [newFormation, setNewFormation] = useState('standard');
   const [addShipId, setAddShipId] = useState('');
   const [addRole, setAddRole] = useState<string>('attacker');
+  const [moveDest, setMoveDest] = useState('');
 
   const selected = fleets.find((f) => f.id === selectedId) ?? null;
+  const inBattle = selected?.status === 'in_battle';
+
+  const currentSectorUuid = useMemo(() => {
+    const raw = currentSector?.id;
+    if (raw == null) return null;
+    const asStr = String(raw);
+    return isUuid(asStr) ? asStr : null;
+  }, [currentSector?.id]);
+
+  const moveLabel = useMemo(() => {
+    if (!currentSector || !currentSectorUuid) return null;
+    const num = currentSector.sector_number ?? currentSector.sector_id;
+    return `Current — Sector ${num}${currentSector.name ? ` (${currentSector.name})` : ''}`;
+  }, [currentSector, currentSectorUuid]);
+
+  useEffect(() => {
+    setMoveDest(currentSectorUuid ?? '');
+  }, [currentSectorUuid]);
 
   const refresh = useCallback(async () => {
     setBusy('load');
@@ -195,12 +225,6 @@ export const FleetManagerPanel: React.FC = () => {
           </div>
         </section>
 
-        <p className="fleet-manager-muted" data-testid="fleet-move-unavailable">
-          Move-as-one is not available yet — the gameserver has no fleet{' '}
-          <code>/move</code> route (canon still lists it). Roster, composition, and
-          formation are live.
-        </p>
-
         <section className="fleet-manager-list" aria-label="Fleet roster">
           <h3 className="fleet-manager-heading">Your fleets</h3>
           {busy === 'load' && fleets.length === 0 ? (
@@ -278,13 +302,66 @@ export const FleetManagerPanel: React.FC = () => {
               </div>
             </dl>
 
+            <div className="fleet-manager-row" data-testid="fleet-move-controls">
+              <label className="fleet-manager-label">
+                Move to
+                <select
+                  data-testid="fleet-move-dest"
+                  value={moveDest}
+                  disabled={busy !== null || inBattle || !currentSectorUuid}
+                  onChange={(e) => setMoveDest(e.target.value)}
+                >
+                  {!currentSectorUuid ? (
+                    <option value="">Current sector unavailable</option>
+                  ) : (
+                    <option value={currentSectorUuid}>{moveLabel}</option>
+                  )}
+                </select>
+              </label>
+              <button
+                type="button"
+                data-testid="fleet-move-submit"
+                disabled={
+                  busy !== null || inBattle || !moveDest || !isUuid(moveDest)
+                }
+                onClick={() =>
+                  run('move', async () => {
+                    if (!isUuid(moveDest)) {
+                      throw new Error(
+                        'Move destination needs a Sector UUID (current sector).'
+                      );
+                    }
+                    await fleetAPI.move(selected.id, moveDest);
+                    await refresh();
+                  })
+                }
+              >
+                {busy === 'move'
+                  ? 'Moving…'
+                  : inBattle
+                    ? 'In battle — cannot move'
+                    : 'Move as one'}
+              </button>
+            </div>
+            {inBattle && (
+              <p className="fleet-manager-muted" data-testid="fleet-move-in-battle">
+                Cannot move a fleet during battle (server rejects IN_BATTLE).
+              </p>
+            )}
+            {!currentSectorUuid && !inBattle && (
+              <p className="fleet-manager-muted" data-testid="fleet-move-no-sector">
+                Current sector UUID not loaded — open the cockpit NAV / wait for
+                sector sync, then move the fleet here.
+              </p>
+            )}
+
             <div className="fleet-manager-row">
               <label className="fleet-manager-label">
                 Formation
                 <select
                   data-testid="fleet-formation-select"
                   value={selected.formation}
-                  disabled={busy !== null || selected.status === 'in_battle'}
+                  disabled={busy !== null || inBattle}
                   onChange={(e) => {
                     const formation = e.target.value;
                     void run('formation', async () => {
@@ -303,7 +380,7 @@ export const FleetManagerPanel: React.FC = () => {
               <button
                 type="button"
                 data-testid="fleet-resupply"
-                disabled={busy !== null || selected.status === 'in_battle'}
+                disabled={busy !== null || inBattle}
                 onClick={() =>
                   run('resupply', async () => {
                     await fleetAPI.resupplyFleet(selected.id);
@@ -347,7 +424,7 @@ export const FleetManagerPanel: React.FC = () => {
                     <button
                       type="button"
                       data-testid={`fleet-remove-${m.ship_id}`}
-                      disabled={busy !== null || selected.status === 'in_battle'}
+                      disabled={busy !== null || inBattle}
                       onClick={() =>
                         run('remove', async () => {
                           await fleetAPI.removeShipFromFleet(selected.id, m.ship_id);
