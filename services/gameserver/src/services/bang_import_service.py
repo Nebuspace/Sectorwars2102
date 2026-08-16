@@ -53,6 +53,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
 from src.core.commodity_economy import base_price as _commodity_base_price
+from src.core.faction_profiles import (
+    build_cluster_faction_influence,
+    cluster_midpoint_sector,
+    galaxy_area_weighted_average,
+    zone_type_for_sector,
+)
 from src.core.market_bootstrap import build_market_prices
 from src.core.station_class_map import apply_class_pattern
 
@@ -1219,6 +1225,9 @@ class BangImportService:
                 )
 
         attachment_by_region: Dict[RegionType, RegionAttachment] = {}
+        # LEG-136 / bang-import §15: accumulate (sector_count, influence) for
+        # Galaxy.faction_influence area-weighted average after all regions.
+        influence_samples: List[Tuple[int, Dict[str, Any]]] = []
         for region_type, region_plan in plan.regions.items():
             region_id = region_ids.get(region_type)
             if region_id is None:
@@ -1228,7 +1237,7 @@ class BangImportService:
                     "InsertPlan.bang_snapshot['regions'][region_type]['region_id']"
                 )
             attachment_by_region[region_type] = await self._apply_region(
-                session, region_plan, region_id
+                session, region_plan, region_id, influence_samples=influence_samples
             )
 
         # Inter-region warp tunnels. Bang only generates the in-region
@@ -1250,6 +1259,9 @@ class BangImportService:
                     session, spoke_rt,
                     attachment_by_region.get(spoke_rt), nexus_attachment,
                 )
+
+        # §15: Galaxy.faction_influence = area-weighted average of clusters.
+        galaxy.faction_influence = galaxy_area_weighted_average(influence_samples)  # type: ignore[assignment]
 
         # Final state flip lives on the same transaction as the inserts so
         # there is no observable partial state.
@@ -1302,8 +1314,19 @@ class BangImportService:
 
         # Write the region's content. _apply_region returns the region's
         # attachment (gate anchor + ADR-0043 Frontier Gateway Plaza landing).
+        # LEG-136: seed cluster faction_influence inside _apply_region, then
+        # refresh Galaxy avg from every Cluster row (singleton galaxy).
         attachment = await self._apply_region(session, region_plan, region_id)
         new_gate = attachment.gate_sector_id
+
+        existing = (
+            await session.execute(select(Cluster.sector_count, Cluster.faction_influence))
+        ).all()
+        all_samples: List[Tuple[int, Dict[str, Any]]] = [
+            (int(row[0] or 0), dict(row[1] or {})) for row in existing
+        ]
+        galaxy.faction_influence = galaxy_area_weighted_average(all_samples)  # type: ignore[assignment]
+        flag_modified(galaxy, "faction_influence")
 
         # Inter-region tunnel: new region ↔ central_nexus. Mirrors apply()'s
         # ADR-0043 pattern — spoke endpoint is the Frontier landing sector,
@@ -1829,6 +1852,8 @@ class BangImportService:
         session: AsyncSession,
         region_plan: RegionInsertPlan,
         region_id: uuid.UUID,
+        *,
+        influence_samples: Optional[List[Tuple[int, Dict[str, Any]]]] = None,
     ) -> RegionAttachment:
         """Write one region's clusters, sectors, warps, stations, planets, formations.
 
@@ -1837,6 +1862,11 @@ class BangImportService:
         the ADR-0043 Gateway Plaza landing sector (Frontier outer reaches,
         natural+latent Nexus warp). apply() uses these to wire the inter-region
         WarpTunnel rows after every region is in place.
+
+        ``influence_samples`` (LEG-136 / bang-import §15): when provided, each
+        seeded Cluster's ``(sector_count, faction_influence)`` is appended so
+        the caller can compute Galaxy.faction_influence as an area-weighted
+        average.
         """
         # ADR-0050 SK17: resolve the Region row up front so each insert stage
         # below can write its row-count sentinel as it completes. Fetching
@@ -1844,9 +1874,28 @@ class BangImportService:
         # this function already did (identity-map cached, same object).
         region_row = await session.get(Region, region_id)
 
+        # Optional admin faction_influence overrides (canon step 3 → §15 merge).
+        # Plumbed when callers stash weights on region_plan via a future field
+        # or when bang_snapshot carries them; today usually None (merge helper
+        # still covered by unit tests).
+        fi_overrides: Optional[Dict[str, Any]] = getattr(
+            region_plan, "faction_influence_overrides", None
+        )
+        total_sectors = int(getattr(region_plan, "total_sectors", 0) or 0)
+        if total_sectors <= 0:
+            total_sectors = sum(int(cs.sector_count or 0) for cs in region_plan.clusters) or max(
+                (int(cs.sector_range_end or 0) for cs in region_plan.clusters),
+                default=0,
+            )
+
         cluster_uuid_by_int: Dict[int, uuid.UUID] = {}
         _sk17_t0 = time.monotonic()
         for cs in region_plan.clusters:
+            midpoint = cluster_midpoint_sector(cs.sector_range_start, cs.sector_range_end)
+            zone_type = zone_type_for_sector(
+                region_plan.region_type, midpoint, total_sectors
+            )
+            faction_influence = build_cluster_faction_influence(zone_type, fi_overrides)
             cluster = Cluster(
                 region_id=region_id,
                 name=cs.name,
@@ -1868,6 +1917,8 @@ class BangImportService:
                 nebula_type=cs.nebula_type,
                 quantum_field_strength=cs.quantum_field_strength,
                 color_hex=cs.color_hex,
+                # LEG-136: §15 zone-profile seed (not the Cluster model default).
+                faction_influence=faction_influence,
                 stats={
                     "sector_range_start": cs.sector_range_start,
                     "sector_range_end": cs.sector_range_end,
@@ -1878,6 +1929,10 @@ class BangImportService:
             session.add(cluster)
             await session.flush()
             cluster_uuid_by_int[cs.cluster_int_id] = cluster.id  # type: ignore[assignment]
+            if influence_samples is not None:
+                influence_samples.append(
+                    (int(cs.sector_count or 0), dict(faction_influence))
+                )
         _record_phase_checksum(region_row, "clusters", len(region_plan.clusters), _sk17_t0)
 
         sector_uuid_by_int: Dict[int, uuid.UUID] = {}
