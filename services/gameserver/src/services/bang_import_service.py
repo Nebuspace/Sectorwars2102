@@ -2941,6 +2941,8 @@ class BangImportService:
             return "Alpha Centauri"
         if slug == "fringe_homeworld":
             return "Fringe Homeworld"
+        if slug == "cabal_hq":
+            return "Cabal Headquarters"
         return f"Sector {sector_id}"
 
     def _apply_terran_space_invariants(
