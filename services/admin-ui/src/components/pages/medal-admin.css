@@ -59,3 +59,28 @@
   font-size: 0.85rem;
   margin: 4px 0 0;
 }
+
+.medal-admin-bulk-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.medal-admin-bulk-summary {
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color, #475569);
+  background: var(--surface, #0f172a);
+}
+
+.medal-admin-bulk-summary h3 {
+  margin: 0 0 8px;
+  font-size: 1rem;
+}
+
+.medal-admin-bulk-summary ul {
+  margin: 0;
+  padding-left: 1.25rem;
+}

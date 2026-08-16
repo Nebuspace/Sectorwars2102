@@ -147,4 +147,158 @@ describe('MedalAdmin', () => {
       });
     });
   });
+
+  it('bulk dry-run then commit happy path', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/medals/admin/catalog')) {
+        return {
+          data: {
+            total: 1,
+            items: [{ id: 'bronze_cluster', name: 'Bronze Cluster', category: 'combat' }],
+          },
+        };
+      }
+      return { data: { players: [] } };
+    });
+    vi.mocked(api.post).mockImplementation(async (_url: string, body: unknown) => {
+      const payload = body as { dry_run?: boolean };
+      if (payload.dry_run) {
+        return {
+          data: {
+            dry_run: true,
+            medal_id: 'bronze_cluster',
+            valid_count: 2,
+            invalid_count: 0,
+            already_held_count: 0,
+            grantable_count: 2,
+            granted_count: 0,
+            invalid_samples: [],
+            grant_batch_id: null,
+            toast_suppressed: false,
+          },
+        };
+      }
+      return {
+        data: {
+          dry_run: false,
+          medal_id: 'bronze_cluster',
+          valid_count: 2,
+          invalid_count: 0,
+          already_held_count: 0,
+          grantable_count: 2,
+          granted_count: 2,
+          invalid_samples: [],
+          grant_batch_id: 'batch-111',
+          toast_suppressed: false,
+        },
+      };
+    });
+
+    render(<MedalAdmin />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Bulk grant' }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('medal-bulk-panel')).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByLabelText('Bulk medal'), {
+      target: { value: 'bronze_cluster' },
+    });
+    fireEvent.change(screen.getByLabelText('Bulk recipients'), {
+      target: { value: 'Ace\nBob' },
+    });
+
+    expect(screen.getByTestId('medal-bulk-commit')).toBeDisabled();
+
+    fireEvent.click(screen.getByTestId('medal-bulk-dry-run'));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith('/api/v1/medals/admin/bulk-grant', {
+        medal_id: 'bronze_cluster',
+        recipients: ['Ace', 'Bob'],
+        reason: null,
+        dry_run: true,
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('medal-bulk-dry-run-summary')).toBeTruthy();
+      expect(screen.getByTestId('medal-bulk-commit')).not.toBeDisabled();
+    });
+
+    fireEvent.click(screen.getByTestId('medal-bulk-commit'));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith('/api/v1/medals/admin/bulk-grant', {
+        medal_id: 'bronze_cluster',
+        recipients: ['Ace', 'Bob'],
+        reason: null,
+        dry_run: false,
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('medal-bulk-grant-batch-id').textContent).toBe('batch-111');
+    });
+  });
+
+  it('bulk dry-run invalid mix shows samples and keeps commit disabled when nothing grantable', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/medals/admin/catalog')) {
+        return {
+          data: {
+            total: 1,
+            items: [{ id: 'bronze_cluster', name: 'Bronze Cluster', category: 'combat' }],
+          },
+        };
+      }
+      return { data: { players: [] } };
+    });
+    vi.mocked(api.post).mockResolvedValue({
+      data: {
+        dry_run: true,
+        medal_id: 'bronze_cluster',
+        valid_count: 0,
+        invalid_count: 2,
+        already_held_count: 0,
+        grantable_count: 0,
+        granted_count: 0,
+        invalid_samples: [
+          { input: 'nope', reason: 'unknown_username' },
+          { input: 'bad-id', reason: 'unknown_player_id' },
+        ],
+        grant_batch_id: null,
+        toast_suppressed: false,
+      },
+    });
+
+    render(<MedalAdmin />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Bulk grant' }));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Bulk medal')).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByLabelText('Bulk medal'), {
+      target: { value: 'bronze_cluster' },
+    });
+    fireEvent.change(screen.getByLabelText('Bulk recipients'), {
+      target: { value: 'nope,bad-id' },
+    });
+    fireEvent.click(screen.getByTestId('medal-bulk-dry-run'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('medal-bulk-invalid-samples')).toBeTruthy();
+    });
+    expect(screen.getByText(/unknown_username/)).toBeTruthy();
+    expect(screen.getByText(/unknown_player_id/)).toBeTruthy();
+    expect(screen.getByTestId('medal-bulk-commit')).toBeDisabled();
+    expect(api.post).toHaveBeenCalledTimes(1);
+    expect(api.post).toHaveBeenCalledWith('/api/v1/medals/admin/bulk-grant', {
+      medal_id: 'bronze_cluster',
+      recipients: ['nope', 'bad-id'],
+      reason: null,
+      dry_run: true,
+    });
+  });
 });
