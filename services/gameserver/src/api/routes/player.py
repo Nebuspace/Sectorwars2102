@@ -202,6 +202,10 @@ class MoveResponse(BaseModel):
 
 class MoveOption(BaseModel):
     sector_id: int
+    # LEG-INI-13: Sector row UUID (sectors.id) for fleet move-as-one /
+    # adjacent-hop pickers. Integer sector_id above stays the player-move
+    # contract — do not reinterpret it as a UUID.
+    sector_uuid: str
     sector_number: int | None = None  # Display number
     name: str
     type: str
@@ -786,6 +790,7 @@ async def get_available_moves(
 
         warps.append(MoveOption(
             sector_id=warp["sector_id"],
+            sector_uuid=warp["sector_uuid"] if "sector_uuid" in warp else str(sector.id),
             sector_number=sector.sector_number if sector and sector.sector_number else warp["sector_id"],
             name=warp["name"],
             type=warp["type"],
@@ -808,6 +813,7 @@ async def get_available_moves(
 
         tunnels.append(MoveOption(
             sector_id=tunnel["sector_id"],
+            sector_uuid=tunnel["sector_uuid"] if "sector_uuid" in tunnel else str(sector.id),
             sector_number=sector.sector_number if sector and sector.sector_number else tunnel["sector_id"],
             name=tunnel["name"],
             type=tunnel["type"],

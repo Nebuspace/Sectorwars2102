@@ -1495,6 +1495,9 @@ class MovementService:
                 warp_cost = self._calculate_warp_cost(current_sector, connected_sector, ship)
             direct_warps.append({
                 "sector_id": connected_sector.sector_id,
+                # LEG-INI-13: Sector row UUID for fleet adjacent-hop; integer
+                # sector_id above remains the player-move contract.
+                "sector_uuid": str(connected_sector.id),
                 "name": connected_sector.name,
                 "type": connected_sector.type.name,
                 "turn_cost": warp_cost,
@@ -1555,6 +1558,7 @@ class MovementService:
             warp_cost = self._warp_cost_from_turn_cost(row.turn_cost, ship, player=player)
             direct_warps.append({
                 "sector_id": origin.sector_id,
+                "sector_uuid": str(origin.id),
                 "name": origin.name,
                 "type": origin.type.name,
                 "turn_cost": warp_cost,
@@ -1590,6 +1594,7 @@ class MovementService:
 
                 warp_tunnels.append({
                     "sector_id": dest_sector.sector_id,
+                    "sector_uuid": str(dest_sector.id),
                     "name": dest_sector.name,
                     "type": dest_sector.type.name,
                     "turn_cost": tunnel_cost,
@@ -1628,6 +1633,7 @@ class MovementService:
 
                 warp_tunnels.append({
                     "sector_id": dest_sector.sector_id,
+                    "sector_uuid": str(dest_sector.id),
                     "name": dest_sector.name,
                     "type": dest_sector.type.name,
                     "turn_cost": tunnel_cost,
@@ -1651,7 +1657,7 @@ class MovementService:
     #
     # CANON: "Scan adjacent sectors | 2 [turns] | Design-only -- currently
     # free / passive map fill" (sw2102-docs/FEATURES/gameplay/turns.md:83).
-    # get_available_moves already discloses {sector_id, name, type,
+    # get_available_moves already discloses {sector_id, sector_uuid, name, type,
     # turn_cost, can_afford} for every neighbor at ZERO cost -- this action
     # is the PAID enrichment above that baseline, never a duplicate of it.
     #

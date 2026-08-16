@@ -191,6 +191,7 @@ def _build_fixture(w: int, t: int, *, warp_capable_ship: bool = False):
     knowledge = []
 
     expect_outgoing_warp_ids = []
+    expect_outgoing_warp_uuids = []
     outgoing_neighbors = []
     for i in range(w):
         dest_id = uuid.uuid4()
@@ -202,9 +203,11 @@ def _build_fixture(w: int, t: int, *, warp_capable_ship: bool = False):
             is_bidirectional=False, turn_cost=5 + i,
         ))
         expect_outgoing_warp_ids.append(dest.sector_id)
+        expect_outgoing_warp_uuids.append(str(dest_id))
     current_sector.outgoing_warps = outgoing_neighbors
 
     expect_incoming_warp_ids = []
+    expect_incoming_warp_uuids = []
     for i in range(w):
         origin_id = uuid.uuid4()
         origin = SimpleNamespace(id=origin_id, sector_id=2000 + i, name=f"In-{i}", type=SectorType.STANDARD)
@@ -214,8 +217,10 @@ def _build_fixture(w: int, t: int, *, warp_capable_ship: bool = False):
             is_bidirectional=True, turn_cost=7 + i,
         ))
         expect_incoming_warp_ids.append(origin.sector_id)
+        expect_incoming_warp_uuids.append(str(origin_id))
 
     expect_tunnel_ids = {"known_latent": [], "excluded_latent": [], "non_latent": []}
+    expect_tunnel_uuids_by_sector_id = {}
     for i in range(t):
         dest_id = uuid.uuid4()
         dest = SimpleNamespace(id=dest_id, sector_id=3000 + i, name=f"TOut-{i}", type=SectorType.STANDARD)
@@ -229,6 +234,7 @@ def _build_fixture(w: int, t: int, *, warp_capable_ship: bool = False):
             created_by_player_id=None, properties={}, expires_at=None, created_at=None,
         )
         tunnels.append(tunnel)
+        expect_tunnel_uuids_by_sector_id[dest.sector_id] = str(dest_id)
         if is_latent:
             if i % 4 == 0:
                 knowledge.append(SimpleNamespace(
@@ -253,6 +259,7 @@ def _build_fixture(w: int, t: int, *, warp_capable_ship: bool = False):
             created_by_player_id=None, properties={}, expires_at=None, created_at=None,
         )
         tunnels.append(tunnel)
+        expect_tunnel_uuids_by_sector_id[origin.sector_id] = str(origin_id)
         if is_latent:
             if i % 4 == 1:
                 knowledge.append(SimpleNamespace(
@@ -277,7 +284,10 @@ def _build_fixture(w: int, t: int, *, warp_capable_ship: bool = False):
     expectations = {
         "outgoing_warp_ids": expect_outgoing_warp_ids,
         "incoming_warp_ids": expect_incoming_warp_ids,
+        "outgoing_warp_uuids": expect_outgoing_warp_uuids,
+        "incoming_warp_uuids": expect_incoming_warp_uuids,
         "tunnels": expect_tunnel_ids,
+        "tunnel_uuids_by_sector_id": expect_tunnel_uuids_by_sector_id,
     }
     return session, player, expectations
 
@@ -356,11 +366,16 @@ class TestOutputEquivalence:
         assert got_ids == expectations["outgoing_warp_ids"] + expectations["incoming_warp_ids"]
 
         first = warps[0]
-        assert set(first.keys()) == {"sector_id", "name", "type", "turn_cost", "can_afford"}
+        assert set(first.keys()) == {
+            "sector_id", "sector_uuid", "name", "type", "turn_cost", "can_afford",
+        }
         assert first["name"] == "Out-0"
         assert first["type"] == "STANDARD"
         assert first["turn_cost"] == 5  # turn_cost=5, Good-band multiplier 1.0, non-warp-capable ship
         assert first["can_afford"] is True
+        # LEG-INI-13: sector_uuid is Sector.id (row UUID), distinct from integer sector_id.
+        assert first["sector_id"] == 1000  # Out-0 integer sector_id from fixture
+        assert first["sector_uuid"] == expectations["outgoing_warp_uuids"][0]
 
         incoming_first = warps[2]
         assert incoming_first["name"] == "In-0"
@@ -420,14 +435,16 @@ class TestOutputEquivalence:
         outgoing_entry, incoming_entry = tunnels
 
         assert set(outgoing_entry.keys()) == {
-            "sector_id", "name", "type", "turn_cost", "tunnel_type", "stability", "one_way", "can_afford",
+            "sector_id", "sector_uuid", "name", "type", "turn_cost", "tunnel_type", "stability", "one_way", "can_afford",
         }
         assert outgoing_entry["sector_id"] == expectations["tunnels"]["known_latent"][0]
+        assert outgoing_entry["sector_uuid"] == expectations["tunnel_uuids_by_sector_id"][outgoing_entry["sector_id"]]
         assert outgoing_entry["turn_cost"] == 10  # turn_cost=10+0, non-warp-capable ship, no reduction
         assert outgoing_entry["tunnel_type"] == "NATURAL"
         assert outgoing_entry["one_way"] is False  # is_bidirectional=(0%3==0)=True -> one_way=not True=False
 
         assert incoming_entry["sector_id"] == expectations["tunnels"]["non_latent"][0]
+        assert incoming_entry["sector_uuid"] == expectations["tunnel_uuids_by_sector_id"][incoming_entry["sector_id"]]
         assert incoming_entry["turn_cost"] == 20  # turn_cost=20+0
         assert incoming_entry["one_way"] is False  # incoming-bidirectional branch is always one_way=False
 
@@ -439,3 +456,24 @@ class TestOutputEquivalence:
         # reverse-traversal branch never sets one_way=True).
         incoming_entry = next(t for t in result["tunnels"] if t["name"] == "TIn-1")
         assert incoming_entry["one_way"] is False
+
+    def test_sector_uuid_on_outgoing_incoming_warps_and_tunnels(self):
+        """LEG-INI-13: every listed neighbor carries Sector.id as sector_uuid
+        while integer sector_id stays the player-move identity."""
+        session, player, expectations = _build_fixture(w=2, t=1)
+        result = MovementService(session).get_available_moves(player.id)
+
+        warps = result["warps"]
+        assert [w["sector_uuid"] for w in warps] == (
+            expectations["outgoing_warp_uuids"] + expectations["incoming_warp_uuids"]
+        )
+        assert [w["sector_id"] for w in warps] == (
+            expectations["outgoing_warp_ids"] + expectations["incoming_warp_ids"]
+        )
+        for w in warps:
+            assert w["sector_uuid"] != str(w["sector_id"])
+            uuid.UUID(w["sector_uuid"])
+
+        for t in result["tunnels"]:
+            assert t["sector_uuid"] == expectations["tunnel_uuids_by_sector_id"][t["sector_id"]]
+            uuid.UUID(t["sector_uuid"])
