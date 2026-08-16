@@ -368,6 +368,28 @@ describe('ContractBoardVenue', () => {
     expect(container.textContent).toContain('Locker 20/50');
   });
 
+  it('Deposit surfaces server error detail when rentLocker fails (LEG-84 Accept)', async () => {
+    mockGetBoard.mockResolvedValueOnce([]);
+    mockGetMine.mockResolvedValueOnce({ posted: [], accepted: [CONTRACT_ACCEPTED] });
+    mockRentLocker.mockRejectedValueOnce(new Error('Must be docked at destination station.'));
+
+    await act(async () => {
+      root.render(<ContractBoardVenue {...VENUE_PROPS} />);
+    });
+    await flush();
+
+    await clickButton('My Contracts');
+    await flush();
+    await clickButton('Deposit');
+    await flush();
+
+    expect(mockRentLocker).toHaveBeenCalledWith(CONTRACT_ACCEPTED.id);
+    expect(mockDeposit).not.toHaveBeenCalled();
+    const err = container.querySelector('.genesis-error-message');
+    expect(err?.textContent).toMatch(/Must be docked at destination station/);
+    expect(err?.getAttribute('aria-live')).toBe('polite');
+  });
+
   describe('insurance tier picker (WO-CONTRACT-1-INSURANCE)', () => {
     it('picking a tier and clicking Insure drives a REAL POST /insure with the selected tier, feeds the new balance to onCreditsSet, and the row flips to the Insured badge on refetch', async () => {
       mockGetBoard.mockResolvedValueOnce([]);
@@ -753,6 +775,29 @@ describe('ContractBoardVenue', () => {
       expect(retrieveBtn).toBeTruthy();
       expect(retrieveBtn.disabled).toBe(true);
       expect(mockRetrieve).not.toHaveBeenCalled();
+    });
+
+    it('Retrieve surfaces server error detail when the locker refuses (LEG-84 Accept)', async () => {
+      mockGetBoard.mockResolvedValueOnce([]);
+      mockGetMine.mockResolvedValueOnce(EMPTY_MINE);
+      mockGetClaimable.mockResolvedValueOnce([CLAIMABLE_LOCKER]);
+      mockRetrieve.mockRejectedValueOnce(new Error('Insufficient cargo capacity for retrieve.'));
+
+      await act(async () => {
+        root.render(<ContractBoardVenue {...VENUE_PROPS} />);
+      });
+      await flush();
+      await clickButton('My Contracts');
+      await flush();
+      await clickButton('Claimable Cargo');
+      await flush();
+      await clickButton('Retrieve');
+      await flush();
+
+      expect(mockRetrieve).toHaveBeenCalledWith('locker-9');
+      const err = container.querySelector('.genesis-error-message');
+      expect(err?.textContent).toMatch(/Insufficient cargo capacity for retrieve/);
+      expect(err?.getAttribute('aria-live')).toBe('polite');
     });
   });
 });
