@@ -1,0 +1,62 @@
+.planetary-lander-cta {
+  margin: 0.6rem 0 0;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid rgba(120, 180, 140, 0.35);
+  background: rgba(20, 40, 28, 0.55);
+  color: #c8e0d0;
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.planetary-lander-cta.compact {
+  margin-top: 0.75rem;
+  margin-bottom: 0.25rem;
+}
+
+.planetary-lander-cta.fitted {
+  border-color: rgba(100, 160, 120, 0.45);
+}
+
+.planetary-lander-cta-copy {
+  margin: 0 0 0.45rem;
+}
+
+.planetary-lander-cta-status {
+  display: block;
+  opacity: 0.9;
+}
+
+.planetary-lander-cta-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.4rem 0.65rem;
+  border: 1px solid rgba(140, 200, 160, 0.55);
+  background: rgba(40, 80, 55, 0.85);
+  color: #e8fff0;
+  font: inherit;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.planetary-lander-cta-btn:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.planetary-lander-cta-btn:not(:disabled):hover {
+  background: rgba(55, 110, 75, 0.95);
+}
+
+.planetary-lander-cta-err {
+  display: block;
+  margin-top: 0.35rem;
+  color: #ff8a8a;
+}
+
+.planetary-lander-cta-ok {
+  display: block;
+  margin-top: 0.35rem;
+  color: #9dffb8;
+}
