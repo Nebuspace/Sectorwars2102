@@ -793,6 +793,18 @@ export const medalsAPI = {
   /** Clear-on-view offline award queue (GET /api/v1/medals/unviewed). */
   getUnviewed: (): Promise<{ unviewed: string[] }> =>
     apiRequest('/api/v1/medals/unviewed'),
+
+  /**
+   * Set or clear the public pinned medal (LEG-59 / medals.md pinning model).
+   * `medalId = null` clears. Non-null ids must be currently earned (400 otherwise).
+   */
+  pin: (
+    medalId: string | null,
+  ): Promise<{ pinned_medal_id: string | null; medal_count?: number | null }> =>
+    apiRequest('/api/v1/medals/me/pin', {
+      method: 'PUT',
+      body: JSON.stringify({ pinned_medal_id: medalId }),
+    }),
 };
 
 // Bounty APIs

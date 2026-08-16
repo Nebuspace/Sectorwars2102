@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 /**
- * MedalShowcase — WO-UIPC-COCKPITINSTRUMENT-OCCLUSION follow-up hardening.
+ * MedalShowcase — WO-UIPC-COCKPITINSTRUMENT-OCCLUSION follow-up hardening
+ * + LEG-87 Trophy Room pin control (PUT /api/v1/medals/me/pin).
  *
  * `MedalData`'s shape is enforced by the TS type, not at runtime --
  * discovered live while proving the CockpitInstrument occlusion fix: a 200
@@ -14,10 +15,12 @@ import { createRoot } from 'react-dom/client';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const mockGetMedals = vi.fn();
+const mockPin = vi.fn();
 
 vi.mock('../../services/api', () => ({
   medalsAPI: {
     getMe: (...a: unknown[]) => mockGetMedals(...a),
+    pin: (...a: unknown[]) => mockPin(...a),
   },
 }));
 
@@ -42,6 +45,7 @@ describe('MedalShowcase', () => {
 
   beforeEach(() => {
     mockGetMedals.mockReset();
+    mockPin.mockReset();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -92,5 +96,91 @@ describe('MedalShowcase', () => {
     await mount();
 
     expect(container.querySelector('.medal-error')?.textContent).toBe('Network down');
+  });
+
+  it('pins an earned medal on happy path (LEG-87)', async () => {
+    mockGetMedals.mockResolvedValue({
+      earned: [makeMedal({ key: 'star_bronze' })],
+      available: [],
+    });
+    mockPin.mockResolvedValue({ pinned_medal_id: 'star_bronze', medal_count: 1 });
+    await mount();
+
+    const pinBtn = container.querySelector(
+      '[data-testid="medal-pin-btn-star_bronze"]',
+    ) as HTMLButtonElement;
+    expect(pinBtn).toBeTruthy();
+    expect(pinBtn.textContent).toBe('Pin');
+
+    await act(async () => {
+      pinBtn.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mockPin).toHaveBeenCalledWith('star_bronze');
+    expect(container.querySelector('[data-testid="medal-pinned-badge"]')?.textContent).toBe(
+      'Pinned',
+    );
+    expect(
+      container.querySelector('[data-testid="medal-card-star_bronze"]')?.getAttribute('data-pinned'),
+    ).toBe('true');
+    expect(pinBtn.textContent).toBe('Unpin');
+  });
+
+  it('clears the pin via Clear pin (LEG-87)', async () => {
+    mockGetMedals.mockResolvedValue({
+      earned: [makeMedal({ key: 'star_bronze' })],
+      available: [],
+    });
+    mockPin
+      .mockResolvedValueOnce({ pinned_medal_id: 'star_bronze', medal_count: 1 })
+      .mockResolvedValueOnce({ pinned_medal_id: null, medal_count: 1 });
+    await mount();
+
+    await act(async () => {
+      (container.querySelector(
+        '[data-testid="medal-pin-btn-star_bronze"]',
+      ) as HTMLButtonElement).click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const clearBtn = container.querySelector(
+      '[data-testid="medal-clear-pin"]',
+    ) as HTMLButtonElement;
+    expect(clearBtn).toBeTruthy();
+
+    await act(async () => {
+      clearBtn.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mockPin).toHaveBeenLastCalledWith(null);
+    expect(container.querySelector('[data-testid="medal-pinned-badge"]')).toBeNull();
+    expect(container.querySelector('[data-testid="medal-clear-pin"]')).toBeNull();
+  });
+
+  it('surfaces pin rejection detail (LEG-87)', async () => {
+    mockGetMedals.mockResolvedValue({
+      earned: [makeMedal({ key: 'star_bronze' })],
+      available: [],
+    });
+    mockPin.mockRejectedValue(new Error('Cannot pin a medal you have not earned'));
+    await mount();
+
+    await act(async () => {
+      (container.querySelector(
+        '[data-testid="medal-pin-btn-star_bronze"]',
+      ) as HTMLButtonElement).click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[data-testid="medal-pin-error"]')?.textContent).toBe(
+      'Cannot pin a medal you have not earned',
+    );
+    expect(container.querySelector('[data-testid="medal-pinned-badge"]')).toBeNull();
   });
 });
