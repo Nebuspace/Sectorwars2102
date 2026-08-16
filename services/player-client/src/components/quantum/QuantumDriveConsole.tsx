@@ -1,6 +1,6 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useGame, type QuantumBearing, type QuantumScanResult, type QuantumJumpResult, type QuantumHarvestResult } from '../../contexts/GameContext';
-import { quantumAPI } from '../../services/api';
+import { quantumAPI, shipUpgradeAPI } from '../../services/api';
 import { TurnsIcon } from '../icons/TurnsIcon';
 import QuantumBearingViewport, { type MinimapSector } from './QuantumBearingViewport';
 import './quantum-drive.css';
@@ -11,7 +11,15 @@ import './quantum-drive.css';
  * pick a range band, fire a hyperspace echo scan, and commit a blind quantum
  * jump. All countdowns tick client-side from the *_until ISO timestamps the
  * quantum API returns — no network polling.
+ *
+ * LEG-115: Nebula harvest requires a fitted Quantum Field Harvester
+ * (`equipment_slots.quantum_harvester`, not the ModuleGrid harvester family).
+ * Install CTA reuses shipUpgradeAPI.installEquipment; server requires Class-7+
+ * dock and may return a 24h pending ready_at before harvest is gated open.
  */
+
+/** Canon catalog cost — EQUIPMENT_DEFINITIONS.quantum_harvester (ship-systems.md). */
+export const QUANTUM_HARVESTER_INSTALL_COST_CR = 50_000;
 
 interface QuantumDriveConsoleProps {
   /** Opens the Gatewright project panel (overlay owned by GameDashboard) */
@@ -66,6 +74,7 @@ const formatCountdown = (ms: number): string => {
 const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewright }) => {
   const {
     playerState,
+    currentShip,
     currentSector,
     quantumStatus,
     quantumScan,
@@ -74,6 +83,8 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
     harvestNebula,
     quantumScanResult,
     setQuantumScanResult,
+    refreshPlayerState,
+    updatePlayerCredits,
   } = useGame();
 
   // --- Bearing controls ---
@@ -101,16 +112,63 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
   const [refineError, setRefineError] = useState<string | null>(null);
 
   // --- Nebula harvest (Warp Jumper with a fitted harvester, in a nebula) ---
-  // The status payload doesn't expose harvester-fitted / harvest-cooldown, so
-  // (like refine) the button enables on the observable state — nebula sector +
-  // not mid-harvest + not within a locally-known cooldown — and the server
-  // enforces the precise gate, surfacing no_harvester / on_cooldown inline.
+  // Fitted state comes from GET .../upgrades (equipment.quantum_harvester +
+  // equipped pending/ready_at). Harvest enable still also needs nebula +
+  // cooldown; no_harvester remains a server-side fallback message only.
   const [isHarvesting, setIsHarvesting] = useState(false);
   const [harvestError, setHarvestError] = useState<string | null>(null);
   const [harvestResult, setHarvestResult] = useState<QuantumHarvestResult | null>(null);
   // Armed cooldown deadline learned from the last successful harvest (or an
   // on_cooldown rejection that carries the ISO deadline in its detail).
   const [harvestCooldownUntil, setHarvestCooldownUntil] = useState<string | null>(null);
+
+  // LEG-115 — Quantum Field Harvester equipment_slots fit (not ModuleGrid).
+  // null = not yet loaded from getUpgrades; false = no slot; true = slot present.
+  const [harvesterSlotPresent, setHarvesterSlotPresent] = useState<boolean | null>(null);
+  const [harvesterPendingUntil, setHarvesterPendingUntil] = useState<string | null>(null);
+  const [harvesterInstallCost, setHarvesterInstallCost] = useState(QUANTUM_HARVESTER_INSTALL_COST_CR);
+  const [isInstallingHarvester, setIsInstallingHarvester] = useState(false);
+  const [installError, setInstallError] = useState<string | null>(null);
+  const [installSuccess, setInstallSuccess] = useState<string | null>(null);
+
+  const shipId = currentShip?.id ?? null;
+
+  const applyHarvesterFromUpgrades = useCallback((info: any) => {
+    const catalog = info?.equipment?.quantum_harvester;
+    const slot = info?.equipped?.quantum_harvester;
+    const present = !!(catalog?.installed || slot != null);
+    setHarvesterSlotPresent(present);
+    if (typeof catalog?.cost === 'number') {
+      setHarvesterInstallCost(catalog.cost);
+    }
+    if (present && slot && typeof slot === 'object') {
+      const readyAt = typeof slot.ready_at === 'string' ? slot.ready_at : null;
+      const pendingFlag = slot.pending === true;
+      const stillPending =
+        pendingFlag && readyAt != null && new Date(readyAt).getTime() > Date.now();
+      setHarvesterPendingUntil(stillPending ? readyAt : null);
+    } else {
+      setHarvesterPendingUntil(null);
+    }
+  }, []);
+
+  const refreshHarvesterEquipment = useCallback(async () => {
+    if (!shipId) {
+      setHarvesterSlotPresent(false);
+      setHarvesterPendingUntil(null);
+      return;
+    }
+    try {
+      const info = await shipUpgradeAPI.getUpgrades(shipId);
+      applyHarvesterFromUpgrades(info);
+    } catch {
+      // Leave prior state; harvest path still has no_harvester fallback.
+    }
+  }, [shipId, applyHarvesterFromUpgrades]);
+
+  useEffect(() => {
+    void refreshHarvesterEquipment();
+  }, [refreshHarvesterEquipment]);
 
   // --- Astrogation chart (minimap) — fetched once per sector while piloting
   // a Warp Jumper. On fetch failure the viewport renders WITHOUT dots and
@@ -161,6 +219,14 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
     return () => clearInterval(timer);
   }, []);
 
+  // Clear pending flag once ready_at elapses (local tick).
+  useEffect(() => {
+    if (!harvesterPendingUntil) return;
+    if (new Date(harvesterPendingUntil).getTime() <= now) {
+      setHarvesterPendingUntil(null);
+    }
+  }, [now, harvesterPendingUntil]);
+
   // ARM auto-disarms after 5s if the pilot doesn't confirm
   useEffect(() => {
     if (jumpPhase !== 'armed') return;
@@ -187,6 +253,7 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
   const scanCooldownLeft = msLeft(quantumStatus?.scan_cooldown_until);
   const jumpCooldownLeft = msLeft(quantumStatus?.jump_cooldown_until);
   const harvestCooldownLeft = msLeft(harvestCooldownUntil);
+  const harvesterInstallLeft = msLeft(harvesterPendingUntil);
   const scanExpiryLeft = msLeft(scanResult?.expires_at);
   const liveScan = scanResult && scanExpiryLeft > 0 ? scanResult : null;
 
@@ -201,6 +268,8 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
   const isDocked = !!(playerState?.is_docked || playerState?.is_landed);
   const extendedLocked = sensorLevel < 3;
   const isNebula = currentSector?.type?.toUpperCase() === 'NEBULA';
+
+  const needsHarvesterInstall = harvesterSlotPresent === false;
 
   // WO-API-PHASE2 Lane B5 — server-surfaced costs, honestly including the
   // +5 flat tow surcharge (BUG-1: a towing pilot's real jump cost is base
@@ -235,6 +304,9 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
   const harvestBlockReason: string | null =
     !statusReady ? 'LINKING DRIVE…'
     : isHarvesting ? 'HARVESTING…'
+    : needsHarvesterInstall ? 'NO HARVESTER FITTED'
+    : harvesterInstallLeft > 0 ? `INSTALLING ${formatCountdown(harvesterInstallLeft)}`
+    : harvesterSlotPresent === null ? 'CHECKING HARVESTER…'
     : !isNebula ? 'NO NEBULA HERE'
     : harvestCooldownLeft > 0 ? `RECHARGE ${formatCountdown(harvestCooldownLeft)}`
     : null;
@@ -305,6 +377,46 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
     return text || 'Nebula harvest failed — harvester unresponsive';
   };
 
+  const handleInstallHarvester = async () => {
+    if (!shipId || isInstallingHarvester || !needsHarvesterInstall) return;
+    setIsInstallingHarvester(true);
+    setInstallError(null);
+    setInstallSuccess(null);
+    try {
+      const result = await shipUpgradeAPI.installEquipment(shipId, 'quantum_harvester');
+      if (!isMounted.current) return;
+      const paid =
+        typeof result?.cost_paid === 'number'
+          ? result.cost_paid.toLocaleString()
+          : harvesterInstallCost.toLocaleString();
+      setInstallSuccess(
+        result?.message
+          ? `${result.message} — ${paid} cr.`
+          : `Quantum Field Harvester installed — ${paid} cr.`,
+      );
+      if (typeof result?.remaining_credits === 'number') {
+        updatePlayerCredits(result.remaining_credits);
+      }
+      // Optimistic: slot present; pending ready_at from server when present.
+      setHarvesterSlotPresent(true);
+      if (result?.pending && typeof result?.ready_at === 'string') {
+        setHarvesterPendingUntil(result.ready_at);
+      } else {
+        setHarvesterPendingUntil(null);
+      }
+      void Promise.allSettled([refreshPlayerState(), refreshHarvesterEquipment()]);
+    } catch (error: unknown) {
+      if (!isMounted.current) return;
+      setInstallError(
+        error instanceof Error && error.message
+          ? error.message
+          : 'Quantum Field Harvester install failed',
+      );
+    } finally {
+      if (isMounted.current) setIsInstallingHarvester(false);
+    }
+  };
+
   const handleHarvest = async () => {
     if (harvestBlockReason) return;
     setIsHarvesting(true);
@@ -314,6 +426,8 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
       if (!isMounted.current) return;
       setHarvestResult(result);
       setHarvestCooldownUntil(result.harvest_cooldown_until);
+      setHarvesterSlotPresent(true);
+      setHarvesterPendingUntil(null);
     } catch (error: any) {
       if (!isMounted.current) return;
       const detail = error?.response?.data?.detail;
@@ -322,6 +436,10 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
       if (typeof detail === 'string' && detail.startsWith('on_cooldown')) {
         const iso = detail.split('until').pop()?.trim();
         if (iso) setHarvestCooldownUntil(iso);
+      }
+      if (typeof detail === 'string' && detail.startsWith('no_harvester')) {
+        setHarvesterSlotPresent(false);
+        setHarvesterPendingUntil(null);
       }
       setHarvestError(friendlyHarvestError(detail));
     } finally {
@@ -485,21 +603,49 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
               </span>
             )}
           </button>
-          <button
-            className="qd-scan-btn"
-            onClick={handleHarvest}
-            disabled={!!harvestBlockReason}
-            title={
-              !isNebula
-                ? 'Harvesting requires a nebula sector + a fitted Quantum Field Harvester'
-                : 'Harvest Quantum Shards from this nebula field'
-            }
-          >
-            {harvestBlockReason || 'HARVEST NEBULA'}
-            {!harvestBlockReason && <span className="qd-cost-tag">+ QUANTUM SHARDS</span>}
-          </button>
+          {needsHarvesterInstall ? (
+            <button
+              className="qd-scan-btn"
+              onClick={handleInstallHarvester}
+              disabled={isInstallingHarvester || !shipId}
+              title={
+                !shipId
+                  ? 'No active ship'
+                  : 'Install a Quantum Field Harvester (equipment slot). Requires docking at a Class-7+ station.'
+              }
+              data-testid="qd-install-harvester"
+            >
+              {isInstallingHarvester
+                ? 'INSTALLING…'
+                : 'INSTALL QUANTUM FIELD HARVESTER'}
+              {!isInstallingHarvester && (
+                <span className="qd-cost-tag">
+                  {harvesterInstallCost.toLocaleString()} CR
+                </span>
+              )}
+            </button>
+          ) : (
+            <button
+              className="qd-scan-btn"
+              onClick={handleHarvest}
+              disabled={!!harvestBlockReason}
+              title={
+                harvesterInstallLeft > 0
+                  ? `Harvester install completes in ${formatCountdown(harvesterInstallLeft)}`
+                  : !isNebula
+                    ? 'Harvesting requires a nebula sector + a fitted Quantum Field Harvester'
+                    : 'Harvest Quantum Shards from this nebula field'
+              }
+              data-testid="qd-harvest-nebula"
+            >
+              {harvestBlockReason || 'HARVEST NEBULA'}
+              {!harvestBlockReason && <span className="qd-cost-tag">+ QUANTUM SHARDS</span>}
+            </button>
+          )}
         </div>
         {scanError && <div className="qd-inline-error">{scanError}</div>}
+        {installError && <div className="qd-inline-error">{installError}</div>}
+        {installSuccess && <div className="qd-inline-success" role="status">{installSuccess}</div>}
         {harvestError && <div className="qd-inline-error">{harvestError}</div>}
 
         {harvestResult && (
