@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { api } from '../../utils/auth';
 import './custom-report-builder.css';
 
 interface ReportMetric {
@@ -17,6 +18,7 @@ interface ReportFilter {
   value: any;
 }
 
+/** Matches gameserver ReportTemplate (admin_reports.py) — schedule is server-optional / unused in UI. */
 interface ReportTemplate {
   id: string;
   name: string;
@@ -28,6 +30,11 @@ interface ReportTemplate {
   visualization: 'table' | 'chart' | 'both';
   chartType?: 'line' | 'bar' | 'pie' | 'area' | 'scatter';
 }
+
+const responseStatus = (err: unknown): number | undefined =>
+  typeof err === 'object' && err !== null && 'response' in err
+    ? (err as { response?: { status?: number } }).response?.status
+    : undefined;
 
 interface CustomReportBuilderProps {
   onGenerate: (template: ReportTemplate) => void;
@@ -58,37 +65,33 @@ export const CustomReportBuilder: React.FC<CustomReportBuilderProps> = ({ onGene
   const fetchReportData = async () => {
     setLoading(true);
     try {
-      // Fetch the real metric catalog and saved templates — no fabricated
-      // fallbacks. If the endpoints don't exist, say so honestly.
+      // Shipped routes (admin_reports.py) — use the shared authenticated client
+      // (LEG-114 sibling). Never invent catalog rows on failure.
       const [metricsResponse, templatesResponse] = await Promise.all([
-        fetch('/api/v1/admin/reports/metrics', {
-          headers: { 'Authorization': `Bearer ${localStorage.getItem('accessToken')}` }
-        }),
-        fetch('/api/v1/admin/reports/templates', {
-          headers: { 'Authorization': `Bearer ${localStorage.getItem('accessToken')}` }
-        })
+        api.get<{ metrics?: ReportMetric[] }>('/api/v1/admin/reports/metrics'),
+        api.get<{ templates?: ReportTemplate[] }>('/api/v1/admin/reports/templates'),
       ]);
 
-      if (!metricsResponse.ok || !templatesResponse.ok) {
-        const failed = !metricsResponse.ok
-          ? { path: '/api/v1/admin/reports/metrics', status: metricsResponse.status }
-          : { path: '/api/v1/admin/reports/templates', status: templatesResponse.status };
-        setError(
-          failed.status === 404
-            ? `Report builder endpoint not implemented — ${failed.path} returned 404`
-            : `Report builder request failed (HTTP ${failed.status})`
-        );
-        return;
-      }
-
-      const metricsData = await metricsResponse.json();
-      const templatesData = await templatesResponse.json();
-      setAvailableMetrics(metricsData.metrics ?? []);
-      setTemplates(templatesData.templates ?? []);
+      setAvailableMetrics(metricsResponse.data.metrics ?? []);
+      setTemplates(templatesResponse.data.templates ?? []);
       setError(null);
     } catch (err) {
       console.error('Error fetching report data:', err);
-      setError('Gameserver unreachable — network error fetching report builder data');
+      const status = responseStatus(err);
+      if (status === 401 || status === 403) {
+        setError(
+          'Access denied — the report builder requires the admin.audit.view scope.'
+        );
+      } else if (status === 404) {
+        setError(
+          'Report builder route not found (404). Metrics/templates ship in the gameserver — ' +
+            'check that the gameserver is running and the /api proxy is reaching it.'
+        );
+      } else if (status !== undefined) {
+        setError(`Report builder request failed (HTTP ${status})`);
+      } else {
+        setError('Gameserver unreachable — network error fetching report builder data');
+      }
     } finally {
       setLoading(false);
     }
@@ -215,7 +218,7 @@ export const CustomReportBuilder: React.FC<CustomReportBuilderProps> = ({ onGene
         <div className="report-builder-header">
           <h2>Custom Report Builder</h2>
         </div>
-        <div className="alert alert-error">
+        <div className="alert alert-error" role="alert">
           <span className="alert-icon">⚠️</span>
           <span className="alert-message">{error}</span>
         </div>
