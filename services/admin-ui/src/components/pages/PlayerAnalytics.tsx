@@ -6,6 +6,7 @@ import BulkOperationPanel from '../admin/BulkOperationPanel';
 import PlayerAssetManager from '../admin/PlayerAssetManager';
 import EmergencyOperationsPanel from '../admin/EmergencyOperationsPanel';
 import RankingLeaderboardPanel from './RankingLeaderboardPanel';
+import ReEngagementQueuePanel, { ReEngagementSummary } from './ReEngagementQueuePanel';
 import { api } from '../../utils/auth';
 import {
   PlayerModel,
@@ -20,6 +21,7 @@ const fmtCount = (n: number | null | undefined): string =>
   n != null ? String(n) : '—';
 
 const PlayerAnalytics: React.FC = () => {
+  const [reEngagementSummary, setReEngagementSummary] = useState<ReEngagementSummary | null>(null);
   const [state, setState] = useState<PlayerAnalyticsState>({
     players: [],
     selectedPlayer: null,
@@ -279,6 +281,12 @@ const PlayerAnalytics: React.FC = () => {
       <div className="page-content">
         {/* WO-WIRE-ADMIN-RANKING-LEADERBOARD: admin GET /ranking/leaderboard */}
         <RankingLeaderboardPanel />
+
+        {/* LEG-28 — re-engagement queue (feeds retention stat card via onSummaryChange) */}
+        <ReEngagementQueuePanel
+          embedded={false}
+          onSummaryChange={setReEngagementSummary}
+        />
 
         {/* Error Display */}
         {state.errors.length > 0 && (
@@ -693,13 +701,22 @@ const PlayerAnalytics: React.FC = () => {
                     <div className="dashboard-stat-description">{analyticsAvailable && state.metrics.new_players_today != null ? 'Today' : (analyticsAvailable ? 'New-player count unavailable' : 'Analytics endpoint unavailable')}</div>
                   </div>
 
-                  <div className="dashboard-stat-card stat-not-tracked">
+                  <div
+                    className={`dashboard-stat-card${reEngagementSummary ? '' : ' stat-not-tracked'}`}
+                    data-variant={reEngagementSummary && reEngagementSummary.open > 0 ? 'warning' : undefined}
+                  >
                     <div className="dashboard-stat-header">
                       <span className="dashboard-stat-icon">📈</span>
-                      <h4 className="dashboard-stat-title">Retention Rate</h4>
+                      <h4 className="dashboard-stat-title">Re-engagement queue</h4>
                     </div>
-                    <div className="dashboard-stat-value">&mdash;</div>
-                    <div className="dashboard-stat-description">No retention telemetry surfaced yet</div>
+                    <div className="dashboard-stat-value">
+                      {reEngagementSummary ? reEngagementSummary.open.toLocaleString() : <>&mdash;</>}
+                    </div>
+                    <div className="dashboard-stat-description">
+                      {reEngagementSummary
+                        ? `OPEN at-risk · ${reEngagementSummary.total} total rows`
+                        : 'Queue summary unavailable'}
+                    </div>
                   </div>
 
                   <div className={`dashboard-stat-card${analyticsAvailable && state.metrics.suspicious_activity_alerts != null ? '' : ' stat-not-tracked'}`} data-variant="warning">

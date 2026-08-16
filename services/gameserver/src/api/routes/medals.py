@@ -17,12 +17,12 @@ from sqlalchemy.orm.attributes import flag_modified
 from pydantic import BaseModel
 
 from src.core.database import get_db
-from src.auth.admin_scopes import PLAYERS_ADJUST_REP
+from src.auth.admin_scopes import PLAYERS_ADJUST_REP, PLAYERS_VIEW
 from src.auth.dependencies import get_current_player, require_scope
 from src.models.player import Player
 from src.models.user import User
 from src.services.medal_service import MedalService
-from src.services.medal_catalog import get_catalog_entry
+from src.services.medal_catalog import MEDAL_CATALOG, get_catalog_entry
 
 router = APIRouter(
     prefix="/medals",
@@ -156,6 +156,26 @@ async def get_unviewed_awards(
 # ------------------------------------------------------------------
 # Admin endpoints
 # ------------------------------------------------------------------
+
+@router.get("/admin/catalog")
+async def admin_list_medal_catalog(
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
+):
+    """Read-only medal catalog for MedalAdmin Catalog tab (LEG-11)."""
+    items = []
+    for medal_id, entry in sorted(MEDAL_CATALOG.items(), key=lambda kv: kv[0]):
+        items.append(
+            {
+                "id": medal_id,
+                "name": entry.get("name"),
+                "category": entry.get("category"),
+                "tier": entry.get("tier"),
+                "description": entry.get("description"),
+                "criteria": entry.get("criteria"),
+            }
+        )
+    return {"items": items, "total": len(items)}
+
 
 @router.post("/admin/grant", response_model=AdminMedalActionResponse)
 async def admin_grant_medal(

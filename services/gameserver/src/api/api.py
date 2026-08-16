@@ -38,6 +38,7 @@ from src.api.routes.teams import router as teams_router
 from src.api.routes.admin_economy import router as admin_economy_router
 from src.api.routes.admin_combat import router as admin_combat_router
 from src.api.routes.admin_ships import router as admin_ships_router
+from src.api.routes.admin_re_engagement import router as admin_re_engagement_router
 from src.api.routes.admin_colonization import router as admin_colonization_router
 from src.api.routes.mfa import router as mfa_router
 from src.api.routes.paypal import router as paypal_router
@@ -225,6 +226,7 @@ api_router.include_router(contracts_router, tags=["contracts"])
 api_router.include_router(admin_contract_disputes_router, tags=["admin-contract-disputes"])
 api_router.include_router(admin_multi_account_router, tags=["admin-multi-account"])  # WO-PADMIN-multiacct-review
 api_router.include_router(admin_scopes_router, tags=["admin-scopes"])  # RBAC Phase B grant/revoke
+api_router.include_router(admin_re_engagement_router, tags=["admin-re-engagement"])  # LEG-28
 # Message beacons (WO-P4-play-beacon-kernel): deploy/read/salvage a
 # physical "message in a bottle" in a sector (router carries its own
 # /beacons prefix).

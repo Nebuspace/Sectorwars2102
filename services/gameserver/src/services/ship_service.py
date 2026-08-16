@@ -457,9 +457,14 @@ class ShipService:
         Canon (ADR-0061 S-D3): payout = (coverage% - deductible%) x purchase_value.
         Net payout per tier = BASIC 50-5=45%, STANDARD 75-10=65%, PREMIUM 90-15=75%
         (the deductible was previously not applied — fixed here).
+
+        Ratios live in ``economy_balancing_levers.INSURANCE_NET_PAYOUT_PCT`` so
+        the admin Economy Levers panel can throttle them without a deploy.
         """
+        from src.services.economy_balancing_levers import INSURANCE_NET_PAYOUT_PCT
+
         insurance_type = insurance.get("type", "NONE")
-        net_payout = {"BASIC": 0.45, "STANDARD": 0.65, "PREMIUM": 0.75}.get(insurance_type, 0.0)
+        net_payout = INSURANCE_NET_PAYOUT_PCT.get(insurance_type, 0.0)
         return int(ship.purchase_value * net_payout)
     
     def is_ship_indestructible(self, ship: Ship) -> bool:

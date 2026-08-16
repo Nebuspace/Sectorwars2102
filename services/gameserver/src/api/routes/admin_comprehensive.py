@@ -3169,6 +3169,22 @@ async def place_npc_faction_bounty(
     return result
 
 
+
+@router.get("/players/{target_id}/bounties", response_model=Dict[str, Any])
+async def admin_list_player_bounties(
+    target_id: uuid.UUID,
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    db: Session = Depends(get_db),
+):
+    """List active player-placed + system bounties on a target (LEG-29 UI)."""
+    from src.services.bounty_service import BountyService
+
+    result = BountyService(db).get_bounties_on_player(target_id)
+    if not result.get("success"):
+        raise HTTPException(status_code=404, detail=result.get("message", "Player not found"))
+    return result
+
+
 @router.post("/players/{target_id}/bounties/{bounty_id}/force-cancel", response_model=Dict[str, Any])
 async def admin_force_cancel_bounty(
     target_id: uuid.UUID,
