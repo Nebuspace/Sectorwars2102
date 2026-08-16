@@ -3011,6 +3011,11 @@ class MovementService:
             # build_presence_entry's own doc-comment (intrasystem_movement_
             # service.py) for the naive->aware arrived_at convergence note.
             from src.services.intrasystem_movement_service import build_presence_entry
+            from src.services.medal_service import count_earned_medals, public_medal_identity
+
+            medal_fields = public_medal_identity(
+                player, medal_count=count_earned_medals(self.db, player.id)
+            )
             player_entry = build_presence_entry(
                 player_id=player.id,
                 username=player.username,
@@ -3018,6 +3023,8 @@ class MovementService:
                 ship_name=player.current_ship.name if player.current_ship else None,
                 ship_type=player.current_ship.type.name if player.current_ship else None,
                 team_id=player.team_id,
+                pinned_medal_id=medal_fields["pinned_medal_id"],
+                medal_count=medal_fields["medal_count"],
             )
 
             # Check if player is already in the list (shouldn't be, but safety check)
