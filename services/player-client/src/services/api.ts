@@ -1320,11 +1320,12 @@ export const shipUpgradeAPI = {
       body: JSON.stringify({ upgrade_type: upgradeType }),
     }),
 
-  // Equipment-slot install/uninstall (LEG-1226 / LEG-109). Still live for
-  // equipment_slots keys (mining_laser, …). Distinct from module-grid
-  // installModule/removeModule below — the deferred lattice `mining` family
-  // stays consumer_inert / Design-only; do not route Mining Laser through it.
-  // Quantum Field Harvester CTA stays on installModule (LEG-2484).
+  // Equipment-slot install/uninstall (LEG-1226 / LEG-109 / LEG-126). Still live for
+  // equipment_slots keys (mining_laser, planetary_lander, tractor_beam, ecm_suite,
+  // stealth_module, …). Distinct from module-grid installModule/removeModule below —
+  // the deferred lattice `mining` family stays consumer_inert / Design-only; do not
+  // route Mining Laser through it. Quantum Field Harvester CTA stays on installModule
+  // (LEG-2484).
   installEquipment: (shipId: string, equipmentKey: string) =>
     apiRequest(`/api/v1/ships/${shipId}/equipment/install`, {
       method: 'POST',
