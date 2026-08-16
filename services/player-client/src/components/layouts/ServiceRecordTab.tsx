@@ -2,6 +2,7 @@ import React from 'react';
 import RankDisplay from '../ranking/RankDisplay';
 import RankProgress from '../ranking/RankProgress';
 import MedalShowcase from '../ranking/MedalShowcase';
+import BountyBoard from '../ranking/BountyBoard';
 
 /**
  * ServiceRecordTab — the StatusBar dossier dropdown's "Service Record" tab
@@ -20,13 +21,16 @@ import MedalShowcase from '../ranking/MedalShowcase';
  * (RankDisplay/RankProgress/MedalShowcase — all zero-prop, self-fetching
  * React.FCs with their own loading/error cycles), deliberately dropping the
  * CockpitInstrument chrome and the Leaderboard, to fit the fixed-size
- * dropdown. Flagged in the WO-UI0-STATUSBAR(a) report for review.
+ * dropdown. LEG-156 adds the public Federation BountyBoard (available
+ * bounties) under the personal medals — browse surface, not fabricated
+ * portraits/kill logs.
  */
 const ServiceRecordTab: React.FC = () => (
   <div className="sb-service-record">
     <RankDisplay />
     <RankProgress />
     <MedalShowcase />
+    <BountyBoard />
   </div>
 );
 
