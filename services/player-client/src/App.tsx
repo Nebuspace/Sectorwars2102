@@ -16,6 +16,7 @@ import { ThemeProvider } from './themes/ThemeProvider'
 import LoginPage from './components/pages/LoginPage'
 import RegisterForm from './components/auth/RegisterForm'
 import OAuthCallback from './components/auth/OAuthCallback'
+import SubscriptionResult from './components/pages/SubscriptionResult'
 import LandingPage from './components/landing/LandingPage'
 import GameShellRoute from './components/layouts/GameShellRoute'
 import GameDashboard from './components/pages/GameDashboard'
@@ -270,6 +271,10 @@ function App() {
               <FirstLoginProvider>
                 <Routes>
               <Route path="/oauth-callback" element={<OAuthCallback />} />
+              {/* LEG-24 — PayPal return/cancel URLs from PayPalSubscription.tsx;
+                  must mount outside ProtectedRoute (AuthProvider still wraps). */}
+              <Route path="/subscription/success" element={<SubscriptionResult />} />
+              <Route path="/subscription/cancelled" element={<SubscriptionResult />} />
               {import.meta.env.DEV && DebugPage && (
                 <Route path="/debug" element={<Suspense fallback={<div>Loading…</div>}><DebugPage /></Suspense>} />
               )}
