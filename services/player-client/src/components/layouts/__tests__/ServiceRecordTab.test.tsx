@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * ServiceRecordTab — composes RankDisplay + RankProgress + MedalShowcase.
+ * ServiceRecordTab — RankDisplay + RankProgress + MedalShowcase + CombatHistoryPanel + BountyBoard.
  */
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -19,6 +19,9 @@ vi.mock('../../ranking/MedalShowcase', () => ({
 }));
 vi.mock('../../combat/CombatHistoryPanel', () => ({
   CombatHistoryPanel: () => <div data-testid="combat-history-panel" />,
+}));
+vi.mock('../../ranking/BountyBoard', () => ({
+  default: () => <div data-testid="bounty-board" />,
 }));
 
 import ServiceRecordTab from '../ServiceRecordTab';
@@ -40,7 +43,7 @@ describe('ServiceRecordTab', () => {
     container.remove();
   });
 
-  it('mounts personal-standing views + combat history inside the dossier shell', async () => {
+  it('mounts personal-standing views, combat history, and the public bounty board', async () => {
     await act(async () => {
       root.render(<ServiceRecordTab />);
     });
@@ -50,5 +53,6 @@ describe('ServiceRecordTab', () => {
     expect(container.querySelector('[data-testid="rank-progress"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="medal-showcase"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="combat-history-panel"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="bounty-board"]')).toBeTruthy();
   });
 });
