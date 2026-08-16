@@ -463,7 +463,25 @@ export const teamAPI = {
 
   // Permissions
   getPermissions: (teamId: string) =>
-    apiRequest(`/api/v1/teams/${teamId}/permissions`)
+    apiRequest(`/api/v1/teams/${teamId}/permissions`),
+
+  // Team wars — mirrors teams.py declare_war / list_wars / ceasefire
+  listWars: (teamId: string, status?: 'active' | 'ceased') => {
+    const q = status ? `?status=${status}` : '';
+    return apiRequest(`/api/v1/teams/${teamId}/wars${q}`);
+  },
+
+  declareWar: (teamId: string, targetTeamId: string, reason = '') =>
+    apiRequest(`/api/v1/teams/${teamId}/wars/declare`, {
+      method: 'POST',
+      body: JSON.stringify({ target_team_id: targetTeamId, reason }),
+    }),
+
+  ceasefire: (teamId: string, targetTeamId: string) =>
+    apiRequest(`/api/v1/teams/${teamId}/wars/ceasefire`, {
+      method: 'POST',
+      body: JSON.stringify({ target_team_id: targetTeamId }),
+    }),
 };
 
 // Fleet Management APIs
