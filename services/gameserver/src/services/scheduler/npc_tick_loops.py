@@ -12,18 +12,18 @@ Moved verbatim from the old ``npc_scheduler_service.py``.
 
 import logging
 import random
-from datetime import datetime, timedelta, UTC
+from datetime import UTC, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import text
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from src.core import game_time
 from src.models.npc_character import (
+    NPCActivity,
     NPCArchetype,
     NPCCharacter,
-    NPCActivity,
     NPCLifecycleStage,
     NPCRoster,
     NPCStatus,
@@ -39,27 +39,26 @@ from src.services.npc_spawn_service import (
     TRADER_STARTING_CREDITS,
     TRADER_TITLES,
     TRADER_TITLES_BY_TIER,
-    notoriety_tier,
-    roll_notoriety,
     _build_npc_ship,
     _presence_entry,
     _roman,
+    notoriety_tier,
+    roll_notoriety,
 )
-
 from src.services.scheduler._common import (
-    RECRUIT_STAGE_HOURS,
-    SENIOR_TENURE_HOURS,
-    SENIOR_COMBAT_BONUS,
-    SENIOR_SCANNER_BONUS,
+    _LIVE_STATUSES,
+    _SCHEDULABLE_STATUSES,
     DECORATED_COMBAT_PER_MEDAL,
     DECORATED_SCANNER_PER_MEDAL,
     GENOCIDE_KILL_THRESHOLD,
-    GENOCIDE_WINDOW_MINUTES,
     GENOCIDE_RESPONSE_MINUTES,
-    _LIVE_STATUSES,
-    _SCHEDULABLE_STATUSES,
-    canonical_minute_of_day,
+    GENOCIDE_WINDOW_MINUTES,
+    RECRUIT_STAGE_HOURS,
+    SENIOR_COMBAT_BONUS,
+    SENIOR_SCANNER_BONUS,
+    SENIOR_TENURE_HOURS,
     canonical_day_number,
+    canonical_minute_of_day,
     canonical_weekday,
     resolve_schedule_block,
 )
@@ -708,6 +707,35 @@ def _fill_roster_deficit(
     if occupied >= roster.target_count:
         return []
 
+    from src.services.npc_scheduler_config import resolve_npc_scheduler_tuning
+
+    tuning = resolve_npc_scheduler_tuning(
+        roster_config=roster.config,
+        role=roster.role,
+    )
+    if tuning.kia_cooldown_seconds > 0:
+        last_kia = (
+            db.query(func.max(NPCCharacter.destroyed_at))
+            .filter(
+                NPCCharacter.bang_roster_ref == roster.bang_roster_ref,
+                NPCCharacter.status == NPCStatus.KIA,
+                NPCCharacter.destroyed_at.isnot(None),
+            )
+            .scalar()
+        )
+        if last_kia is not None:
+            now_gate = datetime.now(UTC)
+            elapsed = (now_gate - last_kia).total_seconds()
+            if elapsed < tuning.kia_cooldown_seconds:
+                logger.info(
+                    "Loop B: roster %s KIA cooldown active "
+                    "(elapsed=%.0fs < %ds) — refill deferred",
+                    roster.id,
+                    elapsed,
+                    tuning.kia_cooldown_seconds,
+                )
+                return []
+
     spec = (
         db.query(ShipSpecification)
         .filter(ShipSpecification.type == cfg.ship_type)
@@ -768,8 +796,7 @@ def _fill_roster_deficit(
     colonist_pool: List[List[Dict[str, Any]]] = []
     science_pool: List[List[Dict[str, Any]]] = []
     if is_trader:
-        from src.services import npc_trading_service
-        from src.services import npc_mission_service
+        from src.services import npc_mission_service, npc_trading_service
 
         for _ in range(min(spawn_count, 8)):
             generated = npc_trading_service.generate_trade_route(
@@ -1004,15 +1031,80 @@ def run_loop_c(db: Session) -> List[Dict[str, Any]]:
     """Canon off-duty rotation — lodging occupancy sleep/wake + presence reconcile.
 
     WO-BUILD-NPC-LODGING-FOUNDATION wires sleep/wake into NPCBarracks /
-    OutlawBase + Sector.defenses.docked_npc_ships. Full ~20% rotation
-    selection remains a follow-on; this pass keeps occupancy consistent
-    with current_activity.
+    OutlawBase + Sector.defenses.docked_npc_ships. LEG-78 consumes
+    ``off_duty_rotation_target_pct`` per roster so ON_DUTY/OFF_DUTY counts
+    move toward the resolved target (default 0.20).
     """
     from src.services.npc_lodging_service import sync_loop_c_occupancy
 
+    rotation = _apply_off_duty_rotation_targets(db)
     stats = sync_loop_c_occupancy(db)
     reconcile_presence(db)
-    return [{"loop": "C", "lodging": stats}]
+    return [{"loop": "C", "lodging": stats, "off_duty_rotation": rotation}]
+
+
+def _apply_off_duty_rotation_targets(db: Session) -> Dict[str, Any]:
+    """Move ON_DUTY ↔ OFF_DUTY toward each roster's resolved target pct.
+
+    Only touches ON_DUTY / OFF_DUTY rows for a roster (engaged / KIA /
+    etc. stay put). Deterministic order by id for stable tests.
+
+    When the target comes from the hard default (no env/roster override),
+    selection is skipped so shipped Loop C behavior (lodging sync only)
+    is preserved — operators opt in by setting the env var or
+    ``NPCRoster.config``.
+    """
+    from src.services.npc_scheduler_config import resolve_npc_scheduler_tuning
+
+    rotated_off = 0
+    rotated_on = 0
+    applied_rosters = 0
+    skipped_default = 0
+    rosters = db.query(NPCRoster).order_by(NPCRoster.id).all()
+    now = datetime.now(UTC)
+    for roster in rosters:
+        tuning = resolve_npc_scheduler_tuning(
+            roster_config=roster.config,
+            role=roster.role,
+        )
+        target_pct = tuning.off_duty_rotation_target_pct
+        if tuning.sources.get("off_duty_rotation_target_pct") == "default":
+            skipped_default += 1
+            continue
+        applied_rosters += 1
+        live = (
+            db.query(NPCCharacter)
+            .filter(
+                NPCCharacter.bang_roster_ref == roster.bang_roster_ref,
+                NPCCharacter.status.in_((NPCStatus.ON_DUTY, NPCStatus.OFF_DUTY)),
+            )
+            .order_by(NPCCharacter.id)
+            .all()
+        )
+        if not live:
+            continue
+        target_off = int(round(len(live) * target_pct))
+        target_off = max(0, min(len(live), target_off))
+        off_now = [n for n in live if n.status == NPCStatus.OFF_DUTY]
+        on_now = [n for n in live if n.status == NPCStatus.ON_DUTY]
+        while len(off_now) < target_off and on_now:
+            npc = on_now.pop(0)
+            npc.status = NPCStatus.OFF_DUTY
+            npc.last_seen_at = now
+            off_now.append(npc)
+            rotated_off += 1
+        while len(off_now) > target_off and off_now:
+            npc = off_now.pop()
+            npc.status = NPCStatus.ON_DUTY
+            npc.last_seen_at = now
+            rotated_on += 1
+    return {
+        "rotated_off": rotated_off,
+        "rotated_on": rotated_on,
+        "rosters": len(rosters),
+        "applied_rosters": applied_rosters,
+        "skipped_default": skipped_default,
+    }
 
 def reconcile_presence(db: Session) -> int:
     """Periodic insurance against players_present drift (lost JSONB
