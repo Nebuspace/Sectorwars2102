@@ -186,7 +186,9 @@ _PINNED_MEDAL_ID_KEY = "pinned_medal_id"
 
 
 def _medal_privacy_block(player: Player) -> Dict[str, Any]:
-    settings = player.settings if isinstance(player.settings, dict) else {}
+    # getattr: movement unit fakes / presence _Row stand-ins may omit settings.
+    settings = getattr(player, "settings", None)
+    settings = settings if isinstance(settings, dict) else {}
     privacy = settings.get(_MEDAL_PRIVACY_SETTINGS_KEY)
     return dict(privacy) if isinstance(privacy, dict) else {}
 
