@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /**
- * FleetManagerPanel — LEG-INI-01
- * Pins roster load, create, and member composition fetch paths.
+ * FleetManagerPanel — LEG-INI-01 + LEG-61
+ * Pins roster load, create, member composition, and move-as-one call paths.
  */
 import React, { act } from 'react';
 import { createRoot, Root } from 'react-dom/client';
@@ -9,7 +9,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const { getFleets, createFleet, getFleetMembers, addShipToFleet } = vi.hoisted(() => ({
+const {
+  getFleets,
+  createFleet,
+  getFleetMembers,
+  addShipToFleet,
+  move,
+} = vi.hoisted(() => ({
   getFleets: vi.fn(),
   createFleet: vi.fn(),
   getFleetMembers: vi.fn(),
@@ -18,6 +24,7 @@ const { getFleets, createFleet, getFleetMembers, addShipToFleet } = vi.hoisted((
   updateFormation: vi.fn(),
   disbandFleet: vi.fn(),
   resupplyFleet: vi.fn(),
+  move: vi.fn(),
 }));
 
 vi.mock('../../../services/api', () => ({
@@ -31,8 +38,11 @@ vi.mock('../../../services/api', () => ({
     updateFormation: vi.fn(),
     disbandFleet: vi.fn(),
     resupplyFleet: vi.fn(),
+    move: (...a: unknown[]) => move(...a),
   },
 }));
+
+const CURRENT_SECTOR_UUID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 
 vi.mock('../../../contexts/GameContext', () => ({
   useGame: () => ({
@@ -40,6 +50,13 @@ vi.mock('../../../contexts/GameContext', () => ({
       { id: 'ship-1', name: 'Arrow', type: 'SCOUT' },
       { id: 'ship-2', name: 'Hammer', type: 'DESTROYER' },
     ],
+    currentSector: {
+      id: CURRENT_SECTOR_UUID,
+      sector_id: 42,
+      sector_number: 42,
+      name: 'Home Dock',
+    },
+    availableMoves: { warps: [], tunnels: [] },
   }),
 }));
 
@@ -68,6 +85,7 @@ const sampleFleet = {
   morale: 100,
   supply_level: 100,
   commander_name: null,
+  sector_id: null,
   sector_name: null,
   member_count: 0,
 };
@@ -81,6 +99,7 @@ describe('FleetManagerPanel', () => {
     createFleet.mockReset().mockResolvedValue(sampleFleet);
     getFleetMembers.mockReset().mockResolvedValue([]);
     addShipToFleet.mockReset().mockResolvedValue({});
+    move.mockReset().mockResolvedValue({ message: 'Fleet moved' });
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -164,5 +183,84 @@ describe('FleetManagerPanel', () => {
 
     expect(createFleet).toHaveBeenCalledWith('Alpha Wing', 'standard');
     expect(getFleets.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('moves selected fleet via fleetAPI.move to current sector UUID', async () => {
+    getFleets.mockResolvedValue([sampleFleet]);
+    getFleetMembers.mockResolvedValue([]);
+
+    await act(async () => {
+      root.render(<FleetManagerPanel />);
+    });
+
+    await act(async () => {
+      (container.querySelector(
+        '[data-testid="fleet-select-fleet-1"]'
+      ) as HTMLButtonElement).click();
+    });
+
+    expect(container.querySelector('[data-testid="fleet-move-unavailable"]')).toBeNull();
+    expect(container.querySelector('[data-testid="fleet-move-controls"]')).toBeTruthy();
+
+    const submit = container.querySelector(
+      '[data-testid="fleet-move-submit"]'
+    ) as HTMLButtonElement;
+    expect(submit.disabled).toBe(false);
+
+    await act(async () => {
+      submit.click();
+    });
+
+    expect(move).toHaveBeenCalledWith('fleet-1', CURRENT_SECTOR_UUID);
+  });
+
+  it('disables move while fleet is in_battle and surfaces the reason', async () => {
+    getFleets.mockResolvedValue([{ ...sampleFleet, status: 'in_battle' }]);
+    getFleetMembers.mockResolvedValue([]);
+
+    await act(async () => {
+      root.render(<FleetManagerPanel />);
+    });
+
+    await act(async () => {
+      (container.querySelector(
+        '[data-testid="fleet-select-fleet-1"]'
+      ) as HTMLButtonElement).click();
+    });
+
+    const submit = container.querySelector(
+      '[data-testid="fleet-move-submit"]'
+    ) as HTMLButtonElement;
+    expect(submit.disabled).toBe(true);
+    expect(submit.textContent).toMatch(/In battle/i);
+    expect(
+      container.querySelector('[data-testid="fleet-move-in-battle"]')?.textContent
+    ).toMatch(/Cannot move a fleet during battle/i);
+  });
+
+  it('surfaces move API errors in the panel alert', async () => {
+    getFleets.mockResolvedValue([sampleFleet]);
+    getFleetMembers.mockResolvedValue([]);
+    move.mockRejectedValue(new Error('Cannot move fleet during battle'));
+
+    await act(async () => {
+      root.render(<FleetManagerPanel />);
+    });
+
+    await act(async () => {
+      (container.querySelector(
+        '[data-testid="fleet-select-fleet-1"]'
+      ) as HTMLButtonElement).click();
+    });
+
+    await act(async () => {
+      (container.querySelector(
+        '[data-testid="fleet-move-submit"]'
+      ) as HTMLButtonElement).click();
+    });
+
+    expect(
+      container.querySelector('[data-testid="fleet-manager-error"]')?.textContent
+    ).toMatch(/Cannot move fleet during battle/);
   });
 });
