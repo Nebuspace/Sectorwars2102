@@ -12,8 +12,10 @@ import type {
 import CockpitInstrument from '../cockpit/CockpitInstrument';
 import EmptyState from '../common/EmptyState';
 import LoadingState from '../common/LoadingState';
+import PlayerNamePlate from '../common/PlayerNamePlate';
 import { ResourceSharing } from './ResourceSharing';
 import { TeamChat } from './TeamChat';
+import { medalsAPI } from '../../services/api';
 import './team-manager.css';
 
 /**
@@ -175,6 +177,39 @@ export const TeamManager: React.FC = () => {
   // Two-step inline confirmations (no native dialogs)
   const [confirmingLeave, setConfirmingLeave] = useState(false);
   const [confirmingKickId, setConfirmingKickId] = useState<string | null>(null);
+
+  // LEG-33 — self pin display only (teams API has no per-member medal fields;
+  // no player settings write endpoint for pinned_medal_id yet).
+  const [selfMedalCount, setSelfMedalCount] = useState<number | null>(null);
+  const [selfPinnedIcon, setSelfPinnedIcon] = useState<string | null>(null);
+  const [selfPinnedId, setSelfPinnedId] = useState<string | null>(null);
+  const [selfPinnedName, setSelfPinnedName] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = (await medalsAPI.getMe()) as {
+          earned?: Array<{ key: string; name: string; icon?: string }>;
+        };
+        if (cancelled) return;
+        const earned = data.earned ?? [];
+        setSelfMedalCount(earned.length);
+        // Provisional public face: first earned until pin settings API lands
+        const first = earned[0];
+        if (first) {
+          setSelfPinnedId(first.key);
+          setSelfPinnedName(first.name);
+          setSelfPinnedIcon(first.icon || '🏅');
+        }
+      } catch {
+        /* roster still renders without medals */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const loadTeamData = useCallback(async (id: string | null) => {
     if (!id) {
@@ -601,7 +636,22 @@ export const TeamManager: React.FC = () => {
                   <div className="member-info">
                     <div className="member-name">
                       <span className={`role-badge ${member.role}`}>{member.role}</span>
-                      {member.playerName}
+                      <PlayerNamePlate
+                        name={member.playerName}
+                        size="sm"
+                        pinnedMedalId={
+                          member.playerId === playerState.id ? selfPinnedId : null
+                        }
+                        pinnedMedalIcon={
+                          member.playerId === playerState.id ? selfPinnedIcon : null
+                        }
+                        pinnedMedalName={
+                          member.playerId === playerState.id ? selfPinnedName : null
+                        }
+                        medalCount={
+                          member.playerId === playerState.id ? selfMedalCount : null
+                        }
+                      />
                     </div>
                     <div className="member-details">
                       <span>📍 {member.location.sectorName}</span>
