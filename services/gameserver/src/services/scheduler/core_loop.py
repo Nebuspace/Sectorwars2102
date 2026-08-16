@@ -34,6 +34,7 @@ from src.services.scheduler._common import (
     ECONOMY_SNAPSHOT_CHECK_SECONDS,
     IDLE_INCOME_CHECK_SECONDS,
     DAILY_STIPEND_CHECK_SECONDS,
+    SFI_DECAY_CHECK_SECONDS,
     BOUNTY_ACCRUAL_CHECK_SECONDS,
     STOLEN_SHIP_REP_PENALTY_CHECK_SECONDS,
     TRANSFER_CLAIM_AUTOCOMPLETE_CHECK_SECONDS,
@@ -95,6 +96,9 @@ from src.services.scheduler.economy_sweeps import (
     _run_price_recompute_flush_sync,
     _run_price_alert_sweep_sync,
     _run_price_history_sweep_sync,
+)
+from src.services.scheduler.faction_influence_sweeps import (
+    _run_sector_faction_influence_decay_sync,
 )
 from src.services.scheduler.reputation_team_sweeps import (
     _run_weekly_decay_sync,
@@ -573,6 +577,24 @@ async def _npc_scheduler_main_loop() -> None:
                 raise
             except Exception:
                 logger.exception("NPC scheduler: daily rep-stipend faucet crashed (loop continues)")
+
+        # SectorFactionInfluence idle decay (LEG-INI-05 / LEG-65) — −0.5 pp per
+        # idle UTC day after 3d idle. Own session, own advisory lock, once-per-
+        # UTC-day Galaxy.state anchor.
+        if elapsed % SFI_DECAY_CHECK_SECONDS == 0:
+            try:
+                decayed = await asyncio.to_thread(
+                    _run_sector_faction_influence_decay_sync
+                )
+                if decayed.get("rows"):
+                    logger.info(
+                        "NPC scheduler: SFI idle decay — updated %d/%d row(s)",
+                        decayed.get("rows", 0), decayed.get("scanned", 0),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("NPC scheduler: SFI idle decay crashed (loop continues)")
 
         # System-bounty pot accrual (WO-BN) — grow each criminal's STORED system-
         # bounty pot once per canonical day (base rate scaled by negative-rep

@@ -347,6 +347,13 @@ _PASSIVE_INCOME_ANCHOR_KEY = "_passive_income_last_utc_date"
 DAILY_STIPEND_CHECK_SECONDS = int(
     os.environ.get("DAILY_STIPEND_CHECK_SECONDS", str(35 * 60))
 )
+# SectorFactionInfluence daily idle decay (LEG-INI-05 / LEG-65). Coarse
+# pre-filter so we don't take the advisory lock every 60s; once-per-UTC-day
+# guarantee comes from Galaxy.state[_SFI_DECAY_STATE_KEY]. Offset to 42m.
+SFI_DECAY_CHECK_SECONDS = int(
+    os.environ.get("SFI_DECAY_CHECK_SECONDS", str(42 * 60))
+)
+_SFI_DECAY_STATE_KEY = "sfi_decay_last_utc_date"
 
 # System-bounty pot accrual pre-filter (WO-BN). The SYSTEM bounty is now a STORED
 # pot per criminal (Player.settings JSONB) that GROWS over time and RESETS to 0
@@ -786,6 +793,7 @@ _CONSTRUCTION_ADVANCE_LOCK_KEY = _mnemonic_lock_key("CNAD")
 _ECONOMIC_METRICS_LOCK_KEY = _mnemonic_lock_key("ECMT")
 _IDLE_INCOME_LOCK_KEY = _mnemonic_lock_key("IDLI")
 _DAILY_STIPEND_LOCK_KEY = _mnemonic_lock_key("STIP")
+_SFI_DECAY_LOCK_KEY = _mnemonic_lock_key("SFID")
 _BOUNTY_ACCRUAL_LOCK_KEY = _mnemonic_lock_key("BNTY")
 _STOLEN_SHIP_REP_PENALTY_LOCK_KEY = _mnemonic_lock_key("STLN")
 # Contested registration-transfer 24h auto-complete sweep (ship-registry.md

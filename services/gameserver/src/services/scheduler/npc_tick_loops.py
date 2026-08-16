@@ -740,6 +740,41 @@ def _fill_roster_deficit(
         spawn_count = deficit
     else:
         spawn_count = min(deficit, 2 if rapid_recovery else 1)
+
+    # LEG-INI-05: patrol archetypes (LAW_ENFORCEMENT / FACTION_PATROL /
+    # STATION_SECURITY, and police KIND_CONFIG) scale fill cadence off the
+    # sector's stored patrol_spawn_weight (0..2). No influence rows → leave
+    # spawn_count unchanged (reproduce-exactly). Weight 0 skips; <1 is a
+    # probability gate; >=2 raises the per-pass cap to 2 when not fill_all.
+    if (
+        cfg.is_police
+        or roster.default_archetype
+        in (
+            NPCArchetype.LAW_ENFORCEMENT,
+            NPCArchetype.FACTION_PATROL,
+            NPCArchetype.STATION_SECURITY,
+        )
+    ):
+        from src.services.faction_service import max_patrol_spawn_weight_for_sector
+
+        weight = max_patrol_spawn_weight_for_sector(db, sector.id)
+        if weight is not None:
+            if weight <= 0.0:
+                logger.debug(
+                    "Loop B: patrol roster %s skipped — patrol_spawn_weight=0 "
+                    "in sector %s",
+                    roster.id, sector.sector_id,
+                )
+                return []
+            if weight < 1.0 and random.random() > weight:
+                logger.debug(
+                    "Loop B: patrol roster %s deferred — weight=%.3f roll miss",
+                    roster.id, weight,
+                )
+                return []
+            if not fill_all and weight >= 2.0:
+                spawn_count = min(deficit, max(spawn_count, 2))
+
     stage_hours = RECRUIT_STAGE_HOURS / 2 if rapid_recovery else RECRUIT_STAGE_HOURS
 
     has_primary = (
