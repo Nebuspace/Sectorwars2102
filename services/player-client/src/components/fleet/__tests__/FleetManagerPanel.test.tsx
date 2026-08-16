@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 /**
- * FleetManagerPanel — LEG-INI-01 + LEG-61 + LEG-133
- * Pins roster load, create, member composition, and move-as-one (adjacent hop).
+ * FleetManagerPanel — LEG-INI-01 + LEG-61 + LEG-133 + LEG-141
+ * Pins roster load, create, member composition, move-as-one (adjacent hop),
+ * and availableMoves refresh on panel mount.
  */
 import React, { act } from 'react';
 import { createRoot, Root } from 'react-dom/client';
@@ -70,6 +71,7 @@ const mockGame = vi.hoisted(() => {
       warps: [] as Array<Record<string, unknown>>,
       tunnels: [] as Array<Record<string, unknown>>,
     },
+    getAvailableMoves: vi.fn().mockResolvedValue(undefined),
   };
 });
 
@@ -78,6 +80,7 @@ vi.mock('../../../contexts/GameContext', () => ({
     ships: mockGame.ships,
     currentSector: mockGame.currentSector,
     availableMoves: mockGame.availableMoves,
+    getAvailableMoves: (...a: unknown[]) => mockGame.getAvailableMoves(...a),
   }),
 }));
 
@@ -147,6 +150,7 @@ describe('FleetManagerPanel', () => {
       name: 'Home Dock',
     };
     mockGame.availableMoves = { warps: [], tunnels: [] };
+    mockGame.getAvailableMoves.mockReset().mockResolvedValue(undefined);
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -157,6 +161,14 @@ describe('FleetManagerPanel', () => {
       root.unmount();
     });
     container.remove();
+  });
+
+  it('refreshes availableMoves on mount when cache is empty (LEG-141)', async () => {
+    mockGame.availableMoves = { warps: [], tunnels: [] };
+    await act(async () => {
+      root.render(<FleetManagerPanel />);
+    });
+    expect(mockGame.getAvailableMoves).toHaveBeenCalled();
   });
 
   it('shows empty roster when player has no fleets', async () => {
