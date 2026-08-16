@@ -39,5 +39,20 @@ test.describe('Admin UI route smoke (WO-ADM-ROUTE-SMOKE-E2E)', () => {
         await expect(page.locator('h1.page-title')).toHaveText(title);
       });
     }
+
+    test('/review-queue aliases to Admin Action Log review tab (LEG-77)', async ({ page }) => {
+      await page.goto('/review-queue', { waitUntil: 'domcontentloaded' });
+      await expect(page).toHaveURL((url) => {
+        return (
+          url.pathname === '/audit' &&
+          url.searchParams.get('tab') === 'review'
+        );
+      });
+      await expect(page.locator('h1.page-title')).toHaveText('Admin Action Log');
+      await expect(page.getByRole('tab', { name: 'Review queue' })).toHaveAttribute(
+        'aria-selected',
+        'true'
+      );
+    });
   });
 });

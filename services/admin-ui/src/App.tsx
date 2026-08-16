@@ -130,6 +130,15 @@ function App() {
                 <Route path="multi-account" element={<ProtectedLazyRoute element={<MultiAccountReview />} />} />
                 <Route path="scopes" element={<ProtectedLazyRoute element={<ScopesManager />} />} />
                 <Route path="audit" element={<ProtectedLazyRoute element={<AdminActionLogPage />} />} />
+                {/* LEG-77: canonical review-queue alias → shared AdminActionLog review tab (no duplicate page) */}
+                <Route
+                  path="review-queue"
+                  element={
+                    <ProtectedLazyRoute
+                      element={<Navigate to="/audit?tab=review" replace />}
+                    />
+                  }
+                />
                 <Route path="translations" element={<ProtectedLazyRoute element={<TranslationManagement />} />} />
 
                 {/* Redirect root to dashboard */}
