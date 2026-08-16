@@ -147,6 +147,7 @@ describe('GatewrightPanel ACTIVE management', () => {
 
     expect(container.querySelector('[data-testid="gw-active-manage"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="gw-active-toll-stats-absent"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="gw-active-toll-stats"]')).toBeNull();
 
     const save = container.querySelector(
       '[data-testid="gw-active-save-perms"]',
@@ -162,6 +163,34 @@ describe('GatewrightPanel ACTIVE management', () => {
       'gate-1',
       expect.objectContaining({ mode: 'PUBLIC', toll: 100 }),
     );
+  });
+
+  it('renders toll_stats when listMine includes them (LEG-100)', async () => {
+    mockListMine.mockResolvedValue({
+      projects: [
+        {
+          ...ACTIVE_PROJECT,
+          toll_stats: {
+            usage_count: 3,
+            total_revenue: 750,
+            last_used: '2026-08-16T12:00:00Z',
+          },
+        },
+      ],
+    });
+
+    await act(async () => {
+      root.render(<GatewrightPanel />);
+      await flush();
+      await flush();
+    });
+
+    const stats = container.querySelector('[data-testid="gw-active-toll-stats"]');
+    expect(stats).toBeTruthy();
+    expect(stats?.textContent).toContain('Usage: 3');
+    expect(stats?.textContent).toContain('Revenue: 750 cr');
+    expect(stats?.textContent).toContain('Last used: 2026-08-16T12:00:00Z');
+    expect(container.querySelector('[data-testid="gw-active-toll-stats-absent"]')).toBeNull();
   });
 
   it('transfers via transfer', async () => {

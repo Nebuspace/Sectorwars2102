@@ -54,12 +54,16 @@ interface GateProject {
   // actionable (Phase-3 once it exists, else Phase 1) — null once nothing
   // is left to stage (HARMONIZING/ACTIVE/EXPIRED/CANCELLED).
   construction_site?: ConstructionSiteEntry | null;
-  // Optional — listMine today does not return these; sector scan / permissions
-  // response may seed them for the ACTIVE management form.
+  // Optional — sector scan / permissions may seed access_mode/toll/whitelist;
+  // listMine (LEG-94) returns toll_stats on ACTIVE projects when present.
   access_mode?: string | null;
   toll?: number | null;
   whitelist?: string[] | null;
-  toll_stats?: { usage_count?: number; total_revenue?: number } | null;
+  toll_stats?: {
+    usage_count?: number;
+    total_revenue?: number;
+    last_used?: string | null;
+  } | null;
 }
 
 interface SectorGateEntry {
@@ -1140,10 +1144,14 @@ const GatewrightPanel: React.FC<GatewrightPanelProps> = ({ onClose }) => {
                     <div className="gw-active-stats" data-testid="gw-active-toll-stats">
                       <span>Usage: {fmtNumber(tollStats!.usage_count ?? 0)}</span>
                       <span>Revenue: {fmtNumber(tollStats!.total_revenue ?? 0)} cr</span>
+                      {typeof tollStats!.last_used === 'string' &&
+                        tollStats!.last_used.length > 0 && (
+                          <span>Last used: {tollStats!.last_used}</span>
+                        )}
                     </div>
                   ) : (
                     <p className="gw-project-hint" data-testid="gw-active-toll-stats-absent">
-                      Toll usage/revenue is not in the /mine payload yet
+                      Toll usage/revenue not on this /mine project
                       {sectorMatch ? ` · sector scan toll ${fmtNumber(sectorMatch.toll ?? 0)} cr` : ''}.
                     </p>
                   )}
