@@ -300,6 +300,83 @@ class TestApplyFactionRepDelta:
         assert result.combat_response == "friendly"
         assert result.port_access_level == 3
 
+    def test_faction_name_scopes_to_named_row(self):
+        """LEG-97: optional faction_name must credit that roster row's id."""
+        fc = _faction(
+            id=uuid4(),
+            name="Frontier Coalition",
+            faction_type=FactionType.INDEPENDENTS,
+        )
+        db = _FakeDb(results={Faction: [fc], Reputation: [None]})
+        result = apply_faction_rep_delta(
+            db,
+            uuid4(),
+            FactionType.INDEPENDENTS,
+            5,
+            "mining_harvest_frontier_unclaimed",
+            faction_name="Frontier Coalition",
+        )
+        assert result is not None
+        assert result.faction_id == fc.id
+        assert result.current_value == 5
+
+    def test_faction_name_miss_returns_none_without_fallback(self):
+        """Named miss must not silently apply to another Independents row.
+
+        FakeDb ignores SQL predicates, so a miss is simulated by queuing
+        None for the Faction lookup — the production path adds
+        ``Faction.name == faction_name`` before ``.first()``.
+        """
+        db = _FakeDb(results={Faction: [None]})
+        result = apply_faction_rep_delta(
+            db,
+            uuid4(),
+            FactionType.INDEPENDENTS,
+            5,
+            "mining_harvest_frontier_unclaimed",
+            faction_name="Frontier Coalition",
+        )
+        assert result is None
+        assert db.added == []
+        assert db.flush_calls == 0
+
+    def test_faction_name_filter_is_applied_in_query_chain(self):
+        """Prove the name predicate is attached (FakeDb cannot eval SQL)."""
+        recorded = []
+        fc = _faction(
+            id=uuid4(),
+            name="Frontier Coalition",
+            faction_type=FactionType.INDEPENDENTS,
+        )
+
+        class _RecordingQuery(_FakeQuery):
+            def filter(self, *args, **kwargs):
+                recorded.extend(args)
+                return self
+
+        class _RecordingDb(_FakeDb):
+            def query(self, model):
+                queue = self._queues.get(model, [])
+                value = queue.pop(0) if queue else None
+                return _RecordingQuery(value)
+
+        db = _RecordingDb(results={Faction: [fc], Reputation: [None]})
+        apply_faction_rep_delta(
+            db,
+            uuid4(),
+            FactionType.INDEPENDENTS,
+            5,
+            "test",
+            faction_name="Frontier Coalition",
+        )
+        assert len(recorded) >= 2
+        # Second filter clause is the name equality (ColumnElement).
+        name_clause = recorded[1]
+        assert getattr(name_clause.left, "key", None) == "name" or "name" in str(
+            name_clause
+        )
+        assert "Frontier Coalition" in str(name_clause.right.value if hasattr(name_clause, "right") else name_clause)
+
 
 # ---------------------------------------------------------------------------
 # adjust_sector_influence

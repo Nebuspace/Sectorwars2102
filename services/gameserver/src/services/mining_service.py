@@ -35,6 +35,7 @@ from src.models.sector import Sector, SectorType
 from src.models.faction import FactionType
 from src.models.claim_license import ClaimLicense
 from src.models.mining_harvest import MiningHarvest, MiningHarvestStatus
+from src.models.zone import Zone, ZoneType
 from src.services.faction_service import apply_faction_rep_delta
 from src.services.turn_service import regenerate_turns, spend_turns
 
@@ -102,15 +103,16 @@ PRECIOUS_METALS_YIELD = (1, 3)  # § Output: "Yield 1–3 units per drop."
 QUANTUM_SHARDS_RATE = 0.01
 QUANTUM_SHARDS_MIN_LASER_LEVEL = 2
 
-# § Faction reputation hooks (canon table). AM deltas only — the Frontier
-# Coalition +5 hook (canon line "Mine in Frontier-zone unclaimed asteroid") is
-# NOT buildable in the kernel: there is no FactionType.FRONTIER / Frontier
-# Coalition faction row to apply it to (only FEDERATION/MINING/etc. exist). It is
-# deferred to the faction-roster expansion and flagged in the WO report.
+# § Faction reputation hooks (canon table). AM deltas below; Frontier Coalition
+# +5 on FRONTIER-zone unclaimed harvests is live (seeded as Independents under
+# name "Frontier Coalition" — resolve by name so a sibling Independents row
+# cannot be credited).
 AM_REP_BASE = 1            # "+1 / harvest" base tick (all asteroid sectors)
 AM_REP_LICENSED_BONUS = 1  # "+1 / harvest" licensed bonus (stacks → +2 total)
 AM_REP_UNLICENSED = -10    # "−10 / extraction" unlicensed penalty in AM space
 AM_REP_LICENSE_PURCHASE = 15  # "+15 / purchase" single-shot on license buy
+FC_REP_UNCLAIMED_FRONTIER = 5  # "+5 / harvest" Frontier-zone unclaimed only
+FC_FACTION_NAME = "Frontier Coalition"
 
 # § asteroid_richness derivation — resource_regeneration → tier mapping (canon
 # "asteroid_richness derivation" table). Used by the lazy backfill when a sector
@@ -381,6 +383,26 @@ class MiningService:
         """True when the sector is controlled by the Astral Mining Consortium
         (canon: ``Sector.controlling_faction == "astral_mining_consortium"``)."""
         return sector.controlling_faction == AM_FACTION_CODE
+
+    @staticmethod
+    def frontier_coalition_rep_for_harvest(
+        *, am_claimed: bool, is_frontier: bool
+    ) -> int:
+        """Canon FC +5 only on FRONTIER-zone **unclaimed** asteroid harvests."""
+        if am_claimed or not is_frontier:
+            return 0
+        return FC_REP_UNCLAIMED_FRONTIER
+
+    def _sector_is_frontier(self, sector: Sector) -> bool:
+        """True when the sector's zone is ``ZoneType.FRONTIER`` (null zone → False)."""
+        zone = sector.zone
+        if zone is None and sector.zone_id is not None:
+            zone = (
+                self.db.query(Zone)
+                .filter(Zone.id == sector.zone_id)
+                .first()
+            )
+        return zone is not None and zone.zone_type == ZoneType.FRONTIER
 
     # ------------------------------------------------------------------
     # Harvest — start (async) / resolve / interrupt
@@ -697,6 +719,20 @@ class MiningService:
                 FactionType.MINING,
                 am_rep_delta,
                 reason="mining_harvest",
+            )
+
+        fc_rep_delta = self.frontier_coalition_rep_for_harvest(
+            am_claimed=bool(row.am_claimed),
+            is_frontier=self._sector_is_frontier(sector),
+        )
+        if fc_rep_delta != 0:
+            apply_faction_rep_delta(
+                self.db,
+                row.player_id,
+                FactionType.INDEPENDENTS,
+                fc_rep_delta,
+                reason="mining_harvest_frontier_unclaimed",
+                faction_name=FC_FACTION_NAME,
             )
 
         now = datetime.now(timezone.utc)
