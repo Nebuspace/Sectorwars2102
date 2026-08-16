@@ -1,11 +1,13 @@
-/* FleetManagerPanel — dossier instrument styles (LEG-INI-01) */
+/* FleetManagerPanel — dossier instrument styles (LEG-INI-01)
+ * Uses literal colors (not undefined --cockpit-fg/--cockpit-muted) so
+ * check:tokens stays green — those tokens are not defined at :root. */
 
 .fleet-manager {
   display: flex;
   flex-direction: column;
   gap: 0.85rem;
   padding: 0.5rem 0.25rem 0.75rem;
-  color: var(--cockpit-fg, #e8f0ff);
+  color: #e8f0ff;
   font-size: 0.85rem;
 }
 
@@ -14,7 +16,7 @@
   font-size: 0.75rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--cockpit-muted, #9eb0c8);
+  color: #9eb0c8;
 }
 
 .fleet-manager-subheading {
@@ -22,7 +24,7 @@
   font-size: 0.7rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--cockpit-muted, #9eb0c8);
+  color: #9eb0c8;
 }
 
 .fleet-manager-muted {
@@ -52,7 +54,7 @@
   font-size: 0.7rem;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--cockpit-muted, #9eb0c8);
+  color: #9eb0c8;
 }
 
 .fleet-manager-label input,
