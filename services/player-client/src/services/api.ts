@@ -562,7 +562,11 @@ export const fleetAPI = {
   getBattles: (activeOnly?: boolean) => {
     const params = activeOnly ? '?active_only=true' : '';
     return apiRequest(`/api/v1/fleets/battles${params}`);
-  }
+  },
+
+  /** LEG-308 — detailed battle status (poll while in_battle). */
+  getBattle: (battleId: string) =>
+    apiRequest(`/api/v1/fleets/battles/${battleId}`),
 };
 
 // Faction APIs
