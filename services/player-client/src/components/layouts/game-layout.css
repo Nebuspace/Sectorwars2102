@@ -30,6 +30,14 @@
   flex: 1;
 }
 
+/* LEG-375: Teleprinter + docked market panel share grid row 3. */
+.game-container > .aria-chrome-stack {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+
 /* EM-ROOT SCALE-LAW RETARGET (WO-UI0-VERTICAL-COMPOSITION) — cockpit-
    shell.css's own em-root rule (`.stage, .game-container { font-size:
    calc(clamp(10px,1.05vw,15px) * var(--uiscale)) }`, untouched diff
