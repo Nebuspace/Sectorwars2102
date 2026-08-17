@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /**
- * SpaceDockInterface — mining license + laser money path
- * (WO-TESTCOV-PLAYER-MINING-LICENSE).
+ * SpaceDockInterface — mining license + laser install/upgrade money path
+ * (WO-TESTCOV-PLAYER-MINING-LICENSE + LEG-109).
  */
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -18,6 +18,17 @@ vi.mock('../../ships', () => ({
   MaintenanceManager: () => null,
   ModuleGridInterface: () => null,
   TIER_LABEL: {},
+}));
+
+const installEquipmentMock = vi.fn();
+
+vi.mock('../../../services/api', () => ({
+  shipAPI: {},
+  registryAPI: { lookup: vi.fn() },
+  shipUpgradeAPI: {
+    installEquipment: (...args: unknown[]) => installEquipmentMock(...args),
+    uninstallEquipment: vi.fn(),
+  },
 }));
 
 const STATION = {
@@ -56,7 +67,7 @@ const gameState = {
   sellResource: vi.fn(),
   dockAtStation: vi.fn(),
   bumpDockOccupant: vi.fn(),
-  currentShip: { id: 'ship-1', type: 'SCOUT_SHIP', name: 'Miner' },
+  currentShip: { id: 'ship-1', type: 'CARGO_HAULER', name: 'Miner' },
   isLoading: false,
   error: null,
   updatePlayerCredits,
@@ -74,28 +85,43 @@ import SpaceDockInterface from '../SpaceDockInterface';
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-const SHIP = {
+const SHIP_NO_LASER = {
   id: 'ship-1',
   name: 'Miner',
-  type: 'SCOUT_SHIP',
+  type: 'CARGO_HAULER',
   genesis_devices: 0,
   max_genesis_devices: 0,
   current_value: 10_000,
   cargo_capacity: 50,
   cargo: { used: 0 },
   combat: { hull: 100, max_hull: 100, shields: 50, max_shields: 50 },
+  mining_laser_level: null as number | null,
+};
+
+const SHIP_WITH_LASER = {
+  ...SHIP_NO_LASER,
+  mining_laser_level: 1,
 };
 
 describe('SpaceDockInterface — mining license / laser', () => {
   let container: HTMLElement;
   let root: ReturnType<typeof createRoot>;
   let fetchMock: ReturnType<typeof vi.fn>;
+  let shipPayload: typeof SHIP_NO_LASER;
 
   beforeEach(() => {
     localStorage.clear();
     localStorage.setItem('accessToken', 'tok-test');
     updatePlayerCredits.mockReset();
     refreshPlayerState.mockClear();
+    installEquipmentMock.mockReset();
+    installEquipmentMock.mockResolvedValue({
+      success: true,
+      message: 'Mining Laser installed successfully',
+      cost_paid: 35_000,
+      remaining_credits: 15_000,
+    });
+    shipPayload = { ...SHIP_NO_LASER, mining_laser_level: null };
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -103,7 +129,7 @@ describe('SpaceDockInterface — mining license / laser', () => {
     fetchMock = vi.fn(async (url: string) => {
       const u = String(url);
       if (u.includes('/api/v1/player/current-ship')) {
-        return { ok: true, json: async () => SHIP };
+        return { ok: true, json: async () => shipPayload };
       }
       if (u.includes('/api/v1/mining/license')) {
         return {
@@ -187,8 +213,37 @@ describe('SpaceDockInterface — mining license / laser', () => {
     });
   });
 
-  it('posts mining/laser-upgrade when Upgrade Mining Laser is clicked', async () => {
+  it('installs Mining Laser via equipment/install when none fitted', async () => {
     await openMining();
+    await vi.waitFor(() => {
+      expect(container.textContent).toMatch(/Install Mining Laser/);
+    });
+    const btn = Array.from(container.querySelectorAll('button.service-btn')).find((b) =>
+      b.textContent?.includes('Install Mining Laser'),
+    ) as HTMLButtonElement;
+    expect(btn).toBeTruthy();
+    await act(async () => {
+      btn.click();
+      await flush();
+    });
+
+    await vi.waitFor(() => {
+      expect(installEquipmentMock).toHaveBeenCalledWith('ship-1', 'mining_laser');
+    });
+    expect(
+      fetchMock.mock.calls.some((c) => String(c[0]).includes('/api/v1/mining/laser-upgrade')),
+    ).toBe(false);
+    await vi.waitFor(() => {
+      expect(container.textContent).toMatch(/Mining Laser installed/);
+    });
+  });
+
+  it('posts mining/laser-upgrade when Upgrade Mining Laser is clicked', async () => {
+    shipPayload = { ...SHIP_WITH_LASER };
+    await openMining();
+    await vi.waitFor(() => {
+      expect(container.textContent).toMatch(/Upgrade Mining Laser/);
+    });
     const btn = Array.from(container.querySelectorAll('button.service-btn')).find((b) =>
       b.textContent?.includes('Upgrade Mining Laser'),
     ) as HTMLButtonElement;
@@ -208,5 +263,6 @@ describe('SpaceDockInterface — mining license / laser', () => {
     const [, init] = call;
     expect(init?.method).toBe('POST');
     expect(JSON.parse(init?.body as string)).toEqual({ ship_id: 'ship-1' });
+    expect(installEquipmentMock).not.toHaveBeenCalled();
   });
 });

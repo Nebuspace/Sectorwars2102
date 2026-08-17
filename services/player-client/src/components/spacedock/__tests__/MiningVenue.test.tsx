@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * MiningVenue — claim license / laser refit UI (WO-TESTCOV-PLAYER-MINING-LICENSE).
+ * MiningVenue — claim license / laser install+refit UI (LEG-109).
  */
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -14,6 +14,7 @@ describe('MiningVenue', () => {
   let container: HTMLElement;
   let root: ReturnType<typeof createRoot>;
   let purchaseClaimLicense: () => void;
+  let installMiningLaser: () => void;
   let upgradeMiningLaser: () => void;
 
   const renderVenue = (overrides: Record<string, unknown> = {}) => {
@@ -21,6 +22,7 @@ describe('MiningVenue', () => {
       root.render(
         <MiningVenue
           shipId="ship-1"
+          miningLaserLevel={null}
           licenseBusy={false}
           licenseError={null}
           licenseSuccess={null}
@@ -28,6 +30,7 @@ describe('MiningVenue', () => {
           laserBusy={false}
           laserError={null}
           laserSuccess={null}
+          installMiningLaser={installMiningLaser}
           upgradeMiningLaser={upgradeMiningLaser}
           onBack={vi.fn<() => void>()}
           blackMarketButton={null}
@@ -42,6 +45,7 @@ describe('MiningVenue', () => {
     document.body.appendChild(container);
     root = createRoot(container);
     purchaseClaimLicense = vi.fn<() => void>();
+    installMiningLaser = vi.fn<() => void>();
     upgradeMiningLaser = vi.fn<() => void>();
   });
 
@@ -63,18 +67,42 @@ describe('MiningVenue', () => {
     expect(purchaseClaimLicense).toHaveBeenCalled();
   });
 
-  it('Upgrade Mining Laser calls upgradeMiningLaser', async () => {
-    renderVenue();
-    const btn = Array.from(container.querySelectorAll('button.service-btn')).find((b) =>
-      b.textContent?.includes('Upgrade Mining Laser'),
+  it('shows Install Mining Laser when no laser is fitted', async () => {
+    renderVenue({ miningLaserLevel: null });
+    const installBtn = Array.from(container.querySelectorAll('button.service-btn')).find((b) =>
+      b.textContent?.includes('Install Mining Laser'),
     ) as HTMLButtonElement;
+    const upgradeBtn = Array.from(container.querySelectorAll('button.service-btn')).find((b) =>
+      b.textContent?.includes('Upgrade Mining Laser'),
+    );
+    expect(installBtn).toBeTruthy();
+    expect(upgradeBtn).toBeUndefined();
     await act(async () => {
-      btn.click();
+      installBtn.click();
     });
-    expect(upgradeMiningLaser).toHaveBeenCalled();
+    expect(installMiningLaser).toHaveBeenCalled();
+    expect(upgradeMiningLaser).not.toHaveBeenCalled();
   });
 
-  it('disables both actions when no ship is present', () => {
+  it('shows Upgrade Mining Laser when a laser is installed', async () => {
+    renderVenue({ miningLaserLevel: 1 });
+    expect(container.textContent).toMatch(/Current level:\s*1/);
+    const upgradeBtn = Array.from(container.querySelectorAll('button.service-btn')).find((b) =>
+      b.textContent?.includes('Upgrade Mining Laser'),
+    ) as HTMLButtonElement;
+    const installBtn = Array.from(container.querySelectorAll('button.service-btn')).find((b) =>
+      b.textContent?.includes('Install Mining Laser'),
+    );
+    expect(upgradeBtn).toBeTruthy();
+    expect(installBtn).toBeUndefined();
+    await act(async () => {
+      upgradeBtn.click();
+    });
+    expect(upgradeMiningLaser).toHaveBeenCalled();
+    expect(installMiningLaser).not.toHaveBeenCalled();
+  });
+
+  it('disables laser + license actions when no ship is present', () => {
     renderVenue({ shipId: undefined });
     const buttons = Array.from(container.querySelectorAll('button.service-btn')) as HTMLButtonElement[];
     expect(buttons.every((b) => b.disabled)).toBe(true);
