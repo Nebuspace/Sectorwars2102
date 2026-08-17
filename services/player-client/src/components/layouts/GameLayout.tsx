@@ -6,6 +6,7 @@ import { useWebSocket } from '../../contexts/WebSocketContext';
 import { useAutopilot } from '../../contexts/AutopilotContext';
 import StatusBar from './StatusBar';
 import Teleprinter from '../aria/Teleprinter';
+import AriaMarketPredictionPanel from '../aria/AriaMarketPredictionPanel';
 import Annunciator from '../hud/Annunciator';
 import { MFDProvider, useMFD } from '../mfd/MFDContext';
 import MFDScreen from '../mfd/MFDScreen';
@@ -543,12 +544,24 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
               (WO-UI1-CHROME-COMPLETE; WO-UI-MAX-BATCH-1 REVISE) — see
               teleprinterBodyPanel's own doc-comment for why bodyPanel is
               owned here (the MFD-B fold below needs to see it). */}
-          <Teleprinter
-            bodyPanel={teleprinterBodyPanel}
-            onBodyPanelChange={setTeleprinterBodyPanel}
-            transcriptOpen={teleprinterTranscriptOpen}
-            onTranscriptOpenChange={setTeleprinterTranscriptOpen}
-          />
+          {/* Teleprinter (WO-UI1-TELEPRINTER stitch) — a DIRECT, non-
+              absolute child of .game-container/.stage, auto-placed into
+              grid row 3. Both display toggles are CONTROLLED from here
+              (WO-UI1-CHROME-COMPLETE; WO-UI-MAX-BATCH-1 REVISE) — see
+              teleprinterBodyPanel's own doc-comment for why bodyPanel is
+              owned here (the MFD-B fold below needs to see it).
+              LEG-375: wrap Teleprinter + docked market panel so they share
+              ONE grid row (auto auto auto 1fr) — a bare sibling would push
+              `.lower` onto a non-existent 5th track. */}
+          <div className="aria-chrome-stack">
+            <Teleprinter
+              bodyPanel={teleprinterBodyPanel}
+              onBodyPanelChange={setTeleprinterBodyPanel}
+              transcriptOpen={teleprinterTranscriptOpen}
+              onTranscriptOpenChange={setTeleprinterTranscriptOpen}
+            />
+            <AriaMarketPredictionPanel />
+          </div>
 
           {/* `.lower` (WO-UI0-SHELL-TRANSPLANT) — MFD column + instrument
               deck, auto-placed into grid row 4 (the `1fr` row — everything
