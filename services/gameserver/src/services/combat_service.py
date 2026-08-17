@@ -3369,21 +3369,44 @@ class CombatService:
             "combat_log": report
         }
     
-    def get_player_combat_history(self, player_id: uuid.UUID, limit: int = 10) -> Dict[str, Any]:
-        """Get a player's recent combat history."""
+    def get_player_combat_history(
+        self,
+        player_id: uuid.UUID,
+        limit: int = 10,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        """Get a player's recent combat history (paginated).
+
+        LEG-304: offset/limit so GET /combat/history can page without inventing
+        a second query path. Always scoped by caller-supplied player_id.
+        """
         # Get player
         player = self.db.query(Player).filter(Player.id == player_id).first()
         if not player:
             return {"success": False, "message": "Player not found"}
-        
+
+        if limit < 1:
+            limit = 1
+        if limit > 100:
+            limit = 100
+        if offset < 0:
+            offset = 0
+
         # Get combat logs where player was attacker or defender
-        logs = self.db.query(CombatLog).filter(
+        base_q = self.db.query(CombatLog).filter(
             or_(
                 CombatLog.attacker_id == player_id,
                 CombatLog.defender_id == player_id
             )
-        ).order_by(CombatLog.timestamp.desc()).limit(limit).all()
-        
+        )
+        total = base_q.count()
+        logs = (
+            base_q.order_by(CombatLog.timestamp.desc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+
         # Format results
         combat_history = []
         for log in logs:
@@ -3436,13 +3459,16 @@ class CombatService:
                 }
             
             combat_history.append(entry)
-        
+
         return {
             "success": True,
             "combat_history": combat_history,
-            "count": len(combat_history)
+            "count": len(combat_history),
+            "total": total,
+            "limit": limit,
+            "offset": offset,
         }
-    
+
     @staticmethod
     def _parse_combat_details(log: CombatLog) -> List[Dict[str, Any]]:
         """Parse the round-by-round combat_details JSON stored in the

@@ -272,6 +272,41 @@ async def engage_combat(
     )
 
 
+class CombatHistoryResponse(BaseModel):
+    """Paginated player-scoped combat history (LEG-304)."""
+    items: list[dict]
+    total: int
+    limit: int
+    offset: int
+
+
+@router.get("/history", response_model=CombatHistoryResponse)
+async def get_combat_history(
+    limit: int = 20,
+    offset: int = 0,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """List the current player's combat logs (attacker or defender).
+
+    Registered before ``/{combatId}/status`` so ``history`` is not parsed as an id.
+    Round-by-round replay stays on GET /{combatId}/status (same JSON parse).
+    """
+    result = CombatService(db).get_player_combat_history(
+        player_id=player.id,
+        limit=limit,
+        offset=offset,
+    )
+    if not result.get("success"):
+        raise HTTPException(status_code=404, detail=result.get("message", "Player not found"))
+    return CombatHistoryResponse(
+        items=result.get("combat_history") or [],
+        total=int(result.get("total") or 0),
+        limit=int(result.get("limit") or limit),
+        offset=int(result.get("offset") or offset),
+    )
+
+
 @router.get("/{combatId}/status", response_model=CombatStatusResponse)
 async def get_combat_status(
     combatId: str,
