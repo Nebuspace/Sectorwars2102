@@ -79,9 +79,9 @@ class DefenseUpdateRequest(BaseModel):
 
 
 class GenesisDeployRequest(BaseModel):
-    """Genesis device deployment request, used by both /planets/genesis/deploy
-    (the route the player-client actually calls) and the parallel /genesis/deploy
-    route in genesis.py."""
+    """Genesis device deployment request for POST /planets/genesis/deploy
+    (the sole live route the player-client calls). The parallel POST
+    /genesis/deploy twin in genesis.py was removed 2026-08-04."""
     sectorId: str
     planetName: str = Field(..., min_length=3, max_length=50)
     # basic = 1 device, enhanced = 3 devices, advanced = 1 device + the Colony
