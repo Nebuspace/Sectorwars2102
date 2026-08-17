@@ -178,8 +178,8 @@ export const TeamManager: React.FC = () => {
   const [confirmingLeave, setConfirmingLeave] = useState(false);
   const [confirmingKickId, setConfirmingKickId] = useState<string | null>(null);
 
-  // LEG-33 — self pin display only (teams API has no per-member medal fields;
-  // no player settings write endpoint for pinned_medal_id yet).
+  // LEG-357 / LEG-33 — self pin from GET /medals/me.pinned_medal_id (GS #613).
+  // Teams roster has no per-member medal fields; only the local player row pins.
   const [selfMedalCount, setSelfMedalCount] = useState<number | null>(null);
   const [selfPinnedIcon, setSelfPinnedIcon] = useState<string | null>(null);
   const [selfPinnedId, setSelfPinnedId] = useState<string | null>(null);
@@ -191,16 +191,20 @@ export const TeamManager: React.FC = () => {
       try {
         const data = (await medalsAPI.getMe()) as {
           earned?: Array<{ key: string; name: string; icon?: string }>;
+          pinned_medal_id?: string | null;
+          total_earned?: number;
         };
         if (cancelled) return;
         const earned = data.earned ?? [];
-        setSelfMedalCount(earned.length);
-        // Provisional public face: first earned until pin settings API lands
-        const first = earned[0];
-        if (first) {
-          setSelfPinnedId(first.key);
-          setSelfPinnedName(first.name);
-          setSelfPinnedIcon(first.icon || '🏅');
+        setSelfMedalCount(
+          typeof data.total_earned === 'number' ? data.total_earned : earned.length,
+        );
+        const pinId = data.pinned_medal_id ?? null;
+        if (pinId) {
+          const match = earned.find(m => m.key === pinId);
+          setSelfPinnedId(pinId);
+          setSelfPinnedName(match?.name ?? pinId);
+          setSelfPinnedIcon(match?.icon || '🏅');
         }
       } catch {
         /* roster still renders without medals */

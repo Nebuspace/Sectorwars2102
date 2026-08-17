@@ -51,4 +51,16 @@ describe('PlayerNamePlate', () => {
       container.querySelector('[data-testid="player-name-plate"]')?.getAttribute('data-pinned-medal'),
     ).toBe('star_bronze');
   });
+
+  it('does not invent a pin when pinnedMedalId is null (GET /medals/me shape)', () => {
+    act(() => {
+      root.render(
+        <PlayerNamePlate name="Ace" pinnedMedalId={null} medalCount={3} />,
+      );
+    });
+    expect(container.querySelector('[data-testid="player-name-plate-medal"]')).toBeNull();
+    expect(container.querySelector('[data-testid="player-name-plate-count"]')?.textContent).toBe(
+      '3',
+    );
+  });
 });

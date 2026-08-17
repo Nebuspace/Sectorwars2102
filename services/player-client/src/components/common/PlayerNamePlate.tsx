@@ -4,8 +4,8 @@ import './player-name-plate.css';
 /**
  * PlayerNamePlate — pinned public medal identity (LEG-33 / medals.md).
  * Renders name + optional pinned medal icon + earned-count badge.
- * Pin write is gameserver-gated (no player settings endpoint yet) — callers
- * pass pinnedMedalId/count when known.
+ * Callers pass pinnedMedalId from GET /medals/me.pinned_medal_id (or contact
+ * fields when present). Pin write lives on Trophy Room (PUT /medals/me/pin).
  */
 
 export interface PlayerNamePlateProps {
