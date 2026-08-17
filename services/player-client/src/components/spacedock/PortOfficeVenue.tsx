@@ -323,6 +323,63 @@ interface PortOfficeVenueProps {
   onBack: () => void;
 }
 
+type DockingAccess = 'open' | 'faction' | 'whitelist' | 'hostile_deny';
+
+type DefensePolicyForm = {
+  dockingAccess: DockingAccess;
+  hostilityListText: string;
+  punitiveFeeMult: number;
+  defenderPosture: string;
+  droneAllocationPct: number;
+};
+
+const DEFAULT_DEFENSE_FORM: DefensePolicyForm = {
+  dockingAccess: 'open',
+  hostilityListText: '',
+  punitiveFeeMult: 1,
+  defenderPosture: 'passive',
+  droneAllocationPct: 100,
+};
+
+const DOCKING_ACCESS_OPTIONS: Array<{ value: DockingAccess; label: string }> = [
+  { value: 'open', label: 'Open' },
+  { value: 'faction', label: 'Faction reputation gate' },
+  { value: 'whitelist', label: 'Whitelist (list = allow)' },
+  { value: 'hostile_deny', label: 'Deny hostility list' },
+];
+
+const POSTURE_OPTIONS = ['passive', 'active', 'aggressive'] as const;
+
+const normalizeDefensePolicy = (raw: unknown): DefensePolicyForm => {
+  const root = asRecord(raw);
+  const policy = asRecord(root?.defense_policy) ?? root;
+  const accessRaw = pickString(policy?.docking_access) ?? 'open';
+  const dockingAccess: DockingAccess =
+    accessRaw === 'faction' || accessRaw === 'whitelist' || accessRaw === 'hostile_deny' || accessRaw === 'open'
+      ? accessRaw
+      : 'open';
+  const listRaw = policy?.hostility_list;
+  const hostilityListText = Array.isArray(listRaw)
+    ? listRaw.map((id) => String(id)).filter(Boolean).join('\n')
+    : '';
+  const punitiveFeeMult = pickNumber(policy?.punitive_fee_mult) ?? 1;
+  const defenderPosture = pickString(policy?.defender_posture) ?? 'passive';
+  const droneAllocationPct = pickNumber(policy?.drone_allocation_pct) ?? 100;
+  return {
+    dockingAccess,
+    hostilityListText,
+    punitiveFeeMult: Math.max(1, Math.min(5, punitiveFeeMult)),
+    defenderPosture,
+    droneAllocationPct: Math.max(0, Math.min(100, Math.round(droneAllocationPct))),
+  };
+};
+
+const parseHostilityList = (text: string): string[] =>
+  text
+    .split(/[\n,]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
 type PortOfficeTab = 'registry' | 'owner' | 'warroom';
 
 const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
@@ -340,6 +397,8 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
     getMyStations,
     setStationTax,
     withdrawTreasury,
+    getDefensePolicy,
+    setDefensePolicy,
     getTakeoverStatus,
     launchTakeover,
     counterTakeover
@@ -356,6 +415,11 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
   const [myStation, setMyStation] = useState<MyStationView | null>(null);
   const [ownerLoading, setOwnerLoading] = useState(false);
   const [ownerError, setOwnerError] = useState<string | null>(null);
+
+  // Defense policy (owner-only)
+  const [defenseForm, setDefenseForm] = useState<DefensePolicyForm>(DEFAULT_DEFENSE_FORM);
+  const [defenseLoading, setDefenseLoading] = useState(false);
+  const [defenseError, setDefenseError] = useState<string | null>(null);
 
   // Takeover state
   const [takeover, setTakeover] = useState<TakeoverView | null>(null);
@@ -419,6 +483,20 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stationId]);
 
+  const fetchDefense = useCallback(async () => {
+    setDefenseLoading(true);
+    try {
+      const data = await getDefensePolicy(stationId);
+      setDefenseForm(normalizeDefensePolicy(data));
+      setDefenseError(null);
+    } catch (error) {
+      setDefenseError(axiosErrorMessage(error, 'Defense policy feed is down. Please try again.'));
+    } finally {
+      setDefenseLoading(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stationId]);
+
   const fetchTakeover = useCallback(async () => {
     setTakeoverLoading(true);
     try {
@@ -440,6 +518,16 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
   useEffect(() => {
     fetchAll();
   }, [fetchAll]);
+
+  // Load owner-only defense policy once ownership is confirmed
+  useEffect(() => {
+    if (isMine) {
+      void fetchDefense();
+    } else {
+      setDefenseForm(DEFAULT_DEFENSE_FORM);
+      setDefenseError(null);
+    }
+  }, [isMine, fetchDefense]);
 
   // Poll every 30s while the venue is open — grace windows and counter
   // windows resolve lazily on read, so polling IS the resolution trigger
@@ -569,6 +657,34 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
       await Promise.allSettled([fetchOwner(), fetchListing()]);
     }
   }, [withdrawInput, myStation?.treasury, listing?.treasuryBalance, runAction, withdrawTreasury, stationId, onCreditsSet, fetchOwner, fetchListing]);
+
+  const submitDefensePolicy = useCallback(async () => {
+    const mult = Math.max(1, Math.min(5, Number(defenseForm.punitiveFeeMult)));
+    const dronePct = Math.max(0, Math.min(100, Math.round(Number(defenseForm.droneAllocationPct))));
+    if (!Number.isFinite(mult) || !Number.isFinite(dronePct)) {
+      setConsoleError('Punitive fee and drone allocation must be valid numbers.');
+      return;
+    }
+    setConsoleSuccess(null);
+    const result = await runAction(
+      'defense',
+      () =>
+        setDefensePolicy(stationId, {
+          docking_access: defenseForm.dockingAccess,
+          hostility_list: parseHostilityList(defenseForm.hostilityListText),
+          punitive_fee_mult: mult,
+          defender_posture: defenseForm.defenderPosture.trim() || 'passive',
+          drone_allocation_pct: dronePct,
+        }),
+      setConsoleError,
+      'Defense policy update failed.',
+    );
+    if (result !== null) {
+      setDefenseForm(normalizeDefensePolicy(result));
+      setConsoleSuccess('Defense policy posted — docking and combat levers are live.');
+      await fetchDefense();
+    }
+  }, [defenseForm, runAction, setDefensePolicy, stationId, fetchDefense]);
 
   const launchCampaign = useCallback(async () => {
     setWarSuccess(null);
@@ -893,6 +1009,129 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
               </div>
             </>
           )}
+        </div>
+
+        {/* Defense policy levers — owner only (renderOwnerConsole is already isMine-gated) */}
+        <div className="po-section" data-testid="po-defense-policy">
+          <h3 className="po-section-title">🛡️ Defense Policy</h3>
+          <p className="section-description">
+            Docking access, hostility list, punitive fees, defender posture, and drone allocation
+            for {stationName}. Patrol radius remains deferred — not configurable here.
+          </p>
+          {defenseLoading && (
+            <div className="catalog-loading">Loading defense policy...</div>
+          )}
+          {defenseError && (
+            <div className="genesis-error-message">
+              <span className="error-icon">❌</span>
+              {defenseError}
+              <button className="action-button" type="button" onClick={() => void fetchDefense()}>
+                Retry
+              </button>
+            </div>
+          )}
+          <div className="po-defense-grid">
+            <label className="po-defense-field">
+              <span>Docking access</span>
+              <select
+                value={defenseForm.dockingAccess}
+                disabled={Boolean(busyAction)}
+                aria-label="Docking access mode"
+                onChange={(e) =>
+                  setDefenseForm((prev) => ({
+                    ...prev,
+                    dockingAccess: e.target.value as DockingAccess,
+                  }))
+                }
+              >
+                {DOCKING_ACCESS_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="po-defense-field">
+              <span>Defender posture</span>
+              <select
+                value={
+                  POSTURE_OPTIONS.includes(defenseForm.defenderPosture as (typeof POSTURE_OPTIONS)[number])
+                    ? defenseForm.defenderPosture
+                    : 'passive'
+                }
+                disabled={Boolean(busyAction)}
+                aria-label="Defender posture"
+                onChange={(e) =>
+                  setDefenseForm((prev) => ({ ...prev, defenderPosture: e.target.value }))
+                }
+              >
+                {POSTURE_OPTIONS.map((p) => (
+                  <option key={p} value={p}>
+                    {p}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="po-defense-field">
+              <span>Punitive fee multiplier (1.0–5.0×)</span>
+              <input
+                type="number"
+                min={1}
+                max={5}
+                step={0.1}
+                value={defenseForm.punitiveFeeMult}
+                disabled={Boolean(busyAction)}
+                aria-label="Punitive fee multiplier"
+                onChange={(e) =>
+                  setDefenseForm((prev) => ({
+                    ...prev,
+                    punitiveFeeMult: parseFloat(e.target.value) || 1,
+                  }))
+                }
+              />
+            </label>
+            <label className="po-defense-field">
+              <span>Drone allocation %</span>
+              <input
+                type="number"
+                min={0}
+                max={100}
+                step={1}
+                value={defenseForm.droneAllocationPct}
+                disabled={Boolean(busyAction)}
+                aria-label="Drone allocation percentage"
+                onChange={(e) =>
+                  setDefenseForm((prev) => ({
+                    ...prev,
+                    droneAllocationPct: parseInt(e.target.value, 10) || 0,
+                  }))
+                }
+              />
+            </label>
+            <label className="po-defense-field po-defense-field-wide">
+              <span>
+                Hostility list (player ids — allow-list under whitelist mode, deny-list under hostile_deny)
+              </span>
+              <textarea
+                rows={3}
+                value={defenseForm.hostilityListText}
+                disabled={Boolean(busyAction)}
+                aria-label="Hostility list player ids"
+                placeholder="One player id per line"
+                onChange={(e) =>
+                  setDefenseForm((prev) => ({ ...prev, hostilityListText: e.target.value }))
+                }
+              />
+            </label>
+          </div>
+          <button
+            className="action-button primary"
+            type="button"
+            onClick={() => void submitDefensePolicy()}
+            disabled={Boolean(busyAction)}
+          >
+            {busyAction === 'defense' ? 'Posting...' : 'Post Defense Policy'}
+          </button>
         </div>
 
         {/* Revenue ledger */}

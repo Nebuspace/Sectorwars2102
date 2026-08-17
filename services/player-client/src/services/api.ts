@@ -1985,6 +1985,34 @@ export const portOwnershipAPI = {
       body: JSON.stringify({ amount }),
     }),
 
+  // Owner defense_policy levers (port-ownership.md § Defense system).
+  // GS DefensePolicyRequest — patrol_radius must stay 0 (deferred).
+  getDefensePolicy: (stationId: string) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/defense-policy`),
+
+  setDefensePolicy: (
+    stationId: string,
+    policy: {
+      docking_access: 'open' | 'faction' | 'whitelist' | 'hostile_deny';
+      hostility_list: string[];
+      punitive_fee_mult: number;
+      defender_posture: string;
+      drone_allocation_pct: number;
+      patrol_radius?: number;
+    },
+  ) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/defense-policy`, {
+      method: 'POST',
+      body: JSON.stringify({
+        docking_access: policy.docking_access,
+        hostility_list: policy.hostility_list,
+        punitive_fee_mult: policy.punitive_fee_mult,
+        defender_posture: policy.defender_posture,
+        drone_allocation_pct: policy.drone_allocation_pct,
+        patrol_radius: 0,
+      }),
+    }),
+
   getTakeoverStatus: (stationId: string) =>
     apiRequest(`/api/v1/port-ownership/stations/${stationId}/takeover`),
 
