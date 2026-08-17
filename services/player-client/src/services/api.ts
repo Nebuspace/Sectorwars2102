@@ -589,6 +589,10 @@ export const messageAPI = {
     return apiRequest(`/api/v1/messages/inbox?${params}`);
   },
 
+  /** Latest Message per thread — tip GET /messages/conversations (messaging.md). */
+  getConversations: (page: number = 1) =>
+    apiRequest(`/api/v1/messages/conversations?page=${page}`),
+
   markAsRead: (messageId: string) =>
     apiRequest(`/api/v1/messages/${messageId}/read`, {
       method: 'PUT'
