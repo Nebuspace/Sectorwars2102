@@ -21,7 +21,14 @@ from src.auth.admin_scopes import PLAYERS_ADJUST_REP
 from src.auth.dependencies import get_current_player, require_scope
 from src.models.player import Player
 from src.models.user import User
-from src.services.medal_service import MedalService, execute_bulk_grant, plan_bulk_grant
+from src.services.medal_service import (
+    MedalService,
+    count_earned_medals,
+    execute_bulk_grant,
+    plan_bulk_grant,
+    public_medal_identity,
+    set_pinned_medal_id,
+)
 from src.services.medal_catalog import get_catalog_entry
 
 router = APIRouter(
@@ -63,10 +70,22 @@ class PlayerMedalsResponse(BaseModel):
     available: List[AvailableMedal]
     total_earned: int
     total_available: int
+    # LEG-90: same source as PUT /me/pin — settings.medal_privacy.pinned_medal_id
+    pinned_medal_id: Optional[str] = None
 
 
 class UnviewedAwardsResponse(BaseModel):
     unviewed: List[str]
+
+
+class PinMedalRequest(BaseModel):
+    """``pinned_medal_id`` null/omitted clears the public pin (medals.md)."""
+    pinned_medal_id: Optional[str] = None
+
+
+class PinMedalResponse(BaseModel):
+    pinned_medal_id: Optional[str] = None
+    medal_count: Optional[int] = None
 
 
 class AdminGrantRequest(BaseModel):
@@ -132,11 +151,13 @@ async def get_my_medals(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=result.get("error") or "Failed to get medals",
         )
+    identity = public_medal_identity(player)
     return PlayerMedalsResponse(
         earned=[EarnedMedal(**m) for m in result["earned"]],
         available=[AvailableMedal(**m) for m in result["available"]],
         total_earned=result["total_earned"],
         total_available=result["total_available"],
+        pinned_medal_id=identity["pinned_medal_id"],
     )
 
 
@@ -177,6 +198,35 @@ async def get_unviewed_awards(
         db.commit()
 
     return UnviewedAwardsResponse(unviewed=result)
+
+
+@router.put("/me/pin", response_model=PinMedalResponse)
+async def pin_my_medal(
+    payload: PinMedalRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Set or clear ``Player.settings.medal_privacy.pinned_medal_id`` (LEG-59).
+
+    Reuses the medals router rather than inventing a generic settings endpoint.
+    Non-null ids must be currently earned; null clears the pin.
+    """
+    try:
+        set_pinned_medal_id(db, player, payload.pinned_medal_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    db.commit()
+    db.refresh(player)
+    identity = public_medal_identity(
+        player, medal_count=count_earned_medals(db, player.id)
+    )
+    return PinMedalResponse(
+        pinned_medal_id=identity["pinned_medal_id"],
+        medal_count=identity["medal_count"],
+    )
 
 
 # ------------------------------------------------------------------
