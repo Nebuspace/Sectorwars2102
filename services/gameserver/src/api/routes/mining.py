@@ -58,10 +58,6 @@ def _status_for_reason(reason) -> int:
     return status.HTTP_400_BAD_REQUEST
 
 
-class YieldPreviewRequest(BaseModel):
-    ship_id: str
-
-
 @router.get("/yield-preview")
 async def preview_yield_band(
     ship_id: str,
