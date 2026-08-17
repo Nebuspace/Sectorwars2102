@@ -159,6 +159,10 @@ function buildMockGameValue(mode: ShellMode): NonNullable<React.ContextType<type
     getTakeoverStatus: asyncNoop,
     launchTakeover: asyncNoop,
     counterTakeover: asyncNoop,
+    activateTariffCut: asyncNoop,
+    activateCounterTrade: asyncNoop,
+    activateFriendlyTrade: asyncNoop,
+    setFeeDistribution: asyncNoop,
 
     inboxMessages: [],
     unreadMessageCount: 0,

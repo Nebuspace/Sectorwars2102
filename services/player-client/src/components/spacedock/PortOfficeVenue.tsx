@@ -98,6 +98,19 @@ const creditsFromResponse = (result: unknown): number | null => {
 // are rejected server-side, so reject them client-side too.
 const BID_CEILING = 2_000_000;
 
+// Ratified economic-defense magnitudes (port-ownership.md / DECISIONS).
+const COUNTER_TRADE_MAX_ABSORB = 500_000;
+const FRIENDLY_TRADE_MAX_VOLUME = 500_000;
+const COUNTER_TRADE_CREDITS_PER_VOLUME = 1;
+
+// Fee-distribution bounds (operating immutable 30%).
+const FEE_DEFENSE_MIN = 0.3;
+const FEE_DEFENSE_MAX = 0.6;
+const FEE_OWNER_MIN = 0.1;
+const FEE_OWNER_MAX = 0.5;
+const FEE_OPERATING = 0.3;
+const FEE_UNDERFUND_WARN = 0.35;
+
 interface OfferView {
   bidAmount: number | null;
   status: string | null;
@@ -401,7 +414,11 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
     setDefensePolicy,
     getTakeoverStatus,
     launchTakeover,
-    counterTakeover
+    counterTakeover,
+    activateTariffCut,
+    activateCounterTrade,
+    activateFriendlyTrade,
+    setFeeDistribution,
   } = useGame();
 
   const [activeTab, setActiveTab] = useState<PortOfficeTab>('registry');
@@ -441,6 +458,15 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
   // Owner console inputs
   const [taxPctInput, setTaxPctInput] = useState<number | null>(null);
   const [withdrawInput, setWithdrawInput] = useState('');
+
+  // Economic takeover defense (LEG-INI-35)
+  const [counterVolumeInput, setCounterVolumeInput] = useState('');
+  const [friendlyVolumeInput, setFriendlyVolumeInput] = useState('');
+  const [allyTeamIdInput, setAllyTeamIdInput] = useState('');
+  const [allyFactionInput, setAllyFactionInput] = useState('');
+
+  // Fee distribution rebalance (LEG-INI-36) — defense% slider; owner = 0.7 − defense
+  const [defensePctInput, setDefensePctInput] = useState(0.4);
 
   // 1s clock for countdowns
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -685,6 +711,140 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
       await fetchDefense();
     }
   }, [defenseForm, runAction, setDefensePolicy, stationId, fetchDefense]);
+
+  const submitTariffCut = useCallback(async () => {
+    setConsoleSuccess(null);
+    const result = await runAction(
+      'tariff-cut',
+      () => activateTariffCut(stationId),
+      setConsoleError,
+      'Tariff cut failed — an active campaign window may be required.',
+    );
+    if (result !== null) {
+      setConsoleSuccess('Tariff cut activated — rate halved for the counter window (floored at the statutory minimum).');
+      await Promise.allSettled([fetchOwner(), fetchListing(), fetchTakeover()]);
+    }
+  }, [runAction, activateTariffCut, stationId, fetchOwner, fetchListing, fetchTakeover]);
+
+  const submitCounterTrade = useCallback(async () => {
+    const volume = parseInt(counterVolumeInput, 10);
+    if (!Number.isFinite(volume) || volume < 1) {
+      setConsoleError('Enter a counter-trade absorb volume of at least 1.');
+      return;
+    }
+    if (volume > COUNTER_TRADE_MAX_ABSORB) {
+      setConsoleError(
+        `Counter-trade absorb is capped at ${COUNTER_TRADE_MAX_ABSORB.toLocaleString()} per activation.`,
+      );
+      return;
+    }
+    setConsoleSuccess(null);
+    const result = await runAction(
+      'counter-trade',
+      () => activateCounterTrade(stationId, volume),
+      setConsoleError,
+      'Counter-trade absorb failed.',
+    );
+    if (result !== null) {
+      const cost = volume * COUNTER_TRADE_CREDITS_PER_VOLUME;
+      setConsoleSuccess(
+        `Counter-trade absorb ${volume.toLocaleString()} posted (≈ ${formatCredits(cost)}).`,
+      );
+      setCounterVolumeInput('');
+      const newCredits = creditsFromResponse(result);
+      if (newCredits !== null) onCreditsSet(newCredits);
+      await Promise.allSettled([fetchOwner(), fetchTakeover()]);
+    }
+  }, [
+    counterVolumeInput,
+    runAction,
+    activateCounterTrade,
+    stationId,
+    onCreditsSet,
+    fetchOwner,
+    fetchTakeover,
+  ]);
+
+  const submitFriendlyTrade = useCallback(async () => {
+    const volume = parseInt(friendlyVolumeInput, 10);
+    if (!Number.isFinite(volume) || volume < 1) {
+      setConsoleError('Enter a friendly-trade contracted volume of at least 1.');
+      return;
+    }
+    if (volume > FRIENDLY_TRADE_MAX_VOLUME) {
+      setConsoleError(
+        `Friendly-trade volume is capped at ${FRIENDLY_TRADE_MAX_VOLUME.toLocaleString()}.`,
+      );
+      return;
+    }
+    const allyTeam = allyTeamIdInput.trim() || null;
+    const allyFaction = allyFactionInput.trim() || null;
+    if (!allyTeam && !allyFaction) {
+      setConsoleError('Bind a friendly ally team id and/or faction before posting the contract.');
+      return;
+    }
+    setConsoleSuccess(null);
+    const result = await runAction(
+      'friendly-trade',
+      () =>
+        activateFriendlyTrade(stationId, {
+          contracted_volume: volume,
+          ally_team_id: allyTeam,
+          ally_faction: allyFaction,
+        }),
+      setConsoleError,
+      'Friendly-trade contract failed.',
+    );
+    if (result !== null) {
+      setConsoleSuccess(`Friendly-trade contract for ${volume.toLocaleString()} volume posted.`);
+      setFriendlyVolumeInput('');
+      await fetchTakeover();
+    }
+  }, [
+    friendlyVolumeInput,
+    allyTeamIdInput,
+    allyFactionInput,
+    runAction,
+    activateFriendlyTrade,
+    stationId,
+    fetchTakeover,
+  ]);
+
+  const ownerPctFromDefense = useMemo(() => {
+    const defense = Math.min(FEE_DEFENSE_MAX, Math.max(FEE_DEFENSE_MIN, defensePctInput));
+    return Math.round((1 - FEE_OPERATING - defense) * 1000) / 1000;
+  }, [defensePctInput]);
+
+  const submitFeeDistribution = useCallback(async () => {
+    const defense = Math.round(defensePctInput * 1000) / 1000;
+    const owner = Math.round(ownerPctFromDefense * 1000) / 1000;
+    if (defense < FEE_DEFENSE_MIN || defense > FEE_DEFENSE_MAX) {
+      setConsoleError(`Defense share must be between ${FEE_DEFENSE_MIN * 100}% and ${FEE_DEFENSE_MAX * 100}%.`);
+      return;
+    }
+    if (owner < FEE_OWNER_MIN || owner > FEE_OWNER_MAX) {
+      setConsoleError(`Owner share must be between ${FEE_OWNER_MIN * 100}% and ${FEE_OWNER_MAX * 100}%.`);
+      return;
+    }
+    const sum = Math.round((defense + owner + FEE_OPERATING) * 1000) / 1000;
+    if (sum !== 1) {
+      setConsoleError('Defense + owner + operating (30%) must sum to 100%.');
+      return;
+    }
+    setConsoleSuccess(null);
+    const result = await runAction(
+      'fee-distribution',
+      () => setFeeDistribution(stationId, defense, owner),
+      setConsoleError,
+      'Fee-distribution rebalance failed.',
+    );
+    if (result !== null) {
+      setConsoleSuccess(
+        `Fee split updated — defense ${(defense * 100).toFixed(0)}% / owner ${(owner * 100).toFixed(0)}% / operating 30%.`,
+      );
+      await fetchOwner();
+    }
+  }, [defensePctInput, ownerPctFromDefense, runAction, setFeeDistribution, stationId, fetchOwner]);
 
   const launchCampaign = useCallback(async () => {
     setWarSuccess(null);
@@ -1131,6 +1291,149 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
             disabled={Boolean(busyAction)}
           >
             {busyAction === 'defense' ? 'Posting...' : 'Post Defense Policy'}
+          </button>
+        </div>
+
+        {/* Economic takeover defense — owner only (LEG-INI-35) */}
+        <div className="po-section" data-testid="po-econ-defense">
+          <h3 className="po-section-title">📉 Economic Takeover Defense</h3>
+          <p className="section-description">
+            During an active counter window: temporarily halve the tariff, absorb volume with a
+            credit-funded counter-trade (1 cr per unit, max {COUNTER_TRADE_MAX_ABSORB.toLocaleString()}),
+            or bind a friendly-trade contract (max {FRIENDLY_TRADE_MAX_VOLUME.toLocaleString()}).
+            Magnitudes are server-enforced — this console does not invent alternate ceilings.
+          </p>
+          <div className="po-defense-grid">
+            <div className="po-defense-field po-defense-field-wide">
+              <span>Tariff cut (halves current rate for the counter window)</span>
+              <button
+                className="action-button"
+                type="button"
+                data-testid="po-tariff-cut"
+                onClick={() => void submitTariffCut()}
+                disabled={Boolean(busyAction)}
+              >
+                {busyAction === 'tariff-cut' ? 'Cutting...' : 'Activate Tariff Cut'}
+              </button>
+            </div>
+            <label className="po-defense-field">
+              <span>Counter-trade absorb volume (1–{COUNTER_TRADE_MAX_ABSORB.toLocaleString()})</span>
+              <input
+                type="number"
+                min={1}
+                max={COUNTER_TRADE_MAX_ABSORB}
+                value={counterVolumeInput}
+                disabled={Boolean(busyAction)}
+                aria-label="Counter-trade absorb volume"
+                data-testid="po-counter-trade-volume"
+                onChange={(e) => setCounterVolumeInput(e.target.value)}
+              />
+            </label>
+            <div className="po-defense-field">
+              <span>Cost ≈ volume × {COUNTER_TRADE_CREDITS_PER_VOLUME} cr</span>
+              <button
+                className="action-button primary"
+                type="button"
+                data-testid="po-counter-trade"
+                onClick={() => void submitCounterTrade()}
+                disabled={Boolean(busyAction) || !counterVolumeInput}
+              >
+                {busyAction === 'counter-trade' ? 'Absorbing...' : 'Post Counter-Trade'}
+              </button>
+            </div>
+            <label className="po-defense-field">
+              <span>Friendly-trade contracted volume</span>
+              <input
+                type="number"
+                min={1}
+                max={FRIENDLY_TRADE_MAX_VOLUME}
+                value={friendlyVolumeInput}
+                disabled={Boolean(busyAction)}
+                aria-label="Friendly-trade contracted volume"
+                data-testid="po-friendly-trade-volume"
+                onChange={(e) => setFriendlyVolumeInput(e.target.value)}
+              />
+            </label>
+            <label className="po-defense-field">
+              <span>Ally team id (optional if faction set)</span>
+              <input
+                type="text"
+                value={allyTeamIdInput}
+                disabled={Boolean(busyAction)}
+                aria-label="Ally team id"
+                data-testid="po-friendly-ally-team"
+                onChange={(e) => setAllyTeamIdInput(e.target.value)}
+              />
+            </label>
+            <label className="po-defense-field">
+              <span>Ally faction (optional if team set)</span>
+              <input
+                type="text"
+                value={allyFactionInput}
+                disabled={Boolean(busyAction)}
+                aria-label="Ally faction"
+                data-testid="po-friendly-ally-faction"
+                onChange={(e) => setAllyFactionInput(e.target.value)}
+              />
+            </label>
+            <div className="po-defense-field po-defense-field-wide">
+              <button
+                className="action-button primary"
+                type="button"
+                data-testid="po-friendly-trade"
+                onClick={() => void submitFriendlyTrade()}
+                disabled={Boolean(busyAction) || !friendlyVolumeInput}
+              >
+                {busyAction === 'friendly-trade' ? 'Binding...' : 'Post Friendly-Trade Contract'}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Fee distribution rebalance — owner only (LEG-INI-36) */}
+        <div className="po-section" data-testid="po-fee-distribution">
+          <h3 className="po-section-title">⚖️ Fee Distribution</h3>
+          <p className="section-description">
+            Rebalance defense vs owner buckets. Operating is fixed at 30%. Defense must stay
+            between 30% and 60%; owner between 10% and 50%; the three shares sum to 100%.
+          </p>
+          <div className="po-defense-grid">
+            <label className="po-defense-field po-defense-field-wide">
+              <span>
+                Defense share: {(defensePctInput * 100).toFixed(0)}% (owner{' '}
+                {(ownerPctFromDefense * 100).toFixed(0)}% · operating 30%)
+              </span>
+              <input
+                type="range"
+                min={FEE_DEFENSE_MIN}
+                max={FEE_DEFENSE_MAX}
+                step={0.01}
+                value={defensePctInput}
+                disabled={Boolean(busyAction)}
+                aria-label="Defense fee percentage"
+                data-testid="po-fee-defense-pct"
+                onChange={(e) => setDefensePctInput(parseFloat(e.target.value))}
+              />
+            </label>
+          </div>
+          {defensePctInput < FEE_UNDERFUND_WARN && (
+            <div
+              className="genesis-error-message"
+              role="status"
+              data-testid="po-fee-underfund-warn"
+            >
+              Defense underfunding: defense share is below 35%. Sustained deficits can auto-downgrade
+              the station security tier (canon cascade).
+            </div>
+          )}
+          <button
+            className="action-button primary"
+            type="button"
+            data-testid="po-fee-submit"
+            onClick={() => void submitFeeDistribution()}
+            disabled={Boolean(busyAction)}
+          >
+            {busyAction === 'fee-distribution' ? 'Rebalancing...' : 'Post Fee Distribution'}
           </button>
         </div>
 

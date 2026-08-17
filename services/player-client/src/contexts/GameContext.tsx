@@ -417,6 +417,21 @@ interface GameContextType {
   getTakeoverStatus: (stationId: string) => Promise<unknown>;
   launchTakeover: (stationId: string) => Promise<unknown>;
   counterTakeover: (stationId: string, action: 'accept' | 'match' | 'dispute') => Promise<unknown>;
+  activateTariffCut: (stationId: string) => Promise<unknown>;
+  activateCounterTrade: (stationId: string, defenseVolume: number) => Promise<unknown>;
+  activateFriendlyTrade: (
+    stationId: string,
+    payload: {
+      contracted_volume: number;
+      ally_team_id?: string | null;
+      ally_faction?: string | null;
+    },
+  ) => Promise<unknown>;
+  setFeeDistribution: (
+    stationId: string,
+    defensePct: number,
+    ownerPct: number,
+  ) => Promise<unknown>;
 
   // Player-to-player hails (COMMS mailbox) — bound to /api/v1/messages/*.
   // Follows the Port Office mold: no global isLoading/error churn, the
@@ -1557,6 +1572,67 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
+  // Economic takeover defense levers (tariff cut / counter-trade / friendly trade).
+  const activateTariffCut = async (stationId: string): Promise<unknown> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      return await portOwnershipAPI.activateTariffCut(stationId);
+    } catch (error: any) {
+      console.error('Error activating tariff cut:', error);
+      throw error;
+    }
+  };
+
+  const activateCounterTrade = async (
+    stationId: string,
+    defenseVolume: number,
+  ): Promise<unknown> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      const data = await portOwnershipAPI.activateCounterTrade(stationId, defenseVolume);
+      await refreshPlayerState();
+      return data;
+    } catch (error: any) {
+      console.error('Error activating counter-trade:', error);
+      throw error;
+    }
+  };
+
+  const activateFriendlyTrade = async (
+    stationId: string,
+    payload: {
+      contracted_volume: number;
+      ally_team_id?: string | null;
+      ally_faction?: string | null;
+    },
+  ): Promise<unknown> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      return await portOwnershipAPI.activateFriendlyTrade(stationId, payload);
+    } catch (error: any) {
+      console.error('Error activating friendly-trade contract:', error);
+      throw error;
+    }
+  };
+
+  const setFeeDistribution = async (
+    stationId: string,
+    defensePct: number,
+    ownerPct: number,
+  ): Promise<unknown> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      return await portOwnershipAPI.setFeeDistribution(stationId, defensePct, ownerPct);
+    } catch (error: any) {
+      console.error('Error setting fee distribution:', error);
+      throw error;
+    }
+  };
+
   // Owner counter during the 7-canonical-day window: accept (forced sale),
   // match (volume contest resets the clock), or dispute (auto-arbitration)
   const counterTakeover = async (
@@ -1957,6 +2033,10 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     getTakeoverStatus,
     launchTakeover,
     counterTakeover,
+    activateTariffCut,
+    activateCounterTrade,
+    activateFriendlyTrade,
+    setFeeDistribution,
 
     // Player-to-player hails (COMMS mailbox)
     inboxMessages,
