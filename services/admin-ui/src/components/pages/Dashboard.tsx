@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom';
 
 // Components
 import PageHeader from '../ui/PageHeader';
-import { useAuth } from '../../contexts/AuthContext';
+import { api } from '../../utils/auth';
 
 // Define types for our dashboard data
 interface SystemHealth {
@@ -72,7 +72,6 @@ type AuditFeedState =
   | { status: 'error'; message: string };
 
 const Dashboard: React.FC = () => {
-  const { token } = useAuth();
   const [dashboardData, setDashboardData] = useState<DashboardData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
@@ -80,16 +79,13 @@ const Dashboard: React.FC = () => {
 
   const fetchDashboardData = async () => {
     try {
-      // Prepare headers with authentication
-      const headers = token ? { Authorization: `Bearer ${token}` } : {};
-
-      // Fetch all dashboard data concurrently - use allSettled so partial failures don't blank everything
+      // Shared api client attaches Bearer via interceptor — no hand-rolled headers.
       const [dbHealthRes, aiHealthRes, gameServerRes, adminStatsRes, auditRes] = await Promise.allSettled([
-        axios.get('/api/v1/status/database/detailed', { headers, timeout: 10000 }),
-        axios.get('/api/v1/status/ai/providers', { headers, timeout: 15000 }),
-        axios.get('/api/v1/status/', { headers, timeout: 10000 }),
-        axios.get('/api/v1/admin/stats', { headers, timeout: 10000 }),
-        axios.get('/api/v1/admin/audit/logs', { headers, timeout: 10000, params: { limit: 8 } })
+        api.get('/api/v1/status/database/detailed', { timeout: 10000 }),
+        api.get('/api/v1/status/ai/providers', { timeout: 15000 }),
+        api.get('/api/v1/status/', { timeout: 10000 }),
+        api.get('/api/v1/admin/stats', { timeout: 10000 }),
+        api.get('/api/v1/admin/audit/logs', { timeout: 10000, params: { limit: 8 } })
       ]);
 
       // Process recent audit events with honest empty/error state (no mock data)
