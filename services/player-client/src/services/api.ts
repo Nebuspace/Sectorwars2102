@@ -293,7 +293,34 @@ export const planetaryAPI = {
     apiRequest(`/api/v1/planets/${planetId}/shields/upgrade`, { method: 'POST' }),
 
   getSiegeStatus: (planetId: string) =>
-    apiRequest(`/api/v1/planets/${planetId}/siege-status`)
+    apiRequest(`/api/v1/planets/${planetId}/siege-status`),
+
+  // Owner-only landing-rights ACL (colonization.md five modes; WO LEG-155).
+  // Body matches gameserver LandingRightsRequest — lists always accepted so
+  // mode flips stay lossless server-side even when the UI omits list editing.
+  setLandingRights: (
+    planetId: string,
+    body: {
+      mode: 'public' | 'team_only' | 'private' | 'whitelist' | 'denylist';
+      whitelist?: string[];
+      denylist?: string[];
+    },
+  ): Promise<{
+    success: boolean;
+    message: string;
+    planet_id: string;
+    mode: string;
+    whitelist: string[];
+    denylist: string[];
+  }> =>
+    apiRequest(`/api/v1/planets/${planetId}/landing-rights`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        mode: body.mode,
+        whitelist: body.whitelist ?? [],
+        denylist: body.denylist ?? [],
+      }),
+    }),
 };
 
 /** Station-protection tractor lock (Guarantee #2) — player responses. */
@@ -1858,6 +1885,34 @@ export const warpGatesAPI = {
     }),
 };
 
+/** Quantum Crystal / Lumen Crystal refining (DISTINCT from quantum refine-charge). */
+export const refiningAPI = {
+  /** 5 Shards + 10,000 cr → 1 Quantum Crystal (instant; Class-3+/SpaceDock). */
+  refine: () =>
+    apiRequest('/api/v1/refining/refine', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+
+  startLumen: () =>
+    apiRequest('/api/v1/refining/refine-lumen/start', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+
+  lumenStatus: (): Promise<{
+    pending: boolean;
+    ready_at: string | null;
+    collectible: boolean;
+  }> => apiRequest('/api/v1/refining/refine-lumen/status'),
+
+  collectLumen: () =>
+    apiRequest('/api/v1/refining/refine-lumen/collect', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+};
+
 // Port Office — station ownership, sealed-bid sales, tariffs, takeovers.
 export const portOwnershipAPI = {
   getListings: () => apiRequest('/api/v1/port-ownership/listings'),
@@ -1973,6 +2028,7 @@ export const gameAPI = {
   storage: storageAPI,
   trade: tradeAPI,
   quantum: quantumAPI,
+  refining: refiningAPI,
   warpGates: warpGatesAPI,
   helm: helmAPI,
   portOwnership: portOwnershipAPI,
