@@ -5890,6 +5890,13 @@ class CombatService:
 
     def _transfer_planet_ownership(self, planet: Planet, new_owner: Player) -> None:
         """Transfer ownership of a planet to a new player via many-to-many."""
+        # LEG-159 / LEG-DEC-15: capture cancels any pending voluntary transfer (no fee).
+        try:
+            from src.services.planet_ownership_transfer_service import clear_pending_transfer
+            clear_pending_transfer(planet)
+        except Exception:
+            logger.debug("clear_pending_transfer skipped", exc_info=True)
+
         # Clear existing owners from the join table
         self.db.execute(
             self.db.query(Planet).filter(Planet.id == planet.id).statement
