@@ -916,3 +916,31 @@
   overflow-y: auto;
   border-radius: 6px;
 }
+
+/* LEG-42 crystal refining (distinct from charge refine) */
+.qd-crystal-refinery {
+  border-top: 1px solid rgba(123, 47, 255, 0.35);
+  padding: 0.5rem 0.35rem 0.25rem;
+}
+.qd-crystal-row {
+  display: flex;
+  gap: 1rem;
+  font-size: 0.65rem;
+  margin-bottom: 0.35rem;
+}
+.qd-crystal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+}
+.qd-lumen-countdown {
+  font-size: 0.65rem;
+  letter-spacing: 0.08em;
+  color: #b8a0ff;
+}
+.qd-hint {
+  font-size: 0.55rem;
+  opacity: 0.75;
+  margin: 0.2rem 0 0.4rem;
+}
