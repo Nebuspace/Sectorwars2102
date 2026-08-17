@@ -404,6 +404,10 @@ interface GameContextType {
   placeOffer: (stationId: string, bidAmount: number) => Promise<unknown>;
   getMyStations: () => Promise<unknown>;
   setStationTax: (stationId: string, taxRate: number) => Promise<unknown>;
+  setPriceLever: (stationId: string, pct: number) => Promise<unknown>;
+  setDockingFee: (stationId: string, amount: number, enabled: boolean) => Promise<unknown>;
+  setServiceCharge: (stationId: string, multiplier: number) => Promise<unknown>;
+  setStorageRental: (stationId: string, perDay: number) => Promise<unknown>;
   withdrawTreasury: (stationId: string, amount: number) => Promise<unknown>;
   getDefensePolicy: (stationId: string) => Promise<unknown>;
   setDefensePolicy: (
@@ -419,6 +423,21 @@ interface GameContextType {
   getTakeoverStatus: (stationId: string) => Promise<unknown>;
   launchTakeover: (stationId: string) => Promise<unknown>;
   counterTakeover: (stationId: string, action: 'accept' | 'match' | 'dispute') => Promise<unknown>;
+  activateTariffCut: (stationId: string) => Promise<unknown>;
+  activateCounterTrade: (stationId: string, defenseVolume: number) => Promise<unknown>;
+  activateFriendlyTrade: (
+    stationId: string,
+    payload: {
+      contracted_volume: number;
+      ally_team_id?: string | null;
+      ally_faction?: string | null;
+    },
+  ) => Promise<unknown>;
+  setFeeDistribution: (
+    stationId: string,
+    defensePct: number,
+    ownerPct: number,
+  ) => Promise<unknown>;
 
   // Player-to-player hails (COMMS mailbox) — bound to /api/v1/messages/*.
   // Follows the Port Office mold: no global isLoading/error churn, the
@@ -1488,6 +1507,60 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
+  const setPriceLever = async (stationId: string, pct: number): Promise<unknown> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      return await portOwnershipAPI.setPriceLever(stationId, pct);
+    } catch (error: any) {
+      console.error('Error setting price lever:', error);
+      throw error;
+    }
+  };
+
+  const setDockingFee = async (
+    stationId: string,
+    amount: number,
+    enabled: boolean,
+  ): Promise<unknown> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      return await portOwnershipAPI.setDockingFee(stationId, amount, enabled);
+    } catch (error: any) {
+      console.error('Error setting docking fee:', error);
+      throw error;
+    }
+  };
+
+  const setServiceCharge = async (
+    stationId: string,
+    multiplier: number,
+  ): Promise<unknown> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      return await portOwnershipAPI.setServiceCharge(stationId, multiplier);
+    } catch (error: any) {
+      console.error('Error setting service charge:', error);
+      throw error;
+    }
+  };
+
+  const setStorageRental = async (
+    stationId: string,
+    perDay: number,
+  ): Promise<unknown> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      return await portOwnershipAPI.setStorageRental(stationId, perDay);
+    } catch (error: any) {
+      console.error('Error setting storage rental:', error);
+      throw error;
+    }
+  };
+
   const getDefensePolicy = async (stationId: string): Promise<unknown> => {
     if (!user) throw new Error('Not authenticated');
 
@@ -1555,6 +1628,67 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       return await portOwnershipAPI.launchTakeover(stationId);
     } catch (error: any) {
       console.error('Error launching takeover campaign:', error);
+      throw error;
+    }
+  };
+
+  // Economic takeover defense levers (tariff cut / counter-trade / friendly trade).
+  const activateTariffCut = async (stationId: string): Promise<unknown> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      return await portOwnershipAPI.activateTariffCut(stationId);
+    } catch (error: any) {
+      console.error('Error activating tariff cut:', error);
+      throw error;
+    }
+  };
+
+  const activateCounterTrade = async (
+    stationId: string,
+    defenseVolume: number,
+  ): Promise<unknown> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      const data = await portOwnershipAPI.activateCounterTrade(stationId, defenseVolume);
+      await refreshPlayerState();
+      return data;
+    } catch (error: any) {
+      console.error('Error activating counter-trade:', error);
+      throw error;
+    }
+  };
+
+  const activateFriendlyTrade = async (
+    stationId: string,
+    payload: {
+      contracted_volume: number;
+      ally_team_id?: string | null;
+      ally_faction?: string | null;
+    },
+  ): Promise<unknown> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      return await portOwnershipAPI.activateFriendlyTrade(stationId, payload);
+    } catch (error: any) {
+      console.error('Error activating friendly-trade contract:', error);
+      throw error;
+    }
+  };
+
+  const setFeeDistribution = async (
+    stationId: string,
+    defensePct: number,
+    ownerPct: number,
+  ): Promise<unknown> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      return await portOwnershipAPI.setFeeDistribution(stationId, defensePct, ownerPct);
+    } catch (error: any) {
+      console.error('Error setting fee distribution:', error);
       throw error;
     }
   };
@@ -1953,12 +2087,20 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     placeOffer,
     getMyStations,
     setStationTax,
+    setPriceLever,
+    setDockingFee,
+    setServiceCharge,
+    setStorageRental,
     withdrawTreasury,
     getDefensePolicy,
     setDefensePolicy,
     getTakeoverStatus,
     launchTakeover,
     counterTakeover,
+    activateTariffCut,
+    activateCounterTrade,
+    activateFriendlyTrade,
+    setFeeDistribution,
 
     // Player-to-player hails (COMMS mailbox)
     inboxMessages,
