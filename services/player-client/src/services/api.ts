@@ -599,6 +599,13 @@ export const messageAPI = {
       method: 'DELETE'
     }),
 
+  /** LEG-412: tip POST /messages/{id}/flag?reason= (10–255 chars). */
+  flagMessage: (messageId: string, reason: string) =>
+    apiRequest(
+      `/api/v1/messages/${encodeURIComponent(messageId)}/flag?reason=${encodeURIComponent(reason)}`,
+      { method: 'POST' },
+    ),
+
   getTeamMessages: (teamId: string, page: number = 1) =>
     apiRequest(`/api/v1/messages/team/${teamId}?page=${page}`)
 };
@@ -1626,6 +1633,19 @@ export const tradingAPI = {
     apiRequest(`/api/v1/trading/stations/${stationId}/slips/bump`, {
       method: 'POST',
       body: JSON.stringify({ occupant_player_id: occupantPlayerId }),
+    }),
+
+  // LEG-438 — long-term mooring (docking-slips.md; tip POST /trading/mooring/long-term).
+  // Rate is tip docking_service.LONG_TERM_MOORING_RATE_PER_DAY (200 cr/day) — preview only.
+  acquireLongTermMooring: (stationId: string, days: number) =>
+    apiRequest('/api/v1/trading/mooring/long-term', {
+      method: 'POST',
+      body: JSON.stringify({ station_id: stationId, days }),
+    }),
+
+  releaseLongTermMooring: () =>
+    apiRequest('/api/v1/trading/mooring/long-term/release', {
+      method: 'POST',
     }),
 
   getMarket: (stationId: string) =>
