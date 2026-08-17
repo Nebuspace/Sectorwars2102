@@ -179,6 +179,7 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 8px;
   margin-bottom: 12px;
 }
 
@@ -279,6 +280,75 @@
   font-size: 0.6rem;
   color: #888;
   margin-top: 2px;
+}
+
+.medal-card.pinned {
+  border-color: rgba(0, 217, 255, 0.55);
+  background: rgba(0, 217, 255, 0.08);
+  position: relative;
+}
+
+.medal-pinned-badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  font-size: 0.55rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--color-primary, #00d9ff);
+  background: rgba(0, 0, 0, 0.45);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.medal-pin-btn {
+  margin-top: 6px;
+  padding: 2px 8px;
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: #ddd;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.medal-pin-btn:hover:not(:disabled) {
+  border-color: var(--color-primary, #00d9ff);
+  color: var(--color-primary, #00d9ff);
+}
+
+.medal-pin-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.medal-clear-pin {
+  margin-left: auto;
+  padding: 2px 8px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #ccc;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.medal-clear-pin:hover:not(:disabled) {
+  border-color: var(--color-primary, #00d9ff);
+  color: var(--color-primary, #00d9ff);
+}
+
+.medal-pin-error {
+  margin: 0 0 8px;
+  padding: 6px 10px;
+  font-size: 0.75rem;
+  color: #ff8a8a;
+  background: rgba(255, 80, 80, 0.12);
+  border: 1px solid rgba(255, 80, 80, 0.35);
+  border-radius: 4px;
 }
 
 .medal-tooltip {
