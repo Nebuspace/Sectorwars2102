@@ -402,6 +402,10 @@ interface GameContextType {
   placeOffer: (stationId: string, bidAmount: number) => Promise<unknown>;
   getMyStations: () => Promise<unknown>;
   setStationTax: (stationId: string, taxRate: number) => Promise<unknown>;
+  setPriceLever: (stationId: string, pct: number) => Promise<unknown>;
+  setDockingFee: (stationId: string, amount: number, enabled: boolean) => Promise<unknown>;
+  setServiceCharge: (stationId: string, multiplier: number) => Promise<unknown>;
+  setStorageRental: (stationId: string, perDay: number) => Promise<unknown>;
   withdrawTreasury: (stationId: string, amount: number) => Promise<unknown>;
   getDefensePolicy: (stationId: string) => Promise<unknown>;
   setDefensePolicy: (
@@ -1501,6 +1505,60 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
+  const setPriceLever = async (stationId: string, pct: number): Promise<unknown> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      return await portOwnershipAPI.setPriceLever(stationId, pct);
+    } catch (error: any) {
+      console.error('Error setting price lever:', error);
+      throw error;
+    }
+  };
+
+  const setDockingFee = async (
+    stationId: string,
+    amount: number,
+    enabled: boolean,
+  ): Promise<unknown> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      return await portOwnershipAPI.setDockingFee(stationId, amount, enabled);
+    } catch (error: any) {
+      console.error('Error setting docking fee:', error);
+      throw error;
+    }
+  };
+
+  const setServiceCharge = async (
+    stationId: string,
+    multiplier: number,
+  ): Promise<unknown> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      return await portOwnershipAPI.setServiceCharge(stationId, multiplier);
+    } catch (error: any) {
+      console.error('Error setting service charge:', error);
+      throw error;
+    }
+  };
+
+  const setStorageRental = async (
+    stationId: string,
+    perDay: number,
+  ): Promise<unknown> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      return await portOwnershipAPI.setStorageRental(stationId, perDay);
+    } catch (error: any) {
+      console.error('Error setting storage rental:', error);
+      throw error;
+    }
+  };
+
   const getDefensePolicy = async (stationId: string): Promise<unknown> => {
     if (!user) throw new Error('Not authenticated');
 
@@ -2027,6 +2085,10 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     placeOffer,
     getMyStations,
     setStationTax,
+    setPriceLever,
+    setDockingFee,
+    setServiceCharge,
+    setStorageRental,
     withdrawTreasury,
     getDefensePolicy,
     setDefensePolicy,

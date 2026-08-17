@@ -1939,6 +1939,31 @@ export const portOwnershipAPI = {
       body: JSON.stringify({ rate: taxRate }),
     }),
 
+  // Owner revenue levers (port-ownership.md § Revenue streams) — tip GS shapes.
+  setPriceLever: (stationId: string, pct: number) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/price-lever`, {
+      method: 'POST',
+      body: JSON.stringify({ pct }),
+    }),
+
+  setDockingFee: (stationId: string, amount: number, enabled: boolean) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/docking-fee`, {
+      method: 'POST',
+      body: JSON.stringify({ amount, enabled }),
+    }),
+
+  setServiceCharge: (stationId: string, multiplier: number) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/service-charge`, {
+      method: 'POST',
+      body: JSON.stringify({ multiplier }),
+    }),
+
+  setStorageRental: (stationId: string, perDay: number) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/storage-rental`, {
+      method: 'POST',
+      body: JSON.stringify({ per_day: perDay }),
+    }),
+
   withdraw: (stationId: string, amount: number) =>
     apiRequest(`/api/v1/port-ownership/stations/${stationId}/withdraw`, {
       method: 'POST',

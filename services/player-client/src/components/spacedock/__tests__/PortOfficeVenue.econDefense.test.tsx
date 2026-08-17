@@ -19,6 +19,10 @@ const {
   activateCounterTrade,
   activateFriendlyTrade,
   setFeeDistribution,
+  setPriceLever,
+  setDockingFee,
+  setServiceCharge,
+  setStorageRental,
 } = vi.hoisted(() => ({
   getListing: vi.fn(),
   getMyStations: vi.fn(),
@@ -27,6 +31,10 @@ const {
   activateCounterTrade: vi.fn(),
   activateFriendlyTrade: vi.fn(),
   setFeeDistribution: vi.fn(),
+  setPriceLever: vi.fn(),
+  setDockingFee: vi.fn(),
+  setServiceCharge: vi.fn(),
+  setStorageRental: vi.fn(),
 }));
 
 vi.mock('../../../contexts/GameContext', () => ({
@@ -37,6 +45,10 @@ vi.mock('../../../contexts/GameContext', () => ({
     placeOffer: vi.fn(),
     getMyStations,
     setStationTax: vi.fn(),
+    setPriceLever,
+    setDockingFee,
+    setServiceCharge,
+    setStorageRental,
     withdrawTreasury: vi.fn(),
     getDefensePolicy,
     setDefensePolicy: vi.fn(),
@@ -84,6 +96,10 @@ describe('PortOfficeVenue — economic defense + fee distribution', () => {
     activateCounterTrade.mockReset();
     activateFriendlyTrade.mockReset();
     setFeeDistribution.mockReset();
+    setPriceLever.mockReset();
+    setDockingFee.mockReset();
+    setServiceCharge.mockReset();
+    setStorageRental.mockReset();
     getMyStations.mockResolvedValue([
       { station_id: 'station-1', treasury_balance: 5000, tax_rate: 0.1 },
     ]);
@@ -110,6 +126,10 @@ describe('PortOfficeVenue — economic defense + fee distribution', () => {
       owner_pct: 0.3,
       operating_pct: 0.3,
     });
+    setPriceLever.mockResolvedValue({ price_adjustment_lever: 0.05 });
+    setDockingFee.mockResolvedValue({ docking_fee: 100, docking_fee_enabled: true });
+    setServiceCharge.mockResolvedValue({ service_charge_multiplier: 1.2 });
+    setStorageRental.mockResolvedValue({ storage_rental_per_day: 2500 });
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -308,7 +328,106 @@ describe('PortOfficeVenue — economic defense + fee distribution', () => {
 
     expect(container.querySelector('[data-testid="po-econ-defense"]')).toBeNull();
     expect(container.querySelector('[data-testid="po-fee-distribution"]')).toBeNull();
+    expect(container.querySelector('[data-testid="po-revenue-levers"]')).toBeNull();
     expect(activateTariffCut).not.toHaveBeenCalled();
     expect(setFeeDistribution).not.toHaveBeenCalled();
+    expect(setPriceLever).not.toHaveBeenCalled();
+  });
+
+  it('posts revenue levers with tip GS payload shapes (LEG-366)', async () => {
+    getListing.mockResolvedValue(ownedListing);
+
+    await act(async () => {
+      root.render(
+        <PortOfficeVenue
+          stationId="station-1"
+          stationName="Test Port"
+          credits={100_000}
+          onCreditsSet={vi.fn()}
+          onBack={vi.fn()}
+        />,
+      );
+    });
+    await act(async () => {
+      await flush();
+      await flush();
+    });
+
+    const ownerTab = Array.from(container.querySelectorAll('[role="tab"]')).find((t) =>
+      (t.textContent || '').toLowerCase().includes('owner'),
+    ) as HTMLElement | undefined;
+    await act(async () => {
+      ownerTab!.click();
+      await flush();
+      await flush();
+    });
+
+    expect(container.querySelector('[data-testid="po-revenue-levers"]')).toBeTruthy();
+
+    const setInput = (el: HTMLInputElement, value: string) => {
+      const native = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+      native.call(el, value);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+
+    const priceSlider = container.querySelector<HTMLInputElement>(
+      '[data-testid="po-price-lever-pct"]',
+    )!;
+    await act(async () => {
+      setInput(priceSlider, '0.05');
+      await flush();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="po-price-lever-submit"]')!.click();
+      await flush();
+      await flush();
+    });
+    expect(setPriceLever).toHaveBeenCalledWith('station-1', 0.05);
+
+    const dockingAmt = container.querySelector<HTMLInputElement>(
+      '[data-testid="po-docking-fee-amount"]',
+    )!;
+    await act(async () => {
+      setInput(dockingAmt, '100');
+      await flush();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="po-docking-fee-submit"]')!.click();
+      await flush();
+      await flush();
+    });
+    expect(setDockingFee).toHaveBeenCalledWith('station-1', 100, true);
+
+    const svcMult = container.querySelector<HTMLInputElement>(
+      '[data-testid="po-service-charge-mult"]',
+    )!;
+    await act(async () => {
+      setInput(svcMult, '1.2');
+      await flush();
+    });
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('[data-testid="po-service-charge-submit"]')!
+        .click();
+      await flush();
+      await flush();
+    });
+    expect(setServiceCharge).toHaveBeenCalledWith('station-1', 1.2);
+
+    const storage = container.querySelector<HTMLInputElement>(
+      '[data-testid="po-storage-rental-per-day"]',
+    )!;
+    await act(async () => {
+      setInput(storage, '2500');
+      await flush();
+    });
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('[data-testid="po-storage-rental-submit"]')!
+        .click();
+      await flush();
+      await flush();
+    });
+    expect(setStorageRental).toHaveBeenCalledWith('station-1', 2500);
   });
 });

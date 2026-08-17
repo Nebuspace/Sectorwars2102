@@ -103,6 +103,16 @@ const COUNTER_TRADE_MAX_ABSORB = 500_000;
 const FRIENDLY_TRADE_MAX_VOLUME = 500_000;
 const COUNTER_TRADE_CREDITS_PER_VOLUME = 1;
 
+// Owner revenue levers — tip GS Field bounds (port_ownership.py request models).
+const PRICE_LEVER_MIN = -0.1;
+const PRICE_LEVER_MAX = 0.1;
+const DOCKING_FEE_MIN = 50;
+const DOCKING_FEE_MAX = 500;
+const SERVICE_CHARGE_MIN = 0.8;
+const SERVICE_CHARGE_MAX = 2.0;
+const STORAGE_RENTAL_MIN = 1000;
+const STORAGE_RENTAL_MAX = 10_000;
+
 // Fee-distribution bounds (operating immutable 30%).
 const FEE_DEFENSE_MIN = 0.3;
 const FEE_DEFENSE_MAX = 0.6;
@@ -409,6 +419,10 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
     placeOffer,
     getMyStations,
     setStationTax,
+    setPriceLever,
+    setDockingFee,
+    setServiceCharge,
+    setStorageRental,
     withdrawTreasury,
     getDefensePolicy,
     setDefensePolicy,
@@ -458,6 +472,13 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
   // Owner console inputs
   const [taxPctInput, setTaxPctInput] = useState<number | null>(null);
   const [withdrawInput, setWithdrawInput] = useState('');
+
+  // Revenue levers (LEG-366) — defaults match tip GS Field baselines when unset.
+  const [priceLeverPct, setPriceLeverPct] = useState(0);
+  const [dockingFeeAmount, setDockingFeeAmount] = useState(50);
+  const [dockingFeeEnabled, setDockingFeeEnabled] = useState(true);
+  const [serviceChargeMult, setServiceChargeMult] = useState(1.0);
+  const [storageRentalPerDay, setStorageRentalPerDay] = useState(1000);
 
   // Economic takeover defense (LEG-INI-35)
   const [counterVolumeInput, setCounterVolumeInput] = useState('');
@@ -661,6 +682,81 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
       await Promise.allSettled([fetchOwner(), fetchListing()]);
     }
   }, [taxPctInput, runAction, setStationTax, stationId, fetchOwner, fetchListing]);
+
+  const submitPriceLever = useCallback(async () => {
+    const pct = Math.min(PRICE_LEVER_MAX, Math.max(PRICE_LEVER_MIN, priceLeverPct));
+    setConsoleSuccess(null);
+    const result = await runAction(
+      'price-lever',
+      () => setPriceLever(stationId, pct),
+      setConsoleError,
+      'Price lever update failed.',
+    );
+    if (result !== null) {
+      setPriceLeverPct(pct);
+      setConsoleSuccess(`Price lever posted at ${(pct * 100).toFixed(0)}%.`);
+      await fetchOwner();
+    }
+  }, [priceLeverPct, runAction, setPriceLever, stationId, fetchOwner]);
+
+  const submitDockingFee = useCallback(async () => {
+    const amount = Math.min(
+      DOCKING_FEE_MAX,
+      Math.max(DOCKING_FEE_MIN, Math.round(dockingFeeAmount)),
+    );
+    setConsoleSuccess(null);
+    const result = await runAction(
+      'docking-fee',
+      () => setDockingFee(stationId, amount, dockingFeeEnabled),
+      setConsoleError,
+      'Docking fee update failed.',
+    );
+    if (result !== null) {
+      setDockingFeeAmount(amount);
+      setConsoleSuccess(
+        `Docking fee posted: ${amount.toLocaleString()} cr (${dockingFeeEnabled ? 'on' : 'off'}).`,
+      );
+      await fetchOwner();
+    }
+  }, [dockingFeeAmount, dockingFeeEnabled, runAction, setDockingFee, stationId, fetchOwner]);
+
+  const submitServiceCharge = useCallback(async () => {
+    const multiplier = Math.min(
+      SERVICE_CHARGE_MAX,
+      Math.max(SERVICE_CHARGE_MIN, serviceChargeMult),
+    );
+    setConsoleSuccess(null);
+    const result = await runAction(
+      'service-charge',
+      () => setServiceCharge(stationId, multiplier),
+      setConsoleError,
+      'Service charge update failed.',
+    );
+    if (result !== null) {
+      setServiceChargeMult(multiplier);
+      setConsoleSuccess(`Service charge posted at ${multiplier.toFixed(1)}×.`);
+      await fetchOwner();
+    }
+  }, [serviceChargeMult, runAction, setServiceCharge, stationId, fetchOwner]);
+
+  const submitStorageRental = useCallback(async () => {
+    const perDay = Math.min(
+      STORAGE_RENTAL_MAX,
+      Math.max(STORAGE_RENTAL_MIN, Math.round(storageRentalPerDay)),
+    );
+    setConsoleSuccess(null);
+    const result = await runAction(
+      'storage-rental',
+      () => setStorageRental(stationId, perDay),
+      setConsoleError,
+      'Storage rental update failed.',
+    );
+    if (result !== null) {
+      setStorageRentalPerDay(perDay);
+      setConsoleSuccess(`Storage rental posted at ${perDay.toLocaleString()} cr/day.`);
+      await fetchOwner();
+    }
+  }, [storageRentalPerDay, runAction, setStorageRental, stationId, fetchOwner]);
 
   const submitWithdraw = useCallback(async () => {
     const amount = parseInt(withdrawInput, 10);
@@ -1116,6 +1212,124 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
           {serverTaxPct !== null && (
             <div className="po-tariff-current">Currently posted: {serverTaxPct}%</div>
           )}
+        </div>
+
+        {/* Revenue levers — owner only (LEG-366); no information-sales */}
+        <div className="po-section" data-testid="po-revenue-levers">
+          <h3 className="po-section-title">💹 Revenue Levers</h3>
+          <p className="section-description">
+            Price adjustment (±10%), docking fee (50–500 cr, toggle), service charge (0.8×–2.0×),
+            and storage rental (1,000–10,000 cr/day). Bounds are enforced by the Port Authority.
+          </p>
+          <div className="po-defense-grid">
+            <label className="po-defense-field">
+              <span>Price lever ({(priceLeverPct * 100).toFixed(0)}%)</span>
+              <input
+                type="range"
+                min={PRICE_LEVER_MIN}
+                max={PRICE_LEVER_MAX}
+                step={0.01}
+                value={priceLeverPct}
+                disabled={Boolean(busyAction)}
+                aria-label="Price adjustment lever"
+                data-testid="po-price-lever-pct"
+                onChange={(e) => setPriceLeverPct(parseFloat(e.target.value))}
+              />
+              <button
+                className="action-button primary"
+                type="button"
+                data-testid="po-price-lever-submit"
+                onClick={() => void submitPriceLever()}
+                disabled={Boolean(busyAction)}
+              >
+                {busyAction === 'price-lever' ? 'Posting...' : 'Post Price Lever'}
+              </button>
+            </label>
+            <label className="po-defense-field">
+              <span>Docking fee (cr)</span>
+              <input
+                type="number"
+                min={DOCKING_FEE_MIN}
+                max={DOCKING_FEE_MAX}
+                step={1}
+                value={dockingFeeAmount}
+                disabled={Boolean(busyAction)}
+                aria-label="Docking fee amount"
+                data-testid="po-docking-fee-amount"
+                onChange={(e) => setDockingFeeAmount(parseInt(e.target.value, 10) || DOCKING_FEE_MIN)}
+              />
+              <label className="po-defense-field">
+                <span>
+                  <input
+                    type="checkbox"
+                    checked={dockingFeeEnabled}
+                    disabled={Boolean(busyAction)}
+                    aria-label="Docking fee enabled"
+                    data-testid="po-docking-fee-enabled"
+                    onChange={(e) => setDockingFeeEnabled(e.target.checked)}
+                  />{' '}
+                  Enabled
+                </span>
+              </label>
+              <button
+                className="action-button primary"
+                type="button"
+                data-testid="po-docking-fee-submit"
+                onClick={() => void submitDockingFee()}
+                disabled={Boolean(busyAction)}
+              >
+                {busyAction === 'docking-fee' ? 'Posting...' : 'Post Docking Fee'}
+              </button>
+            </label>
+            <label className="po-defense-field">
+              <span>Service charge multiplier</span>
+              <input
+                type="number"
+                min={SERVICE_CHARGE_MIN}
+                max={SERVICE_CHARGE_MAX}
+                step={0.1}
+                value={serviceChargeMult}
+                disabled={Boolean(busyAction)}
+                aria-label="Service charge multiplier"
+                data-testid="po-service-charge-mult"
+                onChange={(e) => setServiceChargeMult(parseFloat(e.target.value) || 1)}
+              />
+              <button
+                className="action-button primary"
+                type="button"
+                data-testid="po-service-charge-submit"
+                onClick={() => void submitServiceCharge()}
+                disabled={Boolean(busyAction)}
+              >
+                {busyAction === 'service-charge' ? 'Posting...' : 'Post Service Charge'}
+              </button>
+            </label>
+            <label className="po-defense-field">
+              <span>Storage rental (cr/day)</span>
+              <input
+                type="number"
+                min={STORAGE_RENTAL_MIN}
+                max={STORAGE_RENTAL_MAX}
+                step={100}
+                value={storageRentalPerDay}
+                disabled={Boolean(busyAction)}
+                aria-label="Storage rental per day"
+                data-testid="po-storage-rental-per-day"
+                onChange={(e) =>
+                  setStorageRentalPerDay(parseInt(e.target.value, 10) || STORAGE_RENTAL_MIN)
+                }
+              />
+              <button
+                className="action-button primary"
+                type="button"
+                data-testid="po-storage-rental-submit"
+                onClick={() => void submitStorageRental()}
+                disabled={Boolean(busyAction)}
+              >
+                {busyAction === 'storage-rental' ? 'Posting...' : 'Post Storage Rental'}
+              </button>
+            </label>
+          </div>
         </div>
 
         {/* Treasury vault — citadel vault gauge visual language */}
