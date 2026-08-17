@@ -677,6 +677,136 @@ class TestListSectorStructuresToll:
 
         assert len(result["gates"]) == 1
         assert result["gates"][0]["toll"] == 750
+        # LEG-94: public sector listing must NOT expose owner revenue/usage.
+        gate_payload = result["gates"][0]
+        assert "toll_stats" not in gate_payload
+        assert "total_revenue" not in gate_payload
+        assert "usage_count" not in gate_payload
+        assert "last_used" not in gate_payload
+
+
+# --- LEG-94: owner listMine exposes toll_stats; public path does not --------
+
+
+@pytest.mark.unit
+class TestListPlayerProjectsTollStats:
+    """Owner-scoped GET /warp-gates/mine must surface the canon Reporting
+    fields already persisted by collect_toll (artificial_data.toll_stats).
+    listMine filters by player_id — a different player's beacon never
+    appears, so unauthorized callers gain no new access."""
+
+    def test_owner_sees_accumulated_toll_stats(self) -> None:
+        from src.models.gate_construction_site import GateConstructionSite
+        from src.models.warp_gate import WarpGateBeaconStatus
+
+        owner = _fake_player()
+        used_at = "2026-08-16T12:00:00+00:00"
+        tunnel = _fake_tunnel(
+            created_by_player_id=owner.id,
+            access_requirements={"toll_amount": 250},
+            artificial_data={
+                "toll_stats": {
+                    "usage_count": 3,
+                    "total_revenue": 750,
+                    "last_used": used_at,
+                },
+            },
+        )
+        beacon = WarpGateBeacon(
+            player_id=owner.id,
+            source_sector_id=100,
+            destination_sector_id=200,
+            status=WarpGateBeaconStatus.MATCHED,
+            invulnerable_until=None,
+            created_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+        )
+        # Assign a stable id so gate.beacon_id filter matches in the fake.
+        beacon.id = uuid.uuid4()
+        gate = _fake_gate(
+            owner.id,
+            beacon_id=beacon.id,
+            status=WarpGateStatus.ACTIVE,
+            warp_tunnel_id=tunnel.id,
+        )
+        src = Sector(sector_id=100, name="Origin")
+        dst = Sector(sector_id=200, name="Far Side")
+
+        db = _FakeSession({
+            WarpGateBeacon: _FakeQuery(all=[beacon]),
+            WarpGate: _FakeQuery(all=[gate]),
+            GateConstructionSite: _FakeQuery(all=[]),
+            Sector: _FakeQuery(seq=[src, dst]),
+            WarpTunnel: _FakeQuery(first=tunnel),
+        })
+
+        projects = warp_gate_service.list_player_projects(db, owner)
+
+        assert len(projects) == 1
+        project = projects[0]
+        assert project["phase"] == "ACTIVE"
+        assert project["gate_id"] == str(gate.id)
+        assert project["toll_stats"] == {
+            "total_revenue": 750,
+            "usage_count": 3,
+            "last_used": used_at,
+        }
+
+    def test_active_gate_without_stats_returns_honest_zeros(self) -> None:
+        from src.models.gate_construction_site import GateConstructionSite
+        from src.models.warp_gate import WarpGateBeaconStatus
+
+        owner = _fake_player()
+        tunnel = _fake_tunnel(
+            created_by_player_id=owner.id,
+            artificial_data={},
+        )
+        beacon = WarpGateBeacon(
+            player_id=owner.id,
+            source_sector_id=10,
+            destination_sector_id=20,
+            status=WarpGateBeaconStatus.MATCHED,
+            invulnerable_until=None,
+            created_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+        )
+        beacon.id = uuid.uuid4()
+        gate = _fake_gate(
+            owner.id,
+            beacon_id=beacon.id,
+            status=WarpGateStatus.ACTIVE,
+            warp_tunnel_id=tunnel.id,
+        )
+        db = _FakeSession({
+            WarpGateBeacon: _FakeQuery(all=[beacon]),
+            WarpGate: _FakeQuery(all=[gate]),
+            GateConstructionSite: _FakeQuery(all=[]),
+            Sector: _FakeQuery(seq=[
+                Sector(sector_id=10, name="A"),
+                Sector(sector_id=20, name="B"),
+            ]),
+            WarpTunnel: _FakeQuery(first=tunnel),
+        })
+
+        projects = warp_gate_service.list_player_projects(db, owner)
+        assert projects[0]["toll_stats"] == {
+            "total_revenue": 0,
+            "usage_count": 0,
+            "last_used": None,
+        }
+
+    def test_other_players_projects_not_listed(self) -> None:
+        """list_player_projects queries beacons by player_id — stranger's
+        gate with revenue never appears in the caller's response."""
+        from src.models.gate_construction_site import GateConstructionSite
+
+        caller = _fake_player()
+        # Empty beacon list for the authenticated player = no projects,
+        # regardless of what toll_stats exist elsewhere.
+        db = _FakeSession({
+            WarpGateBeacon: _FakeQuery(all=[]),
+            GateConstructionSite: _FakeQuery(all=[]),
+        })
+        projects = warp_gate_service.list_player_projects(db, caller)
+        assert projects == []
 
 
 # --- Accept #12: free (toll=0) gate makes no debit call ---------------------
