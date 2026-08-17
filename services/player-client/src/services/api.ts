@@ -1756,11 +1756,14 @@ export const centralBankAPI = {
 // Storage lockers — multi-trip contract fulfillment (FEATURES/economy/storage-lockers.md).
 // Rent is idempotent per (player, contract); deposit auto-completes when
 // accumulated deposits reach the contract quantity.
+export type StorageLockerTier = 'basic' | 'reinforced' | 'vault';
+
 export const storageAPI = {
-  rentLocker: (contractId: string) =>
+  /** Rent/reuse a locker. Optional `tier` (basic/reinforced/vault) — GS defaults to basic. */
+  rentLocker: (contractId: string, tier: StorageLockerTier = 'basic') =>
     apiRequest('/api/v1/storage/lockers', {
       method: 'POST',
-      body: JSON.stringify({ contract_id: contractId }),
+      body: JSON.stringify({ contract_id: contractId, tier }),
     }),
 
   deposit: (lockerId: string, quantity: number) =>

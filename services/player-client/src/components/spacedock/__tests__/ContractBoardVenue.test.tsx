@@ -362,10 +362,89 @@ describe('ContractBoardVenue', () => {
     await clickButton('Deposit');
     await flush();
 
-    expect(mockRentLocker).toHaveBeenCalledWith(CONTRACT_ACCEPTED.id);
+    expect(mockRentLocker).toHaveBeenCalledWith(CONTRACT_ACCEPTED.id, 'basic');
     expect(mockGetCurrentShip).toHaveBeenCalled();
     expect(mockDeposit).toHaveBeenCalledWith('locker-1', 20);
     expect(container.textContent).toContain('Locker 20/50');
+  });
+
+  it('Deposit sends selected locker tier (reinforced / vault) to rentLocker (LEG-276)', async () => {
+    mockGetBoard.mockResolvedValueOnce([]);
+    mockGetMine.mockResolvedValueOnce({ posted: [], accepted: [CONTRACT_ACCEPTED] });
+    mockRentLocker.mockResolvedValueOnce({
+      id: 'locker-2',
+      contractId: CONTRACT_ACCEPTED.id,
+      status: 'active',
+      tier: 'reinforced',
+      rentRate: 2.5,
+    });
+    mockGetCurrentShip.mockResolvedValueOnce({
+      cargo: { contents: { ore: 10 }, used: 10, capacity: 50 },
+    });
+    mockDeposit.mockResolvedValueOnce({
+      locker_id: 'locker-2',
+      deposited: 10,
+      accumulated: 10,
+      quantity_required: 50,
+      fee_charged: 0,
+      completed: false,
+      complete_result: null,
+    });
+
+    await act(async () => {
+      root.render(<ContractBoardVenue {...VENUE_PROPS} />);
+    });
+    await flush();
+
+    await clickButton('My Contracts');
+    await flush();
+
+    const tierSelect = container.querySelector(
+      `[data-testid="locker-tier-${CONTRACT_ACCEPTED.id}"]`,
+    ) as HTMLSelectElement;
+    expect(tierSelect).toBeTruthy();
+
+    await act(async () => {
+      tierSelect.value = 'reinforced';
+      tierSelect.dispatchEvent(new Event('change', { bubbles: true }));
+      await flush();
+    });
+
+    await clickButton('Deposit');
+    await flush();
+
+    expect(mockRentLocker).toHaveBeenCalledWith(CONTRACT_ACCEPTED.id, 'reinforced');
+    expect(container.textContent).toMatch(/Rent rate 2\.5/);
+
+    mockRentLocker.mockResolvedValueOnce({
+      id: 'locker-3',
+      contractId: CONTRACT_ACCEPTED.id,
+      status: 'active',
+      tier: 'vault',
+      rentRate: 5,
+    });
+    mockGetCurrentShip.mockResolvedValueOnce({
+      cargo: { contents: { ore: 5 }, used: 5, capacity: 50 },
+    });
+    mockDeposit.mockResolvedValueOnce({
+      locker_id: 'locker-3',
+      deposited: 5,
+      accumulated: 15,
+      quantity_required: 50,
+      fee_charged: 0,
+      completed: false,
+      complete_result: null,
+    });
+
+    await act(async () => {
+      tierSelect.value = 'vault';
+      tierSelect.dispatchEvent(new Event('change', { bubbles: true }));
+      await flush();
+    });
+    await clickButton('Deposit');
+    await flush();
+
+    expect(mockRentLocker).toHaveBeenCalledWith(CONTRACT_ACCEPTED.id, 'vault');
   });
 
   describe('insurance tier picker (WO-CONTRACT-1-INSURANCE)', () => {
