@@ -59,6 +59,8 @@ from src.services.scheduler.presence_helpers import (
     _repair_orphan_schedules_sync,
     _seed_trader_rosters_sync,
     _bulk_fill_traders_sync,
+    _seed_researcher_rosters_sync,
+    _bulk_fill_researchers_sync,
     _assign_trader_notoriety_sync,
     _assign_trader_missions_sync,
     _relocate_stranded_npcs_sync,
@@ -212,6 +214,22 @@ async def npc_scheduler_loop() -> None:
             logger.info("NPC scheduler: bulk-spawned %d trader(s) to target", filled)
     except Exception:
         logger.exception("NPC scheduler: trader bulk-fill failed")
+    # LEG-108: seed + bulk-fill RESEARCHER (nebula_surveyor) so the Rogue
+    # Scientist quantum-drop row is live — same boot shape as traders.
+    try:
+        seeded_r = await asyncio.to_thread(_seed_researcher_rosters_sync)
+        if seeded_r:
+            logger.info("NPC scheduler: seeded %d researcher roster(s)", seeded_r)
+    except Exception:
+        logger.exception("NPC scheduler: researcher roster seeding failed")
+    try:
+        filled_r = await asyncio.to_thread(_bulk_fill_researchers_sync)
+        if filled_r:
+            logger.info(
+                "NPC scheduler: bulk-spawned %d researcher(s) to target", filled_r
+            )
+    except Exception:
+        logger.exception("NPC scheduler: researcher bulk-fill failed")
     # Backfill notoriety onto traders that predate the column.
     try:
         scored = await asyncio.to_thread(_assign_trader_notoriety_sync)
