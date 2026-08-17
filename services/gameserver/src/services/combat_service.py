@@ -5264,9 +5264,13 @@ class CombatService:
         generator level), the citadel-built defense_buildings stored in the
         active_events JSONB (turret_network + orbital_platform counts), AND
         (WO-FIX-DEFENSE-TURRETS-FIGHTERS-NO-COMBAT-EFFECT) the purchasable
-        defense_turrets/defense_fighters garrison columns, to produce a
-        damage-reduction factor, a shield HP pool that must be depleted before
-        hull damage is dealt, and a per-round anti-drone kill contribution.
+        defense_turrets/defense_fighters garrison columns, AND (LEG-164 / WO-G6)
+        the citadel passive-defense rating from
+        ``citadel_service.citadel_passive_defense_rating`` (current-level
+        drone_capacity, plus mid-upgrade +50% of the next level's delta), to
+        produce a damage-reduction factor, a shield HP pool that must be
+        depleted before hull damage is dealt, and a per-round anti-drone kill
+        contribution.
 
         WO-CT1: until this, defense_buildings were dead wiring — players could
         build turret networks and orbital platforms and they had ZERO combat
@@ -5289,6 +5293,12 @@ class CombatService:
         shields = getattr(planet, "shields", 0) or 0
         defense_turrets = getattr(planet, "defense_turrets", 0) or 0
         defense_fighters = getattr(planet, "defense_fighters", 0) or 0
+        # LEG-164 / WO-G6: same mid-upgrade rating defensePower already uses.
+        # drone_capacity IS the citadel's passive defense garrison — fold into
+        # the fighter terms below (do not duplicate the 0.5×delta formula).
+        from src.services.citadel_service import citadel_passive_defense_rating
+        citadel_garrison = citadel_passive_defense_rating(planet)
+        effective_fighters = defense_fighters + citadel_garrison
 
         # Citadel-built defense buildings (JSONB, defensive read — never crashes).
         buildings = self._read_defense_buildings(planet)
@@ -5380,10 +5390,10 @@ class CombatService:
         # the building terms' caps. FLAGGED for DECISIONS pending a
         # balance-tuning pass.
         turret_unit_kills = min(defense_turrets // 10, 20)
-        fighter_unit_kills = min(defense_fighters // 5, 30)
+        fighter_unit_kills = min(effective_fighters // 5, 30)
         unit_anti_drone_kills = turret_unit_kills + fighter_unit_kills
         turret_unit_reduction = min(defense_turrets * 0.0005, 0.08)
-        fighter_unit_reduction = min(defense_fighters * 0.0003, 0.08)
+        fighter_unit_reduction = min(effective_fighters * 0.0003, 0.08)
         unit_reduction = turret_unit_reduction + fighter_unit_reduction
 
         anti_drone_kills_per_round += unit_anti_drone_kills
@@ -5406,9 +5416,9 @@ class CombatService:
             parts.append(f"{turret_networks} turret network(s) ({turret_reduction:.0%} reduction, {min(turret_networks * 3, 18)} drone-kills/round)")
         if orbital_platforms > 0:
             parts.append(f"{orbital_platforms} orbital platform(s) ({orbital_reduction:.0%} reduction, {orbital_shield_hp} armour HP)")
-        if defense_turrets > 0 or defense_fighters > 0:
+        if defense_turrets > 0 or effective_fighters > 0:
             parts.append(
-                f"{defense_turrets} garrison turret(s) + {defense_fighters} garrison fighter(s) "
+                f"{defense_turrets} garrison turret(s) + {effective_fighters} garrison fighter(s) "
                 f"({unit_reduction:.0%} reduction, {unit_anti_drone_kills} drone-kills/round)"
             )
         if drone_damage_bonus > 0:
@@ -5880,6 +5890,13 @@ class CombatService:
 
     def _transfer_planet_ownership(self, planet: Planet, new_owner: Player) -> None:
         """Transfer ownership of a planet to a new player via many-to-many."""
+        # LEG-159 / LEG-DEC-15: capture cancels any pending voluntary transfer (no fee).
+        try:
+            from src.services.planet_ownership_transfer_service import clear_pending_transfer
+            clear_pending_transfer(planet)
+        except Exception:
+            logger.debug("clear_pending_transfer skipped", exc_info=True)
+
         # Clear existing owners from the join table
         self.db.execute(
             self.db.query(Planet).filter(Planet.id == planet.id).statement

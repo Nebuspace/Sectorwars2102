@@ -37,6 +37,7 @@ from src.models.contract import (
 )
 from src.models.ship import Ship, ShipType
 from src.models.station import StationStatus
+from src.models.faction import FactionType
 from src.services import contract_bulk, contract_dispute, contract_escrow_core, contract_service, storage_service
 from src.services.contract_service import (
     ContractConflictError,
@@ -320,8 +321,9 @@ def _contract(**overrides: Any) -> SimpleNamespace:
         dispute_resolved_at=None,
         dispute_notes=None,
         escalated_to_admin=False,
-        # WO-CONTRACT-3-NPCGEN-TYPES
+        # WO-CONTRACT-3-NPCGEN-TYPES / LEG-122
         reputation_penalty=None,
+        reputation_reward=None,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -708,6 +710,113 @@ class TestCompleteHazardousTransportReputationPenalty:
         result = contract_service.complete(db, c.id, player.id, now=_NOW)
         assert calls == []
         assert result["status"] == "completed"
+
+
+@pytest.mark.unit
+class TestCompleteNpcReputationReward:
+    """LEG-122: first reader of Contract.reputation_reward on NPC complete."""
+
+    def _accepted_setup(self, **contract_overrides: Any):
+        destination_id = uuid.uuid4()
+        faction = SimpleNamespace(
+            id=uuid.uuid4(),
+            faction_type=FactionType.MINING,
+            name="Astral Mining Consortium",
+        )
+        c = _contract(
+            status=ContractStatus.ACCEPTED,
+            destination_station_id=destination_id,
+            commodity_type="ore",
+            quantity=50,
+            payment=Decimal("2000.00"),
+            contract_type=ContractType.CARGO_DELIVERY,
+            issuer_type=ContractIssuerType.NPC,
+            faction_id=faction.id,
+            faction=faction,
+            reputation_reward=15,
+        )
+        for k, v in contract_overrides.items():
+            setattr(c, k, v)
+        ship = _real_ship(cargo={"capacity": 500, "used": 80, "contents": {"ore": 80}})
+        player = _player(
+            credits=1000, is_docked=True, current_port_id=destination_id, current_ship=ship,
+        )
+        c.acceptor_player_id = player.id
+        db = _FakeSession(contracts=[c], players=[player])
+        return db, c, player, faction
+
+    def test_npc_complete_with_reward_applies_issuing_faction_delta(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls: List[Any] = []
+        monkeypatch.setattr(
+            contract_service, "apply_faction_rep_delta",
+            lambda db, player_id, faction_type, delta, reason, faction_name=None: calls.append(
+                (player_id, faction_type, delta, reason, faction_name)
+            ),
+        )
+        db, c, player, faction = self._accepted_setup()
+        contract_service.complete(db, c.id, player.id, now=_NOW)
+
+        assert len(calls) == 1
+        called_player_id, called_faction_type, called_delta, called_reason, called_name = calls[0]
+        assert called_player_id == player.id
+        assert called_faction_type == FactionType.MINING
+        assert called_delta == 15
+        assert called_reason == "npc_contract_reputation_reward"
+        assert called_name == faction.name
+
+    def test_null_reputation_reward_is_noop(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: List[Any] = []
+        monkeypatch.setattr(
+            contract_service, "apply_faction_rep_delta",
+            lambda *a, **kw: calls.append((a, kw)),
+        )
+        db, c, player, _faction = self._accepted_setup(reputation_reward=None)
+        contract_service.complete(db, c.id, player.id, now=_NOW)
+        assert calls == []
+
+    def test_player_issuer_with_reward_set_does_not_apply(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Player↔player mutual trader-rep is out of LEG-122 scope."""
+        calls: List[Any] = []
+        monkeypatch.setattr(
+            contract_service, "apply_faction_rep_delta",
+            lambda *a, **kw: calls.append((a, kw)),
+        )
+        db, c, player, _faction = self._accepted_setup(
+            issuer_type=ContractIssuerType.PLAYER,
+            reputation_reward=15,
+        )
+        # Player-complete path needs issuer credits for payout transfer.
+        issuer = _player(credits=5000)
+        c.issuer_id = issuer.id
+        db.players.append(issuer)
+        contract_service.complete(db, c.id, player.id, now=_NOW)
+        assert calls == []
+
+    def test_hazardous_transport_penalty_still_applies_with_reward(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Penalty path unchanged; both columns may fire on one complete."""
+        calls: List[Any] = []
+        monkeypatch.setattr(
+            contract_service, "apply_faction_rep_delta",
+            lambda db, player_id, faction_type, delta, reason, faction_name=None: calls.append(
+                (faction_type, delta, reason)
+            ),
+        )
+        db, c, player, _faction = self._accepted_setup(
+            contract_type=ContractType.HAZARDOUS_TRANSPORT,
+            reputation_penalty=-30,
+            reputation_reward=15,
+        )
+        contract_service.complete(db, c.id, player.id, now=_NOW)
+
+        assert (FactionType.FEDERATION, -30, "hazardous_transport_contract_completed") in calls
+        assert (FactionType.MINING, 15, "npc_contract_reputation_reward") in calls
+        assert len(calls) == 2
 
 
 @pytest.mark.unit
