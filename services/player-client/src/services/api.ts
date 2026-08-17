@@ -2050,6 +2050,14 @@ export const portOwnershipAPI = {
       method: 'POST',
       body: JSON.stringify({ defense_pct: defensePct, owner_pct: ownerPct }),
     }),
+
+  // Military takeover (port-ownership.md § Military takeover) — tip GS
+  // MilitaryActionRequest.action ∈ {declare, siege, occupy}.
+  militaryTakeover: (stationId: string, action: 'declare' | 'siege' | 'occupy') =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/military`, {
+      method: 'POST',
+      body: JSON.stringify({ action }),
+    }),
 };
 
 // Message beacons (message-beacons.md) -- deploy/read/salvage/recharge/
