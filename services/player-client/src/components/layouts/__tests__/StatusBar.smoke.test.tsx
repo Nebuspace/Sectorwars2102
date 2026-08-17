@@ -67,6 +67,9 @@ vi.mock('../../../contexts/GameContext', () => ({
     ships: [],
     currentShip: null,
     setCurrentShip: vi.fn(),
+    // LEG-406 / LEG-230: FleetManagerPanel refreshes availableMoves on mount —
+    // StatusBar dossier fleet tab mounts it; stub required or smoke throws.
+    getAvailableMoves: vi.fn().mockResolvedValue([]),
   }),
 }));
 
