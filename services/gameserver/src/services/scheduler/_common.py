@@ -808,11 +808,13 @@ _PRICE_HISTORY_LOCK_KEY = _mnemonic_lock_key("PXHS")
 _ROUTE_RUNS_RETENTION_LOCK_KEY = _mnemonic_lock_key("RTRT")
 _ORPHAN_SCHEDULE_REPAIR_LOCK_KEY = _mnemonic_lock_key("ORPH")
 _SEED_TRADER_ROSTERS_LOCK_KEY = _mnemonic_lock_key("SEED")
+_SEED_RESEARCHER_ROSTERS_LOCK_KEY = _mnemonic_lock_key("RSED")
 _LAW_PATROL_DISPERSAL_LOCK_KEY = _mnemonic_lock_key("LAWP")
 _STRANDED_RELOCATE_LOCK_KEY = _mnemonic_lock_key("STRN")
 _TRADER_NOTORIETY_LOCK_KEY = _mnemonic_lock_key("NTRY")
 _TRADER_MISSION_LOCK_KEY = _mnemonic_lock_key("TMSN")
 _BULK_FILL_TRADERS_LOCK_KEY = _mnemonic_lock_key("BFIL")
+_BULK_FILL_RESEARCHERS_LOCK_KEY = _mnemonic_lock_key("RBFL")
 # P9-realtime-npc-crash-watermark: startup catch-up, own key -- NOT the
 # global _ADVISORY_LOCK_KEY (that stays reserved for _run_due_ticks_sync
 # alone, per the house convention documented above). Prevents two
