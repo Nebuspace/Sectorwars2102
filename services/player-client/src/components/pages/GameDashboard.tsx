@@ -11,6 +11,7 @@ import SpaceDockInterface from '../spacedock/SpaceDockInterface';
 import PortOfficeVenue from '../spacedock/PortOfficeVenue';
 import ContractBoardVenue from '../spacedock/ContractBoardVenue';
 import PopulationCenterInterface from '../planetary/PopulationCenterInterface';
+import { LandingRightsControl } from '../planetary/LandingRightsControl';
 import SolarSystemViewscreen from '../tactical/SolarSystemViewscreen';
 import WindshieldTableau from '../tactical/WindshieldTableau';
 import PlanetPortPair from '../tactical/PlanetPortPair';
@@ -3155,6 +3156,21 @@ const GameDashboardInner: React.FC = () => {
                               </button>
                             </span>
                           </span>
+
+                          {isLandedPlanetMine && landedPlanet?.id && (
+                            <LandingRightsControl
+                              planetId={String(landedPlanet.id)}
+                              isOwned={isLandedPlanetMine}
+                              initialMode={
+                                (landedPlanetDetail as { landing_rights?: { mode?: string } } | null)
+                                  ?.landing_rights?.mode
+                                ?? (landedPlanetDetail as { landingRights?: { mode?: string } } | null)
+                                  ?.landingRights?.mode
+                                ?? null
+                              }
+                              onChanged={() => setOpsRefresh((n) => n + 1)}
+                            />
+                          )}
                         </div>
 
                         {/* Notices (rename / upgrade / vault / transfer outcomes) —
