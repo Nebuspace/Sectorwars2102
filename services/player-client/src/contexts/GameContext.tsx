@@ -118,6 +118,8 @@ export interface Station {
 }
 
 export interface MoveOption {
+  /** Sector row UUID (LEG-132) — mirrors SectorResponse.id for fleet move-as-one. */
+  id?: string | null;
   sector_id: number;
   sector_number?: number;  // Display number
   name: string;

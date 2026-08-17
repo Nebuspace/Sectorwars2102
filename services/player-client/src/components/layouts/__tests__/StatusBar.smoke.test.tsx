@@ -67,6 +67,9 @@ vi.mock('../../../contexts/GameContext', () => ({
     ships: [],
     currentShip: null,
     setCurrentShip: vi.fn(),
+    // LEG-406 / LEG-230: FleetManagerPanel refreshes availableMoves on mount —
+    // StatusBar dossier fleet tab mounts it; stub required or smoke throws.
+    getAvailableMoves: vi.fn().mockResolvedValue([]),
   }),
 }));
 
@@ -89,6 +92,7 @@ const mockGetOwnedPlanets = vi.fn();
 const mockGetTeam = vi.fn();
 const mockGetPermissions = vi.fn();
 const mockBeaconMine = vi.fn();
+const mockGetFleets = vi.fn();
 
 vi.mock('../../../services/api', () => ({
   factionAPI: {
@@ -118,6 +122,18 @@ vi.mock('../../../services/api', () => ({
   // My Beacons dossier tab (1bc7540d) loads on mount when cycled.
   beaconAPI: {
     mine: (...a: unknown[]) => mockBeaconMine(...a),
+  },
+  // LEG-INI-01 — FLEET tab mounts FleetManagerPanel, which calls getFleets on mount.
+  fleetAPI: {
+    getFleets: (...a: unknown[]) => mockGetFleets(...a),
+    createFleet: vi.fn(),
+    getFleetMembers: vi.fn().mockResolvedValue([]),
+    addShipToFleet: vi.fn(),
+    removeShipFromFleet: vi.fn(),
+    updateFormation: vi.fn(),
+    disbandFleet: vi.fn(),
+    resupplyFleet: vi.fn(),
+    move: vi.fn(),
   },
 }));
 
@@ -170,6 +186,7 @@ mockGetProgress.mockResolvedValue(FULL_PROGRESS);
 mockGetMedals.mockResolvedValue({ earned: [], available: [] });
 mockGetOwnedPlanets.mockResolvedValue({ planets: [] });
 mockBeaconMine.mockResolvedValue({ beacons: [], total: 0, page: 1, pages: 0 });
+mockGetFleets.mockResolvedValue([]);
 
 import StatusBar from '../StatusBar';
 import { SettingsProvider } from '../../../contexts/SettingsContext';
@@ -306,6 +323,11 @@ describe('StatusBar — live-mount smoke', () => {
       await flush();
       expect(tab.getAttribute('aria-selected')).toBe('true');
       expect(container.querySelector('.sb-dossier-body')).not.toBeNull();
+      // LEG-INI-01 — FLEET tab must mount FleetManagerPanel (not hangar-only).
+      if (tab.textContent === 'FLEET') {
+        expect(container.querySelector('[data-testid="fleet-manager"]')).not.toBeNull();
+        expect(mockGetFleets).toHaveBeenCalled();
+      }
     }
 
     expect(errorSpy).not.toHaveBeenCalled();
