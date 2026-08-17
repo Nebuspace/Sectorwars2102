@@ -6,9 +6,9 @@ transfer (``_transfer_quantum_wallet``) existed before this WO; the NPC leg
 carried an explicit deferral comment.
 
 MAPPING (NO-CANON, flagged in combat_service.py): canon names two NPC kinds
-that do not exist as spawn kinds. A Smuggler/Black-Marketeer-TITLED TRADER
-kill maps to the 5%/1-2 row; a RESEARCHER-archetype kill (declared but never
-spawned by npc_spawn_service.py today) maps to the 15%/1-3 row; every other
+that do not exist as distinct spawn kinds. A Smuggler/Black-Marketeer-TITLED TRADER
+kill maps to the 5%/1-2 row; a RESEARCHER-archetype kill (spawned via
+nebula_surveyor rosters — LEG-108) maps to the 15%/1-3 row; every other
 NPC never drops.
 
 Sections:
