@@ -21,7 +21,7 @@ from src.auth.admin_scopes import PLAYERS_ADJUST_REP
 from src.auth.dependencies import get_current_player, require_scope
 from src.models.player import Player
 from src.models.user import User
-from src.services.medal_service import MedalService
+from src.services.medal_service import MedalService, execute_bulk_grant, plan_bulk_grant
 from src.services.medal_catalog import get_catalog_entry
 
 router = APIRouter(
@@ -87,6 +87,32 @@ class AdminMedalActionResponse(BaseModel):
     player_id: str
     medal_id: str
     message: str
+
+
+class AdminBulkGrantRequest(BaseModel):
+    """LEG-81 — medals.md bulk grant (dry-run or commit via ``dry_run``)."""
+    medal_id: str
+    recipients: List[str]
+    reason: Optional[str] = None
+    dry_run: bool = True
+
+
+class BulkGrantInvalidSample(BaseModel):
+    input: str
+    reason: str
+
+
+class AdminBulkGrantResponse(BaseModel):
+    dry_run: bool
+    medal_id: str
+    valid_count: int
+    invalid_count: int
+    already_held_count: int
+    grantable_count: int
+    granted_count: int = 0
+    invalid_samples: List[BulkGrantInvalidSample]
+    grant_batch_id: Optional[str] = None
+    toast_suppressed: bool = False
 
 
 # ------------------------------------------------------------------
@@ -208,3 +234,61 @@ async def admin_revoke_medal(
         medal_id=payload.medal_id,
         message="Medal revoked" if changed else "Player did not hold this medal",
     )
+
+
+@router.post("/admin/bulk-grant", response_model=AdminBulkGrantResponse)
+async def admin_bulk_grant_medal(
+    payload: AdminBulkGrantRequest,
+    admin: User = Depends(require_scope(PLAYERS_ADJUST_REP)),
+    db: Session = Depends(get_db),
+):
+    """LEG-81 — bulk grant with dry-run (default) or commit (``dry_run=false``).
+
+    Paste up to 1,000 player UUIDs / usernames. Dry-run never mutates; commit
+    assigns one shared ``grant_batch_id``. Personal toasts suppressed when
+    grantable count > 50 (medals.md). Bulk-revoke-by-batch left Design-only.
+    """
+    try:
+        if payload.dry_run:
+            plan = plan_bulk_grant(db, payload.medal_id, payload.recipients)
+            return AdminBulkGrantResponse(
+                dry_run=True,
+                medal_id=plan["medal_id"],
+                valid_count=plan["valid_count"],
+                invalid_count=plan["invalid_count"],
+                already_held_count=plan["already_held_count"],
+                grantable_count=plan["grantable_count"],
+                granted_count=0,
+                invalid_samples=[
+                    BulkGrantInvalidSample(**s) for s in plan["invalid_samples"]
+                ],
+                grant_batch_id=None,
+                toast_suppressed=False,
+            )
+        result = execute_bulk_grant(
+            db,
+            payload.medal_id,
+            payload.recipients,
+            admin.id,
+            reason=payload.reason,
+        )
+        db.commit()
+        return AdminBulkGrantResponse(
+            dry_run=False,
+            medal_id=result["medal_id"],
+            valid_count=result["valid_count"],
+            invalid_count=result["invalid_count"],
+            already_held_count=result["already_held_count"],
+            grantable_count=result["grantable_count"],
+            granted_count=result["granted_count"],
+            invalid_samples=[
+                BulkGrantInvalidSample(**s) for s in result["invalid_samples"]
+            ],
+            grant_batch_id=result["grant_batch_id"],
+            toast_suppressed=result["toast_suppressed"],
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
