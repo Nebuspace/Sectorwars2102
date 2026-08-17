@@ -1,9 +1,10 @@
-"""WO-P7-MULTIACCT-PARTICIPATION-WEIGHT — shared participation_weight seam.
+"""WO-P7-MULTIACCT-PARTICIPATION-WEIGHT + LEG-256 soft-tier / all-paid.
 
 Accept proof:
 - one shared implementation (multi_account_service)
 - beacon + governance both consume it
 - HARD-flagged cluster member loses beacon count AND loses the vote
+- SOFT → 0.5; all_paid_subscribers → 1.0; HARD → 0.0 (non-exempt)
 """
 
 from __future__ import annotations
@@ -16,7 +17,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.models.multi_account import MultiAccountFlag, MultiAccountSeverity
+from src.models.multi_account import (
+    MultiAccountCluster,
+    MultiAccountFlag,
+    MultiAccountSeverity,
+)
 from src.services import multi_account_service as mas
 from src.services import message_beacon_service as beacon_svc
 from src.services.regional_governance_service import RegionalGovernanceService
@@ -48,13 +53,20 @@ class _FakeQuery:
 
 
 class _FakeSession:
-    def __init__(self, flags: Optional[List[Any]] = None) -> None:
+    def __init__(
+        self,
+        flags: Optional[List[Any]] = None,
+        clusters: Optional[List[Any]] = None,
+    ) -> None:
         self.flags = flags or []
+        self.clusters = clusters or []
 
     def query(self, *entities: Any) -> Any:
         head = entities[0]
         if head is MultiAccountFlag:
             return _FakeQuery(self.flags)
+        if head is MultiAccountCluster:
+            return _FakeQuery(self.clusters)
         raise AssertionError(f"unexpected query for {entities!r}")
 
 
@@ -65,20 +77,136 @@ class TestSharedParticipationWeight:
 
     def test_hard_flag_weights_zero(self) -> None:
         player_id = uuid.uuid4()
-        flag = SimpleNamespace(player_id=player_id, severity=MultiAccountSeverity.HARD)
-        assert mas.participation_weight(_FakeSession(flags=[flag]), player_id) == 0.0
+        cluster_id = uuid.uuid4()
+        flag = SimpleNamespace(
+            player_id=player_id,
+            cluster_id=cluster_id,
+            severity=MultiAccountSeverity.HARD,
+        )
+        cluster = SimpleNamespace(id=cluster_id, all_paid_subscribers=False)
+        assert (
+            mas.participation_weight(
+                _FakeSession(flags=[flag], clusters=[cluster]), player_id
+            )
+            == 0.0
+        )
 
-    def test_soft_flag_still_weights_one(self) -> None:
-        """Soft discount math is a follow-up; preserve shipped 0x/1.0 seam."""
+    def test_soft_flag_weights_half(self) -> None:
+        """LEG-256: soft-tier discount is 0.5× per multi-account-detection.md."""
         player_id = uuid.uuid4()
-        flag = SimpleNamespace(player_id=player_id, severity=MultiAccountSeverity.SOFT)
-        assert mas.participation_weight(_FakeSession(flags=[flag]), player_id) == 1.0
+        cluster_id = uuid.uuid4()
+        flag = SimpleNamespace(
+            player_id=player_id,
+            cluster_id=cluster_id,
+            severity=MultiAccountSeverity.SOFT,
+        )
+        cluster = SimpleNamespace(id=cluster_id, all_paid_subscribers=False)
+        assert (
+            mas.participation_weight(
+                _FakeSession(flags=[flag], clusters=[cluster]), player_id
+            )
+            == 0.5
+        )
+
+    def test_all_paid_exemption_returns_one_for_hard(self) -> None:
+        player_id = uuid.uuid4()
+        cluster_id = uuid.uuid4()
+        flag = SimpleNamespace(
+            player_id=player_id,
+            cluster_id=cluster_id,
+            severity=MultiAccountSeverity.HARD,
+        )
+        cluster = SimpleNamespace(id=cluster_id, all_paid_subscribers=True)
+        assert (
+            mas.participation_weight(
+                _FakeSession(flags=[flag], clusters=[cluster]), player_id
+            )
+            == 1.0
+        )
+
+    def test_all_paid_exemption_returns_one_for_soft(self) -> None:
+        player_id = uuid.uuid4()
+        cluster_id = uuid.uuid4()
+        flag = SimpleNamespace(
+            player_id=player_id,
+            cluster_id=cluster_id,
+            severity=MultiAccountSeverity.SOFT,
+        )
+        cluster = SimpleNamespace(id=cluster_id, all_paid_subscribers=True)
+        assert (
+            mas.participation_weight(
+                _FakeSession(flags=[flag], clusters=[cluster]), player_id
+            )
+            == 1.0
+        )
+
+    def test_hard_precedes_soft_when_both_present(self) -> None:
+        player_id = uuid.uuid4()
+        cluster_id = uuid.uuid4()
+        hard = SimpleNamespace(
+            player_id=player_id,
+            cluster_id=cluster_id,
+            severity=MultiAccountSeverity.HARD,
+        )
+        soft = SimpleNamespace(
+            player_id=player_id,
+            cluster_id=cluster_id,
+            severity=MultiAccountSeverity.SOFT,
+        )
+        cluster = SimpleNamespace(id=cluster_id, all_paid_subscribers=False)
+        assert (
+            mas.participation_weight(
+                _FakeSession(flags=[soft, hard], clusters=[cluster]), player_id
+            )
+            == 0.0
+        )
 
     def test_blocks_vote_tracks_hard_weight(self) -> None:
         player_id = uuid.uuid4()
-        hard = SimpleNamespace(player_id=player_id, severity=MultiAccountSeverity.HARD)
-        assert mas.blocks_vote(_FakeSession(flags=[hard]), player_id) is True
+        cluster_id = uuid.uuid4()
+        hard = SimpleNamespace(
+            player_id=player_id,
+            cluster_id=cluster_id,
+            severity=MultiAccountSeverity.HARD,
+        )
+        soft = SimpleNamespace(
+            player_id=player_id,
+            cluster_id=cluster_id,
+            severity=MultiAccountSeverity.SOFT,
+        )
+        cluster = SimpleNamespace(id=cluster_id, all_paid_subscribers=False)
+        assert (
+            mas.blocks_vote(
+                _FakeSession(flags=[hard], clusters=[cluster]), player_id
+            )
+            is True
+        )
+        assert (
+            mas.blocks_vote(
+                _FakeSession(flags=[soft], clusters=[cluster]), player_id
+            )
+            is False
+        )
         assert mas.blocks_vote(_FakeSession(), player_id) is False
+
+    def test_eligible_for_contest_soft_still_eligible(self) -> None:
+        player_id = uuid.uuid4()
+        planet_id = uuid.uuid4()
+        cluster_id = uuid.uuid4()
+        soft = SimpleNamespace(
+            player_id=player_id,
+            cluster_id=cluster_id,
+            severity=MultiAccountSeverity.SOFT,
+        )
+        cluster = SimpleNamespace(id=cluster_id, all_paid_subscribers=False)
+        assert (
+            mas.eligible_for_contest(
+                _FakeSession(flags=[soft], clusters=[cluster]),
+                player_id,
+                planet_id,
+            )
+            is True
+        )
 
     def test_beacon_module_uses_shared_helper(self) -> None:
         """Beacon call site is the shared function (imported alias)."""
@@ -91,8 +219,14 @@ class TestHardFlaggedLosesBeaconAndVote:
 
     def test_hard_flagged_loses_beacon_weight(self) -> None:
         player_id = uuid.uuid4()
-        flag = SimpleNamespace(player_id=player_id, severity=MultiAccountSeverity.HARD)
-        db = _FakeSession(flags=[flag])
+        cluster_id = uuid.uuid4()
+        flag = SimpleNamespace(
+            player_id=player_id,
+            cluster_id=cluster_id,
+            severity=MultiAccountSeverity.HARD,
+        )
+        cluster = SimpleNamespace(id=cluster_id, all_paid_subscribers=False)
+        db = _FakeSession(flags=[flag], clusters=[cluster])
         assert mas.participation_weight(db, player_id) == 0.0
         # Beacon consumer is the same function object.
         assert beacon_svc._participation_weight(db, player_id) == 0.0

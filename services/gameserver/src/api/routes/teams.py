@@ -110,6 +110,8 @@ class TeamMemberResponse(BaseModel):
     contribution_credits: dict
     current_sector: Optional[int]
     combat_rating: float
+    pinned_medal_id: Optional[str] = None
+    medal_count: Optional[int] = None
 
 
 class InvitationResponse(BaseModel):
@@ -805,6 +807,16 @@ class WarEntry(BaseModel):
     reason: str
     status: str
     score: dict
+    # Optional cease / victory fields — already persisted on member_roles
+    # active_wars by ceasefire + team_war_service victory path. Without
+    # these, response_model=List[WarEntry] strips them at the API boundary
+    # (LEG-78 / LEG-73 residual).
+    ceased_at: Optional[str] = None
+    ceased_by: Optional[str] = None
+    cease_reason: Optional[str] = None
+    winner_team_id: Optional[str] = None
+    loser_team_id: Optional[str] = None
+    victory_at: Optional[str] = None
 
 
 @router.post("/{team_id}/wars/declare")

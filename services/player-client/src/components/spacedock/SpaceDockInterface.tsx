@@ -11,6 +11,7 @@ import ArmoryVenue from './ArmoryVenue';
 import ServicesVenue from './ServicesVenue';
 import MiningVenue from './MiningVenue';
 import GamblingVenue from './GamblingVenue';
+import RefiningVenue from './RefiningVenue';
 import { getStationClassInfo } from '../common/stationIdentity';
 import { shipAPI, registryAPI } from '../../services/api';
 import { formatCredits } from '../../utils/formatters';
@@ -26,7 +27,7 @@ const getApiBaseUrl = () => {
 };
 
 // Venue type definitions
-type VenueType = 'hub' | 'trading' | 'shipyard' | 'construction' | 'portoffice' | 'contracts' | 'genesis' | 'armory' | 'services' | 'gambling' | 'mining';
+type VenueType = 'hub' | 'trading' | 'shipyard' | 'construction' | 'portoffice' | 'contracts' | 'genesis' | 'armory' | 'services' | 'gambling' | 'mining' | 'refining';
 type GamblingGame = 'menu' | 'slots' | 'dice' | 'blackjack' | 'lottery';
 
 // Blackjack card types
@@ -487,6 +488,18 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
       // sector-bound (server-enforced), the laser refit is universal.
       available: true,
       services: ['Claim Licenses', 'Mining Laser Refits']
+    },
+    // Refining Facility — LEG-79 / WO-UIPC-REFINING. SpaceDocks always offer
+    // refining; Class-3+ TradeDocks advertise refining_facility. Server still
+    // enforces venue class for Crystal vs Lumen.
+    {
+      id: 'refining',
+      name: 'Refining Facility',
+      icon: '🏭',
+      description: 'Refine Quantum Shards into Crystals and Lumen Crystals',
+      available:
+        Boolean(stationServices.refining_facility) || Boolean(currentStation?.is_spacedock),
+      services: ['Quantum Crystal', 'Lumen Crystal (12h)', 'Shard Conversion'],
     },
     {
       id: 'gambling',
@@ -2019,6 +2032,8 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
             blackMarketButton={<BlackMarketButton />}
           />
         );
+      case 'refining':
+        return <RefiningVenue onBack={() => setActiveVenue('hub')} />;
       case 'gambling':
         return (
           <GamblingVenue
