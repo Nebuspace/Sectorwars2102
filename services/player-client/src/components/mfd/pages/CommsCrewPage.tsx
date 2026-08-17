@@ -28,11 +28,22 @@ import React from 'react';
 import { useGame, type PlayerMessage } from '../../../contexts/GameContext';
 import { useWebSocket } from '../../../contexts/WebSocketContext';
 import { useAuth } from '../../../contexts/AuthContext';
-import { teamAPI } from '../../../services/api';
+import { messageAPI, teamAPI } from '../../../services/api';
 import { MFDPageHeader, MFDPageBody, MFDField, MFDEmpty } from '../atoms';
 import './pages-ops.css';
 
 const ACCENT = '#00FF7F';
+
+/** Canon categories (messaging.md). Tip Query reason requires 10–255 chars —
+ *  bare `spam`/`other` are too short, so pad while keeping the category token. */
+export type FlagCategory = 'harassment' | 'spam' | 'rule_break' | 'other';
+export const FLAG_REASON_BY_CATEGORY: Record<FlagCategory, string> = {
+  harassment: 'harassment',
+  spam: 'spam report',
+  rule_break: 'rule_break',
+  other: 'other report',
+};
+const FLAG_CATEGORIES: FlagCategory[] = ['harassment', 'spam', 'rule_break', 'other'];
 
 interface ComposeTarget {
   recipientId: string;
@@ -130,6 +141,10 @@ const CommsCrewPage: React.FC = () => {
   const [sendError, setSendError] = React.useState<string | null>(null);
   const [sendNotice, setSendNotice] = React.useState<string | null>(null);
   const [deletingId, setDeletingId] = React.useState<string | null>(null);
+  const [flagMenuId, setFlagMenuId] = React.useState<string | null>(null);
+  const [flaggingId, setFlaggingId] = React.useState<string | null>(null);
+  const [flagError, setFlagError] = React.useState<string | null>(null);
+  const [flagNotice, setFlagNotice] = React.useState<string | null>(null);
 
   // Initial inbox fetch once auth has hydrated, then again on every live
   // new_message notification — the unread badge stays current without a
@@ -161,9 +176,13 @@ const CommsCrewPage: React.FC = () => {
   const toggleExpand = (msg: PlayerMessage) => {
     if (expandedId === msg.id) {
       setExpandedId(null);
+      setFlagMenuId(null);
       return;
     }
     setExpandedId(msg.id);
+    setFlagMenuId(null);
+    setFlagError(null);
+    setFlagNotice(null);
     if (!msg.is_read) {
       // Reading IS the read receipt — but a failed flag write must not
       // block reading the transmission itself.
@@ -217,6 +236,23 @@ const CommsCrewPage: React.FC = () => {
       setSendError(err instanceof Error ? err.message : 'Failed to purge transmission');
     } finally {
       setDeletingId(null);
+    }
+  };
+
+  const handleFlag = async (msg: PlayerMessage, category: FlagCategory) => {
+    if (flaggingId) return;
+    setFlaggingId(msg.id);
+    setFlagError(null);
+    setFlagNotice(null);
+    setSendError(null);
+    try {
+      await messageAPI.flagMessage(msg.id, FLAG_REASON_BY_CATEGORY[category]);
+      setFlagMenuId(null);
+      setFlagNotice('FLAGGED FOR MODERATION');
+    } catch (err: unknown) {
+      setFlagError(err instanceof Error ? err.message : 'Failed to flag transmission');
+    } finally {
+      setFlaggingId(null);
     }
   };
 
@@ -291,6 +327,17 @@ const CommsCrewPage: React.FC = () => {
                         ↩ REPLY
                       </button>
                       <button
+                        className="mfd-page-comms-flag-btn"
+                        data-testid="comms-flag-hail"
+                        disabled={flaggingId === msg.id || !!msg.flagged}
+                        onClick={() =>
+                          setFlagMenuId((cur) => (cur === msg.id ? null : msg.id))
+                        }
+                        title="Flag this transmission for moderation"
+                      >
+                        {msg.flagged ? 'FLAGGED' : flagMenuId === msg.id ? 'CANCEL FLAG' : '⚑ FLAG'}
+                      </button>
+                      <button
                         className="mfd-page-comms-delete-btn"
                         data-testid="comms-purge-hail"
                         disabled={deletingId === msg.id}
@@ -300,6 +347,35 @@ const CommsCrewPage: React.FC = () => {
                         {deletingId === msg.id ? 'PURGING…' : '✕ PURGE'}
                       </button>
                     </div>
+                    {flagMenuId === msg.id && !msg.flagged && (
+                      <div
+                        className="mfd-page-comms-flag-categories"
+                        data-testid="comms-flag-categories"
+                      >
+                        {FLAG_CATEGORIES.map((cat) => (
+                          <button
+                            key={cat}
+                            type="button"
+                            className="mfd-page-comms-flag-cat-btn"
+                            data-testid={`comms-flag-cat-${cat}`}
+                            disabled={flaggingId === msg.id}
+                            onClick={() => handleFlag(msg, cat)}
+                          >
+                            {flaggingId === msg.id ? 'FLAGGING…' : cat.replace('_', ' ').toUpperCase()}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    {flagNotice && expandedId === msg.id && (
+                      <div className="mfd-page-comms-flag-notice" role="status">
+                        {flagNotice}
+                      </div>
+                    )}
+                    {flagError && expandedId === msg.id && (
+                      <div className="mfd-page-comms-flag-error" role="alert">
+                        {flagError}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
