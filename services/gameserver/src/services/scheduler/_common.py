@@ -1202,6 +1202,36 @@ async def _broadcast_events(events: List[Dict[str, Any]]) -> None:
                 )
             continue
 
+        # LEG-157 / SYSTEMS/anchor-repair-service.md: lifecycle ops alerts for
+        # missing / repaired / repair_failed anchors. Same region+admin fan-out
+        # as coordinated_genocide — NOT sector rooms (sector_id may be null and
+        # the operator dashboard is the intended audience). Best-effort only;
+        # never raise into the governance sweep / repair commit path.
+        if event.get("type") in (
+            "region_anchor_missing",
+            "region_anchor_repaired",
+            "region_anchor_repair_failed",
+        ):
+            region_id = event.get("region_id")
+            if region_id is not None:
+                try:
+                    await connection_manager.broadcast_to_region(
+                        str(region_id), dict(event)
+                    )
+                except Exception:
+                    logger.exception(
+                        "NPC scheduler: region broadcast failed for %s",
+                        event.get("type"),
+                    )
+            try:
+                await connection_manager.broadcast_to_admins(dict(event))
+            except Exception:
+                logger.exception(
+                    "NPC scheduler: admin broadcast failed for %s",
+                    event.get("type"),
+                )
+            continue
+
         # WO-G4: genesis_progress is a PERSONAL frame to the planet owner — not a
         # sector room broadcast. Route it via the per-user primitive
         # (connection_manager.send_personal_message(user_id: str, message)).
