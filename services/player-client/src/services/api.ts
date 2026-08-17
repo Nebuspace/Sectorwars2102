@@ -617,6 +617,13 @@ export const messageAPI = {
       method: 'DELETE'
     }),
 
+  /** LEG-412: tip POST /messages/{id}/flag?reason= (10–255 chars). */
+  flagMessage: (messageId: string, reason: string) =>
+    apiRequest(
+      `/api/v1/messages/${encodeURIComponent(messageId)}/flag?reason=${encodeURIComponent(reason)}`,
+      { method: 'POST' },
+    ),
+
   getTeamMessages: (teamId: string, page: number = 1) =>
     apiRequest(`/api/v1/messages/team/${teamId}?page=${page}`)
 };
