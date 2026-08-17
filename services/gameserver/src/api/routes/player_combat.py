@@ -265,6 +265,36 @@ async def engage_combat(
     if not result.get("success"):
         return CombatEngageResponse(status="error", message=result.get("message", "Combat failed"))
 
+    # LEG-338: combat_attack (+ combat_defend when PvP defender known)
+    try:
+        from src.services.player_activity_service import (
+            ActivityEventType,
+            get_player_activity_service,
+        )
+        activity_service = await get_player_activity_service()
+        await activity_service.track_activity(
+            str(player.id),
+            ActivityEventType.COMBAT_ATTACK,
+            {
+                "sector_id": player.current_sector_id,
+                "target_type": request.targetType,
+            },
+            db=db,
+        )
+        defender_id = result.get("defender_id")
+        if defender_id and str(defender_id) != str(player.id):
+            await activity_service.track_activity(
+                str(defender_id),
+                ActivityEventType.COMBAT_DEFEND,
+                {
+                    "sector_id": player.current_sector_id,
+                    "target_type": request.targetType,
+                },
+                db=db,
+            )
+    except Exception:
+        logger.warning("activity tracking failed (combat engage)", exc_info=True)
+
     return CombatEngageResponse(
         combatId=result.get("combat_log_id"),
         status="initiated",

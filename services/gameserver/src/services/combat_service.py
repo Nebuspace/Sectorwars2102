@@ -1424,7 +1424,8 @@ class CombatService:
             "combat_details": combat_result["combat_details"],
             "turns_consumed": turn_cost,
             "turns_remaining": attacker.turns,
-            "combat_log_id": str(combat_log.id)
+            "combat_log_id": str(combat_log.id),
+            "defender_id": str(defender.id),
         }
         if police_response:
             result_dict["police_response"] = police_response
