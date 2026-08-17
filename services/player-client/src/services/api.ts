@@ -1622,6 +1622,19 @@ export const tradingAPI = {
       body: JSON.stringify({ occupant_player_id: occupantPlayerId }),
     }),
 
+  // LEG-438 — long-term mooring (docking-slips.md; tip POST /trading/mooring/long-term).
+  // Rate is tip docking_service.LONG_TERM_MOORING_RATE_PER_DAY (200 cr/day) — preview only.
+  acquireLongTermMooring: (stationId: string, days: number) =>
+    apiRequest('/api/v1/trading/mooring/long-term', {
+      method: 'POST',
+      body: JSON.stringify({ station_id: stationId, days }),
+    }),
+
+  releaseLongTermMooring: () =>
+    apiRequest('/api/v1/trading/mooring/long-term/release', {
+      method: 'POST',
+    }),
+
   getMarket: (stationId: string) =>
     apiRequest(`/api/v1/trading/market/${stationId}`),
 
