@@ -162,7 +162,9 @@ export const FleetManagerPanel: React.FC = () => {
   // LEG-141: context only refreshes moves on sector change / explore / latent-scan.
   // Opening Fleet with an empty/stale cache showed zero hops until an intervening warp.
   // Depend on sector id only — getAvailableMoves is not memoized in GameContext.
+  // Guard typeof — StatusBar/dossier smoke mocks may omit getAvailableMoves.
   useEffect(() => {
+    if (typeof getAvailableMoves !== 'function') return;
     void getAvailableMoves();
   }, [currentSector?.id]); // eslint-disable-line react-hooks/exhaustive-deps -- see above
 

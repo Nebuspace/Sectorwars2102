@@ -67,6 +67,9 @@ vi.mock('../../../contexts/GameContext', () => ({
     ships: [],
     currentShip: null,
     setCurrentShip: vi.fn(),
+    // LEG-141 FleetManagerPanel refreshes hops on mount when FLEET tab opens.
+    availableMoves: { warps: [], tunnels: [] },
+    getAvailableMoves: vi.fn().mockResolvedValue(undefined),
   }),
 }));
 
