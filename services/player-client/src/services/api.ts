@@ -2013,6 +2013,31 @@ export const portOwnershipAPI = {
       body: JSON.stringify({ rate: taxRate }),
     }),
 
+  // Owner revenue levers (port-ownership.md § Revenue streams) — tip GS shapes.
+  setPriceLever: (stationId: string, pct: number) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/price-lever`, {
+      method: 'POST',
+      body: JSON.stringify({ pct }),
+    }),
+
+  setDockingFee: (stationId: string, amount: number, enabled: boolean) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/docking-fee`, {
+      method: 'POST',
+      body: JSON.stringify({ amount, enabled }),
+    }),
+
+  setServiceCharge: (stationId: string, multiplier: number) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/service-charge`, {
+      method: 'POST',
+      body: JSON.stringify({ multiplier }),
+    }),
+
+  setStorageRental: (stationId: string, perDay: number) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/storage-rental`, {
+      method: 'POST',
+      body: JSON.stringify({ per_day: perDay }),
+    }),
+
   withdraw: (stationId: string, amount: number) =>
     apiRequest(`/api/v1/port-ownership/stations/${stationId}/withdraw`, {
       method: 'POST',
@@ -2059,6 +2084,45 @@ export const portOwnershipAPI = {
     apiRequest(`/api/v1/port-ownership/stations/${stationId}/takeover/counter`, {
       method: 'POST',
       body: JSON.stringify({ action }),
+    }),
+
+  // Economic takeover defense (port-ownership.md § Takeover defense).
+  // Magnitudes ratified: TARIFF_CUT_FRACTION=0.5 (server-side),
+  // COUNTER_TRADE_CREDITS_PER_VOLUME=1, ceilings 500_000.
+  activateTariffCut: (stationId: string) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/takeover/defense/tariff-cut`, {
+      method: 'POST',
+    }),
+
+  activateCounterTrade: (stationId: string, defenseVolume: number) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/takeover/defense/counter-trade`, {
+      method: 'POST',
+      body: JSON.stringify({ defense_volume: defenseVolume }),
+    }),
+
+  activateFriendlyTrade: (
+    stationId: string,
+    payload: {
+      contracted_volume: number;
+      ally_team_id?: string | null;
+      ally_faction?: string | null;
+    },
+  ) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/takeover/defense/friendly-trade`, {
+      method: 'POST',
+      body: JSON.stringify({
+        contracted_volume: payload.contracted_volume,
+        ...(payload.ally_team_id ? { ally_team_id: payload.ally_team_id } : {}),
+        ...(payload.ally_faction ? { ally_faction: payload.ally_faction } : {}),
+      }),
+    }),
+
+  // Fee-distribution rebalance (port-ownership.md § Fee distribution).
+  // Operating is immutable 30% server-side; client sends defense_pct + owner_pct.
+  setFeeDistribution: (stationId: string, defensePct: number, ownerPct: number) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/fee-distribution`, {
+      method: 'POST',
+      body: JSON.stringify({ defense_pct: defensePct, owner_pct: ownerPct }),
     }),
 };
 
