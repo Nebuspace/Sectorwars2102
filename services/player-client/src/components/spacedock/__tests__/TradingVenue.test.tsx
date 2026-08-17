@@ -12,6 +12,10 @@ vi.mock('../../trading/TradingInterface', () => ({
   default: () => <div data-testid="trading-interface" />,
 }));
 
+vi.mock('../LongTermMooringPanel', () => ({
+  default: () => <div data-testid="long-term-mooring-panel" />,
+}));
+
 import TradingVenue from '../TradingVenue';
 
 describe('TradingVenue', () => {
@@ -44,6 +48,7 @@ describe('TradingVenue', () => {
 
     expect(container.textContent).toContain('Trading Hub');
     expect(container.querySelector('[data-testid="trading-interface"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="long-term-mooring-panel"]')).toBeTruthy();
     expect(container.textContent).toContain('Black Market');
 
     const back = Array.from(container.querySelectorAll('button')).find((b) =>
