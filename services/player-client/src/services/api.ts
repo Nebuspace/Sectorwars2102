@@ -136,6 +136,60 @@ export const combatAPI = {
     })
 };
 
+/**
+ * Typed DroneType fleet (attack/defense/scout/mining/repair) — distinct from
+ * planetary defense fighters, which the colony UI labels "Drones".
+ * Canon: FEATURES/gameplay/drones.md. Routes: services/gameserver/.../drones.py
+ */
+export type DroneTypeId = 'attack' | 'defense' | 'scout' | 'mining' | 'repair';
+
+export interface DroneTypeCatalogEntry {
+  type: string;
+  description: string;
+  base_stats: {
+    health: number;
+    attack_power: number;
+    defense_power: number;
+    speed: number;
+  };
+  abilities: string[];
+}
+
+export const droneFleetAPI = {
+  getTypes: (): Promise<{ types: DroneTypeCatalogEntry[] }> =>
+    apiRequest('/api/v1/drones/types'),
+
+  getMyDrones: (includeDestroyed = false) =>
+    apiRequest(`/api/v1/drones/?include_destroyed=${includeDestroyed ? 'true' : 'false'}`),
+
+  create: (body: { drone_type: string; name?: string }) =>
+    apiRequest('/api/v1/drones/', {
+      method: 'POST',
+      body: JSON.stringify({
+        drone_type: body.drone_type,
+        ...(body.name ? { name: body.name } : {}),
+      }),
+    }),
+
+  repair: (droneId: string, repairAmount: number) =>
+    apiRequest(`/api/v1/drones/${droneId}/repair`, {
+      method: 'POST',
+      body: JSON.stringify({ repair_amount: repairAmount }),
+    }),
+
+  upgrade: (droneId: string) =>
+    apiRequest(`/api/v1/drones/${droneId}/upgrade`, {
+      method: 'POST',
+    }),
+
+  /** Batch deploy undeployed drones — same contract as combatAPI.deployDrones. */
+  deploy: (sectorId: string, droneCount: number) =>
+    apiRequest('/api/v1/drones/deploy', {
+      method: 'POST',
+      body: JSON.stringify({ sectorId, droneCount }),
+    }),
+};
+
 // Armory — sector mine laying (open space). Distinct from combatAPI.deployDrones.
 export const armoryAPI = {
   deploy: (quantity: number) =>
@@ -2088,6 +2142,7 @@ export const beaconAPI = {
 
 export const gameAPI = {
   combat: combatAPI,
+  droneFleet: droneFleetAPI,
   armory: armoryAPI,
   greyStatus: greyStatusAPI,
   planetary: planetaryAPI,
