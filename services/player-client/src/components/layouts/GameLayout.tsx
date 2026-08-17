@@ -6,6 +6,7 @@ import { useWebSocket } from '../../contexts/WebSocketContext';
 import { useAutopilot } from '../../contexts/AutopilotContext';
 import StatusBar from './StatusBar';
 import Teleprinter from '../aria/Teleprinter';
+import AriaMarketPredictionPanel from '../aria/AriaMarketPredictionPanel';
 import Annunciator from '../hud/Annunciator';
 import { MFDProvider, useMFD } from '../mfd/MFDContext';
 import MFDScreen from '../mfd/MFDScreen';
@@ -549,6 +550,9 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
             transcriptOpen={teleprinterTranscriptOpen}
             onTranscriptOpenChange={setTeleprinterTranscriptOpen}
           />
+          {/* LEG-375: docked ARIA market expectations (tip predict/all).
+              Panel self-hides when not docked; Teleprinter baseline untouched. */}
+          <AriaMarketPredictionPanel />
 
           {/* `.lower` (WO-UI0-SHELL-TRANSPLANT) — MFD column + instrument
               deck, auto-placed into grid row 4 (the `1fr` row — everything

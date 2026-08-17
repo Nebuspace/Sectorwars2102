@@ -2177,3 +2177,35 @@ export const recoveryAPI = {
     }),
 };
 
+/** Tip GET /api/v1/market-prediction/* — statistical engine (not LLM). LEG-375. */
+export type MarketPricePrediction = {
+  commodity: string;
+  station_id: string;
+  current_price: number;
+  predicted_price: number;
+  price_change_pct: number;
+  trend: string;
+  confidence: number;
+  volatility: number;
+  lower_bound: number;
+  upper_bound: number;
+  prediction_horizon_hours: number;
+  factors: string[];
+  timestamp: string;
+};
+
+export const marketPredictionAPI = {
+  predictAll: (opts: {
+    stationId?: string;
+    hoursAhead?: number;
+  } = {}): Promise<MarketPricePrediction[]> => {
+    const params = new URLSearchParams();
+    if (opts.stationId) params.set('station_id', opts.stationId);
+    if (opts.hoursAhead != null) params.set('hours_ahead', String(opts.hoursAhead));
+    const qs = params.toString();
+    return apiRequest(
+      `/api/v1/market-prediction/predict/all${qs ? `?${qs}` : ''}`,
+    );
+  },
+};
+
