@@ -189,6 +189,82 @@ def award_medal(
 # flag_modified, no migration).
 _MEDAL_PRIVACY_SETTINGS_KEY = "medal_privacy"
 _UNVIEWED_AWARDS_KEY = "unviewed_awards"
+_PINNED_MEDAL_ID_KEY = "pinned_medal_id"
+
+
+def _medal_privacy_block(player: Player) -> Dict[str, Any]:
+    # getattr: movement unit fakes / presence _Row stand-ins may omit settings.
+    settings = getattr(player, "settings", None)
+    settings = settings if isinstance(settings, dict) else {}
+    privacy = settings.get(_MEDAL_PRIVACY_SETTINGS_KEY)
+    return dict(privacy) if isinstance(privacy, dict) else {}
+
+
+def public_medal_identity(
+    player: Player,
+    *,
+    medal_count: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Pinned public face + count for roster/discovery (medals.md pinning model).
+
+    ``medal_count`` may be precomputed (batch enrich); when omitted, callers that
+    need a live count should pass ``count_earned_medals``. Respects
+    ``medal_privacy.show_count_publicly`` (default True) — when False, count is
+    ``None`` so clients that check ``typeof medal_count === 'number'`` hide it.
+    """
+    privacy = _medal_privacy_block(player)
+    pinned = privacy.get(_PINNED_MEDAL_ID_KEY)
+    show_count = privacy.get("show_count_publicly", True)
+    return {
+        "pinned_medal_id": str(pinned) if pinned else None,
+        "medal_count": (int(medal_count) if medal_count is not None else None)
+        if show_count is not False
+        else None,
+    }
+
+
+def count_earned_medals(db: Session, player_id: uuid.UUID) -> int:
+    return (
+        db.query(PlayerMedal)
+        .filter(PlayerMedal.player_id == player_id)
+        .count()
+    )
+
+
+def set_pinned_medal_id(
+    db: Session,
+    player: Player,
+    medal_id: Optional[str],
+) -> str:
+    """Write ``Player.settings.medal_privacy.pinned_medal_id`` (LEG-59).
+
+    ``medal_id=None`` clears the pin. A non-null id must be a medal the player
+    currently holds (catalog unknown / unearned → ValueError). Hidden medals
+    may be pinned (medals.md). Flush left to caller; returns the stored value
+    (resolved catalog id or empty-clear as None → returns \"\").
+    """
+    resolved: Optional[str] = None
+    if medal_id is not None and str(medal_id).strip():
+        raw = str(medal_id).strip()
+        resolved = raw if raw in MEDAL_CATALOG else LEGACY_KEY_TO_ID.get(raw, raw)
+        if not get_catalog_entry(resolved):
+            raise ValueError(f"Unknown medal_id: {raw}")
+        held = (
+            db.query(PlayerMedal)
+            .filter(PlayerMedal.player_id == player.id, PlayerMedal.medal_id == resolved)
+            .first()
+        )
+        if held is None:
+            raise ValueError("Cannot pin a medal you have not earned")
+
+    settings = dict(player.settings) if isinstance(player.settings, dict) else {}
+    privacy = _medal_privacy_block(player)
+    privacy[_PINNED_MEDAL_ID_KEY] = resolved
+    settings[_MEDAL_PRIVACY_SETTINGS_KEY] = privacy
+    player.settings = settings
+    flag_modified(player, "settings")
+    db.flush()
+    return resolved or ""
 
 
 def _persist_offline_award_notification(
@@ -1608,6 +1684,9 @@ __all__ = [
     "MedalService",
     "award_medal",
     "seed_medals",
+    "public_medal_identity",
+    "count_earned_medals",
+    "set_pinned_medal_id",
     "check_and_award_combat_medals",
     "check_and_award_trade_medals",
     "check_and_award_exploration_medals",

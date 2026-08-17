@@ -110,6 +110,8 @@ class TeamMemberResponse(BaseModel):
     contribution_credits: dict
     current_sector: Optional[int]
     combat_rating: float
+    pinned_medal_id: Optional[str] = None
+    medal_count: Optional[int] = None
 
 
 class InvitationResponse(BaseModel):
