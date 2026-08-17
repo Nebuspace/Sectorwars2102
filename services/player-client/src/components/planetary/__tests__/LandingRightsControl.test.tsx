@@ -93,6 +93,39 @@ describe('LandingRightsControl', () => {
     });
   });
 
+  it('PUTs public → private (Accept minimum mode flip)', async () => {
+    setLandingRights.mockResolvedValue({
+      success: true,
+      message: "Landing rights for Test set to 'private'.",
+      planet_id: 'planet-1',
+      mode: 'private',
+      whitelist: [],
+      denylist: [],
+    });
+
+    await act(async () => {
+      root.render(
+        <LandingRightsControl planetId="planet-1" isOwned initialMode="public" />,
+      );
+    });
+
+    const select = container.querySelector(
+      '[data-testid="landing-rights-select"]',
+    ) as HTMLSelectElement;
+
+    await act(async () => {
+      select.value = 'private';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      await flush();
+    });
+
+    expect(setLandingRights).toHaveBeenCalledWith('planet-1', {
+      mode: 'private',
+      whitelist: [],
+      denylist: [],
+    });
+  });
+
   it('disables whitelist and denylist options with honest residual copy', async () => {
     await act(async () => {
       root.render(
