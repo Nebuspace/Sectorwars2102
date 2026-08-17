@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { api } from '../../utils/auth';
 import './audit-log-viewer.css';
 
 interface AuditLog {
@@ -28,6 +29,11 @@ interface AuditLogViewerProps {
   onExport?: (logs: AuditLog[]) => void;
 }
 
+const responseStatus = (err: unknown): number | undefined =>
+  typeof err === 'object' && err !== null && 'response' in err
+    ? (err as { response?: { status?: number } }).response?.status
+    : undefined;
+
 export const AuditLogViewer: React.FC<AuditLogViewerProps> = ({ filters = {}, onExport }) => {
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [loading, setLoading] = useState(true);
@@ -44,30 +50,46 @@ export const AuditLogViewer: React.FC<AuditLogViewerProps> = ({ filters = {}, on
     setError(null);
 
     try {
-      const queryParams = new URLSearchParams({
+      // Preserve prior query keys (page/limit/filters/search/sort) — no filter-semantics change.
+      const params: Record<string, string> = {
         page: page.toString(),
         limit: '50',
-        ...filters,
+        ...Object.fromEntries(
+          Object.entries(filters).filter(([, v]) => v !== undefined && v !== '')
+        ),
         search: searchTerm,
         sortField,
-        sortOrder
-      });
+        sortOrder,
+      };
 
-      const response = await fetch(`/api/v1/admin/audit/logs?${queryParams}`, {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('accessToken')}`
-        }
-      });
+      const response = await api.get<{
+        logs?: AuditLog[];
+        totalPages?: number;
+        pages?: number;
+      }>('/api/v1/admin/audit/logs', { params });
 
-      if (!response.ok) {
-        throw new Error('Failed to load audit logs');
-      }
-
-      const data = await response.json();
-      setLogs(data.logs || []);
-      setTotalPages(data.totalPages || 1);
+      setLogs(response.data.logs || []);
+      // Gameserver returns `pages`; older client expected `totalPages`.
+      setTotalPages(response.data.pages ?? response.data.totalPages ?? 1);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      console.error('Error loading audit logs:', err);
+      const status = responseStatus(err);
+      if (status === 401 || status === 403) {
+        setError(
+          'Access denied — audit log viewer requires the admin.audit.view scope (AUDIT_VIEW).'
+        );
+      } else if (status === 404) {
+        setError(
+          'Audit logs route not found (404). The gameserver ships /api/v1/admin/audit/logs — ' +
+            'check that the gameserver is running and the /api proxy is reaching it.'
+        );
+      } else if (status !== undefined) {
+        setError(`Failed to load audit logs (HTTP ${status})`);
+      } else {
+        setError('Gameserver unreachable — network error fetching audit logs');
+      }
+      setLogs([]);
+      setTotalPages(1);
     } finally {
       setLoading(false);
     }
@@ -161,7 +183,7 @@ export const AuditLogViewer: React.FC<AuditLogViewerProps> = ({ filters = {}, on
       </div>
 
       {error && (
-        <div className="audit-error">
+        <div className="audit-error" role="alert">
           <i className="fas fa-exclamation-circle"></i>
           {error}
         </div>
