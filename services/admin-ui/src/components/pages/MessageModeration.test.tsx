@@ -408,4 +408,120 @@ describe('MessageModeration', () => {
       expect(screen.getByText(/rate limit/i)).toBeTruthy();
     });
   });
+
+  it('select-all toggles every message on the current page', async () => {
+    const user = userEvent.setup();
+    const message2 = { ...message, id: 'm2', sender_name: 'Dana' };
+    mockLoad({
+      messages: {
+        ...emptyMessages,
+        messages: [message, message2],
+        total: 2,
+      },
+    });
+
+    render(<MessageModeration />);
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+
+    await user.click(
+      screen.getByRole('checkbox', { name: 'Select all messages on this page' }),
+    );
+    expect(screen.getByTestId('bulk-action-bar')).toBeTruthy();
+    expect(screen.getByText('2 selected')).toBeTruthy();
+
+    await user.click(
+      screen.getByRole('checkbox', { name: 'Select all messages on this page' }),
+    );
+    expect(screen.queryByTestId('bulk-action-bar')).toBeNull();
+  });
+
+  it('bulk delete posts selected ids to bulk-moderate and reports partial failures', async () => {
+    const user = userEvent.setup();
+    const message2 = { ...message, id: 'm2', sender_name: 'Dana' };
+    mockLoad({
+      messages: {
+        ...emptyMessages,
+        messages: [message, message2],
+        total: 2,
+      },
+    });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockResolvedValue({
+      data: {
+        action: 'delete',
+        succeeded: 1,
+        failed: 1,
+        results: [
+          { message_id: 'm1', success: true, detail: null },
+          { message_id: 'm2', success: false, detail: 'not found' },
+        ],
+      },
+    });
+
+    render(<MessageModeration />);
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+
+    await user.click(screen.getByRole('checkbox', { name: 'Select message m1' }));
+    await user.click(screen.getByRole('checkbox', { name: 'Select message m2' }));
+    await user.click(screen.getByRole('button', { name: 'Bulk Delete' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/messages/bulk-moderate',
+        { message_ids: ['m1', 'm2'], action: 'delete' },
+      );
+    });
+    expect(confirmMock).toHaveBeenCalledWith(
+      expect.objectContaining({ danger: true, confirmLabel: 'Delete selected' }),
+    );
+    expect(toastSuccess).not.toHaveBeenCalled();
+    expect(toastWarning).toHaveBeenCalledWith(
+      'Bulk delete: 1 succeeded, 1 failed.',
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId('bulk-partial-failures')).toBeTruthy();
+    });
+    expect(screen.getByText(/m2: not found/)).toBeTruthy();
+  });
+
+  it('bulk clear-flag posts correct payload when all selections succeed', async () => {
+    const user = userEvent.setup();
+    const message2 = { ...message, id: 'm2', sender_name: 'Dana' };
+    mockLoad({
+      messages: {
+        ...emptyMessages,
+        messages: [message, message2],
+        total: 2,
+      },
+    });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockResolvedValue({
+      data: {
+        action: 'unflag',
+        succeeded: 2,
+        failed: 0,
+        results: [
+          { message_id: 'm1', success: true },
+          { message_id: 'm2', success: true },
+        ],
+      },
+    });
+
+    render(<MessageModeration />);
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+
+    await user.click(
+      screen.getByRole('checkbox', { name: 'Select all messages on this page' }),
+    );
+    await user.click(screen.getByRole('button', { name: 'Bulk Clear Flag' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/messages/bulk-moderate',
+        { message_ids: ['m1', 'm2'], action: 'unflag' },
+      );
+    });
+    expect(toastWarning).not.toHaveBeenCalled();
+    expect(toastSuccess).toHaveBeenCalledWith('Cleared flags on 2 messages.');
+  });
 });

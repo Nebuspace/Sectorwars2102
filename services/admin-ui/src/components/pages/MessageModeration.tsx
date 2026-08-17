@@ -26,6 +26,7 @@ interface FlaggedMessageAlert {
  *   GET  /api/v1/admin/messages/flagged?page=N   -> FlaggedMessagesResponse
  *   GET  /api/v1/admin/messages/stats            -> MessageStats
  *   POST /api/v1/admin/messages/{id}/moderate    -> { success: boolean }
+ *   POST /api/v1/admin/messages/bulk-moderate    -> BulkModerateResponse (LEG-270 / LEG-266)
  *   GET  /api/v1/admin/beacons/flagged?page=N    -> FlaggedBeaconsResponse
  *   POST /api/v1/admin/beacons/{id}/clear-flag   -> { success, flagged, ... }
  *   POST /api/v1/admin/beacons/{id}/confirm-abuse -> { success, removed, deployer_player_id, trust_before, trust_after, trust_dock, aria_violation_count }
@@ -101,6 +102,20 @@ interface MessageStats {
   most_active_senders: ActiveSender[];
 }
 
+/** LEG-266 Accepted contract (PR #711) — mass message moderation. */
+interface BulkModerateItemResult {
+  message_id: string;
+  success: boolean;
+  detail?: string | null;
+}
+
+interface BulkModerateResponse {
+  action: string;
+  succeeded: number;
+  failed: number;
+  results: BulkModerateItemResult[];
+}
+
 type ModerationAction = 'delete' | 'unflag';
 
 const formatTimestamp = (value: string | null): string => {
@@ -141,6 +156,11 @@ const MessageModeration: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [beaconError, setBeaconError] = useState<string | null>(null);
   const [actingId, setActingId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [bulkActing, setBulkActing] = useState(false);
+  const [bulkFailures, setBulkFailures] = useState<BulkModerateItemResult[]>(
+    [],
+  );
 
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -170,11 +190,13 @@ const MessageModeration: React.FC = () => {
       setMessages(data.messages ?? []);
       setTotalFlagged(data.total ?? 0);
       setTotalPages(data.pages && data.pages > 0 ? data.pages : 1);
+      setSelectedIds([]);
     } else {
       console.error('Failed to load flagged messages:', flaggedResult.reason);
       setMessages([]);
       setTotalFlagged(0);
       setTotalPages(1);
+      setSelectedIds([]);
       setError(
         formatAdminApiError(flaggedResult.reason, {
           fallback: 'Failed to load the flagged-message review queue.',
@@ -277,6 +299,7 @@ const MessageModeration: React.FC = () => {
         );
         // Remove the row locally for immediate feedback, then refresh totals.
         setMessages((current) => current.filter((m) => m.id !== message.id));
+        setSelectedIds((current) => current.filter((id) => id !== message.id));
         await loadData();
       } catch (err) {
         console.error(`Failed to ${action} message:`, err);
@@ -293,6 +316,99 @@ const MessageModeration: React.FC = () => {
       }
     },
     [confirm, toast, loadData],
+  );
+
+  const toggleSelected = useCallback((messageId: string) => {
+    setSelectedIds((current) =>
+      current.includes(messageId)
+        ? current.filter((id) => id !== messageId)
+        : [...current, messageId],
+    );
+  }, []);
+
+  const allPageSelected =
+    messages.length > 0 && messages.every((m) => selectedIds.includes(m.id));
+
+  const toggleSelectAllPage = useCallback(() => {
+    setSelectedIds((current) => {
+      const pageIds = messages.map((m) => m.id);
+      const allSelected =
+        pageIds.length > 0 && pageIds.every((id) => current.includes(id));
+      if (allSelected) {
+        return current.filter((id) => !pageIds.includes(id));
+      }
+      const merged = new Set([...current, ...pageIds]);
+      return Array.from(merged);
+    });
+  }, [messages]);
+
+  const bulkModerate = useCallback(
+    async (action: ModerationAction) => {
+      const ids = selectedIds.filter((id) =>
+        messages.some((m) => m.id === id),
+      );
+      if (ids.length === 0) return;
+
+      const isDestructive = action === 'delete';
+      const confirmed = await confirm({
+        title: isDestructive ? 'Bulk Delete Messages' : 'Bulk Clear Flags',
+        message: isDestructive
+          ? `Permanently delete ${ids.length} flagged message${ids.length === 1 ? '' : 's'}? This action cannot be undone.`
+          : `Clear the flag on ${ids.length} message${ids.length === 1 ? '' : 's'} and remove them from the review queue?`,
+        confirmLabel: isDestructive ? 'Delete selected' : 'Clear flags',
+        danger: isDestructive,
+      });
+      if (!confirmed) return;
+
+      setBulkActing(true);
+      setBulkFailures([]);
+      try {
+        const res = await api.post<BulkModerateResponse>(
+          '/api/v1/admin/messages/bulk-moderate',
+          { message_ids: ids, action },
+        );
+        const payload = res.data;
+        const succeededIds = (payload.results ?? [])
+          .filter((r) => r.success)
+          .map((r) => r.message_id);
+        const failed = (payload.results ?? []).filter((r) => !r.success);
+
+        if (succeededIds.length > 0) {
+          setMessages((current) =>
+            current.filter((m) => !succeededIds.includes(m.id)),
+          );
+          setSelectedIds((current) =>
+            current.filter((id) => !succeededIds.includes(id)),
+          );
+        }
+
+        await loadData();
+
+        if (payload.failed > 0 || failed.length > 0) {
+          setBulkFailures(failed);
+          toast.warning(
+            `Bulk ${action}: ${payload.succeeded} succeeded, ${payload.failed} failed.`,
+          );
+        } else {
+          setBulkFailures([]);
+          toast.success(
+            isDestructive
+              ? `Deleted ${payload.succeeded} message${payload.succeeded === 1 ? '' : 's'}.`
+              : `Cleared flags on ${payload.succeeded} message${payload.succeeded === 1 ? '' : 's'}.`,
+          );
+        }
+      } catch (err) {
+        console.error(`Failed to bulk ${action} messages:`, err);
+        toast.error(
+          isDestructive
+            ? 'Failed to bulk-delete messages.'
+            : 'Failed to bulk-clear flags.',
+        );
+      } finally {
+        setBulkActing(false);
+      }
+    },
+    [selectedIds, messages, confirm, toast, loadData],
   );
 
   const clearBeaconFlag = useCallback(
@@ -414,6 +530,24 @@ const MessageModeration: React.FC = () => {
           </div>
         )}
 
+        {bulkFailures.length > 0 && (
+          <div
+            className="msgmod-bulk-failures"
+            role="status"
+            data-testid="bulk-partial-failures"
+          >
+            <strong>Bulk moderation partial failures</strong>
+            <ul>
+              {bulkFailures.map((f) => (
+                <li key={f.message_id}>
+                  {f.message_id}
+                  {f.detail ? `: ${f.detail}` : ' — failed'}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
         {loading && messages.length === 0 && !error ? (
           <div className="msgmod-empty">Loading flagged messages…</div>
         ) : null}
@@ -422,11 +556,44 @@ const MessageModeration: React.FC = () => {
           <div className="msgmod-empty">No flagged messages.</div>
         ) : null}
 
+        {messages.length > 0 && selectedIds.length > 0 && (
+          <div className="msgmod-bulk-bar" data-testid="bulk-action-bar">
+            <span className="msgmod-bulk-count">
+              {selectedIds.length} selected
+            </span>
+            <button
+              type="button"
+              className="msgmod-btn msgmod-btn-secondary"
+              disabled={bulkActing || actingId !== null}
+              onClick={() => void bulkModerate('unflag')}
+            >
+              Bulk Clear Flag
+            </button>
+            <button
+              type="button"
+              className="msgmod-btn msgmod-btn-danger"
+              disabled={bulkActing || actingId !== null}
+              onClick={() => void bulkModerate('delete')}
+            >
+              Bulk Delete
+            </button>
+          </div>
+        )}
+
         {messages.length > 0 && (
           <div className="msgmod-table-wrap">
             <table className="msgmod-table">
               <thead>
                 <tr>
+                  <th className="msgmod-select-col">
+                    <input
+                      type="checkbox"
+                      aria-label="Select all messages on this page"
+                      checked={allPageSelected}
+                      disabled={bulkActing}
+                      onChange={toggleSelectAllPage}
+                    />
+                  </th>
                   <th>Sender</th>
                   <th>Recipient</th>
                   <th>Content</th>
@@ -438,6 +605,15 @@ const MessageModeration: React.FC = () => {
               <tbody>
                 {messages.map((message) => (
                   <tr key={message.id}>
+                    <td className="msgmod-select-col">
+                      <input
+                        type="checkbox"
+                        aria-label={`Select message ${message.id}`}
+                        checked={selectedIds.includes(message.id)}
+                        disabled={bulkActing}
+                        onChange={() => toggleSelected(message.id)}
+                      />
+                    </td>
                     <td className="msgmod-sender">
                       {message.sender_name ?? message.sender_id}
                     </td>
@@ -471,7 +647,9 @@ const MessageModeration: React.FC = () => {
                         <button
                           type="button"
                           className="msgmod-btn msgmod-btn-secondary"
-                          disabled={actingId === message.id}
+                          disabled={
+                            actingId === message.id || bulkActing
+                          }
                           onClick={() => void moderate(message, 'unflag')}
                         >
                           Clear Flag
@@ -479,7 +657,9 @@ const MessageModeration: React.FC = () => {
                         <button
                           type="button"
                           className="msgmod-btn msgmod-btn-danger"
-                          disabled={actingId === message.id}
+                          disabled={
+                            actingId === message.id || bulkActing
+                          }
                           onClick={() => void moderate(message, 'delete')}
                         >
                           Delete
