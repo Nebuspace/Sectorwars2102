@@ -1,12 +1,12 @@
 fastapi==0.141.1
-uvicorn[standard]==0.52.1
+uvicorn[standard]==0.52.3
 websockets==17.0.1
-sqlalchemy==2.0.51
+sqlalchemy==2.0.52
 psycopg2-binary==2.9.12
 asyncpg==0.31.0
 pydantic[email]==2.13.4
-pydantic-settings==2.14.2
-alembic==1.19.0
+pydantic-settings==2.15.0
+alembic==1.19.1
 python-jose[cryptography]==3.5.0
 python-multipart>=0.0.18
 passlib[argon2]==1.7.4
