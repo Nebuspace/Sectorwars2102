@@ -45,6 +45,10 @@ function hasKillLog(row: AvailableBountyRow): boolean {
   return Array.isArray(row.recent_kills) && row.recent_kills.length > 0;
 }
 
+function killLogCount(row: AvailableBountyRow): number {
+  return Array.isArray(row.recent_kills) ? row.recent_kills.length : 0;
+}
+
 export interface BountyBoardProps {
   /** Override fetch for tests; defaults to bountyAPI.getAvailable. */
   fetchAvailable?: (limit?: number) => Promise<AvailableBountiesResponse>;
@@ -194,7 +198,7 @@ const BountyBoard: React.FC<BountyBoardProps> = ({
                   </td>
                   <td className="bb-kills">
                     {hasKillLog(row) ? (
-                      <span data-testid="bounty-board-kills">{String(row.recent_kills?.length)} logged</span>
+                      <span data-testid="bounty-board-kills">{String(killLogCount(row))} logged</span>
                     ) : (
                       <span className="bb-omitted" data-testid="bounty-board-kills-omitted">
                         Not provided
