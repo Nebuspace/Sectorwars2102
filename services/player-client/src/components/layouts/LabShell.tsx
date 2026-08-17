@@ -154,6 +154,8 @@ function buildMockGameValue(mode: ShellMode): NonNullable<React.ContextType<type
     getMyStations: asyncNoop,
     setStationTax: asyncNoop,
     withdrawTreasury: asyncNoop,
+    getDefensePolicy: asyncNoop,
+    setDefensePolicy: asyncNoop,
     getTakeoverStatus: asyncNoop,
     launchTakeover: asyncNoop,
     counterTakeover: asyncNoop,

@@ -403,6 +403,17 @@ interface GameContextType {
   getMyStations: () => Promise<unknown>;
   setStationTax: (stationId: string, taxRate: number) => Promise<unknown>;
   withdrawTreasury: (stationId: string, amount: number) => Promise<unknown>;
+  getDefensePolicy: (stationId: string) => Promise<unknown>;
+  setDefensePolicy: (
+    stationId: string,
+    policy: {
+      docking_access: 'open' | 'faction' | 'whitelist' | 'hostile_deny';
+      hostility_list: string[];
+      punitive_fee_mult: number;
+      defender_posture: string;
+      drone_allocation_pct: number;
+    },
+  ) => Promise<unknown>;
   getTakeoverStatus: (stationId: string) => Promise<unknown>;
   launchTakeover: (stationId: string) => Promise<unknown>;
   counterTakeover: (stationId: string, action: 'accept' | 'match' | 'dispute') => Promise<unknown>;
@@ -1475,6 +1486,37 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
+  const getDefensePolicy = async (stationId: string): Promise<unknown> => {
+    if (!user) throw new Error('Not authenticated');
+
+    try {
+      return await portOwnershipAPI.getDefensePolicy(stationId);
+    } catch (error: any) {
+      console.error('Error getting station defense policy:', error);
+      throw error;
+    }
+  };
+
+  const setDefensePolicy = async (
+    stationId: string,
+    policy: {
+      docking_access: 'open' | 'faction' | 'whitelist' | 'hostile_deny';
+      hostility_list: string[];
+      punitive_fee_mult: number;
+      defender_posture: string;
+      drone_allocation_pct: number;
+    },
+  ): Promise<unknown> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      return await portOwnershipAPI.setDefensePolicy(stationId, policy);
+    } catch (error: any) {
+      console.error('Error setting station defense policy:', error);
+      throw error;
+    }
+  };
+
   // Owner lever: withdraw from the station treasury (solo owner only)
   const withdrawTreasury = async (stationId: string, amount: number): Promise<unknown> => {
     if (!user || !playerState) throw new Error('Not authenticated');
@@ -1910,6 +1952,8 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     getMyStations,
     setStationTax,
     withdrawTreasury,
+    getDefensePolicy,
+    setDefensePolicy,
     getTakeoverStatus,
     launchTakeover,
     counterTakeover,
