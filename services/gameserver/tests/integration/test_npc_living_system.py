@@ -32,20 +32,27 @@ from src.models.npc_character import (
 from src.models.pending_engagement import EngagementStatus
 from src.models.player import Player
 from src.models.region import Region, RegionType
-from src.models.sector import Sector
+from src.models.sector import Sector, SectorType
 from src.models.ship import Ship, ShipSpecification, ShipStatus, ShipType
 from src.models.station import Station, StationClass, StationType
 from src.models.user import User
 from src.models.warp_tunnel import WarpTunnel, WarpTunnelType
 from src.services import npc_movement_service, npc_trading_service
+from src.services.combat_service import (
+    NPC_QUANTUM_DROP_RESEARCHER_MAX,
+    _roll_npc_quantum_drop,
+)
 from src.services.npc_engagement_service import (
     route_engagement,
     sweep_pending_engagements,
 )
-from src.services.npc_scheduler_service import _resurrect_respawned
+from src.services.npc_scheduler_service import _fill_roster_deficit, _resurrect_respawned
 from src.services.npc_spawn_service import (
+    NEBULA_SURVEYOR_KIND,
+    RESEARCHERS_PER_REGION,
     _presence_entry,
     handle_npc_ship_destroyed,
+    seed_researcher_rosters,
     seed_trader_rosters,
 )
 
@@ -534,6 +541,118 @@ class TestTraderNpc:
         assert rosters[0].role == "merchant_captain"
         assert first["trader_rosters_created"] >= 1
         assert second["trader_rosters_created"] == 0
+
+
+def _ensure_scout_spec(db: Session) -> ShipSpecification:
+    existing = (
+        db.query(ShipSpecification)
+        .filter(ShipSpecification.type == ShipType.SCOUT_SHIP)
+        .first()
+    )
+    if existing is not None:
+        return existing
+    from src.models.ship import ShipSize
+
+    spec = ShipSpecification(
+        type=ShipType.SCOUT_SHIP,
+        ship_size=ShipSize.SMALL,
+        base_cost=30000,
+        speed=2.5,
+        turn_cost=1,
+        attack_turn_cost=5,
+        max_cargo=100,
+        max_colonists=1,
+        max_drones=1,
+        max_shields=150,
+        shield_recharge_rate=12.0,
+        hull_points=200,
+        evasion=45,
+        genesis_compatible=False,
+        max_genesis_devices=0,
+        warp_compatible=True,
+        warp_creation_capable=False,
+        quantum_jump_capable=False,
+        scanner_range=5,
+        attack_rating=8,
+        defense_rating=8,
+        maintenance_rate=0.0,
+        construction_time=2,
+        fuel_efficiency=95,
+        max_upgrade_levels={},
+        special_abilities=["advanced_sensors"],
+        description="test scout",
+        shield_resistance=0.0,
+        armor_rating=0.02,
+    )
+    db.add(spec)
+    db.flush()
+    return spec
+
+
+class TestResearcherSpawnLEG108:
+    """LEG-108 — RESEARCHER / Rogue Scientist spawn activates quantum drop."""
+
+    def test_seed_researcher_rosters_idempotent_and_prefers_nebula(self, db, world):
+        world.sector_a.type = SectorType.STANDARD
+        world.sector_b.type = SectorType.NEBULA
+        db.flush()
+
+        galaxy = Galaxy(name=f"Research Galaxy {uuid.uuid4()}")
+        db.add(galaxy)
+        db.flush()
+
+        first = seed_researcher_rosters(db, galaxy)
+        second = seed_researcher_rosters(db, galaxy)
+
+        ref = f"{galaxy.id}:researcher:{world.region.id}"
+        rosters = (
+            db.query(NPCRoster)
+            .filter(NPCRoster.bang_roster_ref == ref)
+            .all()
+        )
+        assert len(rosters) == 1
+        roster = rosters[0]
+        assert roster.role == NEBULA_SURVEYOR_KIND
+        assert roster.default_archetype == NPCArchetype.RESEARCHER
+        assert roster.target_count == RESEARCHERS_PER_REGION
+        assert roster.host_sector_id == world.sector_b.sector_id  # NEBULA preferred
+        assert first["researcher_rosters_created"] >= 1
+        assert second["researcher_rosters_created"] == 0
+
+    def test_fill_spawns_researcher_and_quantum_drop_rolls(self, db, world, monkeypatch):
+        import src.services.combat_service as combat_service_module
+
+        _ensure_scout_spec(db)
+        galaxy = Galaxy(name=f"Research Fill {uuid.uuid4()}")
+        db.add(galaxy)
+        db.flush()
+
+        seed_researcher_rosters(db, galaxy)
+        roster = (
+            db.query(NPCRoster)
+            .filter(NPCRoster.role == NEBULA_SURVEYOR_KIND)
+            .one()
+        )
+        # Keep fill cheap in the fixture world (no science-route requirement).
+        roster.target_count = 1
+        db.flush()
+
+        events = _fill_roster_deficit(db, roster, fill_all=True)
+        assert len(events) == 1
+
+        researchers = (
+            db.query(NPCCharacter)
+            .filter(NPCCharacter.archetype == NPCArchetype.RESEARCHER)
+            .all()
+        )
+        assert len(researchers) >= 1
+        npc = researchers[0]
+        assert npc.faction_code == "nova_scientific_institute"
+        assert npc.bang_roster_ref == roster.bang_roster_ref
+
+        monkeypatch.setattr(combat_service_module.random, "random", lambda: 0.0)
+        monkeypatch.setattr(combat_service_module.random, "randint", lambda lo, hi: hi)
+        assert _roll_npc_quantum_drop(npc) == NPC_QUANTUM_DROP_RESEARCHER_MAX
 
 
 # ---------------------------------------------------------------------------

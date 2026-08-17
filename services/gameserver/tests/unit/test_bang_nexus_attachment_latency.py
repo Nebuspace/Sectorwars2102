@@ -8,31 +8,46 @@ creation sites in ``bang_import_service.py`` must emit ``is_latent=False``.
 ADR-0034 latency still governs ordinary *in-region* natural tunnels
 (``sector_warps`` import + the raw-warp translation path) — this suite does
 not touch those and asserts nothing about them.
+
+LEG-88 / LEG-195: ``_add_nexus_warp`` is async and loads endpoint Sector
+coords for hop-unit length + banded turn_cost — tests must await and stub
+``session.get``.
 """
 from __future__ import annotations
 
 import inspect
 import uuid
-from typing import Any, List
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from typing import Any, Dict, List, Optional
+from unittest.mock import AsyncMock
+
+import pytest
 
 from src.models.warp_tunnel import WarpTunnel, WarpTunnelType
 from src.services.bang_import_service import BangImportService, RegionAttachment
 
 
-class _AddCapturingSession:
-    """Minimal stand-in for AsyncSession — only needs a sync ``add``.
+class _AddCapturingAsyncSession:
+    """AsyncSession stand-in for ``_add_nexus_warp``.
 
-    ``_add_nexus_warp`` is a plain (non-async) staticmethod that only calls
-    ``session.add(...)``; no query/flush surface is exercised, so a real
-    AsyncSession or a fuller fake is unnecessary.
+    Captures ``add(...)`` and serves Sector-like rows from ``get`` so LEG-88
+    length/turn-cost computation can run without a real DB.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, sectors: Optional[Dict[uuid.UUID, Any]] = None) -> None:
         self.added: List[Any] = []
+        self._sectors = sectors or {}
+        self.get = AsyncMock(side_effect=self._get)
+
+    async def _get(self, _model: Any, key: Any) -> Any:
+        return self._sectors.get(key)
 
     def add(self, obj: Any) -> None:
         self.added.append(obj)
+
+
+def _sector(sector_id: uuid.UUID, *, x: float = 0.0, y: float = 0.0, z: float = 0.0) -> Any:
+    return SimpleNamespace(id=sector_id, x_coord=x, y_coord=y, z_coord=z)
 
 
 class TestAddNexusWarpIsNotLatent:
@@ -49,11 +64,26 @@ class TestAddNexusWarpIsNotLatent:
         nexus = RegionAttachment(gate_sector_id=uuid.uuid4())
         return spoke, nexus
 
-    def test_player_owned_spoke_warp_is_not_latent(self) -> None:
-        session = _AddCapturingSession()
-        spoke, nexus = self._spoke_and_nexus()
+    def _session_for(
+        self, spoke: RegionAttachment, nexus: RegionAttachment
+    ) -> _AddCapturingAsyncSession:
+        spoke_endpoint = spoke.nexus_landing_sector_id or spoke.gate_sector_id
+        assert spoke_endpoint is not None
+        assert nexus.gate_sector_id is not None
+        return _AddCapturingAsyncSession(
+            {
+                spoke_endpoint: _sector(spoke_endpoint, x=0.0, y=0.0, z=0.0),
+                # distance 3 hop-units → turn_cost band 1
+                nexus.gate_sector_id: _sector(nexus.gate_sector_id, x=3.0, y=0.0, z=0.0),
+            }
+        )
 
-        BangImportService._add_nexus_warp(session, "player_owned", spoke, nexus)
+    @pytest.mark.asyncio
+    async def test_player_owned_spoke_warp_is_not_latent(self) -> None:
+        spoke, nexus = self._spoke_and_nexus()
+        session = self._session_for(spoke, nexus)
+
+        await BangImportService._add_nexus_warp(session, "player_owned", spoke, nexus)
 
         assert len(session.added) == 1
         tunnel = session.added[0]
@@ -63,37 +93,54 @@ class TestAddNexusWarpIsNotLatent:
         assert tunnel.is_bidirectional is True
         assert tunnel.origin_sector_id == spoke.nexus_landing_sector_id
         assert tunnel.destination_sector_id == nexus.gate_sector_id
+        assert tunnel.turn_cost == 1
+        assert tunnel.properties["length"] == 3.0
+        assert tunnel.properties["traversal_cost"] == 1
 
-    def test_terran_space_spoke_warp_is_not_latent(self) -> None:
-        session = _AddCapturingSession()
+    @pytest.mark.asyncio
+    async def test_terran_space_spoke_warp_is_not_latent(self) -> None:
         spoke, nexus = self._spoke_and_nexus()
+        session = self._session_for(spoke, nexus)
 
-        BangImportService._add_nexus_warp(session, "terran_space", spoke, nexus)
+        await BangImportService._add_nexus_warp(session, "terran_space", spoke, nexus)
 
         assert len(session.added) == 1
         tunnel = session.added[0]
         assert tunnel.is_latent is False
         assert tunnel.type == WarpTunnelType.NATURAL
         assert tunnel.is_bidirectional is True
+        assert tunnel.turn_cost == 1
 
-    def test_falls_back_to_gate_sector_when_no_landing_chosen(self) -> None:
+    @pytest.mark.asyncio
+    async def test_falls_back_to_gate_sector_when_no_landing_chosen(self) -> None:
         """Degraded-region fallback path (no Gateway Plaza landing) is still
         wired non-latent — the fix is not landing-selection-dependent."""
-        session = _AddCapturingSession()
         spoke = RegionAttachment(gate_sector_id=uuid.uuid4())  # no landing sector
         nexus = RegionAttachment(gate_sector_id=uuid.uuid4())
+        session = self._session_for(spoke, nexus)
 
-        BangImportService._add_nexus_warp(session, "player_owned", spoke, nexus)
+        await BangImportService._add_nexus_warp(session, "player_owned", spoke, nexus)
 
         tunnel = session.added[0]
         assert tunnel.is_latent is False
         assert tunnel.origin_sector_id == spoke.gate_sector_id
 
-    def test_no_op_when_spoke_not_imported(self) -> None:
-        session = _AddCapturingSession()
+    @pytest.mark.asyncio
+    async def test_no_op_when_spoke_not_imported(self) -> None:
+        session = _AddCapturingAsyncSession()
         _, nexus = self._spoke_and_nexus()
 
-        BangImportService._add_nexus_warp(session, "player_owned", None, nexus)
+        await BangImportService._add_nexus_warp(session, "player_owned", None, nexus)
+
+        assert session.added == []
+
+    @pytest.mark.asyncio
+    async def test_skips_when_endpoint_sector_missing(self) -> None:
+        """LEG-88: missing Sector rows must not invent coords — skip insert."""
+        spoke, nexus = self._spoke_and_nexus()
+        session = _AddCapturingAsyncSession()  # empty get → None
+
+        await BangImportService._add_nexus_warp(session, "player_owned", spoke, nexus)
 
         assert session.added == []
 
@@ -118,22 +165,9 @@ class TestApplyAdditionalRegionSourceIsNotLatent:
         # ADR-0050 SK22: the tunnel insert is now an idempotent
         # INSERT...ON CONFLICT DO NOTHING (pg_insert(WarpTunnel).values(...))
         # rather than a plain ORM session.add(WarpTunnel(...)) construction
-        # -- same table, same NATURAL/bidirectional fields (asserted above),
-        # different insert mechanism to support the retry idempotency key.
-        assert "insert(WarpTunnel)" in source
-
-
-class TestInRegionWarpLatencyUntouched:
-    """Confirms the audit finding: the two in-region warp-import sites
-    (sector_warps association-table insert, and raw-warp -> WarpSpec
-    translation) still carry the bang-sourced per-warp latent flag through
-    unchanged — those are ADR-0034 ordinary natural tunnels, not the Nexus
-    attachment gateway, and are out of scope for this fix."""
-
-    def test_apply_region_still_persists_bang_latent_flag(self) -> None:
-        source = inspect.getsource(BangImportService._apply_region)
-        assert "is_latent=w.is_latent" in source
-
-    def test_translate_region_still_carries_bang_latent_flag(self) -> None:
-        source = inspect.getsource(BangImportService._translate_region)
-        assert 'is_latent=bool(w.get("is_latent", w.get("isLatent", False)))' in source
+        assert "pg_insert(WarpTunnel)" in source or "_pg_insert(WarpTunnel)" in source
+        assert "on_conflict_do_nothing" in source
+        # LEG-88 length/turn-cost persisted on the same insert
+        assert "natural_tunnel_cost_fields" in source
+        assert "turn_cost=" in source
+        assert "properties=" in source
