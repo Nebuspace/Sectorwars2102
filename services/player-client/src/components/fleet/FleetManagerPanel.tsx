@@ -1,5 +1,5 @@
 /**
- * FleetManagerPanel — LEG-INI-01 + LEG-61 + LEG-133
+ * FleetManagerPanel — LEG-INI-01 + LEG-61 + LEG-133 + LEG-141
  *
  * Player-facing fleet coordination surface over existing `/api/v1/fleets`
  * endpoints: roster list, composition, create, add/remove ship, formation,
@@ -11,6 +11,8 @@
  * from GameContext `availableMoves` keyed by `MoveOption.id` (LEG-132/133).
  * Current-sector UUID remains an optional stay/relocate option. Numeric
  * `sector_id` is NAV/player-move only — never POSTed to fleet move.
+ * LEG-141: call getAvailableMoves on mount / sector-id change so hop cache
+ * is not empty until an intervening warp.
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
@@ -109,7 +111,7 @@ const toHopChoice = (kind: 'warp' | 'tunnel', move: MoveOption): HopChoice | nul
 };
 
 export const FleetManagerPanel: React.FC = () => {
-  const { ships, currentSector, availableMoves } = useGame();
+  const { ships, currentSector, availableMoves, getAvailableMoves } = useGame();
   const [fleets, setFleets] = useState<FleetSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [members, setMembers] = useState<FleetMemberRow[]>([]);
@@ -156,6 +158,13 @@ export const FleetManagerPanel: React.FC = () => {
   }, [availableMoves]);
 
   const hasMoveDestinations = adjacentHops.length > 0 || currentSectorUuid != null;
+
+  // LEG-141: context only refreshes moves on sector change / explore / latent-scan.
+  // Opening Fleet with an empty/stale cache showed zero hops until an intervening warp.
+  // Depend on sector id only — getAvailableMoves is not memoized in GameContext.
+  useEffect(() => {
+    void getAvailableMoves();
+  }, [currentSector?.id]); // eslint-disable-line react-hooks/exhaustive-deps -- see above
 
   useEffect(() => {
     const preferred = adjacentHops[0]?.id ?? currentSectorUuid ?? '';
