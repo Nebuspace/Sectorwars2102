@@ -61,3 +61,14 @@
   font-size: 0.75rem;
   color: #ffe27a;
 }
+
+.ship-registry-salvage-progress {
+  margin: 0.35rem 0 0;
+  font-size: 0.72rem;
+  color: #9ec5ff;
+}
+
+.ship-registry-claim-row input[type='password'] {
+  flex: 0 1 7rem;
+  min-width: 5rem;
+}
