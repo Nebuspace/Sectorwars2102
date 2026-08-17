@@ -52,13 +52,13 @@ NPC_KILL_LOOT_MINT_CAP = 5000      # ratified — per-encounter ceiling
 #
 # CANON (ratified 2026-08-10, DECISIONS.md npc-quantum-drop-kind-mapping) —
 # TRADER/RESEARCHER bridge: canon names "Quantum Smuggler" / "Rogue Scientist"
-# kinds that are not spawn kinds. Existing substrate: NPCArchetype.TRADER
+# kinds that are not distinct spawn kinds. Existing substrate: NPCArchetype.TRADER
 # personas draw a TITLE from TRADER_TITLES_BY_TIER["NOTORIOUS"] (includes
-# "Smuggler" and "Black Marketeer"); NPCArchetype.RESEARCHER is declared but
-# not spawned today. A Smuggler/Black-Marketeer-titled TRADER kill rolls the
-# 5%/1-2 row; a RESEARCHER-archetype kill rolls the 15%/1-3 row; every other
-# NPC never drops. Dedicated QUANTUM_SMUGGLER / ROGUE_SCIENTIST spawn kinds
-# would be a follow-up npc_spawn_service WO, not a rename here.
+# "Smuggler" and "Black Marketeer"); NPCArchetype.RESEARCHER is spawned via
+# gameserver-seeded nebula_surveyor rosters (LEG-108 / seed_researcher_rosters).
+# A Smuggler/Black-Marketeer-titled TRADER kill rolls the 5%/1-2 row; a
+# RESEARCHER-archetype kill rolls the 15%/1-3 row; every other NPC never drops.
+# Dedicated QUANTUM_SMUGGLER spawn kind remains out of scope (title bridge stands).
 # Destroyed-gate drops stay 0% — no gate-destruction combat path exists yet.
 NPC_QUANTUM_DROP_SMUGGLER_TITLES = frozenset({"Smuggler", "Black Marketeer"})
 NPC_QUANTUM_DROP_SMUGGLER_CHANCE = 0.05
@@ -5890,6 +5890,13 @@ class CombatService:
 
     def _transfer_planet_ownership(self, planet: Planet, new_owner: Player) -> None:
         """Transfer ownership of a planet to a new player via many-to-many."""
+        # LEG-159 / LEG-DEC-15: capture cancels any pending voluntary transfer (no fee).
+        try:
+            from src.services.planet_ownership_transfer_service import clear_pending_transfer
+            clear_pending_transfer(planet)
+        except Exception:
+            logger.debug("clear_pending_transfer skipped", exc_info=True)
+
         # Clear existing owners from the join table
         self.db.execute(
             self.db.query(Planet).filter(Planet.id == planet.id).statement

@@ -469,11 +469,13 @@ def _run_governance_sweep_sync() -> Dict[str, Any]:
     Self-gated to     once per canonical day via ``_run_region_lifecycle_
     advance_gated`` (mirrors Phase 6's day-anchor discipline exactly).
 
-    Phase 8 runs the anchor-repair detect-only daily scan
-    (WO-ANCHOR-REPAIR-SERVICE / SYSTEMS/anchor-repair-service.md): existence
-    checks for the four Phase-11 anchors per active non-nexus region, emitting
-    ``region_anchor_missing`` events. Re-injection is deferred. Self-gated
-    once per canonical day via ``anchor_repair_service.run_daily_scan_gated``.
+    Phase 8 runs the anchor-repair daily scan
+    (WO-ANCHOR-REPAIR-SERVICE / LEG-157 / SYSTEMS/anchor-repair-service.md):
+    existence checks + Phase-11 reinjection for the four anchors per active
+    non-nexus region, returning ``region_anchor_missing`` /
+    ``region_anchor_repaired`` / ``region_anchor_repair_failed`` events for
+    post-commit realtime fan-out. Self-gated once per canonical day via
+    ``anchor_repair_service.run_daily_scan_gated``.
 
     Phase 9 runs the station defense-underfunding cascade (ADR-0093 §3 /
     WO-FIX-STATION-DEFENSE-AUTO-DOWNGRADE-CASCADE): once per canonical day,
@@ -1041,10 +1043,12 @@ def _run_governance_sweep_sync() -> Dict[str, Any]:
                     "(post-commit, non-fatal)", exc_info=True,
                 )
 
-        # --- Phase 8: anchor-repair detect-only scan (WO-ANCHOR-REPAIR-SERVICE)
-        # SYSTEMS/anchor-repair-service.md daily existence checks. Self-gated
-        # once per canonical day. Emits region_anchor_missing; no re-inject.
-        # A failure here must NEVER break the governance sweep proper.
+        # --- Phase 8: anchor-repair daily scan (WO-ANCHOR-REPAIR-SERVICE /
+        # LEG-157). SYSTEMS/anchor-repair-service.md existence checks + Phase-11
+        # reinjection. Self-gated once per canonical day. Returns lifecycle
+        # events (missing / repaired / repair_failed) for post-commit
+        # ``_broadcast_events`` region+admin fan-out. A failure here must NEVER
+        # break the governance sweep proper.
         try:
             from src.services import anchor_repair_service
 
