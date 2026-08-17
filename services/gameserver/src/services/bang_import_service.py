@@ -1246,7 +1246,7 @@ class BangImportService:
         nexus_attachment = attachment_by_region.get("central_nexus")
         if nexus_attachment is not None:
             for spoke_rt in ("player_owned", "terran_space"):
-                self._add_nexus_warp(
+                await self._add_nexus_warp(
                     session, spoke_rt,
                     attachment_by_region.get(spoke_rt), nexus_attachment,
                 )
@@ -1327,6 +1327,16 @@ class BangImportService:
             idempotency_key = make_idempotency_key(region_id, 1)
             try:
                 from sqlalchemy.dialects.postgresql import insert as _pg_insert
+                from src.services.warp_tunnel_length import natural_tunnel_cost_fields
+
+                origin = await session.get(Sector, spoke_endpoint)
+                dest = await session.get(Sector, nexus_gate_id)
+                if origin is None or dest is None:
+                    raise ValueError(
+                        f"LEG-88: Phase-14 Nexus attach missing Sector rows "
+                        f"(spoke={spoke_endpoint}, nexus={nexus_gate_id})"
+                    )
+                _length, turn_cost, properties = natural_tunnel_cost_fields(origin, dest)
 
                 stmt = (
                     _pg_insert(WarpTunnel)
@@ -1337,6 +1347,8 @@ class BangImportService:
                         type=WarpTunnelType.NATURAL,
                         is_bidirectional=True,
                         is_latent=False,
+                        turn_cost=turn_cost,
+                        properties=properties,
                         description=(
                             "Natural Nexus warp linking new player_owned region "
                             "(Frontier Gateway Plaza) to central_nexus — "
@@ -1674,7 +1686,7 @@ class BangImportService:
         nexus_attachment = attachment_by_region.get("central_nexus")
         if nexus_attachment is not None:
             for spoke_rt in ("player_owned", "terran_space"):
-                self._add_nexus_warp(
+                await self._add_nexus_warp(
                     session, spoke_rt,
                     attachment_by_region.get(spoke_rt), nexus_attachment,
                 )
@@ -2126,7 +2138,7 @@ class BangImportService:
         return attachment
 
     @staticmethod
-    def _add_nexus_warp(
+    async def _add_nexus_warp(
         session: AsyncSession,
         spoke_rt: str,
         spoke_attachment: Optional["RegionAttachment"],
@@ -2143,6 +2155,9 @@ class BangImportService:
         ADR-0034's "latent until a Warp Jumper scan" pattern governs ordinary
         in-region natural tunnels, not this cross-region gateway. No-op if
         the spoke wasn't imported.
+
+        LEG-88: persist canonical hop-unit ``properties.length`` and banded
+        ``turn_cost`` / ``properties.traversal_cost`` from endpoint 3D coords.
         """
         if spoke_attachment is None:
             return
@@ -2150,6 +2165,18 @@ class BangImportService:
             spoke_attachment.nexus_landing_sector_id
             or spoke_attachment.gate_sector_id
         )
+        origin = await session.get(Sector, spoke_endpoint)
+        dest = await session.get(Sector, nexus_attachment.gate_sector_id)
+        if origin is None or dest is None:
+            logger.error(
+                "LEG-88: Nexus warp skipped for %s — missing endpoint Sector "
+                "(spoke=%s nexus=%s)",
+                spoke_rt, spoke_endpoint, nexus_attachment.gate_sector_id,
+            )
+            return
+        from src.services.warp_tunnel_length import natural_tunnel_cost_fields
+
+        _length, turn_cost, properties = natural_tunnel_cost_fields(origin, dest)
         session.add(WarpTunnel(
             name=f"{spoke_rt.replace('_', ' ').title()} ↔ Central Nexus",
             origin_sector_id=spoke_endpoint,
@@ -2157,6 +2184,8 @@ class BangImportService:
             type=WarpTunnelType.NATURAL,
             is_bidirectional=True,
             is_latent=False,
+            turn_cost=turn_cost,
+            properties=properties,
             description=(
                 f"Natural Nexus warp linking {spoke_rt} (Frontier Gateway Plaza) "
                 "to central_nexus — pre-discovered gateway, visible to every "
