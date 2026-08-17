@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Line, Doughnut } from 'react-chartjs-2';
-import { useAuth } from '../../contexts/AuthContext';
+import { api } from '../../utils/auth';
 import './production-monitoring.css';
 
 interface ProductionData {
@@ -51,8 +51,12 @@ interface ProductionStats {
   }>;
 }
 
+const responseStatus = (err: unknown): number | undefined =>
+  typeof err === 'object' && err !== null && 'response' in err
+    ? (err as { response?: { status?: number } }).response?.status
+    : undefined;
+
 export const ProductionMonitoring: React.FC = () => {
-  useAuth();
   const [timeRange, setTimeRange] = useState<'hour' | 'day' | 'week' | 'month'>('day');
   const [selectedResource, setSelectedResource] = useState<'all' | 'energy' | 'minerals' | 'food' | 'water'>('all');
   const [productionHistory, setProductionHistory] = useState<ProductionData[]>([]);
@@ -73,35 +77,36 @@ export const ProductionMonitoring: React.FC = () => {
 
   const loadProductionData = async () => {
     try {
-      const token = localStorage.getItem('accessToken');
-      const response = await fetch(`/api/v1/admin/colonization/production?timeRange=${timeRange}&resource=${selectedResource}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
-      });
+      // Shipped route (admin_colonization.py) — shared authenticated client (LEG-143 sibling).
+      const response = await api.get<{
+        history?: ProductionData[];
+        trends?: ProductionTrend[];
+        alerts?: ProductionAlert[];
+        stats?: ProductionStats | null;
+      }>(`/api/v1/admin/colonization/production?timeRange=${timeRange}&resource=${selectedResource}`);
 
-      if (!response.ok) {
-        setError(
-          response.status === 404
-            ? 'Production monitoring endpoint not implemented — /api/v1/admin/colonization/production returned 404'
-            : `Failed to load production data (HTTP ${response.status})`
-        );
-        setProductionHistory([]);
-        setTrends([]);
-        setAlerts([]);
-        setStats(null);
-        return;
-      }
-
-      const data = await response.json();
-      setProductionHistory(data.history ?? []);
-      setTrends(data.trends ?? []);
-      setAlerts(data.alerts ?? []);
-      setStats(data.stats ?? null);
+      setProductionHistory(response.data.history ?? []);
+      setTrends(response.data.trends ?? []);
+      setAlerts(response.data.alerts ?? []);
+      setStats(response.data.stats ?? null);
       setError(null);
     } catch (err) {
       console.error('Error loading production data:', err);
-      setError('Gameserver unreachable — network error fetching production data');
+      const status = responseStatus(err);
+      if (status === 401 || status === 403) {
+        setError(
+          'Access denied — production monitoring requires the admin regions view scope (REGIONS_VIEW).'
+        );
+      } else if (status === 404) {
+        setError(
+          'Production monitoring route not found (404). The gameserver ships /api/v1/admin/colonization/production — ' +
+            'check that the gameserver is running and the /api proxy is reaching it.'
+        );
+      } else if (status !== undefined) {
+        setError(`Failed to load production data (HTTP ${status})`);
+      } else {
+        setError('Gameserver unreachable — network error fetching production data');
+      }
       setProductionHistory([]);
       setTrends([]);
       setAlerts([]);
