@@ -140,6 +140,68 @@
   margin: 0.05rem 0 0;
 }
 
+.fleet-manager-stats-span {
+  grid-column: span 2;
+}
+
+.fleet-manager-gauge {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 8rem;
+}
+
+.fleet-manager-gauge-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.7rem;
+  opacity: 0.9;
+}
+
+.fleet-manager-gauge-track {
+  height: 0.45rem;
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(158, 197, 255, 0.25);
+  border-radius: 1px;
+  overflow: hidden;
+}
+
+.fleet-manager-gauge-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #3a6ea5, #f5a623);
+}
+
+.fleet-manager-formation-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.25rem 0.45rem;
+  border: 1px solid rgba(245, 166, 35, 0.4);
+  background: rgba(245, 166, 35, 0.08);
+  font-size: 0.75rem;
+  min-width: 7.5rem;
+}
+
+.fleet-manager-battle {
+  margin: 0.35rem 0 0.5rem;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid rgba(200, 80, 80, 0.4);
+  background: rgba(80, 20, 20, 0.2);
+}
+
+.fleet-manager-battle-meta {
+  margin: 0 0 0.35rem;
+  font-size: 0.78rem;
+}
+
+.fleet-manager-battle-log {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: 0.75rem;
+  max-height: 8rem;
+  overflow-y: auto;
+}
+
 .fleet-manager-members {
   list-style: none;
   margin: 0 0 0.5rem;

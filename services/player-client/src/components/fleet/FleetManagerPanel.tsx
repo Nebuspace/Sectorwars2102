@@ -66,6 +66,53 @@ const FORMATIONS: { value: string; label: string }[] = [
   { value: 'turtle', label: 'Scatter' },
 ];
 
+/** Canon table from fleet-tactics.md — static UI preview (no endpoint). */
+export const FORMATION_PREVIEW: Record<string, { attack: number; defense: number }> = {
+  standard: { attack: 1.0, defense: 1.0 },
+  aggressive: { attack: 1.15, defense: 0.85 },
+  defensive: { attack: 0.85, defense: 1.15 },
+  flanking: { attack: 1.1, defense: 0.9 },
+  turtle: { attack: 0.6, defense: 1.4 },
+};
+
+const formatMult = (n: number): string => `×${n.toFixed(2)}`;
+
+const GaugeBar: React.FC<{ label: string; value: number; testId: string }> = ({
+  label,
+  value,
+  testId,
+}) => {
+  const clamped = Math.max(0, Math.min(100, Number.isFinite(value) ? value : 0));
+  return (
+    <div className="fleet-manager-gauge" data-testid={testId}>
+      <div className="fleet-manager-gauge-label">
+        <span>{label}</span>
+        <span>{clamped}</span>
+      </div>
+      <div className="fleet-manager-gauge-track" aria-hidden="true">
+        <div className="fleet-manager-gauge-fill" style={{ width: `${clamped}%` }} />
+      </div>
+    </div>
+  );
+};
+
+type BattleLogEntry = Record<string, unknown>;
+
+type BattleStatusSnapshot = {
+  battle_id?: string;
+  phase?: string;
+  is_active?: boolean;
+  rounds_completed?: number;
+  winner?: string | null;
+  battle_log?: BattleLogEntry[] | null;
+  attacker?: { ships_remaining?: number; formation?: string | null };
+  defender?: { ships_remaining?: number; formation?: string | null };
+  casualties?: {
+    attacker?: Array<{ ship_name?: string; destroyed?: boolean }>;
+    defender?: Array<{ ship_name?: string; destroyed?: boolean }>;
+  };
+};
+
 const ROLES = ['attacker', 'defender', 'support', 'scout', 'flagship'] as const;
 
 type Busy =
@@ -122,9 +169,20 @@ export const FleetManagerPanel: React.FC = () => {
   const [addShipId, setAddShipId] = useState('');
   const [addRole, setAddRole] = useState<string>('attacker');
   const [moveDest, setMoveDest] = useState('');
+  const [previewFormation, setPreviewFormation] = useState('standard');
+  const [battleId, setBattleId] = useState<string | null>(null);
+  const [battleStatus, setBattleStatus] = useState<BattleStatusSnapshot | null>(null);
 
   const selected = fleets.find((f) => f.id === selectedId) ?? null;
   const inBattle = selected?.status === 'in_battle';
+
+  const formationPreviewKey = selected
+    ? inBattle
+      ? selected.formation
+      : previewFormation || selected.formation
+    : previewFormation;
+  const formationMods =
+    FORMATION_PREVIEW[formationPreviewKey] ?? FORMATION_PREVIEW.standard;
 
   const currentSectorUuid = useMemo(() => {
     const raw = currentSector?.id;
@@ -211,6 +269,56 @@ export const FleetManagerPanel: React.FC = () => {
     if (selectedId) void loadMembers(selectedId);
     else setMembers([]);
   }, [selectedId, loadMembers]);
+
+  useEffect(() => {
+    if (selected) setPreviewFormation(selected.formation || 'standard');
+  }, [selected?.id, selected?.formation]);
+
+  // LEG-308: poll active battles for the selected fleet; detail via getBattle.
+  useEffect(() => {
+    if (!selected || !inBattle) {
+      setBattleId(null);
+      setBattleStatus(null);
+      return;
+    }
+
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const list = (await fleetAPI.getBattles(true)) as Array<{
+          battle_id?: string;
+          attacker_fleet_id?: string;
+          defender_fleet_id?: string;
+        }>;
+        const rows = Array.isArray(list) ? list : [];
+        const match = rows.find(
+          (b) =>
+            String(b.attacker_fleet_id) === selected.id ||
+            String(b.defender_fleet_id) === selected.id,
+        );
+        const id = match?.battle_id ? String(match.battle_id) : null;
+        if (cancelled) return;
+        setBattleId(id);
+        if (!id) {
+          setBattleStatus(null);
+          return;
+        }
+        const detail = (await fleetAPI.getBattle(id)) as BattleStatusSnapshot;
+        if (!cancelled) setBattleStatus(detail && typeof detail === 'object' ? detail : null);
+      } catch {
+        if (!cancelled) {
+          /* keep last snapshot; roster refresh already surfaces hard errors */
+        }
+      }
+    };
+
+    void tick();
+    const handle = window.setInterval(() => void tick(), 4000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(handle);
+    };
+  }, [selected?.id, inBattle]);
 
   const memberShipIds = new Set(members.map((m) => m.ship_id));
   const availableShips = ships.filter((s) => !memberShipIds.has(s.id));
@@ -340,13 +448,25 @@ export const FleetManagerPanel: React.FC = () => {
                 <dt>Coordination</dt>
                 <dd>{selected.coordination_bonus}</dd>
               </div>
-              <div>
+              <div className="fleet-manager-stats-span">
                 <dt>Morale</dt>
-                <dd>{selected.morale}</dd>
+                <dd>
+                  <GaugeBar
+                    label="Morale"
+                    value={selected.morale}
+                    testId="fleet-morale-gauge"
+                  />
+                </dd>
               </div>
-              <div>
+              <div className="fleet-manager-stats-span">
                 <dt>Supply</dt>
-                <dd>{selected.supply_level}</dd>
+                <dd>
+                  <GaugeBar
+                    label="Supply"
+                    value={selected.supply_level}
+                    testId="fleet-supply-gauge"
+                  />
+                </dd>
               </div>
               <div>
                 <dt>Sector</dt>
@@ -433,10 +553,11 @@ export const FleetManagerPanel: React.FC = () => {
                 Formation
                 <select
                   data-testid="fleet-formation-select"
-                  value={selected.formation}
+                  value={inBattle ? selected.formation : previewFormation}
                   disabled={busy !== null || inBattle}
                   onChange={(e) => {
                     const formation = e.target.value;
+                    setPreviewFormation(formation);
                     void run('formation', async () => {
                       await fleetAPI.updateFormation(selected.id, formation);
                       await refresh();
@@ -450,6 +571,14 @@ export const FleetManagerPanel: React.FC = () => {
                   ))}
                 </select>
               </label>
+              <div
+                className="fleet-manager-formation-preview"
+                data-testid="fleet-formation-preview"
+                aria-live="polite"
+              >
+                <span>Attack {formatMult(formationMods.attack)}</span>
+                <span>Defense {formatMult(formationMods.defense)}</span>
+              </div>
               <button
                 type="button"
                 data-testid="fleet-resupply"
@@ -481,6 +610,80 @@ export const FleetManagerPanel: React.FC = () => {
                 {busy === 'disband' ? 'Disbanding…' : 'Disband'}
               </button>
             </div>
+
+            {inBattle && (
+              <section
+                className="fleet-manager-battle"
+                data-testid="fleet-battle-viewer"
+                aria-label="Active battle"
+              >
+                <h4 className="fleet-manager-subheading">Battle viewer</h4>
+                {!battleId && (
+                  <p className="fleet-manager-muted" data-testid="fleet-battle-waiting">
+                    Looking up active battle for this fleet…
+                  </p>
+                )}
+                {battleStatus && (
+                  <>
+                    <p className="fleet-manager-battle-meta" data-testid="fleet-battle-meta">
+                      Phase {battleStatus.phase ?? '—'} · rounds completed{' '}
+                      {battleStatus.rounds_completed ?? 0}
+                      {battleStatus.attacker?.ships_remaining != null &&
+                        battleStatus.defender?.ships_remaining != null && (
+                          <>
+                            {' '}
+                            · ships {battleStatus.attacker.ships_remaining} vs{' '}
+                            {battleStatus.defender.ships_remaining}
+                          </>
+                        )}
+                      {battleStatus.winner ? ` · winner ${battleStatus.winner}` : ''}
+                    </p>
+                    {Array.isArray(battleStatus.battle_log) && battleStatus.battle_log.length > 0 ? (
+                      <ol className="fleet-manager-battle-log" data-testid="fleet-battle-log">
+                        {battleStatus.battle_log.map((entry, idx) => {
+                          const round =
+                            typeof entry.round === 'number' ? entry.round : idx + 1;
+                          const atk =
+                            typeof entry.attacker_damage === 'number'
+                              ? entry.attacker_damage
+                              : '—';
+                          const def =
+                            typeof entry.defender_damage === 'number'
+                              ? entry.defender_damage
+                              : '—';
+                          const destroyed = Array.isArray(entry.ships_destroyed)
+                            ? entry.ships_destroyed.length
+                            : 0;
+                          return (
+                            <li key={`round-${round}-${idx}`} data-testid={`fleet-battle-round-${round}`}>
+                              Round {round}: atk dmg {String(atk)} · def dmg {String(def)}
+                              {destroyed > 0 ? ` · destroyed ${destroyed}` : ''}
+                            </li>
+                          );
+                        })}
+                      </ol>
+                    ) : (
+                      <p
+                        className="fleet-manager-muted"
+                        data-testid="fleet-battle-log-residual"
+                      >
+                        Round-by-round battle_log is not on player GET /fleets/battles/
+                        {'{id}'} yet (tip returns rounds_completed / casualties only). Showing
+                        status summary above — GS sibling needed to expose battle_log.
+                      </p>
+                    )}
+                    {battleStatus.casualties && (
+                      <p className="fleet-manager-muted" data-testid="fleet-battle-casualties">
+                        Casualties — attacker:{' '}
+                        {(battleStatus.casualties.attacker ?? []).filter((c) => c.destroyed).length}
+                        , defender:{' '}
+                        {(battleStatus.casualties.defender ?? []).filter((c) => c.destroyed).length}
+                      </p>
+                    )}
+                  </>
+                )}
+              </section>
+            )}
 
             <h4 className="fleet-manager-subheading">Composition</h4>
             {members.length === 0 ? (

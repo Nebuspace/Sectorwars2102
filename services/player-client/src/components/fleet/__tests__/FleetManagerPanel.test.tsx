@@ -16,6 +16,8 @@ const {
   getFleetMembers,
   addShipToFleet,
   move,
+  getBattles,
+  getBattle,
 } = vi.hoisted(() => ({
   getFleets: vi.fn(),
   createFleet: vi.fn(),
@@ -26,6 +28,8 @@ const {
   disbandFleet: vi.fn(),
   resupplyFleet: vi.fn(),
   move: vi.fn(),
+  getBattles: vi.fn(),
+  getBattle: vi.fn(),
 }));
 
 vi.mock('../../../services/api', () => ({
@@ -40,6 +44,8 @@ vi.mock('../../../services/api', () => ({
     disbandFleet: vi.fn(),
     resupplyFleet: vi.fn(),
     move: (...a: unknown[]) => move(...a),
+    getBattles: (...a: unknown[]) => getBattles(...a),
+    getBattle: (...a: unknown[]) => getBattle(...a),
   },
 }));
 
@@ -143,6 +149,8 @@ describe('FleetManagerPanel', () => {
     getFleetMembers.mockReset().mockResolvedValue([]);
     addShipToFleet.mockReset().mockResolvedValue({});
     move.mockReset().mockResolvedValue({ message: 'Fleet moved' });
+    getBattles.mockReset().mockResolvedValue([]);
+    getBattle.mockReset().mockResolvedValue({});
     mockGame.currentSector = {
       id: CURRENT_SECTOR_UUID,
       sector_id: 42,
@@ -445,5 +453,87 @@ describe('FleetManagerPanel', () => {
     expect(
       container.querySelector('[data-testid="fleet-manager-error"]')?.textContent
     ).toMatch(/Cannot move fleet during battle/);
+  });
+
+  it('shows formation attack/defense preview from canon table (LEG-308)', async () => {
+    getFleets.mockResolvedValue([sampleFleet]);
+    getFleetMembers.mockResolvedValue([]);
+
+    await act(async () => {
+      root.render(<FleetManagerPanel />);
+    });
+    await selectFleet(container);
+
+    const preview = container.querySelector('[data-testid="fleet-formation-preview"]');
+    expect(preview?.textContent).toMatch(/Attack ×1\.00/);
+    expect(preview?.textContent).toMatch(/Defense ×1\.00/);
+
+    const select = container.querySelector(
+      '[data-testid="fleet-formation-select"]',
+    ) as HTMLSelectElement;
+    await setSelectValue(select, 'turtle');
+    expect(preview?.textContent).toMatch(/Attack ×0\.60/);
+    expect(preview?.textContent).toMatch(/Defense ×1\.40/);
+  });
+
+  it('renders morale/supply as gauges (LEG-308)', async () => {
+    getFleets.mockResolvedValue([{ ...sampleFleet, morale: 72, supply_level: 40 }]);
+    getFleetMembers.mockResolvedValue([]);
+
+    await act(async () => {
+      root.render(<FleetManagerPanel />);
+    });
+    await selectFleet(container);
+
+    expect(container.querySelector('[data-testid="fleet-morale-gauge"]')?.textContent).toMatch(
+      /72/,
+    );
+    expect(container.querySelector('[data-testid="fleet-supply-gauge"]')?.textContent).toMatch(
+      /40/,
+    );
+  });
+
+  it('polls battle status and renders battle_log rounds when present (LEG-308)', async () => {
+    getFleets.mockResolvedValue([{ ...sampleFleet, status: 'in_battle' }]);
+    getFleetMembers.mockResolvedValue([]);
+    getBattles.mockResolvedValue([
+      {
+        battle_id: 'battle-1',
+        attacker_fleet_id: 'fleet-1',
+        defender_fleet_id: 'fleet-2',
+        battle_ongoing: true,
+      },
+    ]);
+    getBattle.mockResolvedValue({
+      battle_id: 'battle-1',
+      phase: 'combat',
+      rounds_completed: 2,
+      battle_log: [
+        { round: 1, attacker_damage: 12, defender_damage: 8, ships_destroyed: [] },
+        { round: 2, attacker_damage: 5, defender_damage: 20, ships_destroyed: ['x'] },
+      ],
+      attacker: { ships_remaining: 3 },
+      defender: { ships_remaining: 2 },
+      casualties: { attacker: [], defender: [{ ship_name: 'X', destroyed: true }] },
+    });
+
+    await act(async () => {
+      root.render(<FleetManagerPanel />);
+    });
+    await selectFleet(container);
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    expect(getBattles).toHaveBeenCalled();
+    expect(getBattle).toHaveBeenCalledWith('battle-1');
+    expect(container.querySelector('[data-testid="fleet-battle-viewer"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="fleet-battle-log"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="fleet-battle-round-1"]')?.textContent).toMatch(
+      /Round 1/,
+    );
+    expect(container.querySelector('[data-testid="fleet-battle-round-2"]')?.textContent).toMatch(
+      /destroyed 1/,
+    );
   });
 });
