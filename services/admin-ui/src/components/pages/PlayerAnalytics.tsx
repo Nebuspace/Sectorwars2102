@@ -693,13 +693,24 @@ const PlayerAnalytics: React.FC = () => {
                     <div className="dashboard-stat-description">{analyticsAvailable && state.metrics.new_players_today != null ? 'Today' : (analyticsAvailable ? 'New-player count unavailable' : 'Analytics endpoint unavailable')}</div>
                   </div>
 
-                  <div className="dashboard-stat-card stat-not-tracked">
+                  <div
+                    className={`dashboard-stat-card${analyticsAvailable && state.metrics.player_retention_rate != null ? '' : ' stat-not-tracked'}`}
+                    data-testid="player-metrics-retention-rate"
+                  >
                     <div className="dashboard-stat-header">
                       <span className="dashboard-stat-icon">📈</span>
                       <h4 className="dashboard-stat-title">Retention Rate</h4>
                     </div>
-                    <div className="dashboard-stat-value">&mdash;</div>
-                    <div className="dashboard-stat-description">No retention telemetry surfaced yet</div>
+                    <div className="dashboard-stat-value">
+                      {analyticsAvailable && state.metrics.player_retention_rate != null
+                        ? `${state.metrics.player_retention_rate.toLocaleString()}%`
+                        : <>&mdash;</>}
+                    </div>
+                    <div className="dashboard-stat-description">
+                      {analyticsAvailable && state.metrics.player_retention_rate != null
+                        ? '7-day retention'
+                        : (analyticsAvailable ? 'Retention rate unavailable' : 'Analytics endpoint unavailable')}
+                    </div>
                   </div>
 
                   <div className={`dashboard-stat-card${analyticsAvailable && state.metrics.suspicious_activity_alerts != null ? '' : ' stat-not-tracked'}`} data-variant="warning">
