@@ -106,6 +106,39 @@ async function apiRequest(
   }
 }
 
+/** LEG-372 / LEG-304 — player-scoped combat history list item (GS shape). */
+export interface CombatHistoryOpponent {
+  id: string | null;
+  name: string;
+}
+
+export interface CombatHistoryTarget {
+  type: string;
+  id?: string | null;
+  name?: string;
+  sector_id?: number | null;
+}
+
+export interface CombatHistoryItem {
+  id: string;
+  timestamp: string | null;
+  combat_type: string;
+  role: 'attacker' | 'defender' | string;
+  result: string | null;
+  sector_id: number | null;
+  drones_lost: number | null;
+  ship_destroyed: boolean;
+  opponent?: CombatHistoryOpponent;
+  target?: CombatHistoryTarget;
+}
+
+export interface CombatHistoryResponse {
+  items: CombatHistoryItem[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 // Combat APIs
 export const combatAPI = {
   engage: (targetType: 'ship' | 'planet' | 'port', targetId: string) =>
@@ -119,6 +152,15 @@ export const combatAPI = {
 
   retreat: (combatId: string) =>
     apiRequest(`/api/v1/combat/${combatId}/retreat`, { method: 'POST' }),
+
+  /** Paginated own-combat log (LEG-372). Server scopes to current player. */
+  getHistory: (opts?: { limit?: number; offset?: number }): Promise<CombatHistoryResponse> => {
+    const params = new URLSearchParams();
+    if (opts?.limit != null) params.set('limit', String(opts.limit));
+    if (opts?.offset != null) params.set('offset', String(opts.offset));
+    const q = params.toString();
+    return apiRequest(`/api/v1/combat/history${q ? `?${q}` : ''}`);
+  },
 
   // Drone management
   deployDrones: (sectorId: string, droneCount: number) =>
