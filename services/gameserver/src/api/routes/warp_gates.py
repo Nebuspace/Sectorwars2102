@@ -141,6 +141,14 @@ class ConstructionSiteEntry(BaseModel):
     cure_completes_at: Optional[str] = None
 
 
+class TollStatsEntry(BaseModel):
+    """Canon toll Reporting (warp-gates.md) — exposed on owner listMine only.
+    Sourced from WarpTunnel.artificial_data.toll_stats written by collect_toll."""
+    total_revenue: int = 0
+    usage_count: int = 0
+    last_used: Optional[str] = None
+
+
 class ProjectEntry(BaseModel):
     beacon_id: str
     gate_id: Optional[str] = None
@@ -153,6 +161,9 @@ class ProjectEntry(BaseModel):
     harmonization_completes_at: Optional[str] = None
     created_at: Optional[str] = None
     construction_site: Optional[ConstructionSiteEntry] = None
+    # Present for ACTIVE projects (zeros when no traversals yet); omitted /
+    # null for pre-active phases so clients keep an honest unavailable note.
+    toll_stats: Optional[TollStatsEntry] = None
 
 
 class MyProjectsResponse(BaseModel):

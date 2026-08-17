@@ -675,6 +675,8 @@ def build_presence_entry(
     ship_type: Optional[str],
     team_id: Optional[Any],
     arrived_at: Optional[datetime] = None,
+    pinned_medal_id: Optional[str] = None,
+    medal_count: Optional[int] = None,
 ) -> Dict[str, Any]:
     """QUEUE-HEAL-ENTRY-SHAPE (2026-07-16): the SINGLE canonical
     ``players_present`` entry constructor -- used by BOTH the organic
@@ -717,7 +719,12 @@ def build_presence_entry(
     timezone-aware convention this codebase's newer presence code already
     uses; ``movement_service``'s prior naive ``datetime.now()`` is
     corrected here rather than preserved, since converging both callers
-    onto one constructor means picking exactly one convention."""
+    onto one constructor means picking exactly one convention.
+
+    LEG-59: ``pinned_medal_id`` / ``medal_count`` are part of the canonical
+    key-set (defaults null) so heal + organic stay key-parity; live values
+    are also re-derived on read in ``enrich_presence_with_live_pose``.
+    """
     if arrived_at is None:
         arrived_at = datetime.now(timezone.utc)
     elif arrived_at.tzinfo is None:
@@ -730,6 +737,8 @@ def build_presence_entry(
         "ship_type": ship_type if ship_type else None,
         "team_id": str(team_id) if team_id else None,
         "arrived_at": arrived_at.isoformat(),
+        "pinned_medal_id": pinned_medal_id,
+        "medal_count": medal_count,
     }
 
 
@@ -824,6 +833,19 @@ def enrich_presence_with_live_pose(db: Session, present: List[Dict[str, Any]]) -
     if human_ids:
         player_by_id = {str(p.id): p for p in _enrich_player_lookup_query(db, human_ids).all()}
 
+    medal_counts: Dict[str, int] = {}
+    if human_ids:
+        from src.models.medal import PlayerMedal
+        from sqlalchemy import func as sa_func
+
+        for pid, n in (
+            db.query(PlayerMedal.player_id, sa_func.count(PlayerMedal.medal_id))
+            .filter(PlayerMedal.player_id.in_(human_ids))
+            .group_by(PlayerMedal.player_id)
+            .all()
+        ):
+            medal_counts[str(pid)] = int(n)
+
     enriched: List[Dict[str, Any]] = []
     for e in present:
         if not isinstance(e, dict):
@@ -890,6 +912,14 @@ def enrich_presence_with_live_pose(db: Session, present: List[Dict[str, Any]]) -
                 e["rep_bucket"] = player_rep_bucket(getattr(p, "reputation_tier", None))
                 if p.intrasystem_pose is not None:
                     e["pose"] = pose_public(p.intrasystem_pose)
+                # LEG-59 — pinned public medal identity for discovery/contacts
+                from src.services.medal_service import public_medal_identity
+
+                medal_fields = public_medal_identity(
+                    p, medal_count=medal_counts.get(str(p.id), 0)
+                )
+                e["pinned_medal_id"] = medal_fields["pinned_medal_id"]
+                e["medal_count"] = medal_fields["medal_count"]
         enriched.append(e)
     return enriched
 

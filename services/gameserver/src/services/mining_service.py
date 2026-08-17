@@ -112,6 +112,14 @@ AM_REP_LICENSED_BONUS = 1  # "+1 / harvest" licensed bonus (stacks → +2 total)
 AM_REP_UNLICENSED = -10    # "−10 / extraction" unlicensed penalty in AM space
 AM_REP_LICENSE_PURCHASE = 15  # "+15 / purchase" single-shot on license buy
 
+# § Repeated unlicensed AM enforcement (mining.md — "trips the AM faction
+# enforcement path (NPC patrol response in MILITARY_ZONE overlap clusters)").
+# Canon does NOT pin N or the rolling window — these are PROVISIONAL (LEG-119;
+# N≤5). Do not invent other game-economy numbers beyond this trigger.
+AM_UNLICENSED_ENFORCEMENT_THRESHOLD = 3  # provisional: harvests in window
+AM_UNLICENSED_ENFORCEMENT_WINDOW_HOURS = 24  # provisional rolling window
+AM_UNLICENSED_OFFENSE_TYPE = "unlicensed_am_mining"
+
 # § asteroid_richness derivation — resource_regeneration → tier mapping (canon
 # "asteroid_richness derivation" table). Used by the lazy backfill when a sector
 # predates the asteroid_richness JSONB key.
@@ -381,6 +389,113 @@ class MiningService:
         """True when the sector is controlled by the Astral Mining Consortium
         (canon: ``Sector.controlling_faction == "astral_mining_consortium"``)."""
         return sector.controlling_faction == AM_FACTION_CODE
+
+    def count_recent_unlicensed_am_harvests(
+        self,
+        player_id: uuid.UUID,
+        *,
+        now: Optional[datetime] = None,
+        window_hours: int = AM_UNLICENSED_ENFORCEMENT_WINDOW_HOURS,
+    ) -> int:
+        """COMPLETED unlicensed AM harvests for ``player_id`` in the rolling
+        window (includes the just-flushed row when called from resolve)."""
+        when = now or datetime.now(timezone.utc)
+        cutoff = when - timedelta(hours=window_hours)
+        return (
+            self.db.query(MiningHarvest)
+            .filter(
+                MiningHarvest.player_id == player_id,
+                MiningHarvest.status == MiningHarvestStatus.COMPLETED,
+                MiningHarvest.am_claimed.is_(True),
+                MiningHarvest.has_license.is_(False),
+                MiningHarvest.resolved_at.isnot(None),
+                MiningHarvest.resolved_at >= cutoff,
+            )
+            .count()
+        )
+
+    def _maybe_trip_am_unlicensed_enforcement(
+        self, player: Player, sector: Sector
+    ) -> bool:
+        """Dispatch LAW_ENFORCEMENT when the provisional repeated-unlicensed
+        threshold is met. Returns True when a patrol path was invoked.
+
+        Primary path: ``npc_engagement_service.route_engagement`` (existing
+        PendingEngagement / Marshal-or-Sentinel machinery). Fallback when
+        out of jurisdiction or no officers: relocate one ON_DUTY
+        LAW_ENFORCEMENT from a same-region ``MILITARY_ZONE`` cluster into
+        the harvest sector (canon "MILITARY_ZONE overlap" phrasing).
+        Soft-fail: never raises into the harvest transaction.
+        """
+        try:
+            count = self.count_recent_unlicensed_am_harvests(player.id)
+            if count < AM_UNLICENSED_ENFORCEMENT_THRESHOLD:
+                return False
+
+            from src.services import npc_engagement_service
+
+            engagement = npc_engagement_service.route_engagement(
+                self.db,
+                player,
+                AM_UNLICENSED_OFFENSE_TYPE,
+                sector,
+            )
+            if engagement is not None:
+                logger.info(
+                    "AM unlicensed enforcement: route_engagement "
+                    "offense=%s player=%s sector=%s incidents=%d",
+                    AM_UNLICENSED_OFFENSE_TYPE,
+                    player.id,
+                    sector.sector_id,
+                    count,
+                )
+                return True
+
+            relocated = self._relocate_military_zone_patrol_into(sector)
+            if relocated:
+                logger.info(
+                    "AM unlicensed enforcement: MILITARY_ZONE LE relocated "
+                    "into sector %s (player=%s, incidents=%d)",
+                    sector.sector_id,
+                    player.id,
+                    count,
+                )
+            return relocated
+        except Exception:
+            logger.exception(
+                "AM unlicensed enforcement failed for player %s sector %s "
+                "(harvest still completed)",
+                getattr(player, "id", None),
+                getattr(sector, "sector_id", None),
+            )
+            return False
+
+    def _relocate_military_zone_patrol_into(self, sector: Sector) -> bool:
+        """Best-effort: pull one ON_DUTY LAW_ENFORCEMENT from a same-region
+        MILITARY_ZONE cluster into ``sector`` via existing relocate machinery."""
+        from src.models.cluster import Cluster, ClusterType
+        from src.models.npc_character import NPCArchetype, NPCCharacter, NPCStatus
+        from src.services.npc_movement_service import _relocate_npc
+
+        if sector.region_id is None:
+            return False
+
+        candidate = (
+            self.db.query(NPCCharacter)
+            .join(Sector, Sector.sector_id == NPCCharacter.current_sector_id)
+            .join(Cluster, Cluster.id == Sector.cluster_id)
+            .filter(
+                NPCCharacter.archetype == NPCArchetype.LAW_ENFORCEMENT,
+                NPCCharacter.status == NPCStatus.ON_DUTY,
+                Sector.region_id == sector.region_id,
+                Cluster.type == ClusterType.MILITARY_ZONE,
+                NPCCharacter.current_sector_id != sector.sector_id,
+            )
+            .first()
+        )
+        if candidate is None:
+            return False
+        return bool(_relocate_npc(self.db, candidate, sector.sector_id))
 
     # ------------------------------------------------------------------
     # Harvest — start (async) / resolve / interrupt
@@ -707,6 +822,12 @@ class MiningService:
         row.quantum_shards_yield = quantum_shards
         row.am_rep_delta = am_rep_delta
         self.db.flush()
+
+        # LEG-119: after the −10 is on the ledger, trip patrol when the
+        # provisional repeated-unlicensed threshold is crossed. Soft-fail —
+        # enforcement must never void a completed harvest.
+        if row.am_claimed and not row.has_license:
+            self._maybe_trip_am_unlicensed_enforcement(player, sector)
 
         depletion_state = {
             "depletion_pool": depletion_pool,

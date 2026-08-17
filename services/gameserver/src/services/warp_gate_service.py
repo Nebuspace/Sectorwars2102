@@ -1670,10 +1670,22 @@ def list_player_projects(db: Session, player: Player) -> List[Dict[str, Any]]:
         # The newest non-cancelled gate represents the project's Phase 3 state.
         gate = next((g for g in gates if g.status != WarpGateStatus.CANCELLED), None)
         active_site = _active_construction_site(db, beacon.id, now)
+        phase = _phase_for(beacon, gate)
+        # LEG-94: owner listMine exposes canon toll Reporting from the
+        # tunnel JSONB collect_toll already maintains. Owner-scoped only —
+        # never mirrored onto list_sector_structures (public sector view).
+        toll_stats = None
+        if phase == "ACTIVE" and gate is not None and gate.warp_tunnel_id is not None:
+            tunnel = (
+                db.query(WarpTunnel).filter(WarpTunnel.id == gate.warp_tunnel_id).first()
+            )
+            toll_stats = _toll_stats_of(tunnel)
+        elif phase == "ACTIVE":
+            toll_stats = _toll_stats_of(None)
         projects.append({
             "beacon_id": str(beacon.id),
             "gate_id": str(gate.id) if gate else None,
-            "phase": _phase_for(beacon, gate),
+            "phase": phase,
             "source_sector_id": beacon.source_sector_id,
             "source_name": name_of(beacon.source_sector_id),
             "destination_sector_id": beacon.destination_sector_id,
@@ -1685,6 +1697,7 @@ def list_player_projects(db: Session, player: Player) -> List[Dict[str, Any]]:
             ),
             "created_at": beacon.created_at.isoformat() if beacon.created_at else None,
             "construction_site": _construction_site_payload(active_site),
+            "toll_stats": toll_stats,
         })
     return projects
 
@@ -1983,6 +1996,40 @@ def _toll_fee_of(tunnel: WarpTunnel) -> int:
     except (TypeError, ValueError):
         return 0
     return max(TOLL_FEE_MIN, min(TOLL_FEE_MAX, raw))
+
+
+def _toll_stats_of(tunnel: Optional[WarpTunnel]) -> Dict[str, Any]:
+    """Owner-facing toll Reporting fields (warp-gates.md Toll system):
+    total_revenue, usage_count, last_used — read from the SAME
+    artificial_data.toll_stats JSONB that collect_toll writes. No parallel
+    counter. Missing/malformed -> zeros + null last_used (honest empty
+    ledger, not fabricated economics)."""
+    empty: Dict[str, Any] = {
+        "total_revenue": 0,
+        "usage_count": 0,
+        "last_used": None,
+    }
+    if tunnel is None:
+        return empty
+    data = tunnel.artificial_data if isinstance(tunnel.artificial_data, dict) else {}
+    raw = data.get("toll_stats")
+    stats = raw if isinstance(raw, dict) else {}
+    try:
+        total_revenue = int(stats.get("total_revenue", 0) or 0)
+    except (TypeError, ValueError):
+        total_revenue = 0
+    try:
+        usage_count = int(stats.get("usage_count", 0) or 0)
+    except (TypeError, ValueError):
+        usage_count = 0
+    last_used = stats.get("last_used")
+    if last_used is not None and not isinstance(last_used, str):
+        last_used = str(last_used)
+    return {
+        "total_revenue": total_revenue,
+        "usage_count": usage_count,
+        "last_used": last_used,
+    }
 
 
 def _lock_player_if_exists(db: Session, player_id) -> Optional[Player]:
