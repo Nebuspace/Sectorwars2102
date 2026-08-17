@@ -202,12 +202,17 @@ def test_defense_turrets_and_fighters_now_contribute_to_reduction_and_kills():
     to one with none."""
     cs = CombatService(db=MagicMock())
 
-    bare_planet = _make_planet(defense_level=0, defense_shields=0, shields=0)
+    # LEG-172: citadel_level must be 0 here. After LEG-164, citadel_passive_defense_rating
+    # folds into effective_fighters; a default L1 citadel alone yields anti_drone_kills>0
+    # and breaks the "bare garrison = zero contribution" pin this test exists for.
+    bare_planet = _make_planet(
+        citadel_level=0, defense_level=0, defense_shields=0, shields=0,
+    )
     bare_planet.active_events = None
     bare_planet.specialization = None
 
     garrisoned_planet = _make_planet(
-        defense_level=0, defense_shields=0, shields=0,
+        citadel_level=0, defense_level=0, defense_shields=0, shields=0,
         defense_turrets=100, defense_fighters=100,
     )
     garrisoned_planet.active_events = None
@@ -227,7 +232,7 @@ def test_defense_turrets_fighters_contribution_is_capped():
     building terms -- an absurd garrison count must not blow past the caps."""
     cs = CombatService(db=MagicMock())
     planet = _make_planet(
-        defense_level=0, defense_shields=0, shields=0,
+        citadel_level=0, defense_level=0, defense_shields=0, shields=0,
         defense_turrets=10_000, defense_fighters=10_000,
     )
     planet.active_events = None
