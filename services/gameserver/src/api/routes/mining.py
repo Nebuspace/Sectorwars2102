@@ -58,6 +58,42 @@ def _status_for_reason(reason) -> int:
     return status.HTTP_400_BAD_REQUEST
 
 
+class YieldPreviewRequest(BaseModel):
+    ship_id: str
+
+
+@router.get("/yield-preview")
+async def preview_yield_band(
+    ship_id: str,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Read-only yield band for current sector × Mining Laser (mining.md:252).
+
+    Returns matrix ``ore_lo``/``ore_hi``, ``richness_tier``, ``laser_level``,
+    ``depletion_modifier``, and ``turns_cost`` (5) without spending turns.
+    """
+    from uuid import UUID
+
+    try:
+        sid = UUID(ship_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="invalid_ship_id",
+        ) from exc
+
+    result = MiningService(db).preview_yield(sid, player.id)
+    if not result.get("success"):
+        db.rollback()
+        reason = result.get("reason")
+        raise HTTPException(
+            status_code=_status_for_reason(reason),
+            detail=reason or "Yield preview failed",
+        )
+    return result
+
+
 @router.post("/harvest")
 async def harvest_asteroids(
     request: HarvestRequest,
