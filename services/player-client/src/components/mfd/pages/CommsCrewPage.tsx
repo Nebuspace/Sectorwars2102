@@ -28,11 +28,28 @@ import React from 'react';
 import { useGame, type PlayerMessage } from '../../../contexts/GameContext';
 import { useWebSocket } from '../../../contexts/WebSocketContext';
 import { useAuth } from '../../../contexts/AuthContext';
-import { teamAPI } from '../../../services/api';
+import { messageAPI, teamAPI } from '../../../services/api';
 import { MFDPageHeader, MFDPageBody, MFDField, MFDEmpty } from '../atoms';
 import './pages-ops.css';
 
 const ACCENT = '#00FF7F';
+
+/** Tip MessageService.THREAD_MESSAGE_CAP — honesty banner only (not enforced client-side). */
+const THREAD_MESSAGE_CAP = 50;
+
+/** Latest-per-thread Message dict from GET /messages/conversations. */
+interface ConversationLatest {
+  id: string;
+  sender_id: string;
+  recipient_id?: string | null;
+  subject?: string | null;
+  content?: string | null;
+  sent_at: string | null;
+  thread_id?: string | null;
+  reply_to_id?: string | null;
+  is_read?: boolean;
+  sender_name?: string | null;
+}
 
 interface ComposeTarget {
   recipientId: string;
@@ -75,6 +92,35 @@ const CommsCrewPage: React.FC = () => {
   // carries only team_id, not the name). One fetch per team_id change; falls
   // back to "ACTIVE" while loading or if the lookup fails.
   const [teamLabel, setTeamLabel] = React.useState<string | null>(null);
+
+  // LEG-390 — tip conversations list (latest Message per thread).
+  const [conversations, setConversations] = React.useState<ConversationLatest[]>([]);
+  const [conversationsError, setConversationsError] = React.useState<string | null>(null);
+  const [conversationsLoading, setConversationsLoading] = React.useState(false);
+  const [openThreadId, setOpenThreadId] = React.useState<string | null>(null);
+
+  const refreshConversations = React.useCallback(async () => {
+    setConversationsLoading(true);
+    setConversationsError(null);
+    try {
+      const raw = await messageAPI.getConversations(1) as {
+        conversations?: ConversationLatest[];
+      };
+      const list = Array.isArray(raw?.conversations) ? raw.conversations : [];
+      setConversations(list);
+    } catch (err: unknown) {
+      setConversations([]);
+      setConversationsError(
+        err instanceof Error ? err.message : 'Failed to load conversation threads',
+      );
+    } finally {
+      setConversationsLoading(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    void refreshConversations();
+  }, [refreshConversations, newMessageSignal]);
   React.useEffect(() => {
     const teamId = playerState?.team_id;
     if (!teamId) { setTeamLabel(null); return; }
@@ -236,6 +282,7 @@ const CommsCrewPage: React.FC = () => {
       );
       setComposeContent('');
       setSendNotice('TRANSMISSION SENT');
+      void refreshConversations();
     } catch (error: any) {
       // FastAPI 422s return `detail` as an array of validation objects, and a
       // raw object would render as "[object Object]" / crash the CRT line.
@@ -251,12 +298,125 @@ const CommsCrewPage: React.FC = () => {
     }
   };
 
+  const openConversation = (c: ConversationLatest) => {
+    const tid = c.thread_id || c.id;
+    setOpenThreadId((prev) => (prev === tid ? null : tid));
+  };
+
+  /** Tip conversations = latest Message only; merge same-thread inbox rows for local history. */
+  const threadHistory = React.useMemo(() => {
+    if (!openThreadId) return [] as Array<ConversationLatest | PlayerMessage>;
+    const latest = conversations.find(
+      (c) => (c.thread_id || c.id) === openThreadId,
+    );
+    const fromInbox = inboxMessages.filter(
+      (m) => m.thread_id && m.thread_id === openThreadId,
+    );
+    const byId = new Map<string, ConversationLatest | PlayerMessage>();
+    if (latest) byId.set(latest.id, latest);
+    for (const m of fromInbox) byId.set(m.id, m);
+    return Array.from(byId.values()).sort((a, b) => {
+      const ta = a.sent_at ? Date.parse(a.sent_at) : 0;
+      const tb = b.sent_at ? Date.parse(b.sent_at) : 0;
+      return ta - tb;
+    });
+  }, [openThreadId, conversations, inboxMessages]);
+
+  const startReplyFromConversation = (c: ConversationLatest) => {
+    const otherId =
+      c.sender_id === playerState?.id
+        ? c.recipient_id
+        : c.sender_id;
+    if (!otherId) return;
+    setCompose({
+      recipientId: otherId,
+      recipientName: c.sender_name || 'UNKNOWN',
+      replyToId: c.id,
+    });
+    setComposeSubject(
+      c.subject ? (/^re:/i.test(c.subject) ? c.subject : `RE: ${c.subject}`) : '',
+    );
+    setComposeContent('');
+    setSendError(null);
+    setSendNotice(null);
+  };
+
   return (
     <div className="mfd-page-ops">
       <MFDPageHeader title="COMMS / CREW" accent={ACCENT} status="shipped" showTitle={false} />
       <MFDPageBody scrollKey="comms-crew">
         <MFDField label="UPLINK" value={isConnected ? 'LINK OK' : 'LINK DOWN'} accent={isConnected} />
         <MFDField label="UNREAD" value={unreadMessageCount ?? '—'} />
+
+        <div className="mfd-page-section-label">THREADS</div>
+        <div className="mfd-page-comms-threads" data-testid="comms-threads">
+          {conversationsLoading && conversations.length === 0 ? (
+            <MFDEmpty text="LOADING THREADS…" />
+          ) : conversationsError ? (
+            <div className="mfd-page-warnline" data-testid="comms-threads-error">
+              {conversationsError}
+            </div>
+          ) : conversations.length === 0 ? (
+            <MFDEmpty text="NO THREADS" />
+          ) : (
+            conversations.map((c) => {
+              const tid = c.thread_id || c.id;
+              const open = openThreadId === tid;
+              return (
+                <div
+                  key={c.id}
+                  className={`mfd-page-comms-hail-item ${c.is_read ? 'read' : 'unread'}`}
+                  data-testid="comms-thread-row"
+                >
+                  <button
+                    className="mfd-page-comms-hail-summary"
+                    onClick={() => openConversation(c)}
+                    aria-expanded={open}
+                    data-testid="comms-thread-open"
+                  >
+                    <span
+                      className={`mfd-page-comms-unread-dot ${c.is_read ? 'off' : ''}`}
+                      aria-hidden="true"
+                    />
+                    <span className="mfd-page-comms-hail-sender">
+                      {(c.sender_name || 'UNKNOWN').toUpperCase()}
+                    </span>
+                    <span className="mfd-page-comms-hail-subject">
+                      {c.subject || '(NO SUBJECT)'}
+                    </span>
+                    <span className="mfd-page-comms-hail-time">{timeAgo(c.sent_at)}</span>
+                  </button>
+                  {open && (
+                    <div className="mfd-page-comms-hail-body" data-testid="comms-thread-body">
+                      <p className="mfd-page-comms-thread-cap-note">
+                        THREAD DEPTH CAP {THREAD_MESSAGE_CAP} (SERVER) — TIP LISTS LATEST PER THREAD
+                      </p>
+                      {threadHistory.map((m) => (
+                        <div key={m.id} className="mfd-page-comms-thread-msg">
+                          <div className="mfd-page-comms-hail-sender">
+                            {(('sender_name' in m && m.sender_name) || 'UNKNOWN').toString().toUpperCase()}
+                            {' · '}
+                            {timeAgo(m.sent_at)}
+                          </div>
+                          <p className="mfd-page-comms-hail-content">{m.content || ''}</p>
+                        </div>
+                      ))}
+                      <div className="mfd-page-comms-hail-actions">
+                        <button
+                          className="mfd-page-comms-reply-btn"
+                          onClick={() => startReplyFromConversation(c)}
+                          data-testid="comms-thread-reply"
+                        >
+                          ↩ REPLY
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
 
         <div className="mfd-page-section-label">TRANSMISSIONS</div>
         <div className="mfd-page-comms-inbox">
