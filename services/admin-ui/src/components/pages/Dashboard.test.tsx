@@ -10,6 +10,10 @@ vi.mock('../../utils/auth', () => ({
   },
 }));
 
+vi.mock('../../contexts/AuthContext', () => ({
+  useAuth: () => ({ user: null, logout: vi.fn() }),
+}));
+
 const byUrl = (url: string) => {
   if (url.includes('/status/database/detailed')) {
     return { data: { status: 'healthy', connected: true, response_time: 12 } };
