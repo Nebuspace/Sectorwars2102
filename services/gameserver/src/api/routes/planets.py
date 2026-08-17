@@ -7,7 +7,7 @@ defenses, sieges, and landing/departing operations.
 
 import logging
 from datetime import datetime, timedelta, UTC
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -79,9 +79,9 @@ class DefenseUpdateRequest(BaseModel):
 
 
 class GenesisDeployRequest(BaseModel):
-    """Genesis device deployment request, used by both /planets/genesis/deploy
-    (the route the player-client actually calls) and the parallel /genesis/deploy
-    route in genesis.py."""
+    """Genesis device deployment request for POST /planets/genesis/deploy
+    (the sole live route the player-client calls). The parallel POST
+    /genesis/deploy twin in genesis.py was removed 2026-08-04."""
     sectorId: str
     planetName: str = Field(..., min_length=3, max_length=50)
     # basic = 1 device, enhanced = 3 devices, advanced = 1 device + the Colony
@@ -853,6 +853,11 @@ async def abandon_planet_route(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Only the planet's owner can abandon it.",
             )
+        if reason == "transfer_pending":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Cancel the pending ownership transfer before abandoning this planet.",
+            )
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=reason)
 
     db.commit()
@@ -866,6 +871,196 @@ async def abandon_planet_route(
         planet_id=result["planet_id"],
         compensation=result["compensation"],
     )
+
+
+# LEG-159 — voluntary ownership transfer (colonization.md Ownership controls;
+# LEG-DEC-15 package). Thin routes; logic in planet_ownership_transfer_service.
+
+
+class OwnershipTransferOfferRequest(BaseModel):
+    recipient_player_id: str
+
+
+class OwnershipTransferOfferResponse(BaseModel):
+    success: bool
+    planet_id: str
+    offer: Dict[str, Any]
+
+
+class OwnershipTransferStatusResponse(BaseModel):
+    planet_id: str
+    pending: bool
+    offer: Optional[Dict[str, Any]] = None
+
+
+class OwnershipTransferAcceptResponse(BaseModel):
+    success: bool
+    planet_id: str
+    from_player_id: str
+    to_player_id: str
+    fee_credits: int
+    owner_credits_remaining: int
+
+
+@router.post("/{planet_id}/ownership-transfer", response_model=OwnershipTransferOfferResponse)
+async def offer_ownership_transfer_route(
+    planet_id: str,
+    body: OwnershipTransferOfferRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Owner offers voluntary ownership transfer to another player (5% fee on accept)."""
+    from src.services import planet_ownership_transfer_service as pots
+
+    try:
+        pid = UUID(planet_id)
+        rid = UUID(body.recipient_player_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid UUID")
+
+    planet = db.query(Planet).filter(Planet.id == pid).with_for_update().first()
+    if not planet:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Planet not found")
+    if planet.owner_id is None or planet.owner_id != player.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the owner can offer a transfer.")
+
+    recipient = db.query(Player).filter(Player.id == rid).first()
+    if not recipient:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recipient player not found")
+
+    try:
+        result = pots.offer_transfer(db, planet, player, recipient)
+    except ValueError as e:
+        reason = str(e)
+        if reason == "offer_pending":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A transfer offer is already pending for this planet.",
+            )
+        if reason == "self_transfer":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot transfer to yourself.")
+        if reason == "recipient_inactive":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Recipient is inactive.")
+        if reason == "not_owner":
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the owner can offer a transfer.")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=reason)
+
+    db.commit()
+    return OwnershipTransferOfferResponse(
+        success=True, planet_id=result["planet_id"], offer=result["offer"]
+    )
+
+
+@router.get("/{planet_id}/ownership-transfer", response_model=OwnershipTransferStatusResponse)
+async def ownership_transfer_status_route(
+    planet_id: str,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    from src.services import planet_ownership_transfer_service as pots
+
+    try:
+        pid = UUID(planet_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid planet ID format")
+
+    planet = db.query(Planet).filter(Planet.id == pid).first()
+    if not planet:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Planet not found")
+
+    pending = pots.get_pending_transfer(planet)
+    alive = bool(pending and pots._pending_alive(pending))
+    return OwnershipTransferStatusResponse(
+        planet_id=str(planet.id),
+        pending=alive,
+        offer=pending if alive else None,
+    )
+
+
+@router.post("/{planet_id}/ownership-transfer/accept", response_model=OwnershipTransferAcceptResponse)
+async def accept_ownership_transfer_route(
+    planet_id: str,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Recipient accepts; current owner is charged the 5% fee and ownership flips."""
+    from src.services import planet_ownership_transfer_service as pots
+
+    try:
+        pid = UUID(planet_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid planet ID format")
+
+    planet = db.query(Planet).filter(Planet.id == pid).with_for_update().first()
+    if not planet:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Planet not found")
+    if planet.owner_id is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Planet has no owner")
+
+    owner = (
+        db.query(Player)
+        .filter(Player.id == planet.owner_id)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
+    recipient = (
+        db.query(Player)
+        .filter(Player.id == player.id)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
+    if not owner or not recipient:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Player not found")
+
+    try:
+        result = pots.accept_transfer(db, planet, recipient, owner)
+    except ValueError as e:
+        reason = str(e)
+        if reason == "insufficient_credits":
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail="Current owner cannot afford the 5% transfer fee.",
+            )
+        if reason in ("not_recipient", "no_pending", "offer_expired", "owner_mismatch"):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=reason)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=reason)
+
+    db.commit()
+    return OwnershipTransferAcceptResponse(**result)
+
+
+@router.post("/{planet_id}/ownership-transfer/cancel")
+async def cancel_ownership_transfer_route(
+    planet_id: str,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Owner cancels a pending offer (no fee charged)."""
+    from src.services import planet_ownership_transfer_service as pots
+
+    try:
+        pid = UUID(planet_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid planet ID format")
+
+    planet = db.query(Planet).filter(Planet.id == pid).with_for_update().first()
+    if not planet:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Planet not found")
+
+    try:
+        result = pots.cancel_transfer(db, planet, player)
+    except ValueError as e:
+        reason = str(e)
+        if reason == "not_owner":
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the owner can cancel.")
+        if reason == "no_pending":
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="No pending transfer offer.")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=reason)
+
+    db.commit()
+    return result
 
 
 @router.post("/{planet_id}/reclaim", response_model=ReclaimResponse)
