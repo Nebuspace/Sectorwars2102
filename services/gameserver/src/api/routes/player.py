@@ -201,6 +201,10 @@ class MoveResponse(BaseModel):
     tunnel_events: list = []
 
 class MoveOption(BaseModel):
+    # Sector row UUID (mirrors SectorResponse.id) for fleet move-as-one /
+    # any client that must POST a destination UUID without a second lookup.
+    # Numeric global `sector_id` stays the player/move / NAV identity.
+    id: str | None = None
     sector_id: int
     sector_number: int | None = None  # Display number
     name: str
@@ -785,6 +789,7 @@ async def get_available_moves(
         region_name = (sector.region.display_name or sector.region.name) if sector and sector.region else None
 
         warps.append(MoveOption(
+            id=str(sector.id) if sector is not None else None,
             sector_id=warp["sector_id"],
             sector_number=sector.sector_number if sector and sector.sector_number else warp["sector_id"],
             name=warp["name"],
@@ -807,6 +812,7 @@ async def get_available_moves(
         region_name = (sector.region.display_name or sector.region.name) if sector and sector.region else None
 
         tunnels.append(MoveOption(
+            id=str(sector.id) if sector is not None else None,
             sector_id=tunnel["sector_id"],
             sector_number=sector.sector_number if sector and sector.sector_number else tunnel["sector_id"],
             name=tunnel["name"],
