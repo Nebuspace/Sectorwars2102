@@ -848,6 +848,15 @@ class MiningService:
             am_rep_delta,
         )
 
+        # LEG-431 — durable inbox notifies (soft-fail; must not void harvest).
+        self._notify_harvest_completed(
+            row.player_id,
+            ore=ore,
+            precious_metals=precious_metals,
+            quantum_shards=quantum_shards,
+            harvest_id=row.id,
+        )
+
         return {
             "success": True,
             "reason": None,
@@ -1112,3 +1121,165 @@ class MiningService:
             "expires_at": expires_at.isoformat(),
             "cost_paid_cr": cost,
         }
+
+    @staticmethod
+    def _mining_notify_subject_prefix(kind: str, entity_id: uuid.UUID) -> str:
+        """Stable subject key for once-per-entity dedup (LEG-431)."""
+        return f"mining.{kind}:{entity_id}"
+
+    def _send_system_inbox(
+        self,
+        player_id: uuid.UUID,
+        *,
+        subject: str,
+        content: str,
+        priority: str = "normal",
+    ) -> bool:
+        """Best-effort system inbox Message (medal_service pattern). Soft-fail."""
+        try:
+            from src.models.message import Message
+
+            player = self.db.query(Player).filter(Player.id == player_id).first()
+            if player is None:
+                return False
+            msg = Message(
+                sender_id=player_id,
+                recipient_id=player_id,
+                subject=subject,
+                content=content,
+                message_type="system",
+                priority=priority,
+            )
+            self.db.add(msg)
+            self.db.flush()
+            return True
+        except Exception:
+            logger.warning(
+                "Mining system inbox notify failed for player %s (soft-fail)",
+                player_id,
+                exc_info=True,
+            )
+            return False
+
+    def _notify_harvest_completed(
+        self,
+        player_id: uuid.UUID,
+        *,
+        ore: int,
+        precious_metals: int,
+        quantum_shards: int,
+        harvest_id: uuid.UUID,
+    ) -> None:
+        """Inbox notifies on harvest success + rare/trace drops (mining.md:256)."""
+        try:
+            self._send_system_inbox(
+                player_id,
+                subject=self._mining_notify_subject_prefix("harvest", harvest_id),
+                content=(
+                    f"Asteroid harvest complete: {ore} ore secured"
+                    + (
+                        f", {precious_metals} precious metals"
+                        if precious_metals
+                        else ""
+                    )
+                    + (
+                        f", {quantum_shards} quantum shards"
+                        if quantum_shards
+                        else ""
+                    )
+                    + "."
+                ),
+                priority="normal",
+            )
+            if precious_metals > 0:
+                self._send_system_inbox(
+                    player_id,
+                    subject=self._mining_notify_subject_prefix(
+                        "precious_metals", harvest_id
+                    ),
+                    content=(
+                        f"Rare drop: {precious_metals} precious metals from "
+                        f"harvest {harvest_id}."
+                    ),
+                    priority="high",
+                )
+            if quantum_shards > 0:
+                self._send_system_inbox(
+                    player_id,
+                    subject=self._mining_notify_subject_prefix(
+                        "quantum_shards", harvest_id
+                    ),
+                    content=(
+                        f"Trace drop: {quantum_shards} quantum shards from "
+                        f"harvest {harvest_id}."
+                    ),
+                    priority="high",
+                )
+        except Exception:
+            logger.warning(
+                "Harvest notify path failed for %s (soft-fail; harvest kept)",
+                harvest_id,
+                exc_info=True,
+            )
+
+    def warn_expiring_claim_licenses(
+        self,
+        *,
+        now: Optional[datetime] = None,
+        within: Optional[timedelta] = None,
+    ) -> int:
+        """Warn owners of ClaimLicense rows expiring within ``within`` (default 1h).
+
+        Once per license (subject dedup). Returns count of warnings sent.
+        """
+        from src.models.message import Message
+
+        now = now or datetime.now(timezone.utc)
+        within = within or timedelta(hours=1)
+        window_end = now + within
+        # ClaimLicense.expires_at is naive utc in model; normalize comparison.
+        now_naive = now.replace(tzinfo=None) if now.tzinfo else now
+        end_naive = (
+            window_end.replace(tzinfo=None) if window_end.tzinfo else window_end
+        )
+
+        rows = (
+            self.db.query(ClaimLicense)
+            .filter(
+                ClaimLicense.expires_at > now_naive,
+                ClaimLicense.expires_at <= end_naive,
+            )
+            .all()
+        )
+        warned = 0
+        for lic in rows:
+            subject = self._mining_notify_subject_prefix("license_expiry", lic.id)
+            already = (
+                self.db.query(Message.id)
+                .filter(
+                    Message.recipient_id == lic.player_id,
+                    Message.subject == subject,
+                )
+                .first()
+            )
+            if already is not None:
+                continue
+            expires_iso = (
+                lic.expires_at.replace(tzinfo=timezone.utc).isoformat()
+                if lic.expires_at.tzinfo is None
+                else lic.expires_at.isoformat()
+            )
+            ok = self._send_system_inbox(
+                lic.player_id,
+                subject=subject,
+                content=(
+                    f"Your Astral Mining claim license for sector "
+                    f"{lic.sector_number} expires at {expires_iso} "
+                    f"(within 1 hour). Renew soon to keep mining without "
+                    f"AM reputation penalties."
+                ),
+                priority="high",
+            )
+            if ok:
+                warned += 1
+        return warned

@@ -112,7 +112,10 @@ from src.services.scheduler.contract_sweeps import (
     _run_contract_expire_sweep_sync,
 )
 from src.services.scheduler.beacon_sweeps import _run_beacon_expire_sweep_sync
-from src.services.scheduler.mining_sweeps import _run_mining_harvest_resolve_sync
+from src.services.scheduler.mining_sweeps import (
+    _run_mining_harvest_resolve_sync,
+    _run_claim_license_expiry_warn_sync,
+)
 from src.services.scheduler.ship_registry_sweeps import _run_abandonment_archive_sweep_sync
 
 logger = logging.getLogger(__name__)
@@ -330,6 +333,25 @@ async def _npc_scheduler_main_loop() -> None:
             except Exception:
                 logger.exception(
                     "NPC scheduler: mining harvest resolve sweep crashed "
+                    "(loop continues)"
+                )
+
+        # LEG-431 — claim-license expiry warning (1h before), once per license.
+        if elapsed % MINING_HARVEST_SWEEP_SECONDS == 0:
+            try:
+                warned = await asyncio.to_thread(
+                    _run_claim_license_expiry_warn_sync
+                )
+                if warned:
+                    logger.info(
+                        "NPC scheduler: claim-license expiry warn — %d notice(s)",
+                        warned,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "NPC scheduler: claim-license expiry warn crashed "
                     "(loop continues)"
                 )
 
