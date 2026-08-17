@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
-import ColonyOverview from './ColonyOverview';
+import { ColonyOverview } from './ColonyOverview';
 import { api } from '../../utils/auth';
 
 vi.mock('../../utils/auth', () => ({
