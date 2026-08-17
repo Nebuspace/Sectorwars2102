@@ -1,0 +1,73 @@
+.bounty-admin-panel .bounty-admin-block {
+  background: var(--surface-elevated, #1e293b);
+  border: 1px solid var(--border-color, #475569);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.bounty-admin-panel h4 {
+  margin: 0 0 12px;
+  font-size: 1rem;
+}
+
+.bounty-admin-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.bounty-admin-row label {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.bounty-admin-row input {
+  flex: 1 1 220px;
+  min-width: 180px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color, #475569);
+  background: var(--surface, #0f172a);
+  color: inherit;
+}
+
+.bounty-admin-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.bounty-admin-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.bounty-admin-grid input,
+.bounty-admin-grid select {
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color, #475569);
+  background: var(--surface, #0f172a);
+  color: inherit;
+}
+
+.bounty-admin-span {
+  grid-column: 1 / -1;
+}
+
+.bounty-admin-meta {
+  font-size: 0.9rem;
+  margin: 0 0 10px;
+}
+
+.bounty-admin-muted {
+  color: var(--text-tertiary, #94a3b8);
+  font-size: 0.85rem;
+}

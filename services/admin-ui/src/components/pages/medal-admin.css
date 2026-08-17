@@ -1,0 +1,61 @@
+.medal-admin-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.medal-admin-tab {
+  padding: 8px 14px;
+  border: 1px solid var(--border-color, #475569);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.medal-admin-tab.active {
+  border-color: #3b82f6;
+  background: rgba(59, 130, 246, 0.15);
+  font-weight: 600;
+}
+
+.medal-admin-form,
+.medal-admin-catalog {
+  background: var(--surface-elevated, #1e293b);
+  border: 1px solid var(--border-color, #475569);
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.medal-admin-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.medal-admin-field label {
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.medal-admin-field input,
+.medal-admin-field select,
+.medal-admin-field textarea {
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color, #475569);
+  background: var(--surface, #0f172a);
+  color: inherit;
+}
+
+.medal-admin-select-list {
+  min-height: 6rem;
+}
+
+.medal-admin-muted {
+  color: var(--text-tertiary, #94a3b8);
+  font-size: 0.85rem;
+  margin: 4px 0 0;
+}
