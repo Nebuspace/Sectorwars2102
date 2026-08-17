@@ -45,7 +45,7 @@ def test_preview_not_asteroid_field():
     )
     sector = SimpleNamespace(
         sector_id=1,
-        type=SectorType.EMPTY,  # not asteroid
+        type=SectorType.STANDARD,  # not asteroid
         resources={},
         resource_regeneration=0.5,
     )
