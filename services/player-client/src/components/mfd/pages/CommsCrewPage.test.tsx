@@ -13,9 +13,13 @@ import { createRoot } from 'react-dom/client';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const mockGetTeam = vi.fn();
+const mockFlagMessage = vi.fn();
 vi.mock('../../../services/api', () => ({
   teamAPI: {
     getTeam: (...a: unknown[]) => mockGetTeam(...a),
+  },
+  messageAPI: {
+    flagMessage: (...a: unknown[]) => mockFlagMessage(...a),
   },
 }));
 
@@ -79,7 +83,7 @@ vi.mock('../../../contexts/AuthContext', () => ({
   useAuth: () => ({ user: { id: 'player-1' } }),
 }));
 
-import CommsCrewPage from './CommsCrewPage';
+import CommsCrewPage, { FLAG_REASON_BY_CATEGORY } from './CommsCrewPage';
 
 describe('CommsCrewPage — MFD-B COMM', () => {
   let container: HTMLElement;
@@ -87,6 +91,8 @@ describe('CommsCrewPage — MFD-B COMM', () => {
 
   beforeEach(() => {
     mockGetTeam.mockReset();
+    mockFlagMessage.mockReset();
+    mockFlagMessage.mockResolvedValue({ success: true });
     mockRefreshInbox.mockReset();
     mockSendPlayerMessage.mockReset();
     mockMarkMessageRead.mockReset();
@@ -170,6 +176,36 @@ describe('CommsCrewPage — MFD-B COMM', () => {
     await click(container.querySelector('.mfd-page-comms-hail-summary')!);
     await click(container.querySelector('[data-testid="comms-purge-hail"]')!);
     expect(mockDeletePlayerMessage).toHaveBeenCalledWith('msg-1');
+  });
+
+  it('FLAG category calls messageAPI.flagMessage with tip-length reason', async () => {
+    mockInboxMessages = [makeMessage()];
+    await mount();
+    await click(container.querySelector('.mfd-page-comms-hail-summary')!);
+    await click(container.querySelector('[data-testid="comms-flag-hail"]')!);
+    expect(container.querySelector('[data-testid="comms-flag-categories"]')).not.toBeNull();
+    await click(container.querySelector('[data-testid="comms-flag-cat-spam"]')!);
+    await flush();
+    expect(mockFlagMessage).toHaveBeenCalledWith('msg-1', FLAG_REASON_BY_CATEGORY.spam);
+    expect(FLAG_REASON_BY_CATEGORY.spam.length).toBeGreaterThanOrEqual(10);
+    expect(container.querySelector('.mfd-page-comms-flag-notice')?.textContent).toBe(
+      'FLAGGED FOR MODERATION',
+    );
+  });
+
+  it('FLAG error path surfaces honesty without crashing', async () => {
+    mockFlagMessage.mockRejectedValueOnce(new Error('Message not found'));
+    mockInboxMessages = [makeMessage()];
+    await mount();
+    await click(container.querySelector('.mfd-page-comms-hail-summary')!);
+    await click(container.querySelector('[data-testid="comms-flag-hail"]')!);
+    await click(container.querySelector('[data-testid="comms-flag-cat-harassment"]')!);
+    await flush();
+    expect(mockFlagMessage).toHaveBeenCalledWith('msg-1', FLAG_REASON_BY_CATEGORY.harassment);
+    expect(container.querySelector('.mfd-page-comms-flag-error')?.textContent).toBe(
+      'Message not found',
+    );
+    expect(container.querySelector('.mfd-page-comms-hail-content')).not.toBeNull();
   });
 
   it('shows the honest empty state with no transmissions', async () => {
