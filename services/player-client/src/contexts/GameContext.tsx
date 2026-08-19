@@ -59,6 +59,8 @@ export interface Sector {
   x_coord?: number | null;
   y_coord?: number | null;
   z_coord?: number | null;
+  /** Tip SectorResponse — true after POST investigate-anomaly (LEG-478). */
+  anomaly_investigated?: boolean;
 }
 
 export interface Planet {

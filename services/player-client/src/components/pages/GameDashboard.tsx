@@ -23,6 +23,7 @@ import QuantumDriveConsole from '../quantum/QuantumDriveConsole';
 import GatewrightPanel from '../gatewright/GatewrightPanel';
 import TacticalMonitor from '../tactical/TacticalMonitor';
 import SolarSalvagePage from '../tactical/pages/SolarSalvagePage';
+import AnomalyInvestigateCta from '../tactical/AnomalyInvestigateCta';
 import CockpitColonyManagement from '../cockpit/CockpitColonyManagement';
 import DeckPageTabs from '../cockpit/DeckPageTabs';
 import type { ProductionLine } from '../cockpit/ProductionPanel';
@@ -3847,7 +3848,13 @@ const GameDashboardInner: React.FC = () => {
                           Asteroid fields get a HARVEST trigger; all other empty
                           sectors get the generic "nothing detected" label. */}
                       {planetsInSector.length === 0 && stationsInSector.length === 0 && (
-                        currentSector?.type?.toUpperCase() === 'ASTEROID_FIELD' ? (
+                        currentSector?.type?.toUpperCase() === 'ANOMALY' ? (
+                          <AnomalyInvestigateCta
+                            sectorId={currentSector.sector_id}
+                            sectorType={currentSector.type}
+                            anomalyInvestigated={Boolean(currentSector.anomaly_investigated)}
+                          />
+                        ) : currentSector?.type?.toUpperCase() === 'ASTEROID_FIELD' ? (
                           <div className="planetary-asteroid-state">
                             <b className="planetary-asteroid-label">⚫ ASTEROID FIELD</b>
                             {flying ? (
@@ -3957,10 +3964,19 @@ const GameDashboardInner: React.FC = () => {
                        RETIREMENT+GLASS — this is now its one call site. */
                     !currentSector ? (
                       <div className="empty-state">No sector telemetry</div>
-                    ) : currentSector.special_formations && currentSector.special_formations.length > 0 ? (
-                      renderFormationList(currentSector.special_formations)
                     ) : (
-                      <div className="empty-state">No signals or formations charted in this sector</div>
+                      <>
+                        <AnomalyInvestigateCta
+                          sectorId={currentSector.sector_id}
+                          sectorType={currentSector.type}
+                          anomalyInvestigated={Boolean(currentSector.anomaly_investigated)}
+                        />
+                        {currentSector.special_formations && currentSector.special_formations.length > 0
+                          ? renderFormationList(currentSector.special_formations)
+                          : (currentSector.type || '').toUpperCase() !== 'ANOMALY' && (
+                              <div className="empty-state">No signals or formations charted in this sector</div>
+                            )}
+                      </>
                     )
                   ) : (
                     /* HAZARD — the numeric deep-dive (WO-UI-MAX-BATCH-1 human

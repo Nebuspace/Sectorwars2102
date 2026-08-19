@@ -751,6 +751,12 @@ export const playerAPI = {
     apiRequest(`/api/v1/player/formations/${formationId}/investigate`, {
       method: 'POST',
     }),
+
+  /** Occupying SectorType.ANOMALY — distinct from formation investigate (LEG-478). */
+  investigateAnomaly: (sectorId: number) =>
+    apiRequest(`/api/v1/player/sectors/${sectorId}/investigate-anomaly`, {
+      method: 'POST',
+    }),
 };
 
 /** Asteroid-field mining harvest (WO-UI-MINING). */
