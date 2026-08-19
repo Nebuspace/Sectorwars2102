@@ -74,6 +74,8 @@ class FleetService:
 
     def __init__(self, db: Session):
         self.db = db
+        # LEG-DEC-222: flagship-hop fleet_moved payloads queued until POST-COMMIT.
+        self._pending_fleet_moved: List[Dict[str, Any]] = []
 
     # ---- Ship combat JSONB helpers ----
 
@@ -103,10 +105,10 @@ class FleetService:
         running-loop create_task, swallow every failure — a quiet client
         must never roll back fleet/battle rows.
 
-        ``move_fleet`` / ``POST /fleets/{id}/move`` were retired (see
-        test_fleet_sector_id_flagship_derive). ``fleet_moved`` therefore
-        fires when flagship-derived ``Fleet.sector_id`` actually changes
-        on a roster commit — not a restored travel-as-a-unit API.
+        ``fleet_moved`` (LEG-DEC-222 AMEND): emit only when derived
+        ``Fleet.sector_id`` actually changes in ``_recalculate_fleet_stats``
+        (flagship hop). Never restore ``move_fleet`` / POST /move; never
+        write member ships' ``sector_id``.
         """
         try:
             import asyncio
@@ -137,7 +139,23 @@ class FleetService:
                 exc_info=True,
             )
 
-    def _recalculate_fleet_stats(self, fleet: Fleet) -> Optional[Tuple[Any, Any]]:
+    def _flush_fleet_moved_events(self) -> None:
+        """POST-COMMIT drain of flagship-hop fleet_moved (LEG-DEC-222)."""
+        hops = list(self._pending_fleet_moved)
+        self._pending_fleet_moved = []
+        for hop in hops:
+            self._emit_fleet_event(
+                "fleet_moved",
+                {
+                    "fleet_id": hop["fleet_id"],
+                    "origin": hop["origin"],
+                    "destination": hop["destination"],
+                },
+                team_ids=[hop.get("team_id")],
+                sector_number=hop.get("sector_number"),
+            )
+
+    def _recalculate_fleet_stats(self, fleet: Fleet) -> None:
         """
         Recalculate aggregated fleet stats from member ships.
 
@@ -150,9 +168,8 @@ class FleetService:
             fleet.total_shields = 0
             fleet.total_hull = 0
             fleet.average_speed = 0.0
-            return None
+            return
 
-        origin_sector = fleet.sector_id
         fleet.total_ships = len(fleet.members)
         fleet.total_firepower = sum(
             self._get_ship_combat_stat(m.ship, "attack_rating", 0)
@@ -186,9 +203,6 @@ class FleetService:
             ).first()
             if sector is not None:
                 fleet.sector_id = sector.id
-        if fleet.sector_id != origin_sector:
-            return (origin_sector, fleet.sector_id)
-        return None
 
     def _compute_coordination_bonus(self, fleet: Fleet) -> float:
         """
@@ -345,24 +359,12 @@ class FleetService:
         self.db.add(member)
 
         # Update fleet stats
-        sector_move = self._recalculate_fleet_stats(fleet)
+        self._recalculate_fleet_stats(fleet)
         # Roster changed → recompute static coordination bonus (ADR-0061 S-I3)
         fleet.coordination_bonus = self._compute_coordination_bonus(fleet)
 
         self.db.commit()
         self.db.refresh(member)
-
-        if sector_move:
-            origin, dest = sector_move
-            self._emit_fleet_event(
-                "fleet_moved",
-                {
-                    "fleet_id": str(fleet.id),
-                    "origin": str(origin) if origin is not None else None,
-                    "destination": str(dest) if dest is not None else None,
-                },
-                team_ids=[fleet.team_id],
-            )
 
         logger.info(f"Added ship {ship_id} to fleet {fleet_id}")
         return member
@@ -409,7 +411,7 @@ class FleetService:
         self.db.delete(member)
 
         # Recalculate fleet stats
-        sector_move = self._recalculate_fleet_stats(fleet)
+        self._recalculate_fleet_stats(fleet)
         # Roster changed (manual removal OR mid-battle KIA via
         # _record_ship_casualty → remove_ship_from_fleet). Recompute the
         # static coordination bonus from the surviving roster (ADR-0061 S-I3).
@@ -434,17 +436,6 @@ class FleetService:
                     {
                         "fleet_id": str(fleet.id),
                         "status": FleetStatus.DISBANDED.value,
-                    },
-                    team_ids=[fleet.team_id],
-                )
-            if sector_move:
-                origin, dest = sector_move
-                self._emit_fleet_event(
-                    "fleet_moved",
-                    {
-                        "fleet_id": str(fleet.id),
-                        "origin": str(origin) if origin is not None else None,
-                        "destination": str(dest) if dest is not None else None,
                     },
                     team_ids=[fleet.team_id],
                 )
@@ -1218,7 +1209,7 @@ class FleetService:
 
         # Check for battle end conditions
         if self._should_end_battle(battle, attacker, defender):
-            result = self._end_battle(battle)
+            self.db.commit()
             self._emit_fleet_event(
                 "battle_round_complete",
                 {
@@ -1232,7 +1223,7 @@ class FleetService:
                     getattr(defender, "team_id", None),
                 ],
             )
-            return result
+            return self._end_battle(battle)
 
         # Progress battle phase based on round count
         if round_number > 5 and battle.phase == BattlePhase.ENGAGEMENT.value:
