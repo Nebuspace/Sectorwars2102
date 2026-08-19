@@ -17,6 +17,7 @@ const { tradeAPI } = vi.hoisted(() => ({
     offer: vi.fn(),
     confirm: vi.fn(),
     cancel: vi.fn(),
+    deliverFuel: vi.fn(),
   },
 }));
 
@@ -334,5 +335,85 @@ describe('PlayerTradeDesk', () => {
       close.click();
     });
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it('deliver-fuel posts recipient, amount, and payment from the desk', async () => {
+    tradeAPI.getOpen.mockResolvedValue({ session: null });
+    tradeAPI.initiate.mockResolvedValue({
+      session: openSession({ status: 'PENDING_ACCEPT' }),
+    });
+    tradeAPI.deliverFuel.mockResolvedValue({
+      outcome: 'fuel_delivered',
+      fuel_delivered: 5,
+      payment_credits: 100,
+      deliverer_credits: 900,
+      recipient_credits: 400,
+    });
+
+    await act(async () => {
+      root.render(
+        <PlayerTradeDesk targetPlayerId={THEM} myPlayerId={ME} onClose={onClose} />,
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const amount = document.body.querySelector(
+      '[data-testid="deliver-fuel-amount"]',
+    ) as HTMLInputElement;
+    const payment = document.body.querySelector(
+      '[data-testid="deliver-fuel-payment"]',
+    ) as HTMLInputElement;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        'value',
+      )?.set;
+      setter?.call(amount, '5');
+      amount.dispatchEvent(new Event('input', { bubbles: true }));
+      amount.dispatchEvent(new Event('change', { bubbles: true }));
+      setter?.call(payment, '100');
+      payment.dispatchEvent(new Event('input', { bubbles: true }));
+      payment.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+
+    const submit = document.body.querySelector(
+      '[data-testid="deliver-fuel-submit"]',
+    ) as HTMLButtonElement;
+    await act(async () => {
+      submit.click();
+    });
+
+    expect(tradeAPI.deliverFuel).toHaveBeenCalledWith({
+      recipient_player_id: THEM,
+      fuel_amount: 5,
+      payment_credits: 100,
+    });
+    expect(document.body.textContent).toMatch(/5 fuel delivered/);
+  });
+
+  it('surfaces GS 400 detail on deliver-fuel failure', async () => {
+    tradeAPI.getOpen.mockResolvedValue({ session: null });
+    tradeAPI.initiate.mockResolvedValue({
+      session: openSession({ status: 'PENDING_ACCEPT' }),
+    });
+    tradeAPI.deliverFuel.mockRejectedValue(new Error('not_co_located'));
+
+    await act(async () => {
+      root.render(
+        <PlayerTradeDesk targetPlayerId={THEM} myPlayerId={ME} onClose={onClose} />,
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const submit = document.body.querySelector(
+      '[data-testid="deliver-fuel-submit"]',
+    ) as HTMLButtonElement;
+    await act(async () => {
+      submit.click();
+    });
+    expect(document.body.textContent).toMatch(/same location/i);
   });
 });

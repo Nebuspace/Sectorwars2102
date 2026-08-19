@@ -145,6 +145,8 @@ const PlayerTradeDesk: React.FC<Props> = ({ targetPlayerId, myPlayerId, onClose,
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
+  const [fuelAmount, setFuelAmount] = useState(1);
+  const [paymentCredits, setPaymentCredits] = useState(0);
 
   const cargoShip = ownedShips.find((s) => s.id === cargoShipId);
   const cargoKeys = Object.keys(cargoShip?.cargo ?? {}).filter((k) => (cargoShip?.cargo?.[k] ?? 0) > 0);
@@ -212,6 +214,13 @@ const PlayerTradeDesk: React.FC<Props> = ({ targetPlayerId, myPlayerId, onClose,
 
   const amInitiator = session?.initiator_id === myPlayerId;
   const amTarget = session?.target_id === myPlayerId;
+  const deliverRecipientId =
+    targetPlayerId ||
+    (session
+      ? session.initiator_id === myPlayerId
+        ? session.target_id
+        : session.initiator_id
+      : '');
   const myOffer = amInitiator ? session?.initiator_offer : session?.target_offer;
   const theirOffer = amInitiator ? session?.target_offer : session?.initiator_offer;
 
@@ -481,6 +490,70 @@ const PlayerTradeDesk: React.FC<Props> = ({ targetPlayerId, myPlayerId, onClose,
             </>
           )}
         </>
+      )}
+
+      {deliverRecipientId && (
+        <section className="p2p-trade-desk__fuel" data-testid="deliver-fuel">
+          <h3>Deliver fuel</h3>
+          <p className="p2p-trade-desk__muted">
+            Same-sector fuel-for-credits. Fuel goes onto their ship; they still fly Slipdrive.
+            Payment comes from their credits.
+          </p>
+          <label className="p2p-trade-desk__field">
+            Fuel amount
+            <input
+              data-testid="deliver-fuel-amount"
+              type="number"
+              min={1}
+              value={fuelAmount}
+              disabled={busy}
+              onChange={(e) => setFuelAmount(Math.max(1, Number(e.target.value) || 1))}
+            />
+          </label>
+          <label className="p2p-trade-desk__field">
+            Payment (credits from recipient)
+            <input
+              data-testid="deliver-fuel-payment"
+              type="number"
+              min={0}
+              value={paymentCredits}
+              disabled={busy}
+              onChange={(e) => setPaymentCredits(Math.max(0, Number(e.target.value) || 0))}
+            />
+          </label>
+          <button
+            type="button"
+            data-testid="deliver-fuel-submit"
+            disabled={busy}
+            onClick={async () => {
+              setBusy(true);
+              setError(null);
+              try {
+                const res = await tradeAPI.deliverFuel({
+                  recipient_player_id: deliverRecipientId,
+                  fuel_amount: fuelAmount,
+                  payment_credits: paymentCredits,
+                });
+                const bits = [
+                  typeof res?.fuel_delivered === 'number' ? `${res.fuel_delivered} fuel delivered` : 'Fuel delivered.',
+                  typeof res?.deliverer_credits === 'number'
+                    ? `you ${formatCredits(res.deliverer_credits)}`
+                    : null,
+                  typeof res?.recipient_credits === 'number'
+                    ? `them ${formatCredits(res.recipient_credits)}`
+                    : null,
+                ].filter(Boolean);
+                setInfo(bits.join(' · '));
+              } catch (e: unknown) {
+                setError(formatTradeError(e, 'trade_action_failed'));
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            Deliver fuel
+          </button>
+        </section>
       )}
     </div>
   );
