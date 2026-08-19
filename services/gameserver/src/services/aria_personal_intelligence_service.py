@@ -27,7 +27,7 @@ from cryptography.fernet import Fernet
 import base64
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, func
+from sqlalchemy import select, and_, func, delete
 from sqlalchemy.orm import Session
 
 from src.models.player import Player
@@ -918,7 +918,7 @@ class ARIAPersonalIntelligenceService:
     async def recall_memories(
         self, player_id: str, db: AsyncSession,
         memory_type: Optional[str] = None,
-        limit: int = 50,
+        limit: Optional[int] = 50,
     ) -> List[Dict[str, Any]]:
         """Recall (decrypt) an owner's own ARIA memories -- the read-back
         half of ``_create_memory``/``_encrypt_memory`` (WO-DRIFT-aria-rt-
@@ -947,7 +947,9 @@ class ARIAPersonalIntelligenceService:
         )
         if memory_type is not None:
             stmt = stmt.where(ARIAPersonalMemory.memory_type == memory_type)
-        stmt = stmt.order_by(ARIAPersonalMemory.created_at.desc()).limit(limit)
+        stmt = stmt.order_by(ARIAPersonalMemory.created_at.desc())
+        if limit is not None:
+            stmt = stmt.limit(limit)
 
         result = await db.execute(stmt)
         memories = result.scalars().all()
@@ -979,6 +981,63 @@ class ARIAPersonalIntelligenceService:
             })
 
         return recalled
+
+    async def export_personal_store(
+        self, player_id: str, db: AsyncSession,
+    ) -> Dict[str, Any]:
+        """Owner-scoped GDPR export (LEG-415 / aria-companion.md:173-175).
+
+        Memories decrypt via the same Tier-1 path as ``GET /ai/memories``
+        (``recall_memories``) with no journal page limit. Related personal
+        intelligence tables are counted, not decrypted — only
+        ``ARIAPersonalMemory.memory_content`` is Fernet-wrapped.
+        """
+        memories = await self.recall_memories(player_id, db, limit=None)
+        related_counts: Dict[str, int] = {}
+        for model in (
+            ARIAPersonalMemory,
+            ARIAMarketIntelligence,
+            ARIAExplorationMap,
+            ARIATradingObservation,
+            ARIAQuantumCache,
+            ARIASecurityLog,
+        ):
+            count_stmt = (
+                select(func.count())
+                .select_from(model)
+                .where(model.player_id == player_id)
+            )
+            result = await db.execute(count_stmt)
+            related_counts[model.__tablename__] = int(result.scalar_one())
+        return {
+            "player_id": player_id,
+            "memories": memories,
+            "related_row_counts": related_counts,
+        }
+
+    async def reset_personal_store(
+        self, player_id: str, db: AsyncSession,
+    ) -> Dict[str, int]:
+        """Delete only this player's ARIA personal tables (LEG-415).
+
+        Order: trading observations first (FK to market intelligence), then
+        the remaining aria-companion.md:169 tables. Never calls
+        ``cleanup_expired_data`` (global expired wipe).
+        """
+        deleted: Dict[str, int] = {}
+        for model in (
+            ARIATradingObservation,
+            ARIAPersonalMemory,
+            ARIAMarketIntelligence,
+            ARIAExplorationMap,
+            ARIAQuantumCache,
+            ARIASecurityLog,
+        ):
+            result = await db.execute(
+                delete(model).where(model.player_id == player_id)
+            )
+            deleted[model.__tablename__] = int(result.rowcount or 0)
+        return deleted
 
     # =============================================================================
     # HELPER METHODS
