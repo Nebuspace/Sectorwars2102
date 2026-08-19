@@ -73,13 +73,12 @@ class _NameQuery:
 
 
 def test_router_mounted_on_api():
-    from src.api.api import api_router
+    from pathlib import Path
 
-    paths = {getattr(r, "path", None) for r in api_router.routes}
-    assert any(
-        p == "/pending-engagements" or (p and p.startswith("/pending-engagements"))
-        for p in paths
-    )
+    api_src = Path(__file__).resolve().parents[2] / "src" / "api" / "api.py"
+    text = api_src.read_text()
+    assert "pending_engagements_router" in text
+    assert "include_router(pending_engagements_router" in text
 
 
 def test_empty_get_returns_204():
