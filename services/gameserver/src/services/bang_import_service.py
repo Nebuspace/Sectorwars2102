@@ -41,6 +41,7 @@ import os
 import random
 import time
 import uuid
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
@@ -544,6 +545,90 @@ def _should_stamp_nexus_protected(region_type: str, sector_number: int) -> bool:
         <= sector_number
         <= NEXUS_GATEWAY_PLAZA_SECTOR_HI
     )
+
+
+# bang-import-pipeline.md step 9: isolated clusters (no dedicated boolean —
+# stamp Cluster.special_features with this token). Observational 10–20%
+# target; never synthesize extra isolation. Warn above 25% and proceed.
+_ISOLATED_FEATURE = "isolated"
+_ISOLATED_SHARE_WARN = 0.25
+
+
+def _step9_isolated_cluster_int_ids(
+    cluster_specs: List["ClusterSpec"],
+    sector_specs: List["SectorSpec"],
+    warp_specs: List["WarpSpec"],
+) -> set[int]:
+    """Return cluster_int_ids with no fedspace-reachable sector via bang warps.
+
+    Canon (bang-import-pipeline.md:198-204): a cluster is isolated when none
+    of its sectors is reachable from a fedspace sector via natural warps.
+    Graph is the bang warp list (directed; bidirectional adds the reverse).
+    Latent bang warps still count as natural — do not invent a latent skip.
+    Empty fedspace set → every populated cluster is isolated (inherit bang;
+    do not invent sector 1 as a fedspace root). Empty clusters are skipped.
+    """
+    members: Dict[int, List[int]] = defaultdict(list)
+    for ss in sector_specs:
+        members[ss.cluster_int_id].append(ss.sector_id)
+
+    adj: Dict[int, List[int]] = defaultdict(list)
+    for w in warp_specs:
+        adj[w.from_sector_int].append(w.to_sector_int)
+        if w.is_bidirectional:
+            adj[w.to_sector_int].append(w.from_sector_int)
+
+    roots = [
+        ss.sector_id
+        for ss in sector_specs
+        if "fedspace" in (ss.special_features or [])
+    ]
+    reachable: set[int] = set(roots)
+    queue: deque[int] = deque(roots)
+    while queue:
+        cur = queue.popleft()
+        for nxt in adj.get(cur, ()):
+            if nxt not in reachable:
+                reachable.add(nxt)
+                queue.append(nxt)
+
+    isolated: set[int] = set()
+    for cs in cluster_specs:
+        secs = members.get(cs.cluster_int_id) or []
+        if not secs:
+            continue
+        if not any(sid in reachable for sid in secs):
+            isolated.add(cs.cluster_int_id)
+    return isolated
+
+
+def _step9_stamp_isolated_clusters(
+    cluster_specs: List["ClusterSpec"],
+    sector_specs: List["SectorSpec"],
+    warp_specs: List["WarpSpec"],
+) -> set[int]:
+    """Append ``isolated`` onto ClusterSpec.special_features; warn if >25%."""
+    isolated = _step9_isolated_cluster_int_ids(
+        cluster_specs, sector_specs, warp_specs
+    )
+    n = len(cluster_specs)
+    if n and (len(isolated) / n) > _ISOLATED_SHARE_WARN:
+        logger.warning(
+            "bang-import step-9: %s/%s clusters isolated (>%s); "
+            "proceeding without synthesizing extra isolation",
+            len(isolated),
+            n,
+            _ISOLATED_SHARE_WARN,
+        )
+    by_id = {cs.cluster_int_id: cs for cs in cluster_specs}
+    for cid in isolated:
+        cs = by_id[cid]
+        feats = list(cs.special_features or [])
+        if _ISOLATED_FEATURE not in feats:
+            feats.append(_ISOLATED_FEATURE)
+            cs.special_features = feats
+    return isolated
+
 
 #: WO-BANG-ONEWAY-RATE: GLOSSARY.md's canonical one-way-warp fraction
 #: target (~5%). Every BangConfig construction site below pins this
@@ -2812,6 +2897,11 @@ class BangImportService:
                     is_latent=bool(w.get("is_latent", w.get("isLatent", False))),
                 )
             )
+
+        # Step 9 (bang-import-pipeline.md:198-204): stamp isolated clusters
+        # from the bang warp graph before formations / persist. Persist copies
+        # ClusterSpec.special_features onto Cluster at insert.
+        _step9_stamp_isolated_clusters(cluster_specs, sector_specs, warp_specs)
 
         # Formations
         formation_specs: List[FormationSpec] = []
