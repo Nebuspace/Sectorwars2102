@@ -144,6 +144,13 @@ export const DroneFleetPanel: React.FC = () => {
       await refresh();
     });
 
+  const onRecall = (droneId: string) =>
+    run(`recall-${droneId}`, async () => {
+      await droneFleetAPI.recall(droneId);
+      setNotice('Drone recalled.');
+      await refresh();
+    });
+
   const onDeploy = () =>
     run('deploy', async () => {
       if (!sectorUuid) {
@@ -320,6 +327,17 @@ export const DroneFleetPanel: React.FC = () => {
                   >
                     Upgrade
                   </button>
+                  {(d.status === 'deployed' || d.status === 'combat') && (
+                    <button
+                      type="button"
+                      className="drone-fleet-btn"
+                      data-testid={`drone-recall-${d.id}`}
+                      disabled={Boolean(busy)}
+                      onClick={() => void onRecall(d.id)}
+                    >
+                      Recall
+                    </button>
+                  )}
                 </div>
               </li>
             ))}
