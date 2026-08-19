@@ -198,3 +198,21 @@ async def upgrade_mining_laser(
         db.rollback()
         raise
     return result
+
+
+@router.get(
+    "/nearest-am-refinery",
+    summary="Nearest AM-flagged refinery + ore buy price",
+    description=(
+        "ARIA market-intelligence overlay helper (mining.md:254). Returns the "
+        "nearest Astral Mining Consortium station with refining_facility from "
+        "the caller's current sector, plus current ore buy_price from tip "
+        "trading math. Honest empty when none reachable."
+    ),
+)
+async def nearest_am_refinery(
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Owner-scoped nearest AM refinery finder (LEG-430)."""
+    return MiningService(db).find_nearest_am_refinery(player.id)
