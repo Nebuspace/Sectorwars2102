@@ -136,6 +136,60 @@ export const combatAPI = {
     })
 };
 
+/**
+ * Typed DroneType fleet (attack/defense/scout/mining/repair) — distinct from
+ * planetary defense fighters, which the colony UI labels "Drones".
+ * Canon: FEATURES/gameplay/drones.md. Routes: services/gameserver/.../drones.py
+ */
+export type DroneTypeId = 'attack' | 'defense' | 'scout' | 'mining' | 'repair';
+
+export interface DroneTypeCatalogEntry {
+  type: string;
+  description: string;
+  base_stats: {
+    health: number;
+    attack_power: number;
+    defense_power: number;
+    speed: number;
+  };
+  abilities: string[];
+}
+
+export const droneFleetAPI = {
+  getTypes: (): Promise<{ types: DroneTypeCatalogEntry[] }> =>
+    apiRequest('/api/v1/drones/types'),
+
+  getMyDrones: (includeDestroyed = false) =>
+    apiRequest(`/api/v1/drones/?include_destroyed=${includeDestroyed ? 'true' : 'false'}`),
+
+  create: (body: { drone_type: string; name?: string }) =>
+    apiRequest('/api/v1/drones/', {
+      method: 'POST',
+      body: JSON.stringify({
+        drone_type: body.drone_type,
+        ...(body.name ? { name: body.name } : {}),
+      }),
+    }),
+
+  repair: (droneId: string, repairAmount: number) =>
+    apiRequest(`/api/v1/drones/${droneId}/repair`, {
+      method: 'POST',
+      body: JSON.stringify({ repair_amount: repairAmount }),
+    }),
+
+  upgrade: (droneId: string) =>
+    apiRequest(`/api/v1/drones/${droneId}/upgrade`, {
+      method: 'POST',
+    }),
+
+  /** Batch deploy undeployed drones — same contract as combatAPI.deployDrones. */
+  deploy: (sectorId: string, droneCount: number) =>
+    apiRequest('/api/v1/drones/deploy', {
+      method: 'POST',
+      body: JSON.stringify({ sectorId, droneCount }),
+    }),
+};
+
 // Armory — sector mine laying (open space). Distinct from combatAPI.deployDrones.
 export const armoryAPI = {
   deploy: (quantity: number) =>
@@ -598,6 +652,13 @@ export const messageAPI = {
     apiRequest(`/api/v1/messages/${messageId}`, {
       method: 'DELETE'
     }),
+
+  /** LEG-412: tip POST /messages/{id}/flag?reason= (10–255 chars). */
+  flagMessage: (messageId: string, reason: string) =>
+    apiRequest(
+      `/api/v1/messages/${encodeURIComponent(messageId)}/flag?reason=${encodeURIComponent(reason)}`,
+      { method: 'POST' },
+    ),
 
   getTeamMessages: (teamId: string, page: number = 1) =>
     apiRequest(`/api/v1/messages/team/${teamId}?page=${page}`)
@@ -1615,6 +1676,19 @@ export const tradingAPI = {
       body: JSON.stringify({ occupant_player_id: occupantPlayerId }),
     }),
 
+  // LEG-438 — long-term mooring (docking-slips.md; tip POST /trading/mooring/long-term).
+  // Rate is tip docking_service.LONG_TERM_MOORING_RATE_PER_DAY (200 cr/day) — preview only.
+  acquireLongTermMooring: (stationId: string, days: number) =>
+    apiRequest('/api/v1/trading/mooring/long-term', {
+      method: 'POST',
+      body: JSON.stringify({ station_id: stationId, days }),
+    }),
+
+  releaseLongTermMooring: () =>
+    apiRequest('/api/v1/trading/mooring/long-term/release', {
+      method: 'POST',
+    }),
+
   getMarket: (stationId: string) =>
     apiRequest(`/api/v1/trading/market/${stationId}`),
 
@@ -2051,8 +2125,8 @@ export const portOwnershipAPI = {
       body: JSON.stringify({ defense_pct: defensePct, owner_pct: ownerPct }),
     }),
 
-  // Military takeover (port-ownership.md § Military takeover) — tip GS
-  // MilitaryActionRequest.action ∈ {declare, siege, occupy}.
+  // MilitaryActionRequest.action ∈ {declare, siege, occupy}. Magnitudes /
+  // notice / immunity are server-enforced (invent=0).
   militaryTakeover: (stationId: string, action: 'declare' | 'siege' | 'occupy') =>
     apiRequest(`/api/v1/port-ownership/stations/${stationId}/military`, {
       method: 'POST',
@@ -2100,6 +2174,7 @@ export const beaconAPI = {
 
 export const gameAPI = {
   combat: combatAPI,
+  droneFleet: droneFleetAPI,
   armory: armoryAPI,
   greyStatus: greyStatusAPI,
   planetary: planetaryAPI,
@@ -2275,5 +2350,35 @@ export const recoveryAPI = {
       method: 'POST',
       body: JSON.stringify({}),
     }),
+};
+
+/** LEG-397 — ARIA Tier-1 memory journal + data-index catalog (owner JWT only). */
+export type AriaMemory = {
+  id: string;
+  memory_type: string;
+  importance_score: number;
+  confidence_level: number;
+  created_at?: string | null;
+  content: Record<string, unknown>;
+};
+
+export type AriaDataStream = {
+  key: string;
+  domain: string;
+  display_name: string;
+  retention_class: string;
+  transparency_visible: boolean;
+};
+
+export const ariaMemoryAPI = {
+  getMemories: (opts?: { memoryType?: string; limit?: number }): Promise<AriaMemory[]> => {
+    const params = new URLSearchParams();
+    if (opts?.memoryType) params.set('memory_type', opts.memoryType);
+    if (opts?.limit != null) params.set('limit', String(opts.limit));
+    const q = params.toString();
+    return apiRequest(`/api/v1/ai/memories${q ? `?${q}` : ''}`);
+  },
+  getDataIndex: (): Promise<AriaDataStream[]> =>
+    apiRequest('/api/v1/ai/data-index'),
 };
 

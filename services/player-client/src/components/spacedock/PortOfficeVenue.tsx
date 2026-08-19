@@ -1924,7 +1924,7 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
 
         {/* Military takeover — challenger only on owned foreign stations (LEG-368).
             GS enforces notice window, Military Contract immunity, drones, region
-            rules; UI surfaces returned detail via warError. */}
+            rules; UI surfaces returned detail via warError. invent=0 magnitudes. */}
         {!isMine && listing?.ownerId && (
           <div className="po-section" data-testid="po-military-takeover">
             <h3 className="po-section-title">🎖️ Military Takeover</h3>
