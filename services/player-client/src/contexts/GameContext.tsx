@@ -61,6 +61,8 @@ export interface Sector {
   z_coord?: number | null;
   /** LEG-427 / mining.md:255 — GS asteroid_depletion on current-sector (null off ASTEROID_FIELD). */
   asteroid_depletion?: Record<string, unknown> | null;
+  /** Tip SectorResponse — true after POST investigate-anomaly (LEG-478). */
+  anomaly_investigated?: boolean;
 }
 
 export interface Planet {

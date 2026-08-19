@@ -44,6 +44,7 @@ vi.mock('../../../services/api', () => ({
   },
   playerAPI: {
     investigateFormation: (...a: unknown[]) => mockInvestigateFormation(...a),
+    investigateAnomaly: vi.fn(),
   },
   miningAPI: {
     harvest: vi.fn(),
