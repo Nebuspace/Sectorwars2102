@@ -82,7 +82,12 @@ from src.models.npc_character import (
 from src.models.npc_barracks import NPCBarracks, NPCLodgingLocationType
 from src.models.outlaw_base import OutlawBase
 from src.models.construction import ConstructionReservation
-from src.models.port_ownership import StationListing, PurchaseOffer, TakeoverCampaign
+from src.models.port_ownership import (
+    StationListing,
+    PurchaseOffer,
+    TakeoverCampaign,
+    StationGovernanceVote,
+)
 from src.models.warp_gate import WarpGate, WarpGateBeacon, WarpGateStatus, WarpGateBeaconStatus
 from src.models.gate_construction_site import GateConstructionSite, GateConstructionSiteStatus
 from src.models.sector_celestial import SectorCelestial, SectorFeatureDiscovery
