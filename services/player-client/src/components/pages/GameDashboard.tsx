@@ -12,6 +12,7 @@ import PortOfficeVenue from '../spacedock/PortOfficeVenue';
 import ContractBoardVenue from '../spacedock/ContractBoardVenue';
 import PopulationCenterInterface from '../planetary/PopulationCenterInterface';
 import { LandingRightsControl } from '../planetary/LandingRightsControl';
+import { OwnershipTransferControl } from '../planetary/OwnershipTransferControl';
 import SolarSystemViewscreen from '../tactical/SolarSystemViewscreen';
 import WindshieldTableau from '../tactical/WindshieldTableau';
 import PlanetPortPair from '../tactical/PlanetPortPair';
@@ -3168,6 +3169,14 @@ const GameDashboardInner: React.FC = () => {
                                   ?.landingRights?.mode
                                 ?? null
                               }
+                              onChanged={() => setOpsRefresh((n) => n + 1)}
+                            />
+                          )}
+                          {landedPlanet?.id && playerState?.id && (
+                            <OwnershipTransferControl
+                              planetId={String(landedPlanet.id)}
+                              isOwned={isLandedPlanetMine}
+                              currentPlayerId={playerState.id}
                               onChanged={() => setOpsRefresh((n) => n + 1)}
                             />
                           )}
