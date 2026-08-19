@@ -33,6 +33,7 @@ from src.models.ship import ShipSpecification
 from src.services import npc_movement_service
 from src.services.npc_spawn_service import (
     KIND_CONFIG,
+    PIRATE_CAPTAIN_KIND,
     POLICE_WANTED_THRESHOLD,
     RESEARCHER_TITLES,
     TRADER_SHIP_NOUN,
@@ -741,6 +742,19 @@ def _fill_roster_deficit(
         spawn_count = deficit
     else:
         spawn_count = min(deficit, 2 if rapid_recovery else 1)
+    # LEG-298: HOSTILE_RAIDER (pirate_captain) fill scales when a player
+    # at personal_reputation ≤ −500 is in the host sector. Reuses the
+    # pirate spawn recipe; extras take title "Bounty Hunter".
+    bounty_hunter_extras_from = spawn_count
+    if roster.role == PIRATE_CAPTAIN_KIND:
+        from src.services.personal_reputation_service import (
+            bounty_hunter_spawn_count,
+            lowest_personal_reputation_in_sector,
+        )
+
+        hunter_rep = lowest_personal_reputation_in_sector(db, roster.host_sector_id)
+        if hunter_rep is not None:
+            spawn_count = min(deficit, bounty_hunter_spawn_count(spawn_count, hunter_rep))
     stage_hours = RECRUIT_STAGE_HOURS / 2 if rapid_recovery else RECRUIT_STAGE_HOURS
 
     has_primary = (
@@ -806,7 +820,7 @@ def _fill_roster_deficit(
                 science_pool.append(sr)
 
     events: List[Dict[str, Any]] = []
-    for _ in range(spawn_count):
+    for spawn_i in range(spawn_count):
         npc_name = _next_name(db, roster)
 
         # Defaults: the kind's single hull, title and ship-name convention.
@@ -816,6 +830,7 @@ def _fill_roster_deficit(
         spawn_title = cfg.title
         ship_name = cfg.ship_name_format.format(name=npc_name)
         spawn_notoriety = None  # traders only (set below)
+        hunts_wanted = False
 
         if is_trader:
             # Roll the captain's mission: most run commerce (station commodity
@@ -882,6 +897,14 @@ def _fill_roster_deficit(
                 )
                 daily_schedule["shift_offset_hours"] = random.randint(0, 23)
 
+        if (
+            roster.role == PIRATE_CAPTAIN_KIND
+            and spawn_i >= bounty_hunter_extras_from
+        ):
+            spawn_title = "Bounty Hunter"
+            ship_name = f"Hunter {npc_name}'s Marauder"
+            hunts_wanted = True
+
         ship = _build_npc_ship(
             spawn_spec,
             name=ship_name,
@@ -922,6 +945,7 @@ def _fill_roster_deficit(
             notoriety=spawn_notoriety,
             spawned_at=now,
             last_seen_at=now,
+            backstory={"hunts_wanted": True} if hunts_wanted else {},
         )
         from src.services.npc_lodging_service import apply_roster_lodging_to_npc
         apply_roster_lodging_to_npc(npc, roster)
