@@ -703,6 +703,32 @@ class ConnectionManager:
         if target_id:
             await self.send_personal_message(target_id, message)
 
+    async def send_fleet_event(
+        self,
+        event_type: str,
+        payload: Dict[str, Any],
+        *,
+        team_id: Optional[str] = None,
+        sector_number: Optional[int] = None,
+    ):
+        """LEG-303 — fleet-coordination.md Outputs (fleet_moved /
+        fleet_status_changed / battle_round_complete / battle_ended).
+
+        Canon does not name a dedicated fleet room. Team members of the
+        owning fleet(s) are the live consumers (broadcast_to_team). Optional
+        sector_number fans out to the integer sector-number room peers
+        already occupy. WS failure is the caller's problem to swallow.
+        """
+        message = {
+            "type": event_type,
+            "timestamp": datetime.now(UTC).isoformat(),
+            **payload,
+        }
+        if team_id:
+            await self.broadcast_to_team(str(team_id), message)
+        if sector_number is not None:
+            await self.broadcast_to_sector(int(sector_number), message)
+
     async def send_planetary_update(self, planet_data: Dict[str, Any], owner_user_id: str = None, sector_id: int = None):
         """Send planetary update to planet owner or sector"""
         message = {
