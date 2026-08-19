@@ -15,6 +15,7 @@ const {
   mockRepair,
   mockUpgrade,
   mockDeploy,
+  mockRecall,
 } = vi.hoisted(() => ({
   mockGetTypes: vi.fn(),
   mockGetMyDrones: vi.fn(),
@@ -22,6 +23,7 @@ const {
   mockRepair: vi.fn(),
   mockUpgrade: vi.fn(),
   mockDeploy: vi.fn(),
+  mockRecall: vi.fn(),
 }));
 
 vi.mock('../../../contexts/GameContext', () => ({
@@ -42,6 +44,7 @@ vi.mock('../../../services/api', async () => {
       repair: (...a: unknown[]) => mockRepair(...a),
       upgrade: (...a: unknown[]) => mockUpgrade(...a),
       deploy: (...a: unknown[]) => mockDeploy(...a),
+      recall: (...a: unknown[]) => mockRecall(...a),
     },
     combatAPI: {
       ...actual.combatAPI,
@@ -65,6 +68,7 @@ describe('DroneFleetPanel', () => {
     mockRepair.mockReset();
     mockUpgrade.mockReset();
     mockDeploy.mockReset();
+    mockRecall.mockReset();
     mockGetTypes.mockResolvedValue({
       types: [
         {
@@ -91,11 +95,21 @@ describe('DroneFleetPanel', () => {
         max_health: 80,
         status: 'idle',
       },
+      {
+        id: 'drone-deployed',
+        drone_type: 'scout',
+        name: 'Scout-1',
+        level: 1,
+        health: 60,
+        max_health: 60,
+        status: 'deployed',
+      },
     ]);
     mockCreate.mockResolvedValue({ id: 'drone-2', drone_type: 'scout' });
     mockRepair.mockResolvedValue({ id: 'drone-1', health: 65 });
     mockUpgrade.mockResolvedValue({ id: 'drone-1', level: 2 });
     mockDeploy.mockResolvedValue({ dronesDeployed: 1 });
+    mockRecall.mockResolvedValue({ message: 'Drone recalled successfully' });
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -170,5 +184,27 @@ describe('DroneFleetPanel', () => {
       await flush();
     });
     expect(mockUpgrade).toHaveBeenCalledWith('drone-1');
+  });
+
+  it('Recall on a deployed row calls droneFleetAPI.recall and is absent for idle', async () => {
+    await act(async () => {
+      root.render(<DroneFleetPanel />);
+    });
+    await act(async () => {
+      await flush();
+      await flush();
+    });
+
+    expect(container.querySelector('[data-testid="drone-recall-drone-1"]')).toBeNull();
+    const recallBtn = container.querySelector(
+      '[data-testid="drone-recall-drone-deployed"]',
+    ) as HTMLButtonElement;
+    expect(recallBtn).toBeTruthy();
+    await act(async () => {
+      recallBtn.click();
+      await flush();
+      await flush();
+    });
+    expect(mockRecall).toHaveBeenCalledWith('drone-deployed');
   });
 });
