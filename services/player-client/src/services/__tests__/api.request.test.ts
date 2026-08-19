@@ -61,6 +61,26 @@ describe('apiRequest via trade/combat/grey wrappers', () => {
     );
   });
 
+  it('tradeAPI.deliverFuel POSTs the tip deliver-fuel body', async () => {
+    post.mockResolvedValue({ data: { outcome: 'fuel_delivered', fuel_delivered: 3 } });
+    await expect(
+      tradeAPI.deliverFuel({
+        recipient_player_id: 'p-2',
+        fuel_amount: 3,
+        payment_credits: 40,
+      }),
+    ).resolves.toEqual({ outcome: 'fuel_delivered', fuel_delivered: 3 });
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/trade/deliver-fuel',
+      JSON.stringify({
+        recipient_player_id: 'p-2',
+        fuel_amount: 3,
+        payment_credits: 40,
+      }),
+      jsonHeaders,
+    );
+  });
+
   it('tradeAPI.offer defaults empty offer fields', async () => {
     post.mockResolvedValue({ data: { ok: true } });
     await tradeAPI.offer('s1', { credits: 50 });

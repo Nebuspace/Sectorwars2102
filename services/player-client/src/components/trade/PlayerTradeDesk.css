@@ -107,3 +107,29 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+.p2p-trade-desk__fuel {
+  margin: 0.75rem 0;
+  padding-top: 0.75rem;
+  border-top: 1px solid #2a4a62;
+}
+
+.p2p-trade-desk__fuel h3 {
+  margin: 0 0 0.35rem;
+  font-size: 0.8rem;
+  letter-spacing: 0.06em;
+}
+
+.p2p-trade-desk__fuel button {
+  background: #12324a;
+  border: 1px solid #3a6a8a;
+  color: inherit;
+  padding: 0.4rem 0.7rem;
+  cursor: pointer;
+  margin-top: 0.35rem;
+}
+
+.p2p-trade-desk__fuel button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
