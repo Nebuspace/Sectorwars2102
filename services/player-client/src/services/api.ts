@@ -2357,3 +2357,33 @@ export const recoveryAPI = {
     }),
 };
 
+/** LEG-397 — ARIA Tier-1 memory journal + data-index catalog (owner JWT only). */
+export type AriaMemory = {
+  id: string;
+  memory_type: string;
+  importance_score: number;
+  confidence_level: number;
+  created_at?: string | null;
+  content: Record<string, unknown>;
+};
+
+export type AriaDataStream = {
+  key: string;
+  domain: string;
+  display_name: string;
+  retention_class: string;
+  transparency_visible: boolean;
+};
+
+export const ariaMemoryAPI = {
+  getMemories: (opts?: { memoryType?: string; limit?: number }): Promise<AriaMemory[]> => {
+    const params = new URLSearchParams();
+    if (opts?.memoryType) params.set('memory_type', opts.memoryType);
+    if (opts?.limit != null) params.set('limit', String(opts.limit));
+    const q = params.toString();
+    return apiRequest(`/api/v1/ai/memories${q ? `?${q}` : ''}`);
+  },
+  getDataIndex: (): Promise<AriaDataStream[]> =>
+    apiRequest('/api/v1/ai/data-index'),
+};
+
