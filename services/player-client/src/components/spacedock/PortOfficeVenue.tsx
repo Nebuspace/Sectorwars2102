@@ -142,6 +142,7 @@ interface ListingView {
 }
 
 interface MyStationView {
+  stationId: string | null;
   taxRate: number | null;
   treasury: number | null;
   treasuryCapacity: number | null;
@@ -149,6 +150,12 @@ interface MyStationView {
   revenue90d: number | null;
   revenue30d: number | null;
   monthly: Array<{ label: string; amount: number }>;
+  /** Tip GET my-stations lever keys (LEG-370). Null when the row omits them. */
+  priceAdjustmentLever: number | null;
+  dockingFee: number | null;
+  dockingFeeEnabled: boolean | null;
+  serviceChargeMultiplier: number | null;
+  storageRentalPerDay: number | null;
 }
 
 interface MonthView {
@@ -217,13 +224,19 @@ const normalizeMyStation = (raw: unknown): MyStationView => {
     })
     .filter((e): e is { label: string; amount: number } => e !== null);
   return {
+    stationId: pickString(o.station_id, o.id),
     taxRate: pickNumber(o.tax_rate),
     treasury: pickNumber(o.treasury_balance, o.treasury),
     treasuryCapacity: pickNumber(o.treasury_capacity),
     acquisitionCost: pickNumber(o.acquisition_cost, o.purchase_price),
     revenue90d: pickNumber(revenue.last_90_days, o.revenue_90d),
     revenue30d: pickNumber(revenue.last_30_days, o.revenue_30d),
-    monthly
+    monthly,
+    priceAdjustmentLever: pickNumber(o.price_adjustment_lever),
+    dockingFee: pickNumber(o.docking_fee),
+    dockingFeeEnabled: pickBool(o.docking_fee_enabled),
+    serviceChargeMultiplier: pickNumber(o.service_charge_multiplier),
+    storageRentalPerDay: pickNumber(o.storage_rental_per_day),
   };
 };
 
@@ -479,6 +492,7 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
   const [dockingFeeEnabled, setDockingFeeEnabled] = useState(true);
   const [serviceChargeMult, setServiceChargeMult] = useState(1.0);
   const [storageRentalPerDay, setStorageRentalPerDay] = useState(1000);
+  const [leversHydratedFor, setLeversHydratedFor] = useState<string | null>(null);
 
   // Economic takeover defense (LEG-INI-35)
   const [counterVolumeInput, setCounterVolumeInput] = useState('');
@@ -604,6 +618,61 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
       setTaxPctInput(serverTaxPct);
     }
   }, [serverTaxPct, taxPctInput]);
+
+  // Reset lever controls when the docked station changes so Field defaults
+  // apply until this station's my-stations row hydrates.
+  useEffect(() => {
+    setLeversHydratedFor(null);
+    setPriceLeverPct(0);
+    setDockingFeeAmount(DOCKING_FEE_MIN);
+    setDockingFeeEnabled(true);
+    setServiceChargeMult(1.0);
+    setStorageRentalPerDay(STORAGE_RENTAL_MIN);
+  }, [stationId]);
+
+  // Seed revenue levers from tip my-stations keys (LEG-371). Absent keys keep
+  // Field defaults — do not invent magnitudes. Clamp to the same Field bounds
+  // the submit handlers already use.
+  useEffect(() => {
+    if (!myStation || myStation.stationId !== stationId || leversHydratedFor === stationId) return;
+    const hasLeverPayload =
+      myStation.priceAdjustmentLever !== null ||
+      myStation.dockingFee !== null ||
+      myStation.dockingFeeEnabled !== null ||
+      myStation.serviceChargeMultiplier !== null ||
+      myStation.storageRentalPerDay !== null;
+    if (!hasLeverPayload) return;
+    if (myStation.priceAdjustmentLever !== null) {
+      setPriceLeverPct(
+        Math.min(PRICE_LEVER_MAX, Math.max(PRICE_LEVER_MIN, myStation.priceAdjustmentLever)),
+      );
+    }
+    if (myStation.dockingFee !== null) {
+      setDockingFeeAmount(
+        Math.min(DOCKING_FEE_MAX, Math.max(DOCKING_FEE_MIN, Math.round(myStation.dockingFee))),
+      );
+    }
+    if (myStation.dockingFeeEnabled !== null) {
+      setDockingFeeEnabled(myStation.dockingFeeEnabled);
+    }
+    if (myStation.serviceChargeMultiplier !== null) {
+      setServiceChargeMult(
+        Math.min(
+          SERVICE_CHARGE_MAX,
+          Math.max(SERVICE_CHARGE_MIN, myStation.serviceChargeMultiplier),
+        ),
+      );
+    }
+    if (myStation.storageRentalPerDay !== null) {
+      setStorageRentalPerDay(
+        Math.min(
+          STORAGE_RENTAL_MAX,
+          Math.max(STORAGE_RENTAL_MIN, Math.round(myStation.storageRentalPerDay)),
+        ),
+      );
+    }
+    setLeversHydratedFor(stationId);
+  }, [myStation, stationId, leversHydratedFor]);
 
   // If I lose the owner tab (sale completed, takeover accepted), fall back
   useEffect(() => {
