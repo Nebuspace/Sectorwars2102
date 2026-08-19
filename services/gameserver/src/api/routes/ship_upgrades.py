@@ -156,8 +156,13 @@ class InsurancePurchaseRequest(BaseModel):
 # Ship insurance (ADR-0081 premium pricing, ADR-0061 payout formula).
 # Premium = % of purchase_value paid upfront; net payout on destruction =
 # (coverage - deductible)% of purchase_value.
-INSURANCE_PREMIUM_PCT = {"BASIC": 0.10, "STANDARD": 0.17, "PREMIUM": 0.22}
-INSURANCE_NET_PAYOUT_PCT = {"BASIC": 0.45, "STANDARD": 0.65, "PREMIUM": 0.75}
+# Source of truth is economy_balancing_levers (admin Economy Levers can mutate
+# these in-process — same contract as upgrade-definition overrides).
+from src.services.economy_balancing_levers import (  # noqa: E402
+    INSURANCE_NET_PAYOUT_PCT,
+    INSURANCE_PREMIUM_PCT,
+)
+
 INSURANCE_TIER_ORDER = ["NONE", "BASIC", "STANDARD", "PREMIUM"]
 # Non-insurable hulls (ADR-0029): a registry flag, not a route-level set — see
 # ShipSpecification.insurable (models/ship.py) and its seeder
