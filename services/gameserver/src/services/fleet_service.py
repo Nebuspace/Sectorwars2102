@@ -203,7 +203,21 @@ class FleetService:
                 Sector.sector_id == flagship.ship.sector_id
             ).first()
             if sector is not None:
-                fleet.sector_id = sector.id
+                origin = fleet.sector_id
+                dest = sector.id
+                fleet.sector_id = dest
+                # LEG-DEC-222: emit fleet_moved only on actual derived hop.
+                # Do not teleport member ships (docs still name that; code does not).
+                if origin != dest:
+                    self._pending_fleet_moved.append(
+                        {
+                            "fleet_id": str(fleet.id),
+                            "origin": str(origin) if origin is not None else None,
+                            "destination": str(dest),
+                            "team_id": fleet.team_id,
+                            "sector_number": sector.sector_id,
+                        }
+                    )
 
     def _compute_coordination_bonus(self, fleet: Fleet) -> float:
         """
@@ -366,6 +380,7 @@ class FleetService:
 
         self.db.commit()
         self.db.refresh(member)
+        self._flush_fleet_moved_events()
 
         logger.info(f"Added ship {ship_id} to fleet {fleet_id}")
         return member
@@ -431,6 +446,7 @@ class FleetService:
 
         if commit:
             self.db.commit()
+            self._flush_fleet_moved_events()
             if became_disbanded:
                 self._emit_fleet_event(
                     "fleet_status_changed",
@@ -1157,6 +1173,7 @@ class FleetService:
         # Check for battle end conditions
         if self._should_end_battle(battle, attacker, defender):
             self.db.commit()
+            self._flush_fleet_moved_events()
             self._emit_fleet_event(
                 "battle_round_complete",
                 {
@@ -1179,6 +1196,7 @@ class FleetService:
             battle.phase = BattlePhase.PURSUIT.value
 
         self.db.commit()
+        self._flush_fleet_moved_events()
 
         # Count remaining active ships after this round
         attacker_remaining = len(self._get_active_fleet_ships(attacker))
@@ -2273,6 +2291,7 @@ class FleetService:
         flag_modified(battle, "battle_log")
 
         self.db.commit()
+        self._flush_fleet_moved_events()
 
         summary = self._battle_end_result(battle)
         self._emit_fleet_event(
