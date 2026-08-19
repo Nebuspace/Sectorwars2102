@@ -3268,6 +3268,9 @@ class MovementService:
             )
             if engagement is not None:
                 self.db.commit()
+                npc_engagement_service.dispatch_police_en_route_event(
+                    player, engagement, self.db
+                )
         except Exception:
             logger.exception(
                 "Police engagement dispatch failed for player %s in sector %s "
