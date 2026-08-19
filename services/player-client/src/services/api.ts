@@ -191,11 +191,15 @@ export const droneFleetAPI = {
 };
 
 // Armory — sector mine laying (open space). Distinct from combatAPI.deployDrones.
+export type ArmoryMineItem = 'armored_mine' | 'limpet_mine';
+
 export const armoryAPI = {
-  deploy: (quantity: number) =>
+  getCatalog: () => apiRequest('/api/v1/armory/catalog'),
+
+  deploy: (quantity: number, item: ArmoryMineItem = 'armored_mine') =>
     apiRequest('/api/v1/armory/deploy', {
       method: 'POST',
-      body: JSON.stringify({ quantity }),
+      body: JSON.stringify({ quantity, item }),
     }),
 };
 
