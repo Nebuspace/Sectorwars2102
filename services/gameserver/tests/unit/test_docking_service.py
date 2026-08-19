@@ -65,6 +65,67 @@ class TestSlipCapacityTable:
         assert docking_service.slip_capacity_for(station) == 30
 
 
+class TestPersistedBangDockingSlips:
+    """LEG-467 — bang inventory beats class-band; TradeDock tier still wins."""
+
+    @staticmethod
+    def _with_inventory(station_class, slips, tradedock_tier=None):
+        return SimpleNamespace(
+            station_class=station_class,
+            is_spacedock=False,
+            tradedock_tier=tradedock_tier,
+            services={"docking_slips": slips},
+        )
+
+    def test_black_market_payload_is_6_transient_2_long_term(self):
+        station = self._with_inventory(
+            StationClass.CLASS_3,
+            {
+                "transient": 6,
+                "long_term": 2,
+                "construction": 0,
+                "specialized_construction": 0,
+            },
+        )
+        assert docking_service.slip_capacity_for(station) == 6
+        assert docking_service.long_term_capacity_for(station) == 2
+        assert docking_service.construction_capacity_for(station) == 0
+        assert docking_service.specialized_construction_capacity_for(station) == 0
+
+    def test_frontier_payload_is_4_transient_1_long_term(self):
+        station = self._with_inventory(
+            StationClass.CLASS_2,
+            {
+                "transient": 4,
+                "long_term": 1,
+                "construction": 0,
+                "specialized_construction": 0,
+            },
+        )
+        assert docking_service.slip_capacity_for(station) == 4
+        assert docking_service.long_term_capacity_for(station) == 1
+        assert docking_service.construction_capacity_for(station) == 0
+
+    def test_class_band_fallback_unchanged_without_payload(self):
+        station = make_station(StationClass.CLASS_3)
+        assert docking_service.slip_capacity_for(station) == 12
+        assert docking_service.long_term_capacity_for(station) == 4
+
+    def test_tradedock_tier_overrides_persisted_class_band(self):
+        station = self._with_inventory(
+            StationClass.CLASS_5,
+            {
+                "transient": 12,
+                "long_term": 4,
+                "construction": 0,
+                "specialized_construction": 0,
+            },
+            tradedock_tier="B",
+        )
+        assert docking_service.slip_capacity_for(station) == 20
+        assert docking_service.construction_capacity_for(station) == 12
+
+
 # NOTE: docking_fee_for no longer keys off station_class/is_spacedock/
 # tradedock_tier -- it's the canon ship-SIZE x security-TIER matrix
 # (FEATURES/economy/station-protection.md §Docking fee economics). The old
