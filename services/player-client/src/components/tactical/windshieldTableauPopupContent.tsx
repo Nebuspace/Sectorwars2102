@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useState } from 'react';
 import type { SystemStation } from './SolarSystemViewscreen';
+import { beaconAPI } from '../../services/api';
 import { bodyPosition, stationPosition, type PctPoint, type SafeOrbitRadii, type StarAnchor } from './windshieldTableauLayout';
 import { DOCK_RANGE_EM, REFERENCE_BAND, distancePx, type PopupState, type StaticSystem } from './windshieldTableauHelpers';
 
@@ -37,6 +38,8 @@ export interface TableauPopupContentParams {
   onApproachPlanet: (pos: PctPoint, planetId: string) => void;
   /** `approachStation(station, stationPos)` in the original closure. */
   onApproachStation: (station: SystemStation, pos: PctPoint) => void;
+  /** Drop a sector-view beacon icon after salvage or read-once read. */
+  onBeaconRemoved?: (beaconId: string) => void;
 }
 
 export function renderTableauPopupContent(params: TableauPopupContentParams): React.ReactNode {
@@ -44,6 +47,7 @@ export function renderTableauPopupContent(params: TableauPopupContentParams): Re
     popup, sectorId, planets, system, star, safeRadiiPlanets, safeRadiiStations,
     shipPos, localTraveling, glideTargetId, onHaltApproach,
     onRequestLand, onRequestDock, onClosePopup, onApproachPlanet, onApproachStation,
+    onBeaconRemoved,
   } = params;
   const meta = popup.meta;
   switch (meta.kind) {
@@ -208,12 +212,14 @@ export function renderTableauPopupContent(params: TableauPopupContentParams): Re
       );
     case 'beacon':
       return (
-        <>
-          <div className="ssv-popup-title">MESSAGE BEACON</div>
-          <div className="ssv-popup-line">FROM — {meta.deployerNickname.toUpperCase()}</div>
-          <div className="ssv-popup-line">"{meta.preview}"</div>
-          <div className="ssv-popup-status">MESSAGE IN A BOTTLE — {meta.deployedAt ? new Date(meta.deployedAt).toLocaleDateString() : 'UNDATED'}</div>
-        </>
+        <BeaconPopupActions
+          beaconId={meta.beaconId}
+          deployerNickname={meta.deployerNickname}
+          preview={meta.preview}
+          deployedAt={meta.deployedAt}
+          onClosePopup={onClosePopup}
+          onBeaconRemoved={onBeaconRemoved}
+        />
       );
     case 'formation':
       return (
@@ -226,4 +232,96 @@ export function renderTableauPopupContent(params: TableauPopupContentParams): Re
     default:
       return null;
   }
+}
+
+/** Sector-view Read/Salvage (message-beacons.md:42-47, :136-137). Visitor-capable. */
+function BeaconPopupActions({
+  beaconId,
+  deployerNickname,
+  preview,
+  deployedAt,
+  onClosePopup,
+  onBeaconRemoved,
+}: {
+  beaconId: string;
+  deployerNickname: string;
+  preview: string;
+  deployedAt: string | null;
+  onClosePopup: () => void;
+  onBeaconRemoved?: (beaconId: string) => void;
+}): React.ReactNode {
+  const [busy, setBusy] = useState<'read' | 'salvage' | null>(null);
+  const [error, setError] = useState('');
+  const [fullMessage, setFullMessage] = useState<string | null>(null);
+  const [author, setAuthor] = useState<string | null>(null);
+
+  const run = async (action: 'read' | 'salvage') => {
+    if (busy) return;
+    setBusy(action);
+    setError('');
+    try {
+      if (action === 'read') {
+        const result = await beaconAPI.read(beaconId);
+        const message = typeof result?.message === 'string' ? result.message : '';
+        const nick =
+          typeof result?.deployer_nickname === 'string' && result.deployer_nickname
+            ? result.deployer_nickname
+            : deployerNickname;
+        setFullMessage(message);
+        setAuthor(nick);
+        if (result?.read_once) {
+          onBeaconRemoved?.(beaconId);
+        }
+      } else {
+        await beaconAPI.salvage(beaconId);
+        onBeaconRemoved?.(beaconId);
+        onClosePopup();
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Action failed');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <>
+      <div className="ssv-popup-title">MESSAGE BEACON</div>
+      <div className="ssv-popup-line">FROM — {deployerNickname.toUpperCase()}</div>
+      {fullMessage != null ? (
+        <>
+          <div className="ssv-popup-line" data-testid="beacon-popup-full-message">{fullMessage}</div>
+          {author && (
+            <div className="ssv-popup-line" data-testid="beacon-popup-author">AUTHOR — {author}</div>
+          )}
+        </>
+      ) : (
+        <div className="ssv-popup-line">"{preview}"</div>
+      )}
+      <div className="ssv-popup-status">
+        MESSAGE IN A BOTTLE — {deployedAt ? new Date(deployedAt).toLocaleDateString() : 'UNDATED'}
+      </div>
+      {error && (
+        <div className="ssv-popup-status" role="alert" data-testid="beacon-popup-error">{error}</div>
+      )}
+      <button
+        type="button"
+        className="ssv-popup-action"
+        data-testid="beacon-popup-read"
+        disabled={busy != null}
+        onClick={() => { void run('read'); }}
+      >
+        {busy === 'read' ? 'READING…' : 'READ (0 TURNS)'}
+      </button>
+      <button
+        type="button"
+        className="ssv-popup-action"
+        data-testid="beacon-popup-salvage"
+        disabled={busy != null}
+        onClick={() => { void run('salvage'); }}
+      >
+        {busy === 'salvage' ? 'SALVAGING…' : 'SALVAGE (1 TURN · 250CR)'}
+      </button>
+    </>
+  );
 }
