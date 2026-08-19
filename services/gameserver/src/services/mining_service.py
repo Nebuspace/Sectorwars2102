@@ -1283,3 +1283,99 @@ class MiningService:
             if ok:
                 warned += 1
         return warned
+    def find_nearest_am_refinery(self, player_id: uuid.UUID) -> Dict[str, Any]:
+        """Nearest AM-flagged refining station + current ore buy_price (LEG-430).
+
+        Eligibility matches tip AM ore-sale gate (trading.py): faction_affiliation
+        ``Astral Mining Consortium`` AND ``services.refining_facility`` true.
+        Hop distance uses tip ``contract_generator`` sector graph BFS — no invent.
+        Ore buy_price echoes ``TradingService.calculate_dynamic_price(..., "buy")``.
+        """
+        from src.models.station import Station
+        from src.services.contract_generator import (
+            _all_hop_distances,
+            _load_directed_sector_graph,
+        )
+        from src.services.trading_service import TradingService
+
+        empty = {
+            "found": False,
+            "station": None,
+            "hop_distance": None,
+            "ore_buy_price": None,
+            "reason": "none_reachable",
+        }
+
+        player = self.db.query(Player).filter(Player.id == player_id).first()
+        if player is None:
+            return {**empty, "reason": "player_not_found"}
+        if player.current_sector_id is None:
+            return {**empty, "reason": "no_current_sector"}
+
+        sector_q = self.db.query(Sector).filter(
+            Sector.sector_id == player.current_sector_id
+        )
+        if player.current_region_id:
+            sector_q = sector_q.filter(Sector.region_id == player.current_region_id)
+        else:
+            sector_q = sector_q.filter(Sector.region_id.is_(None))
+        origin = sector_q.first()
+        if origin is None:
+            return {**empty, "reason": "sector_not_found"}
+
+        candidates = (
+            self.db.query(Station)
+            .filter(Station.faction_affiliation == "Astral Mining Consortium")
+            .all()
+        )
+        eligible: List[Station] = []
+        for st in candidates:
+            services = st.services if isinstance(st.services, dict) else {}
+            if services.get("refining_facility", False):
+                eligible.append(st)
+        if not eligible:
+            return empty
+
+        _, adjacency = _load_directed_sector_graph(self.db)
+        distances = _all_hop_distances(adjacency, origin.id)
+
+        best: Optional[Tuple[int, Station]] = None
+        for st in eligible:
+            dest_pk = st.sector_uuid
+            if dest_pk is None:
+                # Fall back to sector_id lookup when UUID FK absent.
+                dest = (
+                    self.db.query(Sector)
+                    .filter(Sector.sector_id == st.sector_id)
+                    .first()
+                )
+                dest_pk = dest.id if dest is not None else None
+            if dest_pk is None:
+                continue
+            hops = distances.get(dest_pk)
+            if hops is None:
+                continue
+            if best is None or hops < best[0]:
+                best = (hops, st)
+            elif hops == best[0] and str(st.id) < str(best[1].id):
+                # Deterministic tie-break: lower station UUID wins.
+                best = (hops, st)
+
+        if best is None:
+            return empty
+
+        hops, station = best
+        trading = TradingService(self.db)
+        ore_buy = trading.calculate_dynamic_price(station, "ore", "buy")
+
+        return {
+            "found": True,
+            "station": {
+                "id": str(station.id),
+                "name": station.name,
+                "sector_id": station.sector_id,
+            },
+            "hop_distance": hops,
+            "ore_buy_price": int(ore_buy) if ore_buy else 0,
+            "reason": None,
+        }
