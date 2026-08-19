@@ -65,6 +65,7 @@ from src.core.station_class_map import apply_class_pattern
 # site (this module's own _apply_region, plus
 # tests/unit/test_station_security_seeding.py) keeps working unchanged.
 from src.core.station_security_tiers import _derive_station_security_tier
+from src.services.syndicate_fence_service import assign_has_syndicate_fence
 from src.models.bang_generation_job import (
     BangGenerationJob,
     BangGenerationJobStatus,
@@ -2017,6 +2018,13 @@ class BangImportService:
                     tradedock_tier=stsp.tradedock_tier,
                 )
             }
+            station_kwargs["has_syndicate_fence"] = assign_has_syndicate_fence(
+                universe_seed=region_plan.universe_seed,
+                sector_int_id=stsp.sector_int_id,
+                name=stsp.name,
+                tradedock_tier=stsp.tradedock_tier,
+                faction_affiliation=None,
+            )
             station = Station(**station_kwargs)
             session.add(station)
             created_stations.append(station)
