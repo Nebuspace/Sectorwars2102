@@ -1,0 +1,93 @@
+/* LEG-397 — memory journal panel (Teleprinter PANEL mount).
+   Shares teleprinter amber/phosphor tokens via inherited .tele context. */
+
+.aria-memory-journal {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-height: 8rem;
+  max-height: 14rem;
+  overflow: hidden;
+  padding: 0.35rem 0.5rem 0.5rem;
+  font-size: 0.85em;
+}
+
+.aria-memory-journal-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.aria-memory-journal-filter-label {
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.85;
+}
+
+.aria-memory-journal-filter {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  color: inherit;
+  border: 1px solid rgba(212, 175, 55, 0.45);
+  padding: 0.2rem 0.4rem;
+  font: inherit;
+}
+
+.aria-memory-journal-status {
+  flex-shrink: 0;
+}
+
+.aria-memory-journal-loading,
+.aria-memory-journal-empty,
+.aria-memory-journal-error {
+  margin: 0;
+  opacity: 0.9;
+}
+
+.aria-memory-journal-error {
+  color: #e07070;
+}
+
+.aria-memory-journal-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.aria-memory-journal-item {
+  border-top: 1px solid rgba(212, 175, 55, 0.25);
+  padding: 0.35rem 0;
+}
+
+.aria-memory-journal-item-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.75rem;
+  margin-bottom: 0.2rem;
+  opacity: 0.9;
+}
+
+.aria-memory-journal-type {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.aria-memory-journal-scores {
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+}
+
+.aria-memory-journal-content {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.92em;
+  opacity: 0.95;
+}
