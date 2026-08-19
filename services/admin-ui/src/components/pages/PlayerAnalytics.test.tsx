@@ -39,9 +39,11 @@ vi.mock('../admin/EmergencyOperationsPanel', () => ({
 
 function mockApis({
   retention,
+  sessionTime,
   analyticsFail = false,
 }: {
   retention?: number | null;
+  sessionTime?: number | null;
   analyticsFail?: boolean;
 }) {
   vi.mocked(api.get).mockImplementation((url: string) => {
@@ -69,6 +71,10 @@ function mockApis({
         payload.player_retention_rate_7d = retention;
       }
       // omit field entirely when retention === null → asCount → null
+      if (sessionTime !== undefined && sessionTime !== null) {
+        payload.average_session_time = sessionTime;
+      }
+      // omit field entirely when sessionTime === null → asCount → null
       return Promise.resolve({ data: { data: payload } });
     }
     if (url === '/api/v1/admin/regions') {
@@ -114,6 +120,48 @@ describe('PlayerAnalytics retention rate card (LEG-376)', () => {
     render(<PlayerAnalytics />);
 
     const card = await waitFor(() => screen.getByTestId('player-metrics-retention-rate'));
+    expect(card.querySelector('.dashboard-stat-value')?.textContent).toMatch(/—|–|-/);
+    expect(card.className).toContain('stat-not-tracked');
+    expect(card.textContent).toMatch(/Analytics endpoint unavailable/i);
+  });
+});
+
+describe('PlayerAnalytics session time card (LEG-386)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('shows average session time in hours when analytics returns average_session_time', async () => {
+    mockApis({ sessionTime: 2.5 });
+
+    render(<PlayerAnalytics />);
+
+    const card = await waitFor(() => screen.getByTestId('player-metrics-session-time'));
+    expect(card.textContent).toContain('2.5h');
+    expect(card.textContent).toMatch(/Average \(hours\)/i);
+    expect(card.className).not.toContain('stat-not-tracked');
+    expect(card.textContent).not.toMatch(/No session tracking yet/);
+  });
+
+  it('demotes to em-dash when session time field is absent', async () => {
+    mockApis({ sessionTime: null });
+
+    render(<PlayerAnalytics />);
+
+    const card = await waitFor(() => screen.getByTestId('player-metrics-session-time'));
+    expect(card.querySelector('.dashboard-stat-value')?.textContent).toMatch(/—|–|-/);
+    expect(card.className).toContain('stat-not-tracked');
+    expect(card.textContent).toMatch(/Session time unavailable/i);
+  });
+
+  it('demotes when analytics endpoint is unavailable', async () => {
+    mockApis({ sessionTime: 2.5, analyticsFail: true });
+
+    render(<PlayerAnalytics />);
+
+    const card = await waitFor(() => screen.getByTestId('player-metrics-session-time'));
     expect(card.querySelector('.dashboard-stat-value')?.textContent).toMatch(/—|–|-/);
     expect(card.className).toContain('stat-not-tracked');
     expect(card.textContent).toMatch(/Analytics endpoint unavailable/i);
