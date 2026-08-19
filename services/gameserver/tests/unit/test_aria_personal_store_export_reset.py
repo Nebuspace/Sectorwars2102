@@ -184,6 +184,15 @@ async def test_reset_deletes_only_caller_rows_then_recall_empty(service):
     assert recalled_b[0]["content"] == content_b
 
 
+def test_dump_path_avoids_admin_report_export_marker():
+    export_route = next(
+        r for r in enhanced_ai.router.routes
+        if getattr(r, "path", "").endswith("/memories/dump")
+    )
+    assert "/export" not in export_route.path
+    assert "/exports" not in export_route.path
+
+
 def test_export_and_reset_routes_have_no_player_id_parameter():
     export_params = inspect.signature(enhanced_ai.export_aria_personal_store).parameters
     reset_params = inspect.signature(enhanced_ai.reset_aria_personal_store).parameters

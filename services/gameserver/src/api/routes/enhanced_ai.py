@@ -904,11 +904,13 @@ async def get_aria_data_index(
 
 
 @router.get(
-    "/memories/export",
+    "/memories/dump",
     summary="Export your ARIA personal memory store",
     description=(
         "Owner-scoped data export of the caller's ARIA personal memory store "
-        "(aria-companion.md:173-175). Decrypts Tier-1 memories with the same "
+        "(aria-companion.md:173-175). Path is /memories/dump not /export so it "
+        "cannot collide with security.py _ADMIN_REPORT_MARKERS if this router "
+        "is ever mounted under /admin. Decrypts Tier-1 memories with the same "
         "path as GET /ai/memories (no player-id parameter). Does not call "
         "POST /ai/system/cleanup."
     ),
