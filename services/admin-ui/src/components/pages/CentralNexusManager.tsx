@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import './central-nexus-manager.css';
 
 interface NexusStatus {
@@ -72,12 +73,14 @@ const CentralNexusManager: React.FC = () => {
       if (status === 404) {
         // Nexus not generated yet — not an error for the UI.
       } else {
-        const detail =
-          typeof err === 'object' && err !== null && 'response' in err
-            ? (err as { response?: { data?: { detail?: string } } }).response?.data?.detail
-            : undefined;
         console.error('Failed to load clusters:', err);
-        setError(detail || 'Failed to load clusters');
+        setError(
+          formatAdminApiError(err, {
+            fallback: 'Failed to load clusters',
+            scopeHint: 'admin nexus cluster scopes required',
+            notFoundMessage: 'Nexus clusters not available — generate the nexus first.',
+          })
+        );
       }
     } finally {
       setLoading(false);

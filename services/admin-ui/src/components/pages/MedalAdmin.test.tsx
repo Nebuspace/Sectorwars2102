@@ -14,10 +14,12 @@ vi.mock('../../contexts/AuthContext', () => ({
   useAuth: () => ({ user: null, logout: vi.fn() }),
 }));
 
+const mockToastError = vi.fn();
+
 vi.mock('../../contexts/ToastContext', () => ({
   useToast: () => ({
     success: vi.fn(),
-    error: vi.fn(),
+    error: mockToastError,
     warning: vi.fn(),
     info: vi.fn(),
   }),
@@ -27,6 +29,7 @@ describe('MedalAdmin', () => {
   beforeEach(() => {
     vi.mocked(api.get).mockReset();
     vi.mocked(api.post).mockReset();
+    mockToastError.mockReset();
   });
 
   it('loads catalog and renders Catalog tab rows', async () => {
@@ -300,5 +303,64 @@ describe('MedalAdmin', () => {
       reason: null,
       dry_run: true,
     });
+  });
+
+  it('shows honest 404 on catalog tab when GS catalog route is absent', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/medals/admin/catalog')) {
+        throw Object.assign(new Error('HTTP 404'), {
+          response: { status: 404, data: { detail: 'Not Found' } },
+        });
+      }
+      return { data: { players: [] } };
+    });
+
+    render(<MedalAdmin />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Catalog' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/catalog route not found/i);
+    });
+    expect(screen.getByRole('alert').textContent).not.toMatch(/Failed to grant medal/i);
+  });
+
+  it('surfaces PLAYERS_ADJUST_REP scope denial on grant instead of generic failure', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/medals/admin/catalog')) {
+        return {
+          data: {
+            total: 1,
+            items: [{ id: 'bronze_cluster', name: 'Bronze Cluster', category: 'combat' }],
+          },
+        };
+      }
+      return { data: { players: [{ id: 'p1', username: 'Ace' }] } };
+    });
+    vi.mocked(api.post).mockRejectedValue(
+      Object.assign(new Error('HTTP 403'), {
+        response: {
+          status: 403,
+          data: { detail: 'Missing scope admin.players.adjust_rep (PLAYERS_ADJUST_REP)' },
+        },
+      }),
+    );
+
+    render(<MedalAdmin />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Select player')).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByLabelText('Select player'), { target: { value: 'p1' } });
+    fireEvent.change(screen.getByLabelText('Medal'), { target: { value: 'bronze_cluster' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Grant medal' }));
+
+    await waitFor(() => {
+      expect(mockToastError).toHaveBeenCalled();
+    });
+    expect(mockToastError.mock.calls[0][0]).toMatch(/PLAYERS_ADJUST_REP|adjust_rep/i);
+    expect(mockToastError.mock.calls[0][0]).not.toMatch(/^Grant failed$/);
   });
 });
