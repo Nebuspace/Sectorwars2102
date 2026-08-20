@@ -2,9 +2,12 @@
 Faction service for managing faction relationships, reputation, and missions.
 """
 
+from dataclasses import dataclass
 from uuid import UUID
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
+from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, func
 from sqlalchemy.exc import IntegrityError
@@ -13,6 +16,7 @@ import logging
 from src.models.faction import Faction, FactionType
 from src.models.reputation import Reputation, ReputationLevel
 from src.models.player import Player
+from src.models.team import Team
 from src.models.sector_faction_influence import SectorFactionInfluence
 from src.services.websocket_service import connection_manager as manager
 
@@ -58,6 +62,105 @@ TRADE_MODIFIERS = [
     (-699, 1.30),   # HATED: 30% surcharge
 ]
 TRADE_MODIFIER_PUBLIC_ENEMY = 1.50  # Fallback for -700 and below
+
+# Phase-1/2 consumer inventory (LEG-800 / LEG-814): personal Reputation.current_value
+# readers used for faction *interaction* decisions (pricing / port access / patrol).
+# Wired:
+#   (1) get_trade_modifier — team aggregate when player has team_id (LEG-800)
+#   (2) docking_service.check_reputation_gate / _player_faction_rep_for_station
+#       — dock slip + defense_policy port access (LEG-814)
+# Follow-up backlog (same resolver, not forked formulas):
+#   (3) construction_service.tradedock_access — TradeDock construction gate
+#   (4) get_faction_pricing_modifier — GET /factions/{id}/pricing-modifier
+#   (5) check_territory_access — faction territory gate
+#   (6) mission-gate consumers — none located on tip; separate WO if found
+# Not interaction consumers (personal-row maintenance / display only):
+#   update_reputation / apply_faction_rep_delta / apply_reputation_decay derived
+#   field writes; factions.py reputation API response fields.
+
+
+@dataclass(frozen=True)
+class EffectiveFactionStanding:
+    """Resolved standing for faction interactions (team aggregate or personal)."""
+
+    value: int
+    source: str  # "team" | "personal"
+    trade_modifier: float
+    port_access_level: int
+    combat_response: str
+
+
+def trade_modifier_from_standing_value(value: int) -> float:
+    """Lookup-table pricing multiplier (same ladder as get_trade_modifier)."""
+    for threshold, modifier in TRADE_MODIFIERS:
+        if value >= threshold:
+            return modifier
+    return TRADE_MODIFIER_PUBLIC_ENEMY
+
+
+def resolve_effective_faction_standing_value(
+    db: Session,
+    player_id: UUID,
+    faction_id: UUID,
+    *,
+    team_id: Optional[UUID] = None,
+) -> Tuple[int, str]:
+    """When the acting player belongs to a team, use the team aggregate value.
+
+    Reads ``TeamReputation.faction_reputation[faction_id].value`` via
+    ``team_reputation_service.get_team_reputation`` (lazy inline recalc).
+    Otherwise falls back to the player's personal ``Reputation.current_value``.
+    """
+    from src.services import team_reputation_service
+
+    resolved_team_id = team_id
+    if resolved_team_id is None:
+        player = db.query(Player).filter(Player.id == player_id).first()
+        resolved_team_id = player.team_id if player is not None else None
+
+    if resolved_team_id is not None:
+        team = db.query(Team).filter(Team.id == resolved_team_id).first()
+        if team is not None:
+            snapshot = team_reputation_service.get_team_reputation(db, team)
+            entry = (snapshot.get("standings") or {}).get(str(faction_id))
+            if entry is not None:
+                return int(entry.get("value", 0)), "team"
+
+    reputation = (
+        db.query(Reputation)
+        .filter(
+            and_(
+                Reputation.player_id == player_id,
+                Reputation.faction_id == faction_id,
+            )
+        )
+        .first()
+    )
+    if reputation is None:
+        return 0, "personal"
+    return int(reputation.current_value), "personal"
+
+
+def build_effective_faction_standing(
+    db: Session,
+    player_id: UUID,
+    faction_id: UUID,
+    *,
+    team_id: Optional[UUID] = None,
+    svc: Optional["FactionService"] = None,
+) -> EffectiveFactionStanding:
+    """Map resolved standing through the existing derived-field helpers."""
+    svc = svc or FactionService(db)
+    value, source = resolve_effective_faction_standing_value(
+        db, player_id, faction_id, team_id=team_id
+    )
+    return EffectiveFactionStanding(
+        value=value,
+        source=source,
+        trade_modifier=svc._calculate_trade_modifier(value),
+        port_access_level=svc._calculate_port_access_level(value),
+        combat_response=svc._calculate_combat_response(value),
+    )
 
 
 def apply_faction_rep_delta(
@@ -486,6 +589,39 @@ def dominant_reputation_faction_id(db: Session, player_id: UUID) -> Optional[UUI
     return top.faction_id
 
 
+# Canon Dynamic influence deltas (factions-and-teams.md action table).
+# Fair-tariff +2% is owned by a separate tip-land WO — do not wire here.
+RIVAL_KILL_INFLUENCE_DELTA = -2.0
+DEFEND_SECTOR_INFLUENCE_DELTA = 1.0
+
+
+def apply_rival_kill_sector_influence(
+    db: Session,
+    sector_id: Optional[UUID],
+    killer_player_id: UUID,
+    victim_player_id: UUID,
+) -> None:
+    """On a resolved rival-faction ship kill, −2% influence for the victim's dominant faction."""
+    if sector_id is None:
+        return
+    killer_faction = dominant_reputation_faction_id(db, killer_player_id)
+    victim_faction = dominant_reputation_faction_id(db, victim_player_id)
+    if killer_faction is None or victim_faction is None or killer_faction == victim_faction:
+        return
+    adjust_sector_influence(db, sector_id, victim_faction, RIVAL_KILL_INFLUENCE_DELTA)
+
+
+def apply_defense_survived_sector_influence(
+    db: Session,
+    sector_id: Optional[UUID],
+    defended_faction_id: Optional[UUID],
+) -> None:
+    """When faction-flagged sector drone defense survives an attack, +1% for that faction."""
+    if sector_id is None or defended_faction_id is None:
+        return
+    adjust_sector_influence(db, sector_id, defended_faction_id, DEFEND_SECTOR_INFLUENCE_DELTA)
+
+
 class FactionService:
     """Service for managing faction-related operations."""
 
@@ -789,12 +925,30 @@ class FactionService:
 
         return results
 
-    async def get_trade_modifier(self, player_id: UUID, faction_id: UUID) -> float:
+    def effective_faction_standing(
+        self,
+        player_id: UUID,
+        faction_id: UUID,
+        *,
+        team_id: Optional[UUID] = None,
+    ) -> EffectiveFactionStanding:
+        """Team aggregate when ``team_id`` present (or player belongs to a team)."""
+        return build_effective_faction_standing(
+            self.db, player_id, faction_id, team_id=team_id, svc=self
+        )
+
+    async def get_trade_modifier(
+        self,
+        player_id: UUID,
+        faction_id: UUID,
+        *,
+        team_id: Optional[UUID] = None,
+    ) -> float:
         """
         Return a price multiplier for a player at a faction-controlled port.
 
-        The multiplier is derived from the player's current reputation value
-        with the faction using the TRADE_MODIFIERS lookup table:
+        Uses ``effective_faction_standing`` (team aggregate when the player
+        has a team) and the TRADE_MODIFIERS lookup table:
 
             EXALTED  (+700+): 0.85  (15% discount)
             REVERED  (+500) : 0.90
@@ -806,18 +960,12 @@ class FactionService:
             HATED    (-500) : 1.30
             PUBLIC_ENEMY(-700): 1.50
 
-        Returns 1.0 (no modifier) when no reputation record exists.
+        Neutral (1.0) when no personal or team standing exists.
         """
-        reputation = await self.get_player_reputation(player_id, faction_id)
-        if not reputation:
-            return 1.0
-
-        value = reputation.current_value
-        for threshold, modifier in TRADE_MODIFIERS:
-            if value >= threshold:
-                return modifier
-
-        return TRADE_MODIFIER_PUBLIC_ENEMY
+        value, _source = resolve_effective_faction_standing_value(
+            self.db, player_id, faction_id, team_id=team_id
+        )
+        return trade_modifier_from_standing_value(value)
 
     def _calculate_reputation_level(self, value: int) -> ReputationLevel:
         """Calculate reputation level from numeric value."""
