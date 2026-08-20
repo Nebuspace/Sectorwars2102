@@ -100,4 +100,28 @@ describe('PlayerBountyPanel', () => {
       expect(screen.getByRole('alert')).toHaveTextContent('Not found');
     });
   });
+
+  it('shows PLAYERS_VIEW denial on load 403', async () => {
+    vi.mocked(api.get).mockRejectedValue({
+      response: { status: 403 },
+    });
+
+    render(<PlayerBountyPanel targetId="t1" />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent ?? '').toMatch(/PLAYERS_VIEW|Access denied/i);
+    });
+  });
+
+  it('shows admin rate-limit on load 429', async () => {
+    vi.mocked(api.get).mockRejectedValue({
+      response: { status: 429 },
+    });
+
+    render(<PlayerBountyPanel targetId="t1" />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent ?? '').toMatch(/rate limit/i);
+    });
+  });
 });
