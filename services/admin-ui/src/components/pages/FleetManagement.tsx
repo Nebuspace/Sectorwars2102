@@ -245,9 +245,12 @@ const FleetManagement: React.FC = () => {
     if (!selectedShip) return;
     
     try {
-      await api.post(`/api/v1/admin/ships/${selectedShip.id}/teleport`, {
-        target_sector_id: teleportSector
-      });
+      // tip teleport_ship takes target_sector_id as a FastAPI query param (not JSON body)
+      await api.post(
+        `/api/v1/admin/ships/${selectedShip.id}/teleport`,
+        null,
+        { params: { target_sector_id: teleportSector } },
+      );
       setShowTeleportForm(false);
       setSelectedShip(null);
       setTeleportSector(1);

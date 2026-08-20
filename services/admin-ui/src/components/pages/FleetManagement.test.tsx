@@ -42,3 +42,14 @@ describe('FleetManagement Soft-ORDER SHIP_TYPES (LEG-1463)', () => {
     }
   });
 });
+
+describe('FleetManagement Soft-ORDER teleport query (LEG-1470)', () => {
+  it('posts teleport with target_sector_id as query params, not JSON body', () => {
+    expect(src).toMatch(
+      /api\.post\(\s*`\/api\/v1\/admin\/ships\/\$\{selectedShip\.id\}\/teleport`\s*,\s*null\s*,\s*\{\s*params:\s*\{\s*target_sector_id:/,
+    );
+    expect(src).not.toMatch(
+      /api\.post\(`\/api\/v1\/admin\/ships\/\$\{selectedShip\.id\}\/teleport`,\s*\{\s*target_sector_id:/,
+    );
+  });
+});
