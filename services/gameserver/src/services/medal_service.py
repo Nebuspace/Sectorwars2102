@@ -337,6 +337,23 @@ def _persist_offline_award_notification(
         )
 
 
+def _medal_broadcast_to_team_allowed(player: Player) -> bool:
+    """Whether team-room fan-out is allowed (medals.md broadcast_to_team, default ON)."""
+    privacy = _medal_privacy_block(player)
+    return privacy.get("broadcast_to_team", True) is not False
+
+
+def _medal_qualifies_for_sector_broadcast(
+    tier: Optional[str], category: Optional[str]
+) -> bool:
+    """Sector fan-out for prestige tier per medal-service.md / medals.md."""
+    if category and str(category).strip().upper() == "UNIQUE":
+        return True
+    if not tier:
+        return False
+    return str(tier).strip().lower() in ("gold", "platinum", "unique")
+
+
 def _dispatch_medal_awarded_event(
     db: Session, player_id: uuid.UUID, medal_id: str, awarded_via: str
 ) -> None:
@@ -356,23 +373,33 @@ def _dispatch_medal_awarded_event(
     skipped — never raised.
     """
     try:
-        user_id = (
-            db.query(Player.user_id).filter(Player.id == player_id).scalar()
-        )
-        if not user_id:
+        player = db.query(Player).filter(Player.id == player_id).first()
+        if player is None or not player.user_id:
             return
+
+        user_id = str(player.user_id)
 
         entry = get_catalog_entry(medal_id) or {}
         criteria = entry.get("criteria") or {}
+        medal_tier = entry.get("tier")
+        medal_category = entry.get("category")
         medal_payload = {
             "medal_id": medal_id,
             "medal_name": entry.get("name"),
-            "medal_category": entry.get("category"),
-            "medal_tier": entry.get("tier"),
+            "medal_category": medal_category,
+            "medal_tier": medal_tier,
             "medal_description": entry.get("description"),
             "medal_icon": criteria.get("icon"),
             "awarded_via": awarded_via,
         }
+
+        team_id: Optional[str] = None
+        if player.team_id and _medal_broadcast_to_team_allowed(player):
+            team_id = str(player.team_id)
+
+        sector_id: Optional[int] = None
+        if _medal_qualifies_for_sector_broadcast(medal_tier, medal_category):
+            sector_id = int(player.current_sector_id)
 
         import asyncio
         from src.services.enhanced_websocket_service import (
@@ -382,7 +409,10 @@ def _dispatch_medal_awarded_event(
         loop = asyncio.get_running_loop()
         loop.create_task(
             get_enhanced_websocket_service().send_medal_awarded(
-                str(user_id), medal_payload
+                user_id,
+                medal_payload,
+                team_id=team_id,
+                sector_id=sector_id,
             )
         )
     except Exception:

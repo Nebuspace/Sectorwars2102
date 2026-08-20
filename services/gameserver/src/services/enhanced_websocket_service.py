@@ -16,7 +16,7 @@ import hashlib
 import hmac
 import os
 import time
-from typing import Dict, List, Set, Any
+from typing import Dict, List, Set, Any, Optional
 from datetime import datetime, UTC
 from dataclasses import dataclass
 from collections import defaultdict
@@ -1029,7 +1029,14 @@ class EnhancedWebSocketService:
             "message": error_message
         })
 
-    async def send_medal_awarded(self, user_id: str, medal_data: Dict[str, Any]):
+    async def send_medal_awarded(
+        self,
+        user_id: str,
+        medal_data: Dict[str, Any],
+        *,
+        team_id: Optional[str] = None,
+        sector_id: Optional[int] = None,
+    ):
         """Push a player-scoped ``medal_awarded`` frame to a freshly-decorated pilot.
 
         The single realtime helper for WO-B7: when ``medal_service.award_medal``
@@ -1040,6 +1047,12 @@ class EnhancedWebSocketService:
         / ``send_new_message_notification``): a typed message stamped with a
         top-level ``timestamp``, flat-spread payload, delivered via
         ``send_personal_message``.
+
+        After the personal unicast, optionally fans out to the earner's team room
+        (``broadcast_to_team``) and/or current sector (``broadcast_to_sector``)
+        per sw2102-docs/SYSTEMS/medal-service.md realtime table — the earner is
+        excluded from room broadcasts because they already received the personal
+        frame.
 
         ``user_id`` is the owning ``User.id`` string (the key
         ``send_personal_message`` routes on — NOT the ``Player.id``); the caller
@@ -1057,6 +1070,14 @@ class EnhancedWebSocketService:
             **medal_data,
         }
         await self.connection_manager.send_personal_message(user_id, message)
+        if team_id:
+            await self.connection_manager.broadcast_to_team(
+                team_id, message, exclude_user=user_id
+            )
+        if sector_id is not None:
+            await self.connection_manager.broadcast_to_sector(
+                int(sector_id), message, exclude_user=user_id
+            )
     
     async def _handle_heartbeat(self, player_id: str):
         """Handle heartbeat message"""
