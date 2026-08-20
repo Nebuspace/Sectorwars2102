@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import PageHeader from '../ui/PageHeader';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import './multi-account-review.css';
 
 // Matches _serialize_cluster() in admin_multi_account.py
@@ -61,12 +62,13 @@ export const MultiAccountReview: React.FC = () => {
         `/api/v1/admin/multi-account/clusters?decision=${filterDecision}`
       );
       setClusters(res.data as MultiAccountCluster[]);
-    } catch (err: any) {
+    } catch (err: unknown) {
       setClusters([]);
       setError(
-        err?.response?.data?.detail ||
-          err?.response?.data?.message ||
-          'Failed to load clusters'
+        formatAdminApiError(err, {
+          fallback: 'Failed to load clusters',
+          scopeHint: 'admin multi-account review scopes required',
+        })
       );
     } finally {
       setIsLoading(false);
@@ -77,11 +79,12 @@ export const MultiAccountReview: React.FC = () => {
     try {
       const res = await api.get(`/api/v1/admin/multi-account/clusters/${id}`);
       setSelected(res.data as MultiAccountCluster);
-    } catch (err: any) {
+    } catch (err: unknown) {
       setDecideError(
-        err?.response?.data?.detail ||
-          err?.response?.data?.message ||
-          'Failed to load cluster detail'
+        formatAdminApiError(err, {
+          fallback: 'Failed to load cluster detail',
+          scopeHint: 'admin multi-account review scopes required',
+        })
       );
     }
   }, []);
@@ -112,11 +115,12 @@ export const MultiAccountReview: React.FC = () => {
       setDecision('');
       setReason('');
       await loadClusters();
-    } catch (err: any) {
+    } catch (err: unknown) {
       setDecideError(
-        err?.response?.data?.detail ||
-          err?.response?.data?.message ||
-          'Failed to record decision'
+        formatAdminApiError(err, {
+          fallback: 'Failed to record decision',
+          scopeHint: 'admin multi-account review scopes required',
+        })
       );
     } finally {
       setIsDeciding(false);
@@ -164,11 +168,11 @@ export const MultiAccountReview: React.FC = () => {
         ))}
       </div>
 
-      {/* Honest-gap notice — detection service not yet shipped */}
+      {/* Honesty notice — hourly detection sweep is tip-shipped */}
       <p className="mar-honest-gap">
-        The detection sweep (P7-admin-multiacct-service-sweep) has not shipped yet. This queue
-        will be empty until the hourly sweep runs against live accounts. The review UI and
-        decision-recording REST layer are fully wired and ready.
+        The detection sweep runs hourly against live accounts. An empty queue means no open
+        clusters are awaiting review right now. The review UI and decision-recording REST
+        layer are fully wired.
       </p>
 
       <div className="mar-content">
