@@ -41,13 +41,13 @@ describe('MultiAccountReview (LEG-1098 honesty banner)', () => {
     expect(banner).toMatch(/hourly/i);
     expect(banner).toMatch(/empty queue|no open clusters/i);
   });
-  it('reports a 403 as PLAYERS_VIEW on cluster load', async () => {
+  it('reports a 403 as scope denial on cluster load', async () => {
     vi.mocked(api.get).mockRejectedValue({ response: { status: 403 } });
 
     render(<MultiAccountReview />);
 
     await waitFor(() => {
-      expect(document.body.textContent).toMatch(/PLAYERS_VIEW/);
+      expect(document.body.textContent).toMatch(/Access denied|scope/i);
     });
     expect(document.body.textContent).not.toMatch(/Failed to load clusters$/);
   });
