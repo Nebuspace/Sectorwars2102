@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import { useResourceCatalog } from '../../hooks/useResourceCatalog';
-import { formatUniverseAdminError } from '../../utils/universeAdminError';
 import './universe-detail.css';
 
 interface PlanetDetailProps {
@@ -18,6 +18,7 @@ const PlanetDetail: React.FC<PlanetDetailProps> = ({ planet, onBack, onUpdate })
   const [editingField, setEditingField] = useState<string | null>(null);
   const [editValues, setEditValues] = useState<any>({});
   const [isLoading, setIsLoading] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const handleSave = async (field: string) => {
     const newValue = editValues[field];
@@ -33,13 +34,19 @@ const PlanetDetail: React.FC<PlanetDetailProps> = ({ planet, onBack, onUpdate })
     const payload =
       field === 'planet_type' ? { type: newValue } : { [field]: newValue };
     setIsLoading(true);
+    setSaveError(null);
     try {
       await api.patch(`/api/v1/admin/planets/${planet.id}`, payload);
       if (onUpdate) onUpdate({ ...planet, [field]: newValue });
       setEditingField(null);
       setEditValues({});
     } catch (err: unknown) {
-      alert(formatUniverseAdminError(err, `Failed to update ${field}`));
+      setSaveError(
+        formatAdminApiError(err, {
+          fallback: `Failed to update ${field}`,
+          scopeHint: 'admin.universe.manage',
+        })
+      );
       setEditingField(null);
     } finally {
       setIsLoading(false);
@@ -109,7 +116,14 @@ const PlanetDetail: React.FC<PlanetDetailProps> = ({ planet, onBack, onUpdate })
     }
 
     if (!PATCHABLE_FIELDS.has(field)) {
-      return <span className="editable-field">{value}</span>;
+      return (
+        <span
+          className="editable-field read-only"
+          title="Not editable via admin planet PATCH"
+        >
+          {value}
+        </span>
+      );
     }
 
     return (
@@ -231,6 +245,11 @@ const PlanetDetail: React.FC<PlanetDetailProps> = ({ planet, onBack, onUpdate })
       </div>
 
       <div className="detail-content">
+        {saveError ? (
+          <div className="admin-save-error" role="alert">
+            {saveError}
+          </div>
+        ) : null}
         <div className="planet-overview">
           <h3>Planet Overview</h3>
           <div className="info-grid">
