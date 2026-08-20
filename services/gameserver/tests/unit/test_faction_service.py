@@ -50,6 +50,7 @@ from src.models.faction import Faction, FactionType
 from src.models.player import Player
 from src.models.reputation import Reputation, ReputationLevel
 from src.models.sector_faction_influence import SectorFactionInfluence
+from src.models.team import Team
 from src.services import faction_service
 from src.services.faction_service import (
     PIRATE_SPAWN_FLOOR,
@@ -60,14 +61,18 @@ from src.services.faction_service import (
     TERRITORY_SECONDARY_PRESENCE_MIN,
     TRADE_MODIFIER_PUBLIC_ENEMY,
     TRADE_MODIFIERS,
+    EffectiveFactionStanding,
     FactionService,
     _dispatch_faction_medals,
     adjust_sector_influence,
     apply_faction_rep_delta,
+    build_effective_faction_standing,
     dominant_reputation_faction_id,
     get_sector_influence,
+    resolve_effective_faction_standing_value,
     sector_spawn_bias,
     sector_territory_tier,
+    trade_modifier_from_standing_value,
 )
 
 
@@ -791,7 +796,7 @@ class TestApplyReputationDecay:
 class TestGetTradeModifier:
     @pytest.mark.asyncio
     async def test_no_reputation_record_returns_neutral(self):
-        db = _FakeDb(results={Reputation: [None]})
+        db = _FakeDb(results={Player: [None], Reputation: [None]})
         svc = FactionService(db)
         assert await svc.get_trade_modifier(uuid4(), uuid4()) == 1.0
 
@@ -813,7 +818,7 @@ class TestGetTradeModifier:
     @pytest.mark.asyncio
     async def test_threshold_ladder(self, value, expected):
         rep = _reputation(current_value=value)
-        db = _FakeDb(results={Reputation: [rep]})
+        db = _FakeDb(results={Player: [None], Reputation: [rep]})
         svc = FactionService(db)
         assert await svc.get_trade_modifier(uuid4(), uuid4()) == expected
 
@@ -1026,3 +1031,107 @@ class TestUpdateFactionTerritory:
         message, _exclude = _stub_manager.broadcasts[0]
         assert message["type"] == "faction_territory_changed"
         assert message["sectors"] == [str(sid) for sid in new_sectors]
+
+
+# ---------------------------------------------------------------------------
+# effective_faction_standing / team aggregate consumers (LEG-800)
+# ---------------------------------------------------------------------------
+
+
+class TestEffectiveFactionStanding:
+    def test_solo_player_uses_personal_reputation(self):
+        player_id = uuid4()
+        faction_id = uuid4()
+        rep = _reputation(player_id=player_id, faction_id=faction_id, current_value=100)
+        db = _FakeDb(results={Player: [None], Reputation: [rep]})
+        value, source = resolve_effective_faction_standing_value(
+            db, player_id, faction_id
+        )
+        assert source == "personal"
+        assert value == 100
+
+    def test_team_player_uses_team_aggregate(self, monkeypatch):
+        player_id = uuid4()
+        faction_id = uuid4()
+        team_id = uuid4()
+        player = Player(id=player_id, team_id=team_id)
+        team = Team(id=team_id, name="Test Team", leader_id=player_id)
+
+        def _fake_get_team_reputation(_db, _team, *, now=None):
+            assert _team.id == team_id
+            return {
+                "standings": {
+                    str(faction_id): {
+                        "faction_id": str(faction_id),
+                        "value": 700,
+                        "level": ReputationLevel.EXALTED.value,
+                    }
+                }
+            }
+
+        monkeypatch.setattr(
+            "src.services.team_reputation_service.get_team_reputation",
+            _fake_get_team_reputation,
+        )
+
+        db = _FakeDb(results={Player: [player], Team: [team]})
+        value, source = resolve_effective_faction_standing_value(
+            db, player_id, faction_id
+        )
+        assert source == "team"
+        assert value == 700
+
+    @pytest.mark.asyncio
+    async def test_get_trade_modifier_team_average_changes_pricing(self, monkeypatch):
+        player_id = uuid4()
+        faction_id = uuid4()
+        team_id = uuid4()
+        player = Player(id=player_id, team_id=team_id)
+        team = Team(id=team_id, name="Avg Team", leader_id=player_id)
+        personal_rep = _reputation(
+            player_id=player_id, faction_id=faction_id, current_value=0
+        )
+
+        def _fake_get_team_reputation(_db, _team, *, now=None):
+            return {
+                "standings": {
+                    str(faction_id): {
+                        "faction_id": str(faction_id),
+                        "value": 700,
+                        "level": ReputationLevel.EXALTED.value,
+                    }
+                }
+            }
+
+        monkeypatch.setattr(
+            "src.services.team_reputation_service.get_team_reputation",
+            _fake_get_team_reputation,
+        )
+
+        db = _FakeDb(results={Player: [player], Team: [team]})
+        svc = FactionService(db)
+        assert await svc.get_trade_modifier(player_id, faction_id) == 0.85
+        assert trade_modifier_from_standing_value(0) == 1.0
+
+    @pytest.mark.asyncio
+    async def test_get_trade_modifier_solo_unchanged(self):
+        player_id = uuid4()
+        faction_id = uuid4()
+        rep = _reputation(player_id=player_id, faction_id=faction_id, current_value=0)
+        db = _FakeDb(results={Player: [None], Reputation: [rep]})
+        svc = FactionService(db)
+        assert await svc.get_trade_modifier(player_id, faction_id) == 1.0
+
+    def test_build_effective_maps_helpers(self):
+        player_id = uuid4()
+        faction_id = uuid4()
+        rep = _reputation(player_id=player_id, faction_id=faction_id, current_value=600)
+        db = _FakeDb(results={Player: [None], Reputation: [rep]})
+        svc = FactionService(db)
+        standing = build_effective_faction_standing(db, player_id, faction_id, svc=svc)
+        assert isinstance(standing, EffectiveFactionStanding)
+        assert standing.source == "personal"
+        assert standing.value == 600
+        assert standing.port_access_level == svc._calculate_port_access_level(600)
+        assert standing.combat_response == svc._calculate_combat_response(600)
+        assert standing.trade_modifier == svc._calculate_trade_modifier(600)
