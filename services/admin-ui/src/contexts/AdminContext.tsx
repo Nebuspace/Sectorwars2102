@@ -1,6 +1,6 @@
 import React, { createContext, useCallback, useContext, useState, useEffect, ReactNode } from 'react';
-import axios from 'axios';
 import { useAuth } from './AuthContext';
+import { api } from '../utils/auth';
 import type {
   BangConfig,
   BangJobListItem,
@@ -11,6 +11,7 @@ import {
   listBangJobs,
   wipeBangGalaxy,
 } from '../services/bangGalaxyApi';
+import { formatAdminApiError } from '../utils/adminApiError';
 
 // Types for admin context
 export interface AdminStats {
@@ -226,11 +227,6 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   const [bangHistory, setBangHistory] = useState<BangJobListItem[]>([]);
   const [bangHistoryTotal, setBangHistoryTotal] = useState<number>(0);
   
-  // Set up axios instance (headers set per request)
-  const api = axios.create({
-    baseURL: '/api/v1',
-  });
-  
   // Load admin stats
   const loadAdminStats = async () => {
     if (!user || !user.is_admin) return;
@@ -240,9 +236,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
 
     try {
       // Backend returns snake_case, we need to map to camelCase for TypeScript interface
-      const response = await api.get<any>('/admin/stats', {
-        headers: token ? { Authorization: `Bearer ${token}` } : {}
-      });
+      const response = await api.get<any>('/api/v1/admin/stats');
 
       // Map snake_case API response to camelCase interface
       const mappedStats: AdminStats = {
@@ -279,9 +273,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     setError(null);
 
     try {
-      const response = await api.get<GalaxyState | {galaxy: null}>('/admin/galaxy', {
-        headers: token ? { Authorization: `Bearer ${token}` } : {}
-      });
+      const response = await api.get<GalaxyState | {galaxy: null}>('/api/v1/admin/galaxy');
 
       if (response.data && 'galaxy' in response.data && response.data.galaxy === null) {
         setGalaxyState(null);
@@ -298,7 +290,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     } finally {
       setIsLoading(false);
     }
-  }, [user, token]);
+  }, [user]);
   
   // Load regions
   const loadRegions = async () => {
@@ -308,9 +300,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     setError(null);
 
     try {
-      const response = await api.get<{regions: Region[]}>('/admin/regions', {
-        headers: token ? { Authorization: `Bearer ${token}` } : {}
-      });
+      const response = await api.get<{regions: Region[]}>('/api/v1/admin/regions');
       setRegions(response.data.regions || []);
     } catch (error) {
       console.error('Error loading regions:', error);
@@ -328,9 +318,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     setError(null);
 
     try {
-      const response = await api.get<{zones: Zone[]}>(`/admin/regions/${regionId}/zones`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {}
-      });
+      const response = await api.get<{zones: Zone[]}>(`/api/v1/admin/regions/${regionId}/zones`);
       setZones(response.data.zones || []);
     } catch (error) {
       console.error('Error loading region zones:', error);
@@ -345,14 +333,12 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     if (!user || !user.is_admin) return;
 
     try {
-      let url = '/admin/clusters';
+      let url = '/api/v1/admin/clusters';
       if (regionId) {
-        url = `/admin/regions/${regionId}/clusters`;
+        url = `/api/v1/admin/regions/${regionId}/clusters`;
       }
 
-      const response = await api.get<{clusters: Cluster[]}>(url, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {}
-      });
+      const response = await api.get<{clusters: Cluster[]}>(url);
       setClusters(response.data.clusters || []);
     } catch (error) {
       console.error('Error loading clusters:', error);
@@ -375,7 +361,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     setError(null);
 
     try {
-      await api.post(`/admin/galaxy/${galaxyId}/sectors/add`, {
+      await api.post(`/api/v1/admin/galaxy/${galaxyId}/sectors/add`, {
         num_sectors: numSectors,
         config
       });
@@ -406,7 +392,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     setError(null);
 
     try {
-      await api.delete('/admin/galaxy/clear');
+      await api.delete('/api/v1/admin/galaxy/clear');
 
       // After clearing, reset all state
       setGalaxyState(null);
@@ -432,7 +418,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     setError(null);
     
     try {
-      await api.post('/admin/warp-tunnels/create', {
+      await api.post('/api/v1/admin/warp-tunnels/create', {
         source_sector_id: sourceSectorId,
         target_sector_id: targetSectorId,
         stability: stability ?? 0.75 // Default to 75% stability if not specified
@@ -459,7 +445,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     setError(null);
     
     try {
-      const response = await api.get<{sectors: SectorData[]}>('/admin/sectors');
+      const response = await api.get<{sectors: SectorData[]}>('/api/v1/admin/sectors');
       setSectors(response.data.sectors || []);
     } catch (error) {
       console.error('Error loading sectors:', error);
@@ -477,9 +463,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     setError(null);
     
     try {
-      const response = await api.get<{users: UserAccount[]}>('/admin/users', {
-        headers: token ? { Authorization: `Bearer ${token}` } : {}
-      });
+      const response = await api.get<{users: UserAccount[]}>('/api/v1/admin/users');
       setUsers(response.data.users || []);
     } catch (error) {
       console.error('Error loading users:', error);
@@ -497,9 +481,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     setError(null);
     
     try {
-      const response = await api.get<{players: PlayerAccount[]}>('/admin/players', {
-        headers: token ? { Authorization: `Bearer ${token}` } : {}
-      });
+      const response = await api.get<{players: PlayerAccount[]}>('/api/v1/admin/players');
       setPlayers(response.data.players || []);
     } catch (error) {
       console.error('Error loading players:', error);
@@ -520,9 +502,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     setError(null);
 
     try {
-      await api.put(`/users/${userId}`, { is_active: true }, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {}
-      });
+      await api.put(`/api/v1/users/${userId}`, { is_active: true });
 
       // Update local state
       setUsers(users.map(u =>
@@ -544,9 +524,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     setError(null);
 
     try {
-      await api.put(`/users/${userId}`, { is_active: false }, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {}
-      });
+      await api.put(`/api/v1/users/${userId}`, { is_active: false });
 
       // Update local state
       setUsers(users.map(u =>
@@ -627,7 +605,13 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         setSectors([]);
       } catch (err) {
         console.error('Error wiping galaxy:', err);
-        setError('Failed to wipe galaxy');
+        // LEG-1315: context-layer wipe must distinguish RBAC/rate-limit from bare Failed
+        setError(
+          formatAdminApiError(err, {
+            fallback: 'Failed to wipe galaxy',
+            scopeHint: 'admin.universe.manage',
+          }),
+        );
         throw err;
       } finally {
         setIsLoading(false);
