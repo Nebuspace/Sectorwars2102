@@ -59,11 +59,19 @@ export const PlayerBehaviorAnalytics: React.FC = () => {
         insight: insight
       })) : []);
     } catch (err: any) {
-      const errorMessage = err.response?.data?.detail || err.message || 'Failed to load behavior analytics';
-      if (err.response?.status === 401) {
+      const status = err.response?.status as number | undefined;
+      if (status === 401) {
         setError('Authentication required. Please log in as an admin user.');
+      } else if (status === 403) {
+        setError(
+          'Access denied — behavior analytics require the admin players view scope (PLAYERS_VIEW).'
+        );
+      } else if (status === 429) {
+        setError('Admin rate limit exceeded — wait a moment and try again.');
       } else {
-        setError(errorMessage);
+        setError(
+          err.response?.data?.detail || err.message || 'Failed to load behavior analytics'
+        );
       }
     } finally {
       setLoading(false);
@@ -71,7 +79,7 @@ export const PlayerBehaviorAnalytics: React.FC = () => {
   };
 
   if (loading) return <div className="loading">Loading behavior analytics...</div>;
-  if (error) return <div className="error">Error: {error}</div>;
+  if (error) return <div className="error" role="alert">Error: {error}</div>;
 
   return (
     <div className="player-behavior-analytics">
