@@ -338,12 +338,11 @@ const PortDetail: React.FC<PortDetailProps> = ({ port, onBack, onUpdate }) => {
             <div className="service-item">
               <span className="service-icon">🛡️</span>
               <span className="service-name">Station Shields</span>
-              <span className="service-status">
-                <EditableField 
-                  field="port_shields" 
-                  value={port.port_shields || 0} 
-                  type="number" 
-                /> / 1000
+              <span
+                className="service-status"
+                title="Not editable — update_port has no port_shields column"
+              >
+                {port.port_shields || 0} / 1000
               </span>
             </div>
             <div className="service-item">
@@ -360,34 +359,31 @@ const PortDetail: React.FC<PortDetailProps> = ({ port, onBack, onUpdate }) => {
             <div className="service-item">
               <span className="service-icon">🔧</span>
               <span className="service-name">Max Maintenance</span>
-              <span className="service-status">
-                <EditableField 
-                  field="max_maintenance" 
-                  value={port.max_maintenance || 100} 
-                  type="number" 
-                />%
+              <span
+                className="service-status"
+                title="Not editable — update_port has no max_maintenance column"
+              >
+                {port.max_maintenance || 100}%
               </span>
             </div>
             <div className="service-item">
               <span className="service-icon">💰</span>
               <span className="service-name">Buy Rate</span>
-              <span className="service-status">
-                <EditableField 
-                  field="buy_rate" 
-                  value={port.buy_rate || 95} 
-                  type="number" 
-                />%
+              <span
+                className="service-status"
+                title="Not editable — update_port has no buy_rate column"
+              >
+                {port.buy_rate || 95}%
               </span>
             </div>
             <div className="service-item">
               <span className="service-icon">💸</span>
               <span className="service-name">Sell Rate</span>
-              <span className="service-status">
-                <EditableField 
-                  field="sell_rate" 
-                  value={port.sell_rate || 105} 
-                  type="number" 
-                />%
+              <span
+                className="service-status"
+                title="Not editable — update_port has no sell_rate column"
+              >
+                {port.sell_rate || 105}%
               </span>
             </div>
           </div>
@@ -439,15 +435,6 @@ const PortDetail: React.FC<PortDetailProps> = ({ port, onBack, onUpdate }) => {
                 }}
               >
                 🤖 Deploy Defense Drones
-              </button>
-              <button 
-                className="admin-action-btn"
-                onClick={() => {
-                  const newShields = prompt('Enter new shield strength:', port.port_shields?.toString() || '500');
-                  if (newShields) handleEdit('port_shields', parseInt(newShields));
-                }}
-              >
-                🛡️ Adjust Station Shields
               </button>
             </div>
           </div>

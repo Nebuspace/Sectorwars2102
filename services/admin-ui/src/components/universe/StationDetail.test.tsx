@@ -175,3 +175,30 @@ describe('StationDetail Soft-HOLD scope errors (LEG-1213 residual after Soft-ORD
     });
   });
 });
+
+describe('StationDetail Soft-ORDER demote silent no-ops (LEG-1472)', () => {
+  it('renders port_shields / max_maintenance / buy_rate / sell_rate as display-only', () => {
+    render(
+      <PortDetail
+        port={{
+          ...basePort,
+          port_shields: 500,
+          max_maintenance: 80,
+          buy_rate: 90,
+          sell_rate: 110,
+        }}
+        onBack={() => undefined}
+      />,
+    );
+
+    const services = screen.getByText('Station Shields').closest('.services-grid');
+    expect(services).toBeTruthy();
+    expect(services!.textContent).toMatch(/500\s*\/\s*1000/);
+    expect(services!.textContent).toMatch(/80%/);
+    expect(services!.textContent).toMatch(/90%/);
+    expect(services!.textContent).toMatch(/110%/);
+    expect(screen.queryByText('Adjust Station Shields')).toBeNull();
+    // port_shields/buy_rate/sell_rate/max_maintenance demoted — only defense_drones stays clickable in services-grid
+    expect(services!.querySelectorAll('.editable-field.clickable').length).toBe(1);
+  });
+});
