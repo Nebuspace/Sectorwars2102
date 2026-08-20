@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAIUpdates } from '../../contexts/WebSocketContext';
 import { api } from '../../utils/auth';
+import { axiosResponseStatus, formatAdminApiError } from '../../utils/adminApiError';
 import './route-optimization-display.css';
 
 interface OptimizedRoute {
@@ -60,18 +61,18 @@ export const RouteOptimizationDisplay: React.FC = () => {
       setLoading(true);
       const response = await api.get('/api/v1/admin/ai/route-optimization');
       setActiveRoutes(response.data.active_optimizations || []);
-    } catch (err: any) {
-      const status = err.response?.status as number | undefined;
+    } catch (err: unknown) {
+      const status = axiosResponseStatus(err);
       if (status === 401) {
         setError('Authentication required. Please log in as an admin user.');
-      } else if (status === 403) {
-        setError(
-          'Access denied — route optimization requires the admin players view scope (PLAYERS_VIEW).'
-        );
-      } else if (status === 429) {
-        setError('Admin rate limit exceeded — wait a moment and try again.');
       } else {
-        setError(err.response?.data?.detail || err.message || 'Failed to load routes');
+        setError(
+          formatAdminApiError(err, {
+            fallback: 'Failed to load routes',
+            scopeHint:
+              'route optimization requires the admin players view scope (PLAYERS_VIEW).',
+          })
+        );
       }
     } finally {
       setLoading(false);
