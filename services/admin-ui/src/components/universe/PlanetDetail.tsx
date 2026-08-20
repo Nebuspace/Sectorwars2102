@@ -11,7 +11,20 @@ interface PlanetDetailProps {
 }
 
 /** Fields PlanetDetail may click-edit — must match PlanetUpdateRequest. */
-const PATCHABLE_FIELDS = new Set(['name', 'planet_type', 'defense_level']);
+const PATCHABLE_FIELDS = new Set(['name', 'planet_type', 'defense_level', 'owner_id']);
+
+/** Build PATCH body for a PlanetDetail EditableField (tip PlanetUpdateRequest). */
+export function buildPlanetPatchPayload(field: string, value: unknown): Record<string, unknown> {
+  if (field === 'planet_type') {
+    return { type: value };
+  }
+  if (field === 'owner_id') {
+    const raw = String(value ?? '').trim();
+    // Tip: explicit null clears ownership (uncolonized); omit is leave-unchanged.
+    return { owner_id: raw === '' ? null : raw };
+  }
+  return { [field]: value };
+}
 
 const PlanetDetail: React.FC<PlanetDetailProps> = ({ planet, onBack, onUpdate }) => {
   const { getIcon, getLabel } = useResourceCatalog();
@@ -30,14 +43,18 @@ const PlanetDetail: React.FC<PlanetDetailProps> = ({ planet, onBack, onUpdate })
       setEditingField(null);
       return;
     }
-    // API expects `type`; the UI field is still `planet_type`.
-    const payload =
-      field === 'planet_type' ? { type: newValue } : { [field]: newValue };
+    const payload = buildPlanetPatchPayload(field, newValue);
     setIsLoading(true);
     setSaveError(null);
     try {
       await api.patch(`/api/v1/admin/planets/${planet.id}`, payload);
-      if (onUpdate) onUpdate({ ...planet, [field]: newValue });
+      if (onUpdate) {
+        const local =
+          field === 'owner_id'
+            ? { owner_id: (payload as { owner_id: string | null }).owner_id }
+            : { [field]: newValue };
+        onUpdate({ ...planet, ...local });
+      }
       setEditingField(null);
       setEditValues({});
     } catch (err: unknown) {
@@ -271,11 +288,23 @@ const PlanetDetail: React.FC<PlanetDetailProps> = ({ planet, onBack, onUpdate })
               </span>
             </div>
             <div className="info-item">
-              <span className="label">Owner:</span>
+              <span className="label">Owner ID:</span>
               <span className="value">
-                <EditableField field="owner_name" value={planet.owner_name || 'Uncolonized'} type="text" />
+                <EditableField
+                  field="owner_id"
+                  value={planet.owner_id || ''}
+                  type="text"
+                />
               </span>
             </div>
+            {planet.owner_name ? (
+              <div className="info-item">
+                <span className="label">Owner name:</span>
+                <span className="value">
+                  <EditableField field="owner_name" value={planet.owner_name} type="text" />
+                </span>
+              </div>
+            ) : null}
             <div className="info-item">
               <span className="label">Citadel Level:</span>
               <span className="value">
