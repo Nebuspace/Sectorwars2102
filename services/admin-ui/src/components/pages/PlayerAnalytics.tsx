@@ -675,13 +675,24 @@ const PlayerAnalytics: React.FC = () => {
                     <div className="dashboard-stat-description">{analyticsAvailable && state.metrics.total_credits_circulation != null ? 'In Circulation' : (analyticsAvailable ? 'Credits circulation unavailable' : 'Analytics endpoint unavailable')}</div>
                   </div>
 
-                  <div className="dashboard-stat-card stat-not-tracked">
+                  <div
+                    className={`dashboard-stat-card${analyticsAvailable && state.metrics.average_session_time != null ? '' : ' stat-not-tracked'}`}
+                    data-testid="player-metrics-session-time"
+                  >
                     <div className="dashboard-stat-header">
                       <span className="dashboard-stat-icon">⏱️</span>
                       <h4 className="dashboard-stat-title">Session Time</h4>
                     </div>
-                    <div className="dashboard-stat-value">&mdash;</div>
-                    <div className="dashboard-stat-description">No session tracking yet</div>
+                    <div className="dashboard-stat-value">
+                      {analyticsAvailable && state.metrics.average_session_time != null
+                        ? `${state.metrics.average_session_time.toLocaleString()}h`
+                        : <>&mdash;</>}
+                    </div>
+                    <div className="dashboard-stat-description">
+                      {analyticsAvailable && state.metrics.average_session_time != null
+                        ? 'Average (hours)'
+                        : (analyticsAvailable ? 'Session time unavailable' : 'Analytics endpoint unavailable')}
+                    </div>
                   </div>
 
                   <div className={`dashboard-stat-card${analyticsAvailable && state.metrics.new_players_today != null ? '' : ' stat-not-tracked'}`}>
@@ -693,13 +704,24 @@ const PlayerAnalytics: React.FC = () => {
                     <div className="dashboard-stat-description">{analyticsAvailable && state.metrics.new_players_today != null ? 'Today' : (analyticsAvailable ? 'New-player count unavailable' : 'Analytics endpoint unavailable')}</div>
                   </div>
 
-                  <div className="dashboard-stat-card stat-not-tracked">
+                  <div
+                    className={`dashboard-stat-card${analyticsAvailable && state.metrics.player_retention_rate != null ? '' : ' stat-not-tracked'}`}
+                    data-testid="player-metrics-retention-rate"
+                  >
                     <div className="dashboard-stat-header">
                       <span className="dashboard-stat-icon">📈</span>
                       <h4 className="dashboard-stat-title">Retention Rate</h4>
                     </div>
-                    <div className="dashboard-stat-value">&mdash;</div>
-                    <div className="dashboard-stat-description">No retention telemetry surfaced yet</div>
+                    <div className="dashboard-stat-value">
+                      {analyticsAvailable && state.metrics.player_retention_rate != null
+                        ? `${state.metrics.player_retention_rate.toLocaleString()}%`
+                        : <>&mdash;</>}
+                    </div>
+                    <div className="dashboard-stat-description">
+                      {analyticsAvailable && state.metrics.player_retention_rate != null
+                        ? '7-day retention'
+                        : (analyticsAvailable ? 'Retention rate unavailable' : 'Analytics endpoint unavailable')}
+                    </div>
                   </div>
 
                   <div className={`dashboard-stat-card${analyticsAvailable && state.metrics.suspicious_activity_alerts != null ? '' : ' stat-not-tracked'}`} data-variant="warning">
