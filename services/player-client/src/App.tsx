@@ -13,10 +13,15 @@ import { SettingsProvider } from './contexts/SettingsContext'
 import { ThemeProvider } from './themes/ThemeProvider'
 
 // Import components
+import {
+  captureInviteFromLocationSearch,
+  readStoredRegionInvite,
+} from './components/auth/regionInvite'
 import LoginPage from './components/pages/LoginPage'
 import RegisterForm from './components/auth/RegisterForm'
 import OAuthCallback from './components/auth/OAuthCallback'
 import LandingPage from './components/landing/LandingPage'
+import JoinInviteLanding from './components/auth/JoinInviteLanding'
 import GameShellRoute from './components/layouts/GameShellRoute'
 import GameDashboard from './components/pages/GameDashboard'
 import { FirstLoginContainer } from './components/first-login'
@@ -68,7 +73,10 @@ function MainApp() {
   const [apiStatus, setApiStatus] = useState<string>('Loading...');
   const [apiMessage, setApiMessage] = useState<string>('');
   const [apiEnvironment, setApiEnvironment] = useState<string>('');
-  const [authMode, setAuthMode] = useState<'none' | 'login' | 'register'>('none');
+  const [authMode, setAuthMode] = useState<'none' | 'login' | 'register'>(() => {
+    captureInviteFromLocationSearch(window.location.search);
+    return readStoredRegionInvite() ? 'register' : 'none';
+  });
   const navigate = useNavigate();
 
   // Static game feature highlights
@@ -270,6 +278,7 @@ function App() {
               <FirstLoginProvider>
                 <Routes>
               <Route path="/oauth-callback" element={<OAuthCallback />} />
+              <Route path="/join" element={<JoinInviteLanding />} />
               {import.meta.env.DEV && DebugPage && (
                 <Route path="/debug" element={<Suspense fallback={<div>Loading…</div>}><DebugPage /></Suspense>} />
               )}

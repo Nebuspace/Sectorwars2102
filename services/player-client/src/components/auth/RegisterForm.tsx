@@ -1,5 +1,11 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
+import {
+  captureInviteFromLocationSearch,
+  persistRegionInvite,
+  readStoredRegionInvite,
+  sanitizeOauthInvite,
+} from './regionInvite';
 import './auth.css';
 
 interface RegisterFormProps {
@@ -13,10 +19,17 @@ const RegisterForm: React.FC<RegisterFormProps> = ({ onRegisterSuccess, switchTo
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [inviteCode, setInviteCode] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   
   const { register, registerWithOAuth } = useAuth();
+
+  useEffect(() => {
+    captureInviteFromLocationSearch(window.location.search);
+    const stored = readStoredRegionInvite();
+    if (stored) setInviteCode(stored);
+  }, []);
   
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -41,7 +54,8 @@ const RegisterForm: React.FC<RegisterFormProps> = ({ onRegisterSuccess, switchTo
     setIsSubmitting(true);
     
     try {
-      await register(username, email, password);
+      const invite = sanitizeOauthInvite(inviteCode);
+      await register(username, email, password, invite ?? undefined);
       if (onRegisterSuccess) {
         onRegisterSuccess();
       }
@@ -58,7 +72,9 @@ const RegisterForm: React.FC<RegisterFormProps> = ({ onRegisterSuccess, switchTo
   };
 
   const handleOAuthRegister = (provider: string) => {
-    registerWithOAuth(provider);
+    const invite = sanitizeOauthInvite(inviteCode);
+    if (invite) persistRegionInvite(invite);
+    registerWithOAuth(provider, invite ?? undefined);
   };
   
   return (
@@ -109,6 +125,20 @@ const RegisterForm: React.FC<RegisterFormProps> = ({ onRegisterSuccess, switchTo
             disabled={isSubmitting}
             autoComplete="new-password"
             placeholder="At least 8 characters"
+          />
+        </div>
+        
+        <div className="form-group">
+          <label htmlFor="region-invite">Region invite (optional)</label>
+          <input
+            type="text"
+            id="region-invite"
+            value={inviteCode}
+            onChange={(e) => setInviteCode(e.target.value)}
+            disabled={isSubmitting}
+            autoComplete="off"
+            spellCheck={false}
+            placeholder="Code from a region owner"
           />
         </div>
         
