@@ -2071,3 +2071,39 @@ def admin_reservation_detail(
     if reservation.state not in TERMINAL_STATES:
         advance(db, reservation, now=now)
     return status_payload(db, reservation, now=now)
+
+
+def admin_force_cancel(
+    db: Session, reservation_id, now: Optional[datetime] = None
+) -> Dict[str, Any]:
+    """Admin force-cancel a construction reservation (LEG-339).
+
+    Loads the reservation without a player ownership gate, then reuses
+    :func:`cancel` so refund math stays identical to the player path
+    (``cancel_refund`` / ADR-0039 — credits refunded, resources never).
+    Idempotent safety is cancel()'s: a second call on a terminal state
+    raises ``ConstructionError(400, ...)``.
+    """
+    reservation = (
+        db.query(ConstructionReservation)
+        .filter(ConstructionReservation.id == reservation_id)
+        .first()
+    )
+    if reservation is None:
+        raise ConstructionError(404, "reservation not found")
+
+    player = (
+        db.query(Player)
+        .filter(Player.id == reservation.player_id)
+        .first()
+    )
+    if player is None:
+        raise ConstructionError(404, "Player not found")
+
+    result = cancel(db, reservation, player, now=now)
+    return {
+        **result,
+        "reservation_id": str(reservation.id),
+        "player_id": str(player.id),
+        "state": reservation.state,
+    }
