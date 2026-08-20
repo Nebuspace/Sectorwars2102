@@ -183,6 +183,85 @@ def _depletion_replenish_hours(pool_size: int, depletion_pool: int) -> int:
     return DEPLETION_REPLENISH_LIGHT_HOURS
 
 
+def depletion_band_for_consumed_fraction(pool_consumed_fraction: float) -> str:
+    """Canon band label for overlay (mining.md:199-207 + :253).
+
+    Cut-points match ``_depletion_yield_modifier``; Fresh is exactly 0%
+    consumed, Light is the remaining <5% window that still yields 1.0×.
+    """
+    if pool_consumed_fraction <= 0.0:
+        return "fresh"
+    if pool_consumed_fraction < 0.05:
+        return "light"
+    if pool_consumed_fraction <= 0.50:
+        return "moderate"
+    if pool_consumed_fraction <= 0.90:
+        return "heavy"
+    return "exhausted"
+
+
+def build_asteroid_depletion_readout(
+    sector: "Sector",
+    *,
+    now: Optional[datetime] = None,
+) -> Optional[Dict[str, Any]]:
+    """Server-authoritative depletion overlay payload (LEG-427).
+
+    Returns ``None`` when ``sector`` is not an ASTEROID_FIELD. Read-only —
+    does not persist richness/depletion backfill.
+    """
+    from src.models.sector import SectorType
+
+    sector_type = getattr(sector, "type", None)
+    type_val = (
+        sector_type.value if hasattr(sector_type, "value") else sector_type
+    )
+    if type_val != SectorType.ASTEROID_FIELD.value:
+        return None
+
+    resources = sector.resources if isinstance(sector.resources, dict) else {}
+    richness = resources.get("asteroid_richness")
+    if isinstance(richness, dict) and "richness_tier" in richness:
+        tier = max(1, min(5, int(richness.get("richness_tier", 3))))
+    else:
+        tier = _derive_richness_tier(getattr(sector, "resource_regeneration", None))
+
+    pool_size = tier * DEPLETION_POOL_PER_TIER
+    depletion_pool = resources.get("depletion_pool", pool_size)
+    if not isinstance(depletion_pool, int):
+        depletion_pool = pool_size
+    depletion_pool = max(0, min(depletion_pool, pool_size))
+
+    consumed = max(0, pool_size - depletion_pool)
+    consumed_fraction = (consumed / pool_size) if pool_size > 0 else 0.0
+    band = depletion_band_for_consumed_fraction(consumed_fraction)
+    yield_modifier = _depletion_yield_modifier(consumed_fraction)
+
+    last_at = _parse_depletion_last_harvest_at(
+        resources.get(DEPLETION_LAST_HARVEST_AT_KEY)
+    )
+    pool_full = depletion_pool >= pool_size
+    replenish_hours: Optional[int] = None
+    replenish_eta: Optional[str] = None
+    if not pool_full:
+        replenish_hours = _depletion_replenish_hours(pool_size, depletion_pool)
+        if last_at is not None:
+            eta = last_at + timedelta(hours=replenish_hours)
+            replenish_eta = eta.isoformat()
+
+    return {
+        "band": band,
+        "yield_modifier": yield_modifier,
+        "depletion_pool": depletion_pool,
+        "pool_size": pool_size,
+        "consumed_fraction": round(consumed_fraction, 4),
+        "richness_tier": tier,
+        "replenish_hours": replenish_hours,
+        "replenish_eta": replenish_eta,
+        "last_harvest_at": last_at.isoformat() if last_at else None,
+    }
+
+
 def _parse_depletion_last_harvest_at(raw: Any) -> Optional[datetime]:
     if raw is None:
         return None
@@ -915,7 +994,22 @@ class MiningService:
             "yield_modifier": depletion_mod,
             "richness_tier": tier,
             "floored": floor_fired,
+            "band": depletion_band_for_consumed_fraction(consumed_fraction),
         }
+        if depletion_pool < pool_size:
+            hours = _depletion_replenish_hours(pool_size, depletion_pool)
+            depletion_state["replenish_hours"] = hours
+            last_raw = resources.get(DEPLETION_LAST_HARVEST_AT_KEY)
+            last_at = _parse_depletion_last_harvest_at(last_raw)
+            if last_at is not None:
+                depletion_state["replenish_eta"] = (
+                    last_at + timedelta(hours=hours)
+                ).isoformat()
+            else:
+                depletion_state["replenish_eta"] = None
+        else:
+            depletion_state["replenish_hours"] = None
+            depletion_state["replenish_eta"] = None
 
         logger.info(
             "Harvest %s completed sector %s: ore=%d pm=%d qs=%d am_rep=%+d",
