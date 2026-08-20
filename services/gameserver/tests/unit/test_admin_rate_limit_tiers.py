@@ -45,6 +45,7 @@ from src.api.middleware.security import (
         ("PUT", "/api/v1/admin/config", ADMIN_TIER_WRITE),
         ("POST", "/api/v1/admin/markets/bulk", ADMIN_TIER_BULK),
         ("POST", "/api/v1/admin/messages/batch", ADMIN_TIER_BULK),
+        ("POST", "/api/v1/admin/messages/bulk-moderate", ADMIN_TIER_BULK),
         ("DELETE", "/api/v1/admin/assets/mass", ADMIN_TIER_BULK),
         ("GET", "/api/v1/admin/reports/economy", ADMIN_TIER_REPORTS),
         ("POST", "/api/v1/admin/export/players", ADMIN_TIER_REPORTS),
