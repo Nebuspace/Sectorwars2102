@@ -70,11 +70,17 @@ export const MarketPredictionInterface: React.FC = () => {
       const response = await api.get(`/api/v1/admin/ai/predictions?${params}`);
       setPredictions(response.data);
     } catch (err: any) {
-      const errorMessage = err.response?.data?.detail || err.message || 'Failed to load predictions';
-      if (err.response?.status === 401) {
+      const status = err.response?.status as number | undefined;
+      if (status === 401) {
         setError('Authentication required. Please log in as an admin user.');
+      } else if (status === 403) {
+        setError(
+          'Access denied — market predictions require the admin players view scope (PLAYERS_VIEW).'
+        );
+      } else if (status === 429) {
+        setError('Admin rate limit exceeded — wait a moment and try again.');
       } else {
-        setError(errorMessage);
+        setError(err.response?.data?.detail || err.message || 'Failed to load predictions');
       }
     } finally {
       setLoading(false);
@@ -106,7 +112,7 @@ export const MarketPredictionInterface: React.FC = () => {
   };
 
   if (loading) return <div className="loading">Loading predictions...</div>;
-  if (error) return <div className="error">Error: {error}</div>;
+  if (error) return <div className="error" role="alert">Error: {error}</div>;
 
   return (
     <div className="market-prediction-interface">
