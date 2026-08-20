@@ -68,19 +68,19 @@ function mockLoad() {
   });
 }
 
-describe('CombatOverview restore_shields honesty (LEG-482)', () => {
+describe('CombatOverview restore_shields honesty (LEG-482 / LEG-1348)', () => {
   beforeEach(() => {
     vi.mocked(api.get).mockReset();
     vi.mocked(api.post).mockReset();
     mockLoad();
   });
 
-  it('does not claim ships changed when restore_shields note says they were not', async () => {
+  it('labels restore as live shield write and posts shield_percent + target', async () => {
     vi.mocked(api.post).mockResolvedValue({
       data: {
         result: {
           action: 'shields_restored',
-          note: 'Shield restoration would be applied to ship models',
+          note: 'Restored shields to 50% of max_shields on 2 ship(s)',
         },
       },
     });
@@ -92,17 +92,118 @@ describe('CombatOverview restore_shields honesty (LEG-482)', () => {
     });
 
     await user.click(screen.getByText('Open intervention'));
-    expect(screen.getByText('Log shield restore (audit only)')).toBeInTheDocument();
-    expect(screen.queryByText('Restore Ships')).not.toBeInTheDocument();
+    expect(screen.getByText('Restore shields')).toBeInTheDocument();
+    expect(screen.queryByText(/audit only/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Ship\.shields writes land/i)).not.toBeInTheDocument();
 
-    await user.click(screen.getByText('Log shield restore (audit only)'));
+    await user.click(screen.getByText('Restore shields'));
 
     await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/combat/combat-1/intervene',
+        expect.objectContaining({
+          intervention_type: 'restore_shields',
+          parameters: expect.objectContaining({
+            target: 'both',
+            shield_percent: 50,
+          }),
+        })
+      );
+    });
+    await waitFor(() => {
       expect(
-        screen.getByText('Shield restoration would be applied to ship models')
+        screen.getByText('Restored shields to 50% of max_shields on 2 ship(s)')
       ).toBeInTheDocument();
     });
-    expect(screen.queryByText(/hull/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/does not change ship/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Logged only/i)).not.toBeInTheDocument();
+  });
+
+  it('posts custom restore target and shield_percent', async () => {
+    vi.mocked(api.post).mockResolvedValue({
+      data: { result: { action: 'shields_restored', note: 'Restored shields to 75% of max_shields on 1 ship(s)' } },
+    });
+    const user = userEvent.setup();
+    render(<CombatOverview />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Open intervention')).toBeInTheDocument();
+    });
+    await user.click(screen.getByText('Open intervention'));
+    await user.selectOptions(screen.getByLabelText('Restore shields target'), 'attacker');
+    await user.clear(screen.getByLabelText('Restore shield percent'));
+    await user.type(screen.getByLabelText('Restore shield percent'), '75');
+    await user.click(screen.getByText('Restore shields'));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/combat/combat-1/intervene',
+        expect.objectContaining({
+          intervention_type: 'restore_shields',
+          parameters: expect.objectContaining({
+            target: 'attacker',
+            shield_percent: 75,
+          }),
+        })
+      );
+    });
+  });
+
+  it('posts adjust_damage with target and multiplier', async () => {
+    vi.mocked(api.post).mockResolvedValue({
+      data: { result: { action: 'damage_adjusted', target: 'defender', multiplier: 0.5 } },
+    });
+    const user = userEvent.setup();
+    render(<CombatOverview />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Open intervention')).toBeInTheDocument();
+    });
+    await user.click(screen.getByText('Open intervention'));
+    await user.selectOptions(screen.getByLabelText('Adjust damage target'), 'defender');
+    await user.clear(screen.getByLabelText('Damage multiplier'));
+    await user.type(screen.getByLabelText('Damage multiplier'), '0.5');
+    await user.click(screen.getByText('Adjust damage'));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/combat/combat-1/intervene',
+        expect.objectContaining({
+          intervention_type: 'adjust_damage',
+          parameters: expect.objectContaining({
+            target: 'defender',
+            damage_multiplier: 0.5,
+          }),
+        })
+      );
+    });
+  });
+
+  it('posts declare_winner with winner side', async () => {
+    vi.mocked(api.post).mockResolvedValue({
+      data: { result: { action: 'winner_declared', winner: 'defender' } },
+    });
+    const user = userEvent.setup();
+    render(<CombatOverview />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Open intervention')).toBeInTheDocument();
+    });
+    await user.click(screen.getByText('Open intervention'));
+    await user.selectOptions(screen.getByLabelText('Declare winner side'), 'defender');
+    await user.click(screen.getByRole('button', { name: 'Declare winner' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/combat/combat-1/intervene',
+        expect.objectContaining({
+          intervention_type: 'declare_winner',
+          parameters: expect.objectContaining({
+            winner: 'defender',
+          }),
+        })
+      );
+    });
   });
 
   it('keeps Force End path posting stop_combat', async () => {
