@@ -8,7 +8,7 @@ import { createRoot } from 'react-dom/client';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { PendingEngagementSummary } from '../../../services/pendingEngagementApi';
 
-const listMine = vi.fn<[], Promise<PendingEngagementSummary[]>>();
+const listMine = vi.fn<() => Promise<PendingEngagementSummary[]>>();
 
 let mockWsState: {
   isConnected: boolean;
@@ -24,7 +24,7 @@ let mockWsState: {
 let mockGameState: { playerState: { id: string } | null };
 
 vi.mock('../../../services/pendingEngagementApi', () => ({
-  default: { listMine: (...args: unknown[]) => listMine(...args) },
+  default: { listMine: () => listMine() },
   parsePendingEngagementSummary: vi.fn(),
 }));
 

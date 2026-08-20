@@ -62,7 +62,7 @@ export const pendingEngagementApi = {
     }
 
     return items.map((item) =>
-      parsePendingEngagementSummary(item as Record<string, unknown>)
+      parsePendingEngagementSummary(item as unknown as Record<string, unknown>)
     );
   },
 };
