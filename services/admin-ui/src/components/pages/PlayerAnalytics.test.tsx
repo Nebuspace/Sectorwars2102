@@ -9,6 +9,15 @@ vi.mock('../../utils/auth', () => ({
   },
 }));
 
+vi.mock('../../contexts/ToastContext', () => ({
+  useToast: () => ({
+    success: vi.fn(),
+    error: vi.fn(),
+    warning: vi.fn(),
+    info: vi.fn(),
+  }),
+}));
+
 vi.mock('../ui/PageHeader', () => ({
   default: ({ title }: { title: string }) => <h1>{title}</h1>,
 }));
@@ -79,6 +88,15 @@ function mockApis({
     }
     if (url === '/api/v1/admin/regions') {
       return Promise.resolve({ data: { regions: [] } });
+    }
+    // LEG-880 mounts ReEngagementQueuePanel under PlayerAnalytics
+    if (typeof url === 'string' && url.startsWith('/api/v1/admin/re-engagement/summary')) {
+      return Promise.resolve({
+        data: { open: 0, contacted: 0, resolved: 0, total: 0, open_share: null },
+      });
+    }
+    if (typeof url === 'string' && url.startsWith('/api/v1/admin/re-engagement')) {
+      return Promise.resolve({ data: { items: [], total: 0 } });
     }
     return Promise.reject(new Error(`unexpected GET ${url}`));
   });
