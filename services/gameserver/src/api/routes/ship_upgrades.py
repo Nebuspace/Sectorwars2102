@@ -819,6 +819,30 @@ async def get_ship_modules(
     }
 
 
+@router.post("/{ship_id}/modules/preview")
+async def preview_ship_module(
+    ship_id: str,
+    request: ModuleInstallRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Dry-run before/after module effect preview (LEG-320 / ships.md shipyard UI).
+
+    No DB write and no credit charge — reuses bake totals math so the player
+    client does not duplicate MODULE_DEFINITIONS / best-N stacking.
+    """
+    service = ShipUpgradeService(db)
+    result = service.preview_module_install(
+        ship_id, player.id, request.slot_index, request.module_class, request.tier
+    )
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=result.get("message", "Module preview failed"),
+        )
+    return result
+
+
 @router.post("/{ship_id}/modules/install")
 async def install_ship_module(
     ship_id: str,
