@@ -438,7 +438,7 @@ def apply_rival_kill_sector_influence(
     killer_player_id: UUID,
     victim_player_id: UUID,
 ) -> None:
-    """On a resolved kill, −2% influence for the victim's dominant faction when rival."""
+    """On a resolved rival-faction ship kill, −2% influence for the victim's dominant faction."""
     if sector_id is None:
         return
     killer_faction = dominant_reputation_faction_id(db, killer_player_id)
@@ -453,7 +453,7 @@ def apply_defense_survived_sector_influence(
     sector_id: Optional[UUID],
     defended_faction_id: Optional[UUID],
 ) -> None:
-    """When faction-flagged defense survives an attack, +1% for the defended faction."""
+    """When faction-flagged sector drone defense survives an attack, +1% for that faction."""
     if sector_id is None or defended_faction_id is None:
         return
     adjust_sector_influence(db, sector_id, defended_faction_id, DEFEND_SECTOR_INFLUENCE_DELTA)
