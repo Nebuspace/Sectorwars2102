@@ -51,4 +51,24 @@ describe('ColonyOverview (LEG-212 shared api)', () => {
     });
     expect(screen.getByText('Colony Overview')).toBeTruthy();
   });
+  it('reports a 403 as REGIONS_VIEW, never bare Failed to load colonies', async () => {
+    vi.mocked(api.get).mockRejectedValue({ response: { status: 403 } });
+
+    render(<ColonyOverview />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/REGIONS_VIEW/);
+    });
+    expect(screen.getByRole('alert').textContent).not.toContain('Failed to load colonies data');
+  });
+
+  it('reports a 429 as an admin rate-limit', async () => {
+    vi.mocked(api.get).mockRejectedValue({ response: { status: 429 } });
+
+    render(<ColonyOverview />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
+    });
+  });
 });
