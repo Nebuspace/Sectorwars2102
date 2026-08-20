@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../../utils/auth';
+import { axiosResponseStatus, formatAdminApiError } from '../../utils/adminApiError';
 import './balance-analytics.css';
 
 // =============================================================================
@@ -125,24 +126,26 @@ const BalanceAnalytics: React.FC = () => {
       setStats(null);
     }
 
-    const rejectionStatus = (reason: unknown): number | undefined => {
-      if (typeof reason !== 'object' || reason === null || !('response' in reason)) {
-        return undefined;
-      }
-      return (reason as { response?: { status?: number } }).response?.status;
-    };
-
     const failedReasons = [balanceRes, statsRes]
       .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
       .map((r) => r.reason);
-    const statuses = failedReasons.map(rejectionStatus).filter((s): s is number => s !== undefined);
+    const statuses = failedReasons
+      .map((r) => axiosResponseStatus(r))
+      .filter((s): s is number => s !== undefined);
 
-    if (statuses.some((s) => s === 401 || s === 403)) {
+    if (statuses.some((s) => s === 401 || s === 403 || s === 429)) {
+      const prioritized =
+        failedReasons.find((r) => {
+          const s = axiosResponseStatus(r);
+          return s === 401 || s === 403 || s === 429;
+        }) ?? failedReasons[0];
       setError(
-        'Access denied — combat balance analytics requires the admin players view scope (PLAYERS_VIEW).'
+        formatAdminApiError(prioritized, {
+          fallback: 'Failed to load balance analytics. Please check if the gameserver is running.',
+          scopeHint:
+            'combat balance analytics requires the admin players view scope (PLAYERS_VIEW).',
+        })
       );
-    } else if (statuses.some((s) => s === 429)) {
-      setError('Admin rate limit exceeded — wait a moment and try again.');
     } else if (failedReasons.length === 2) {
       setError('Failed to load balance analytics. Please check if the gameserver is running.');
     } else if (balanceRes.status === 'rejected') {

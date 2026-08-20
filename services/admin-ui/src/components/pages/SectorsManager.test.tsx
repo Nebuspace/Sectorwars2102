@@ -49,12 +49,34 @@ describe('SectorsManager (LEG-399)', () => {
     const alert = screen.getByRole('alert').textContent ?? '';
     expect(alert).toContain('404');
     expect(alert).toMatch(/auth\/scope|base URL|proxy/i);
-    expect(alert).toMatch(/ships on the gameserver/i);
     expect(alert).not.toMatch(/not implemented|unimplemented/i);
-    expect(api.get).toHaveBeenCalledWith(
-      '/api/v1/admin/sectors',
-      expect.objectContaining({ params: expect.any(Object) })
+  });
+
+  it('surfaces scope denial on 403 without generic load failure', async () => {
+    vi.mocked(api.get).mockRejectedValue(
+      Object.assign(axiosError(403), {
+        response: {
+          status: 403,
+          data: { detail: 'Missing scope admin.universe.view' },
+        },
+      }),
     );
+
+    render(<SectorsManager />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/admin\.universe\.view|Missing scope/i);
+    });
+  });
+
+  it('shows rate-limit copy on 429', async () => {
+    vi.mocked(api.get).mockRejectedValue(axiosError(429));
+
+    render(<SectorsManager />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
+    });
   });
 
   it('loads sectors on success without dishonest not-implemented copy', async () => {

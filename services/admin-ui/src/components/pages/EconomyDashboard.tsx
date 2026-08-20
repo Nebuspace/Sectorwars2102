@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import * as d3 from 'd3';
 import PageHeader from '../ui/PageHeader';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import { useEconomyUpdates } from '../../contexts/WebSocketContext';
 import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import { useToast, useConfirm } from '../../contexts/ToastContext';
@@ -426,7 +427,12 @@ const EconomyDashboard: React.FC = () => {
       setMarketData(marketRes.value.data as MarketData[]);
     } else {
       setMarketData([]);
-      errors.push('Market data unavailable');
+      errors.push(
+        formatAdminApiError(marketRes.reason, {
+          fallback: 'Market data unavailable',
+          scopeHint: 'admin economy market scope required',
+        })
+      );
     }
 
     // Process economic metrics
@@ -434,26 +440,50 @@ const EconomyDashboard: React.FC = () => {
       setMetrics(metricsRes.value.data as EconomicMetrics);
     } else {
       setMetrics(null);
-      errors.push('Economic metrics unavailable');
+      errors.push(
+        formatAdminApiError(metricsRes.reason, {
+          fallback: 'Economic metrics unavailable',
+          scopeHint: 'admin economy metrics scope required',
+        })
+      );
     }
 
-    // Process price alerts
+    // Process price alerts — empty array only on honest empty payload, not on auth/rate-limit
     if (alertsRes.status === 'fulfilled') {
       setPriceAlerts(Array.isArray(alertsRes.value.data) ? alertsRes.value.data : []);
     } else {
       setPriceAlerts([]);
+      errors.push(
+        formatAdminApiError(alertsRes.reason, {
+          fallback: 'Price alerts unavailable',
+          scopeHint: 'admin economy alerts scope required',
+        })
+      );
     }
 
-    // Process economic health summary (non-blocking - its own honest empty state)
+    // Process economic health summary — null only on honest empty, not on auth/rate-limit
     if (summaryRes.status === 'fulfilled') {
       setSummary(summaryRes.value.data as DashboardSummary);
     } else {
       setSummary(null);
+      errors.push(
+        formatAdminApiError(summaryRes.reason, {
+          fallback: 'Dashboard summary unavailable',
+          scopeHint: 'admin economy summary scope required',
+        })
+      );
     }
 
-    // Show combined error if all endpoints failed
-    if (errors.length === 2) {
-      setError('Failed to load economic data. Please check if the gameserver is running.');
+    // Combined strip includes market/metrics/alerts/summary — never silent on 403/429
+    const primaryBothFailed =
+      marketRes.status === 'rejected' && metricsRes.status === 'rejected';
+    if (primaryBothFailed && errors.length === 2) {
+      setError(
+        formatAdminApiError(marketRes.reason, {
+          fallback: 'Failed to load economic data. Please check if the gameserver is running.',
+          scopeHint: 'admin economy scopes required',
+        })
+      );
     } else if (errors.length > 0) {
       setError(errors.join(' | '));
     }
@@ -483,8 +513,13 @@ const EconomyDashboard: React.FC = () => {
       } else {
         toast.error('Price intervention failed.');
       }
-    } catch (error: any) {
-      toast.error(error.response?.data?.detail || 'Price intervention failed.');
+    } catch (error: unknown) {
+      toast.error(
+        formatAdminApiError(error, {
+          fallback: 'Price intervention failed.',
+          scopeHint: 'admin economy price intervention scope required',
+        })
+      );
     }
   };
 
@@ -517,8 +552,13 @@ const EconomyDashboard: React.FC = () => {
       } else {
         toast.error('Supply injection failed.');
       }
-    } catch (error: any) {
-      toast.error(error.response?.data?.detail || 'Supply injection failed.');
+    } catch (error: unknown) {
+      toast.error(
+        formatAdminApiError(error, {
+          fallback: 'Supply injection failed.',
+          scopeHint: 'admin economy supply intervention scope required',
+        })
+      );
     }
   };
 
@@ -569,8 +609,13 @@ const EconomyDashboard: React.FC = () => {
       } else {
         toast.error('Failed to create price alert');
       }
-    } catch (error: any) {
-      toast.error(error.response?.data?.detail || 'Failed to create price alert');
+    } catch (error: unknown) {
+      toast.error(
+        formatAdminApiError(error, {
+          fallback: 'Failed to create price alert',
+          scopeHint: 'admin economy alerts scope required',
+        })
+      );
     }
   };
 
@@ -591,8 +636,13 @@ const EconomyDashboard: React.FC = () => {
       } else {
         toast.error('Failed to delete price alert');
       }
-    } catch (error: any) {
-      toast.error(error.response?.data?.detail || 'Failed to delete price alert');
+    } catch (error: unknown) {
+      toast.error(
+        formatAdminApiError(error, {
+          fallback: 'Failed to delete price alert',
+          scopeHint: 'admin economy alerts scope required',
+        })
+      );
     }
   };
 
@@ -628,7 +678,7 @@ const EconomyDashboard: React.FC = () => {
         <>
           {/* Error Notice */}
           {error && (
-            <div className="alert error" style={{ marginBottom: '20px' }}>
+            <div className="alert error" role="alert" style={{ marginBottom: '20px' }}>
               <span className="alert-icon">❌</span>
               <span className="alert-message">
                 {error}
