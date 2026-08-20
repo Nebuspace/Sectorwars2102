@@ -97,6 +97,8 @@ export const GenesisDeviceTracking: React.FC = () => {
         setError(
           'Access denied — Genesis device tracking requires the admin regions view scope (REGIONS_VIEW).'
         );
+      } else if (status === 429) {
+        setError('Admin rate limit exceeded — wait a moment and try again.');
       } else if (status === 404) {
         setError(
           'Genesis devices route not found (404). The gameserver ships /api/v1/admin/colonization/genesis-devices — ' +
