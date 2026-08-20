@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import PageHeader from '../ui/PageHeader';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import { useToast, useConfirm } from '../../contexts/ToastContext';
 import './faction-management.css';
 
@@ -147,9 +148,14 @@ const FactionManagement: React.FC = () => {
     try {
       const response = await api.get<Faction[]>('/api/v1/admin/factions/');
       setFactions(response.data ?? []);
-    } catch (err) {
+    } catch (err: unknown) {
       console.error('Error fetching factions:', err);
-      setError('Failed to load factions.');
+      setError(
+        formatAdminApiError(err, {
+          fallback: 'Failed to load factions.',
+          scopeHint: 'admin faction management scopes required',
+        })
+      );
       setFactions([]);
     }
 
@@ -184,9 +190,14 @@ const FactionManagement: React.FC = () => {
       setShowCreateModal(false);
       setCreateForm(EMPTY_FACTION_FORM);
       await fetchData();
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error creating faction:', err);
-      toast.error(err.response?.data?.detail || 'Failed to create faction.');
+      toast.error(
+        formatAdminApiError(err, {
+          fallback: 'Failed to create faction.',
+          scopeHint: 'admin faction management scopes required',
+        })
+      );
     } finally {
       setCreating(false);
     }
@@ -214,9 +225,14 @@ const FactionManagement: React.FC = () => {
       toast.success(`Faction "${editForm.name.trim()}" updated.`);
       setEditingFaction(null);
       await fetchData();
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error updating faction:', err);
-      toast.error(err.response?.data?.detail || 'Failed to update faction.');
+      toast.error(
+        formatAdminApiError(err, {
+          fallback: 'Failed to update faction.',
+          scopeHint: 'admin faction management scopes required',
+        })
+      );
     } finally {
       setSaving(false);
     }
@@ -253,10 +269,13 @@ const FactionManagement: React.FC = () => {
       toast.success(`Territory updated for "${territoryFaction.name}".`);
       setTerritoryFaction(null);
       await fetchData();
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error updating faction territory:', err);
       toast.error(
-        err.response?.data?.detail || 'Failed to update territory. Check that sector IDs are valid.'
+        formatAdminApiError(err, {
+          fallback: 'Failed to update territory. Check that sector IDs are valid.',
+          scopeHint: 'admin faction territory scopes required',
+        })
       );
     } finally {
       setSavingTerritory(false);
@@ -297,10 +316,13 @@ const FactionManagement: React.FC = () => {
         }).`
       );
       setReputationFaction(null);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error adjusting faction reputation:', err);
       toast.error(
-        err.response?.data?.detail || 'Failed to adjust reputation. Check the player ID.'
+        formatAdminApiError(err, {
+          fallback: 'Failed to adjust reputation. Check the player ID.',
+          scopeHint: 'admin faction reputation scopes required',
+        })
       );
     } finally {
       setSavingReputation(false);

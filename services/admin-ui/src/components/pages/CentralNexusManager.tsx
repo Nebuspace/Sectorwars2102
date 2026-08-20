@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { useAuth } from '../../contexts/AuthContext';
+import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import './central-nexus-manager.css';
 
 interface NexusStatus {
@@ -37,7 +38,6 @@ interface NexusStats {
 }
 
 const CentralNexusManager: React.FC = () => {
-  const { token } = useAuth();
   const [nexusStatus, setNexusStatus] = useState<NexusStatus | null>(null);
   const [clusters, setClusters] = useState<Cluster[]>([]);
   const [stats, setStats] = useState<NexusStats | null>(null);
@@ -53,34 +53,41 @@ const CentralNexusManager: React.FC = () => {
 
   const loadNexusStatus = async () => {
     try {
-      const response = await fetch('/api/v1/nexus/status', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setNexusStatus(data);
-      }
+      const response = await api.get<NexusStatus>('/api/v1/nexus/status');
+      setNexusStatus(response.data);
     } catch (err) {
       console.error('Failed to load nexus status:', err);
+      setError(
+        formatAdminApiError(err, {
+          fallback: 'Failed to load nexus status',
+          scopeHint: 'admin nexus scopes required',
+        }),
+      );
     }
   };
 
   const loadClusters = async () => {
     setLoading(true);
     try {
-      const response = await fetch('/api/v1/nexus/clusters', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setClusters(data);
-      } else if (response.status !== 404) {
-        const errData = await response.json().catch(() => ({ detail: 'Failed to load clusters' }));
-        setError(errData.detail || 'Failed to load clusters');
-      }
+      const response = await api.get<Cluster[]>('/api/v1/nexus/clusters');
+      setClusters(response.data);
     } catch (err) {
-      console.error('Failed to load clusters:', err);
-      setError('Network error while loading clusters');
+      const status =
+        typeof err === 'object' && err !== null && 'response' in err
+          ? (err as { response?: { status?: number; data?: { detail?: string } } }).response?.status
+          : undefined;
+      if (status === 404) {
+        // Nexus not generated yet — not an error for the UI.
+      } else {
+        console.error('Failed to load clusters:', err);
+        setError(
+          formatAdminApiError(err, {
+            fallback: 'Failed to load clusters',
+            scopeHint: 'admin nexus cluster scopes required',
+            notFoundMessage: 'Nexus clusters not available — generate the nexus first.',
+          })
+        );
+      }
     } finally {
       setLoading(false);
     }
@@ -88,13 +95,8 @@ const CentralNexusManager: React.FC = () => {
 
   const loadStats = async () => {
     try {
-      const response = await fetch('/api/v1/nexus/stats', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setStats(data);
-      }
+      const response = await api.get<NexusStats>('/api/v1/nexus/stats');
+      setStats(response.data);
     } catch (err) {
       console.error('Failed to load stats:', err);
     }
