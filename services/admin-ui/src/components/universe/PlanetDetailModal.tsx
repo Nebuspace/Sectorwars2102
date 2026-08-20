@@ -64,6 +64,7 @@ const PlanetDetailModal: React.FC<PlanetDetailModalProps> = ({
         habitability_score: editedPlanet.habitability_score,
         resource_richness: editedPlanet.resource_richness,
         gravity: editedPlanet.gravity,
+        defense_level: editedPlanet.defense_level,
       });
       setIsEditing(false);
       if (onSave) onSave(editedPlanet);

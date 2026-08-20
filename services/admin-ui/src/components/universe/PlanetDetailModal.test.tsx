@@ -69,3 +69,30 @@ describe('PlanetDetailModal scope errors (LEG-1214)', () => {
     });
   });
 });
+
+describe('PlanetDetailModal Soft-ORDER defense_level (LEG-1462)', () => {
+  beforeEach(() => {
+    vi.mocked(api.patch).mockReset();
+    vi.mocked(api.patch).mockResolvedValue({ data: {} });
+  });
+
+  it('includes defense_level in PATCH payload', async () => {
+    render(
+      <PlanetDetailModal
+        isOpen
+        planet={{ ...planet, defense_level: 42 } as any}
+        onClose={() => {}}
+        mode="edit"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+
+    await waitFor(() => {
+      expect(api.patch).toHaveBeenCalledWith(
+        '/api/v1/admin/planets/p1',
+        expect.objectContaining({ defense_level: 42 }),
+      );
+    });
+  });
+});
