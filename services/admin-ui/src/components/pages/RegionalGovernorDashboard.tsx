@@ -147,9 +147,25 @@ const RegionalGovernorDashboard: React.FC = () => {
     governance_quorum_pct: 0.33
   });
 
+  // Beacon sector cap state (admin-only)
+  const [beaconCap, setBeaconCap] = useState<number | null>(null);
+  const [beaconCapInput, setBeaconCapInput] = useState<number>(10);
+  const [beaconCapLoading, setBeaconCapLoading] = useState(false);
+
   useEffect(() => {
     loadRegionalData();
   }, []);
+
+  useEffect(() => {
+    if (isAdmin && region?.id) {
+      api.get(`/api/v1/admin/regions/${region.id}/beacon-sector-cap`)
+        .then(({ data }) => {
+          setBeaconCap(data.beacon_sector_cap);
+          setBeaconCapInput(data.beacon_sector_cap);
+        })
+        .catch(() => {});
+    }
+  }, [region?.id, isAdmin]);
 
   const loadRegionalData = async () => {
     setLoading(true);
@@ -304,6 +320,23 @@ const RegionalGovernorDashboard: React.FC = () => {
       console.error('Update error:', err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const updateBeaconSectorCap = async () => {
+    if (!region?.id) return;
+    setBeaconCapLoading(true);
+    try {
+      const { data } = await api.patch(`/api/v1/admin/regions/${region.id}/beacon-sector-cap`, {
+        beacon_sector_cap: beaconCapInput,
+      });
+      setBeaconCap(data.beacon_sector_cap);
+      setBeaconCapInput(data.beacon_sector_cap);
+      setSuccess('Beacon sector cap updated successfully');
+    } catch (err) {
+      setError(axiosDetail(err) || 'Failed to update beacon sector cap');
+    } finally {
+      setBeaconCapLoading(false);
     }
   };
 
@@ -780,6 +813,30 @@ const RegionalGovernorDashboard: React.FC = () => {
                 {loading ? 'Updating...' : 'Update Economy'}
               </button>
             </div>
+
+            {isAdmin && beaconCap !== null && (
+              <div className="form-group beacon-cap-editor">
+                <label>Beacon Sector Cap</label>
+                <div className="beacon-cap-controls">
+                  <input
+                    type="number"
+                    min="1"
+                    max="50"
+                    step="1"
+                    value={beaconCapInput}
+                    onChange={(e) => setBeaconCapInput(Math.min(50, Math.max(1, parseInt(e.target.value, 10) || 1)))}
+                  />
+                  <button
+                    onClick={updateBeaconSectorCap}
+                    className="action-button primary"
+                    disabled={beaconCapLoading}
+                  >
+                    {beaconCapLoading ? 'Saving...' : 'Save Cap'}
+                  </button>
+                </div>
+                <small>Max sectors in which a message beacon remains visible [1–50]. Current: {beaconCap}.</small>
+              </div>
+            )}
           </div>
         )}
 
