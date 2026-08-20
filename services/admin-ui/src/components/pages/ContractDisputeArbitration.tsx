@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import PageHeader from '../ui/PageHeader';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import './contract-dispute-arbitration.css';
 
 // Matches the backend _serialize_dispute() shape in admin_contract_disputes.py
@@ -46,9 +47,14 @@ export const ContractDisputeArbitration: React.FC = () => {
     try {
       const res = await api.get('/api/v1/admin/contracts/disputes');
       setDisputes(res.data as DisputedContract[]);
-    } catch (err: any) {
+    } catch (err: unknown) {
       setDisputes([]);
-      setError(err?.response?.data?.detail || err?.response?.data?.message || 'Failed to load disputed contracts');
+      setError(
+        formatAdminApiError(err, {
+          fallback: 'Failed to load disputed contracts',
+          scopeHint: 'admin contract dispute arbitration scopes required',
+        })
+      );
     } finally {
       setIsLoading(false);
     }
@@ -73,8 +79,13 @@ export const ContractDisputeArbitration: React.FC = () => {
       setOutcome('');
       setNotes('');
       await loadDisputes();
-    } catch (err: any) {
-      setResolveError(err?.response?.data?.detail || err?.response?.data?.message || 'Failed to resolve dispute');
+    } catch (err: unknown) {
+      setResolveError(
+        formatAdminApiError(err, {
+          fallback: 'Failed to resolve dispute',
+          scopeHint: 'admin contract dispute arbitration scopes required',
+        })
+      );
     } finally {
       setIsResolving(false);
     }
