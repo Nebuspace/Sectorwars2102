@@ -1,7 +1,17 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../../utils/auth';
 import { useToast, useConfirm } from '../../contexts/ToastContext';
+import { useWebSocket } from '../../contexts/WebSocketContext';
 import './message-moderation.css';
+
+/** GS `flagged_message_alert` payload (websocket maps type → `flagged:message:alert`). */
+interface FlaggedMessageAlert {
+  type?: string;
+  message_id?: string;
+  flagged_by_name?: string;
+  reason?: string;
+  message_preview?: string;
+}
 
 /**
  * Message Moderation
@@ -114,9 +124,13 @@ const recipientLabel = (message: FlaggedMessage): string => {
 const senderLabel = (playerId: string, nickname?: string | null): string =>
   nickname ?? `${playerId.slice(0, 8)}…`;
 
+const LIVE_REFRESH_DEBOUNCE_MS = 400;
+
 const MessageModeration: React.FC = () => {
   const toast = useToast();
   const confirm = useConfirm();
+  const { isConnected, subscribe } = useWebSocket();
+  const liveRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [messages, setMessages] = useState<FlaggedMessage[]>([]);
   const [beacons, setBeacons] = useState<FlaggedBeacon[]>([]);
@@ -190,6 +204,38 @@ const MessageModeration: React.FC = () => {
   useEffect(() => {
     void loadData();
   }, [loadData]);
+
+  // LEG-414: live-refresh review queue when GS broadcasts flagged_message_alert.
+  useEffect(() => {
+    const handleFlaggedAlert = (data: FlaggedMessageAlert) => {
+      const who = data.flagged_by_name?.trim() || 'a player';
+      const reason = data.reason?.trim();
+      const preview = data.message_preview?.trim();
+      const detail = reason
+        ? `${who}: ${truncate(reason, 120)}`
+        : preview
+          ? `${who}: ${truncate(preview, 120)}`
+          : `${who} flagged a message`;
+      toast.info(`New flag — ${detail}. Refreshing queue…`);
+
+      if (liveRefreshTimer.current) {
+        clearTimeout(liveRefreshTimer.current);
+      }
+      liveRefreshTimer.current = setTimeout(() => {
+        liveRefreshTimer.current = null;
+        void loadData();
+      }, LIVE_REFRESH_DEBOUNCE_MS);
+    };
+
+    const unsubscribe = subscribe('flagged:message:alert', handleFlaggedAlert);
+    return () => {
+      unsubscribe();
+      if (liveRefreshTimer.current) {
+        clearTimeout(liveRefreshTimer.current);
+        liveRefreshTimer.current = null;
+      }
+    };
+  }, [subscribe, loadData, toast]);
 
   const moderate = useCallback(
     async (message: FlaggedMessage, action: ModerationAction) => {
@@ -310,6 +356,11 @@ const MessageModeration: React.FC = () => {
             <span className="msgmod-count">
               {totalFlagged.toLocaleString()} flagged
             </span>
+            {!isConnected ? (
+              <span className="msgmod-live-demotion" role="status">
+                Live updates unavailable — use Refresh
+              </span>
+            ) : null}
             <button
               type="button"
               className="msgmod-btn msgmod-btn-secondary"
