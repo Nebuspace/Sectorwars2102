@@ -5,6 +5,7 @@
 import React, { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { SUPPORTED_LANGUAGES } from '../../i18n';
+import { api } from '../../utils/auth';
 import './language-switcher.css';
 
 interface Language {
@@ -16,29 +17,71 @@ interface Language {
   completionPercentage: number;
 }
 
+interface TranslationProgress {
+  overallCompletion?: number;
+}
+
+/** Canon OPERATIONS/i18n.md launch-complete rows — never invent key counts. */
+const LAUNCH_COMPLETE_CODES = new Set(['en', 'es', 'fr', 'zh', 'pt']);
+
+const staticCompletion = (code: string): number =>
+  LAUNCH_COMPLETE_CODES.has(code) ? 100 : 0;
+
+const parseApiPercent = (data: TranslationProgress | undefined): number | null => {
+  const pct = data?.overallCompletion;
+  return typeof pct === 'number' && Number.isFinite(pct) ? pct : null;
+};
+
 const LanguageSwitcher: React.FC = () => {
   const { i18n } = useTranslation();
   const [isOpen, setIsOpen] = useState(false);
   const [languages, setLanguages] = useState<Language[]>([]);
   const [loading, setLoading] = useState(false);
 
-  // Initialize languages from static configuration
   useEffect(() => {
-    // Use static configuration directly - no API call needed
-    const staticLanguages = Object.entries(SUPPORTED_LANGUAGES).map(([code, info]) => ({
-      code,
-      name: info.name,
-      nativeName: info.nativeName,
-      direction: (info as { direction?: string }).direction ?? 'ltr',
-      isActive: code === 'en' || ['es', 'fr', 'zh', 'pt'].includes(code),
-      completionPercentage: code === 'en' ? 100 : 0
-    }));
-    setLanguages(staticLanguages.filter(lang => lang.isActive));
+    let cancelled = false;
+
+    const staticLanguages = Object.entries(SUPPORTED_LANGUAGES)
+      .map(([code, info]) => ({
+        code,
+        name: info.name,
+        nativeName: info.nativeName,
+        direction: (info as { direction?: string }).direction ?? 'ltr',
+        isActive: LAUNCH_COMPLETE_CODES.has(code),
+        completionPercentage: staticCompletion(code),
+      }))
+      .filter((lang) => lang.isActive);
+
+    setLanguages(staticLanguages);
+
+    (async () => {
+      const withProgress = await Promise.all(
+        staticLanguages.map(async (lang) => {
+          try {
+            const response = await api.get<TranslationProgress>(
+              `/api/v1/i18n/admin/progress/${lang.code}`
+            );
+            const pct = parseApiPercent(response.data);
+            if (pct !== null) {
+              return { ...lang, completionPercentage: pct };
+            }
+          } catch {
+            // Static fallback: launch-complete locales stay 100%, never a 0% bar.
+          }
+          return lang;
+        })
+      );
+      if (!cancelled) setLanguages(withProgress);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const handleLanguageChange = async (languageCode: string) => {
     if (languageCode === i18n.language) return;
-    
+
     setLoading(true);
     try {
       await i18n.changeLanguage(languageCode);
@@ -50,7 +93,7 @@ const LanguageSwitcher: React.FC = () => {
     }
   };
 
-  const currentLanguage = languages.find(lang => lang.code === i18n.language) || languages[0];
+  const currentLanguage = languages.find((lang) => lang.code === i18n.language) || languages[0];
 
   if (!currentLanguage) return null;
 
@@ -84,7 +127,7 @@ const LanguageSwitcher: React.FC = () => {
                 {language.completionPercentage < 100 && (
                   <div className="completion-indicator">
                     <div className="completion-bar">
-                      <div 
+                      <div
                         className="completion-fill"
                         style={{ width: `${language.completionPercentage}%` }}
                       />
@@ -98,7 +141,7 @@ const LanguageSwitcher: React.FC = () => {
               </button>
             ))}
           </div>
-          
+
           <div className="language-footer">
             <small>Help translate SectorWars 2102</small>
           </div>
