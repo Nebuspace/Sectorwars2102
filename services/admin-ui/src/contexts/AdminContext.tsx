@@ -11,6 +11,7 @@ import {
   listBangJobs,
   wipeBangGalaxy,
 } from '../services/bangGalaxyApi';
+import { formatAdminApiError } from '../utils/adminApiError';
 
 // Types for admin context
 export interface AdminStats {
@@ -604,7 +605,13 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         setSectors([]);
       } catch (err) {
         console.error('Error wiping galaxy:', err);
-        setError('Failed to wipe galaxy');
+        // LEG-1315: context-layer wipe must distinguish RBAC/rate-limit from bare Failed
+        setError(
+          formatAdminApiError(err, {
+            fallback: 'Failed to wipe galaxy',
+            scopeHint: 'admin.universe.manage',
+          }),
+        );
         throw err;
       } finally {
         setIsLoading(false);

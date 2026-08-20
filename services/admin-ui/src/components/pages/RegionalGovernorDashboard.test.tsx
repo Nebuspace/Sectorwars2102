@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import RegionalGovernorDashboard from './RegionalGovernorDashboard';
 import { api } from '../../utils/auth';
 
@@ -37,9 +37,16 @@ const region = {
   trade_bonuses: {},
 };
 
+function httpErr(status: number, detail?: string) {
+  return Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: detail ? { detail } : {} },
+  });
+}
+
 describe('RegionalGovernorDashboard (LEG-213)', () => {
   beforeEach(() => {
     vi.mocked(api.get).mockReset();
+    vi.mocked(api.put).mockReset();
     vi.mocked(api.get).mockImplementation(async (url: string) => {
       if (url === '/api/v1/regions/my-region') return { data: region };
       if (url.endsWith('/stats')) return { data: {} };
@@ -70,5 +77,44 @@ describe('RegionalGovernorDashboard (LEG-213)', () => {
       ])
     );
     expect(screen.getByText('Regional Governor Dashboard')).toBeTruthy();
+  });
+
+  it('shows scope-aware copy on 403 load of my-region', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url === '/api/v1/regions/my-region') throw httpErr(403);
+      if (url.endsWith('/stats')) return { data: {} };
+      if (url.endsWith('/policies')) return { data: [] };
+      if (url.endsWith('/elections')) return { data: [] };
+      if (url.endsWith('/treaties')) return { data: [] };
+      if (url.endsWith('/members')) return { data: [] };
+      return { data: {} };
+    });
+
+    render(<RegionalGovernorDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/admin\.regions|region owner/i);
+    });
+  });
+
+  it('shows admin rate-limit copy on 429 economy save', async () => {
+    render(<RegionalGovernorDashboard />);
+    await waitFor(() => expect(screen.getByText('Sol Reach')).toBeTruthy());
+
+    vi.mocked(api.put).mockRejectedValueOnce(httpErr(429));
+
+    fireEvent.click(screen.getByRole('button', { name: /economy/i }));
+
+    const saveBtn = await waitFor(() => {
+      const buttons = screen.getAllByRole('button');
+      const match = buttons.find((b) => /save|update/i.test(b.textContent || ''));
+      if (!match) throw new Error('save button not found');
+      return match;
+    });
+    fireEvent.click(saveBtn);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
+    });
   });
 });
