@@ -113,10 +113,8 @@ describe('AdminContext / AdminProvider', () => {
 
   it('surfaces loadAdminStats 403 as PLAYERS_VIEW denial (LEG-1254)', async () => {
     mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
-    mockApiInstance.get.mockRejectedValue(
-      Object.assign(new Error('HTTP 403'), { response: { status: 403 } }),
-    );
-    const user = (await import('@testing-library/user-event')).default.setup();
+    vi.mocked(api.get).mockRejectedValue(httpErr(403));
+    const user = userEvent.setup();
 
     render(
       <AdminProvider>
@@ -135,10 +133,8 @@ describe('AdminContext / AdminProvider', () => {
 
   it('surfaces loadUsers 429 as admin rate-limit (LEG-1254)', async () => {
     mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
-    mockApiInstance.get.mockRejectedValue(
-      Object.assign(new Error('HTTP 429'), { response: { status: 429 } }),
-    );
-    const user = (await import('@testing-library/user-event')).default.setup();
+    vi.mocked(api.get).mockRejectedValue(httpErr(429));
+    const user = userEvent.setup();
 
     render(
       <AdminProvider>
