@@ -57,6 +57,12 @@ const CentralNexusManager: React.FC = () => {
       setNexusStatus(response.data);
     } catch (err) {
       console.error('Failed to load nexus status:', err);
+      setError(
+        formatAdminApiError(err, {
+          fallback: 'Failed to load nexus status',
+          scopeHint: 'admin nexus scopes required',
+        }),
+      );
     }
   };
 

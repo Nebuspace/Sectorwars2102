@@ -363,4 +363,39 @@ describe('MedalAdmin', () => {
     expect(mockToastError.mock.calls[0][0]).toMatch(/PLAYERS_ADJUST_REP|adjust_rep/i);
     expect(mockToastError.mock.calls[0][0]).not.toMatch(/^Grant failed$/);
   });
+
+  it('surfaces admin rate-limit copy on grant 429', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/medals/admin/catalog')) {
+        return {
+          data: {
+            total: 1,
+            items: [{ id: 'bronze_cluster', name: 'Bronze Cluster', category: 'combat' }],
+          },
+        };
+      }
+      return { data: { players: [{ id: 'p1', username: 'Ace' }] } };
+    });
+    vi.mocked(api.post).mockRejectedValue(
+      Object.assign(new Error('HTTP 429'), {
+        response: { status: 429, data: { detail: 'Too Many Requests' } },
+      }),
+    );
+
+    render(<MedalAdmin />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Select player')).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByLabelText('Select player'), { target: { value: 'p1' } });
+    fireEvent.change(screen.getByLabelText('Medal'), { target: { value: 'bronze_cluster' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Grant medal' }));
+
+    await waitFor(() => {
+      expect(mockToastError).toHaveBeenCalled();
+    });
+    expect(mockToastError.mock.calls[0][0]).toMatch(/rate limit/i);
+  });
 });
