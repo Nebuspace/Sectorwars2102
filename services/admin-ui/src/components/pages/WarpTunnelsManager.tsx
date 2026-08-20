@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import PageHeader from '../ui/PageHeader';
 import { useToast, useConfirm } from '../../contexts/ToastContext';
 import './pages.css';
@@ -47,8 +48,13 @@ const WarpTunnelsManager: React.FC = () => {
       const response = await api.get('/api/v1/admin/warp-tunnels');
       setWarpTunnels(response.data.warp_tunnels || []);
       setError(null);
-    } catch (err: any) {
-      setError(err.response?.data?.detail || 'Failed to fetch warp tunnels');
+    } catch (err: unknown) {
+      setError(
+        formatAdminApiError(err, {
+          fallback: 'Failed to fetch warp tunnels',
+          scopeHint: 'admin universe warp tunnel scopes required',
+        })
+      );
     } finally {
       setLoading(false);
     }
@@ -90,8 +96,13 @@ const WarpTunnelsManager: React.FC = () => {
       setWarpTunnels(warpTunnels.map(t =>
         t.id === tunnel.id ? { ...t, is_active: newActive, status: newActive ? 'ACTIVE' : 'MAINTENANCE' } : t
       ));
-    } catch (err: any) {
-      toast.error(`Failed to update tunnel: ${err.response?.data?.detail || err.message}`);
+    } catch (err: unknown) {
+      toast.error(
+        `Failed to update tunnel: ${formatAdminApiError(err, {
+          fallback: 'update failed',
+          scopeHint: 'admin universe warp tunnel scopes required',
+        })}`
+      );
     }
   };
 
@@ -108,8 +119,13 @@ const WarpTunnelsManager: React.FC = () => {
     try {
       await api.delete(`/api/v1/admin/warp-tunnels/${tunnel.id}`);
       setWarpTunnels(warpTunnels.filter(t => t.id !== tunnel.id));
-    } catch (err: any) {
-      toast.error(`Failed to delete tunnel: ${err.response?.data?.detail || err.message}`);
+    } catch (err: unknown) {
+      toast.error(
+        `Failed to delete tunnel: ${formatAdminApiError(err, {
+          fallback: 'delete failed',
+          scopeHint: 'admin universe warp tunnel scopes required',
+        })}`
+      );
     }
   };
 
@@ -143,8 +159,13 @@ const WarpTunnelsManager: React.FC = () => {
         t.id === selectedTunnel.id ? { ...t, ...rest, ...(is_active !== undefined ? { is_active } : {}) } : t
       ));
       closeModal();
-    } catch (err: any) {
-      toast.error(`Failed to update tunnel: ${err.response?.data?.detail || err.message}`);
+    } catch (err: unknown) {
+      toast.error(
+        `Failed to update tunnel: ${formatAdminApiError(err, {
+          fallback: 'update failed',
+          scopeHint: 'admin universe warp tunnel scopes required',
+        })}`
+      );
     } finally {
       setSaving(false);
     }
