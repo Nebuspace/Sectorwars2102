@@ -3123,6 +3123,74 @@ class BangImportService:
         "central_nexus": ["TradeDock Nexus Prime", "TradeDock Nexus Apex"],
     }
 
+    @staticmethod
+    def _inbound_warp_counts(plan: RegionInsertPlan) -> Dict[int, int]:
+        """Count inbound warps per sector (bidirectional edges count both ends).
+
+        LEG-38 / galaxy-generation.md Step 9.5 rule (b): place only at
+        sectors with at least 2 inbound warps.
+        """
+        counts: Dict[int, int] = {}
+        for w in plan.warps:
+            counts[w.to_sector_int] = counts.get(w.to_sector_int, 0) + 1
+            if w.is_bidirectional:
+                counts[w.from_sector_int] = counts.get(w.from_sector_int, 0) + 1
+        return counts
+
+    @staticmethod
+    def _frontier_zone_sectors(region_type: str, total_sectors: int) -> set:
+        """Sector numbers in the FRONTIER zone (bang-import step-4 thirds).
+
+        Central Nexus is a single EXPANSE zone — empty set. Terran/player
+        regions: last ~33% after Federation + Border.
+        """
+        if total_sectors < 1 or region_type == "central_nexus":
+            return set()
+        fed_end = max(1, int(total_sectors * 0.33))
+        border_len = max(0, int(round(total_sectors * 0.34)))
+        border_start = fed_end + 1
+        if border_start > total_sectors:
+            return set()
+        border_end = min(total_sectors, border_start + border_len - 1)
+        frontier_start = border_end + 1
+        if frontier_start > total_sectors:
+            return set()
+        return set(range(frontier_start, total_sectors + 1))
+
+    def _tradedock_candidate_pool(
+        self,
+        region_type: str,
+        plan: RegionInsertPlan,
+        occupied: set,
+        *,
+        min_inbound: int = 2,
+    ) -> List[int]:
+        """Build TradeDock candidates enforcing Step 9.5 rules (b)+(c).
+
+        - (b) ``inbound_warp_count >= min_inbound``
+        - (c) never starter/fedspace sectors; never FRONTIER-zone sectors
+        Geographic preference (rule a approximation) retained: Terran
+        Federation band ``2..min(99,total)``; Nexus upper half.
+        """
+        total = plan.total_sectors
+        inbound = self._inbound_warp_counts(plan)
+        starter = set(plan.fedspace_sector_ints) | {1}
+        frontier = self._frontier_zone_sectors(region_type, total)
+
+        if region_type == "terran_space":
+            geo = range(2, min(100, total + 1))
+        else:
+            geo = range(max(2, total // 2), total + 1)
+
+        return [
+            i
+            for i in geo
+            if i not in occupied
+            and i not in starter
+            and i not in frontier
+            and inbound.get(i, 0) >= min_inbound
+        ]
+
     def _apply_tradedock_seeding(
         self,
         region_type: str,
@@ -3137,6 +3205,9 @@ class BangImportService:
         Nexus docks prefer the upper (EXPANSE-ward) half of the region —
         a documented simplification of "EXPANSE zones near population
         centres" pending zone metadata in the import plan.
+
+        LEG-38: candidate pool also enforces Step 9.5 (b) ≥2 inbound warps
+        and (c) never starter/fedspace or FRONTIER-zone sectors.
         """
         tiers = self._TRADEDOCK_QUOTAS.get(region_type, [])
         if not tiers:
@@ -3144,13 +3215,42 @@ class BangImportService:
 
         rng = random.Random(f"{plan.universe_seed}:tradedock:{region_type}")
         occupied = {st.sector_int_id for st in plan.stations}
-        total = plan.total_sectors
 
-        if region_type == "terran_space":
-            candidate_pool = [i for i in range(2, min(100, total + 1)) if i not in occupied]
-        else:
-            lower = max(2, total // 2)
-            candidate_pool = [i for i in range(lower, total + 1) if i not in occupied]
+        candidate_pool = self._tradedock_candidate_pool(
+            region_type, plan, occupied, min_inbound=2
+        )
+        if not candidate_pool:
+            # Soften connectivity floor before failing the quota — still
+            # never place in starter/FRONTIER (rule c is hard).
+            candidate_pool = self._tradedock_candidate_pool(
+                region_type, plan, occupied, min_inbound=1
+            )
+            if candidate_pool:
+                warnings.append(
+                    {
+                        "category": "TRADEDOCK_SEEDING",
+                        "code": "TD-002",
+                        "message": (
+                            f"{region_type}: no sector with ≥2 inbound warps; "
+                            "fell back to ≥1 inbound (LEG-38 soft floor)"
+                        ),
+                    }
+                )
+        if not candidate_pool:
+            candidate_pool = self._tradedock_candidate_pool(
+                region_type, plan, occupied, min_inbound=0
+            )
+            if candidate_pool:
+                warnings.append(
+                    {
+                        "category": "TRADEDOCK_SEEDING",
+                        "code": "TD-003",
+                        "message": (
+                            f"{region_type}: no connected candidates; "
+                            "fell back to geo+exclusion pool without inbound floor"
+                        ),
+                    }
+                )
 
         name_counters = {"A": 0, "B": 0}
         for tier in tiers:
@@ -3165,6 +3265,8 @@ class BangImportService:
                 continue
             sector_int = candidate_pool.pop(rng.randrange(len(candidate_pool)))
             occupied.add(sector_int)
+            # Keep pool coherent if we later filter again (occupied already
+            # tracked; remaining candidates stay valid).
             if tier == "A":
                 names = self._TRADEDOCK_TIER_A_NAMES_BY_REGION.get(
                     region_type, self._TRADEDOCK_NAMES["A"]
