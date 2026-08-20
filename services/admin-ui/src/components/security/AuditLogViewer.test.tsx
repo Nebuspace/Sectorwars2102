@@ -78,6 +78,20 @@ describe('AuditLogViewer (LEG-174)', () => {
     expect(alert).not.toContain('not implemented');
   });
 
+  it('reports a 429 as admin rate-limit, never as gameserver-down', async () => {
+    vi.mocked(api.get).mockRejectedValue(axiosError(429));
+
+    render(<AuditLogViewer />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/rate limit/i);
+    expect(alert).not.toMatch(/unreachable|gameserver/i);
+  });
+
   it('reports a 404 as a routing fault, never as an unbuilt endpoint', async () => {
     vi.mocked(api.get).mockRejectedValue(axiosError(404));
 
