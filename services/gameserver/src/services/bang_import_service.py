@@ -83,6 +83,7 @@ from src.models.station import (
     StationType,
 )
 from src.models.warp_tunnel import WarpTunnel, WarpTunnelType
+from src.models.zone import Zone, ZoneType
 from src.schemas.bang_config import BangConfig, RegionType
 from src.services.galaxy_validation import (
     ERR_BANG_VALIDATION_FAILED,
@@ -103,8 +104,8 @@ logger = logging.getLogger(__name__)
 # resume from the last verified phase on restart. That orchestrator is not
 # committed gameserver code -- the actual generation pipeline is
 # BangImportService.run_generation_job(): bang runs 3x out-of-process,
-# translate() is pure, and apply() writes every region's rows (clusters ->
-# sectors -> warps -> stations -> planets -> formations, see _apply_region)
+# translate() is pure, and apply() writes every region's rows (zones ->
+# clusters -> sectors -> warps -> stations -> planets -> formations, see _apply_region)
 # inside ONE Postgres transaction (module docstring above; run_generation_job
 # wraps it in `async with session.begin(): ...`). A crash mid-apply already
 # rolls the whole transaction back to nothing -- there is no partially-
@@ -114,7 +115,7 @@ logger = logging.getLogger(__name__)
 # What SK17 buys under that real architecture:
 #   1. Per-stage telemetry (row_count/duration_ms/completed_at) written into
 #      the SAME transaction as the inserts, keyed by the REAL insert-order
-#      stage names (clusters/sectors/warps/stations/planets/formations) --
+#      stage names (zones/clusters/sectors/warps/stations/planets/formations) --
 #      not fabricated phase_1..phase_14 labels for stages that don't exist.
 #      Once a generation succeeds this is durable, useful ops visibility
 #      into where time/rows went.
@@ -152,12 +153,142 @@ def _record_phase_checksum(
 # `warps` is handled separately below (it's an association table joined
 # through Sector, not a mapped class with its own region_id column).
 _SK17_PHASE_MODELS: Dict[str, Any] = {
+    "zones": Zone,
     "clusters": Cluster,
     "sectors": Sector,
     "stations": Station,
     "planets": Planet,
     "formations": SpecialFormation,
 }
+
+# ---------------------------------------------------------------------------
+# Bang-import pipeline step 4 — Zone partition (SYSTEMS/bang-import-pipeline.md)
+# ---------------------------------------------------------------------------
+#
+# Driven by region context, not bang payload. Magnitudes are canon-cited:
+# EXPANSE 3/6; FEDERATION 9/1; BORDER 5/4; FRONTIER 2/8. Do not invent.
+
+
+@dataclass(frozen=True)
+class ZonePartitionSpec:
+    """Pure plan for one Zone row before persist."""
+
+    name: str
+    zone_type: ZoneType
+    start_sector: int
+    end_sector: int
+    policing_level: int
+    danger_rating: int
+
+    def contains(self, sector_number: int) -> bool:
+        return self.start_sector <= sector_number <= self.end_sector
+
+
+def _step4_thirds_counts(total_sectors: int) -> Tuple[int, int, int]:
+    """FED first 33%, BORDER middle 34%, FRONTIER last 33%.
+
+    Integer split floors both 33% ends; remainder (the extra ~1% plus
+    rounding) lands in BORDER so ranges stay contiguous with no gaps
+    (bang-import-pipeline.md:132-136). Favours FEDERATION on the low
+    sector numbers and FRONTIER on the high end.
+
+    ``total_sectors < 3`` cannot host three non-empty ranges (Zone
+    ``end_sector >= start_sector``). Then: N=1 → FED only; N=2 → FED +
+    FRONTIER (skip empty BORDER).
+    """
+    if total_sectors < 1:
+        raise ValueError("step-4 zone partition requires total_sectors >= 1")
+    if total_sectors == 1:
+        return (1, 0, 0)
+    if total_sectors == 2:
+        return (1, 0, 1)
+    fed = total_sectors * 33 // 100
+    front = total_sectors * 33 // 100
+    if fed < 1:
+        fed = 1
+    if front < 1:
+        front = 1
+    border = total_sectors - fed - front
+    if border < 1:
+        if fed >= front and fed > 1:
+            fed -= 1
+        elif front > 1:
+            front -= 1
+        border = total_sectors - fed - front
+    return (fed, border, front)
+
+
+def _step4_zone_specs(
+    region_type: RegionType, total_sectors: int
+) -> List[ZonePartitionSpec]:
+    """Canon step-4 Zone set for one imported region."""
+    if total_sectors < 1:
+        raise ValueError("step-4 zone partition requires total_sectors >= 1")
+    if region_type == "central_nexus":
+        # Production Nexus is 5000 local sectors (1..5000). Cover the
+        # actual import width so a smaller fixture has no uncovered
+        # sector_number — Accept is no-gap coverage, not a hardcoded
+        # 5000-wide empty tail.
+        return [
+            ZonePartitionSpec(
+                name="The Expanse",
+                zone_type=ZoneType.EXPANSE,
+                start_sector=1,
+                end_sector=total_sectors,
+                policing_level=3,
+                danger_rating=6,
+            )
+        ]
+    fed_n, border_n, front_n = _step4_thirds_counts(total_sectors)
+    specs: List[ZonePartitionSpec] = []
+    cursor = 1
+    if fed_n:
+        specs.append(
+            ZonePartitionSpec(
+                name="Federation Space",
+                zone_type=ZoneType.FEDERATION,
+                start_sector=cursor,
+                end_sector=cursor + fed_n - 1,
+                policing_level=9,
+                danger_rating=1,
+            )
+        )
+        cursor += fed_n
+    if border_n:
+        specs.append(
+            ZonePartitionSpec(
+                name="Border Space",
+                zone_type=ZoneType.BORDER,
+                start_sector=cursor,
+                end_sector=cursor + border_n - 1,
+                policing_level=5,
+                danger_rating=4,
+            )
+        )
+        cursor += border_n
+    if front_n:
+        specs.append(
+            ZonePartitionSpec(
+                name="Frontier Space",
+                zone_type=ZoneType.FRONTIER,
+                start_sector=cursor,
+                end_sector=cursor + front_n - 1,
+                policing_level=2,
+                danger_rating=8,
+            )
+        )
+    return specs
+
+
+def _step4_spec_for_sector(
+    specs: List[ZonePartitionSpec], sector_number: int
+) -> ZonePartitionSpec:
+    for spec in specs:
+        if spec.contains(sector_number):
+            return spec
+    raise ValueError(
+        f"step-4 zone partition does not cover sector_number={sector_number}"
+    )
 
 
 async def verify_region_phase_checksums(
@@ -1671,7 +1802,7 @@ class BangImportService:
     ) -> None:
         """Delete every CONTENT row owned by ``region_id`` — keep the Region.
 
-        Tears down clusters / sectors / warps / stations / market_prices /
+        Tears down zones / clusters / sectors / warps / stations / market_prices /
         planets / special_formations for a single region while leaving the
         ``regions`` row (and its operator/customer-bound identity columns)
         completely untouched.
@@ -1686,7 +1817,12 @@ class BangImportService:
            ``sector_warps`` (both endpoints), ``warp_tunnels`` (both
            endpoints), ``stations`` (→ ``market_prices`` / ``price_history`` /
            ``price_alerts`` via their own CASCADE), and ``planets``.
-        3. ``clusters`` last — sectors are already gone, so the cluster→sector
+           ``Sector.zone_id`` is ``ON DELETE SET NULL``, so Zone rows survive
+           this delete and MUST be removed explicitly (step 3) or regen
+           accumulates duplicate zones.
+        3. ``zones`` — after sectors so SET NULL has already fired; before
+           clusters (no FK between them).
+        4. ``clusters`` last — sectors are already gone, so the cluster→sector
            CASCADE is a no-op; we delete them explicitly because the regen
            keeps the parent Region (cluster rows would otherwise survive and
            accumulate on every regeneration).
@@ -1700,6 +1836,10 @@ class BangImportService:
         )
         await session.execute(
             text("DELETE FROM sectors WHERE region_id = :rid"),
+            {"rid": region_id},
+        )
+        await session.execute(
+            text("DELETE FROM zones WHERE region_id = :rid"),
             {"rid": region_id},
         )
         await session.execute(
@@ -1927,7 +2067,7 @@ class BangImportService:
         region_plan: RegionInsertPlan,
         region_id: uuid.UUID,
     ) -> RegionAttachment:
-        """Write one region's clusters, sectors, warps, stations, planets, formations.
+        """Write one region's zones, clusters, sectors, warps, stations, planets, formations.
 
         Returns a :class:`RegionAttachment` carrying the region's legacy gate
         sector (lowest sector_id in its offset range) and — for spoke regions —
@@ -1940,6 +2080,29 @@ class BangImportService:
         # early is a no-op change vs. the later `session.get(Region, ...)`
         # this function already did (identity-map cached, same object).
         region_row = await session.get(Region, region_id)
+
+        # Step 4 — Zone partition (bang-import-pipeline.md:126-136). Persist
+        # before sectors so Sector.zone_id is a real FK at insert. Canon
+        # order is also before clusters; clusters do not reference zones.
+        _sk17_t0 = time.monotonic()
+        zone_specs = _step4_zone_specs(
+            region_plan.region_type, region_plan.total_sectors
+        )
+        zone_uuid_by_start: Dict[int, uuid.UUID] = {}
+        for zs in zone_specs:
+            zone = Zone(
+                region_id=region_id,
+                name=zs.name,
+                zone_type=zs.zone_type,
+                start_sector=zs.start_sector,
+                end_sector=zs.end_sector,
+                policing_level=zs.policing_level,
+                danger_rating=zs.danger_rating,
+            )
+            session.add(zone)
+            await session.flush()
+            zone_uuid_by_start[zs.start_sector] = zone.id  # type: ignore[assignment]
+        _record_phase_checksum(region_row, "zones", len(zone_specs), _sk17_t0)
 
         cluster_uuid_by_int: Dict[int, uuid.UUID] = {}
         _sk17_t0 = time.monotonic()
@@ -2007,6 +2170,8 @@ class BangImportService:
                 is_discovered=ss.is_discovered,
                 description=ss.description,
             )
+            zone_spec = _step4_spec_for_sector(zone_specs, ss.sector_number)
+            sector_kwargs["zone_id"] = zone_uuid_by_start[zone_spec.start_sector]
             # WO-GX1 Lane 2 (Gap B): wire the seeding-bias fields ONLY when set.
             # Omitting a key lets the Sector model's python-side column default
             # fire (resources/defenses are NOT NULL with dict defaults), so a
@@ -3225,8 +3390,9 @@ class BangImportService:
         "Federation zone, sector range 1-99" placement for Terran Space
         (tradedock-shipyard #galaxy-generation-seeding) reads directly.
         Nexus docks prefer the upper (EXPANSE-ward) half of the region —
-        a documented simplification of "EXPANSE zones near population
-        centres" pending zone metadata in the import plan.
+        a documented numeric shortcut. Step-4 Zone rows now persist in
+        `_apply_region`; this seeder still uses the range heuristic (not a
+        live Zone lookup) so TradeDock placement stays LEG-38-stable.
         """
         tiers = self._TRADEDOCK_QUOTAS.get(region_type, [])
         if not tiers:
