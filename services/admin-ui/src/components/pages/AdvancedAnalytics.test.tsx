@@ -109,7 +109,8 @@ describe('AdvancedAnalytics generate/export (LEG-165)', () => {
     expect(msg).not.toContain('not implemented');
   });
 
-  it('reports generate 429 as Reports-tier admin rate-limit', async () => {
+  it('reports generate 429 with reports-tier rate-limit copy', async () => {
+
     vi.mocked(api.post).mockRejectedValue(axiosError(429));
 
     render(<AdvancedAnalytics />);
@@ -120,7 +121,9 @@ describe('AdvancedAnalytics generate/export (LEG-165)', () => {
     });
 
     const msg = screen.getByTestId('analytics-save-message').textContent ?? '';
-    expect(msg).toMatch(/rate limit|5\/hour/i);
+    expect(msg).toMatch(/5\/hour/i);
+    expect(msg).toMatch(/rate limit/i);
+    expect(msg).not.toMatch(/HTTP 429/i);
     expect(msg).not.toMatch(/gameserver unreachable|not implemented/i);
   });
 
