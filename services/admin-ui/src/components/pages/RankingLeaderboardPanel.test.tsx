@@ -47,13 +47,25 @@ describe('RankingLeaderboardPanel', () => {
 
   it('shows error when the request fails', async () => {
     vi.mocked(api.get).mockRejectedValue({
-      response: { data: { detail: 'Forbidden' } },
+      response: { status: 403, data: { detail: 'Missing scope admin.players.view' } },
     });
 
     render(<RankingLeaderboardPanel />);
 
     await waitFor(() => {
-      expect(screen.getByRole('alert').textContent).toContain('Forbidden');
+      expect(screen.getByRole('alert').textContent).toContain('admin.players.view');
+    });
+  });
+
+  it('shows rate-limit copy on 429', async () => {
+    vi.mocked(api.get).mockRejectedValue({
+      response: { status: 429 },
+    });
+
+    render(<RankingLeaderboardPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
     });
   });
 });
