@@ -1,5 +1,6 @@
 import React, { useCallback, useState } from 'react';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import { useToast, useConfirm } from '../../contexts/ToastContext';
 import './bounty-admin-panel.css';
 
@@ -47,11 +48,6 @@ const FACTION_TYPES = [
   'Concord',
 ];
 
-function detailFromErr(err: unknown, fallback: string): string {
-  const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-  return typeof detail === 'string' ? detail : fallback;
-}
-
 const BountyAdminPanel: React.FC = () => {
   const toast = useToast();
   const confirm = useConfirm();
@@ -82,7 +78,10 @@ const BountyAdminPanel: React.FC = () => {
       setList(data);
     } catch (err: unknown) {
       setList(null);
-      setListError(detailFromErr(err, 'Failed to load bounties'));
+      setListError(formatAdminApiError(err, {
+        fallback: 'Failed to load bounties',
+        scopeHint: 'listing bounties requires the admin players view scope (PLAYERS_VIEW)',
+      }));
     } finally {
       setLoading(false);
     }
@@ -106,7 +105,10 @@ const BountyAdminPanel: React.FC = () => {
       toast.success('Bounty force-cancelled');
       await loadBounties();
     } catch (err: unknown) {
-      toast.error(detailFromErr(err, 'Force-cancel failed'));
+      toast.error(formatAdminApiError(err, {
+        fallback: 'Force-cancel failed',
+        scopeHint: 'bounty force-cancel requires ECONOMY_INTERVENE',
+      }));
     } finally {
       setMutating(null);
     }
@@ -134,7 +136,10 @@ const BountyAdminPanel: React.FC = () => {
       );
       await loadBounties();
     } catch (err: unknown) {
-      toast.error(detailFromErr(err, 'Collapse failed'));
+      toast.error(formatAdminApiError(err, {
+        fallback: 'Collapse failed',
+        scopeHint: 'bounty collapse requires ECONOMY_INTERVENE',
+      }));
     } finally {
       setMutating(null);
     }
@@ -166,7 +171,10 @@ const BountyAdminPanel: React.FC = () => {
       toast.success('Faction bounty placed');
       setFactionReason('');
     } catch (err: unknown) {
-      toast.error(detailFromErr(err, 'Faction bounty failed'));
+      toast.error(formatAdminApiError(err, {
+        fallback: 'Faction bounty failed',
+        scopeHint: 'faction bounty place requires ECONOMY_INTERVENE',
+      }));
     } finally {
       setMutating(null);
     }
