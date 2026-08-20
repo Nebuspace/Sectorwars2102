@@ -11,6 +11,7 @@ import { MineIcon } from '../icons/MineIcon';
 import ReputationPage from '../mfd/pages/ReputationPage';
 import { ShipSelector } from '../ships/ShipSelector';
 import { FleetManagerPanel } from '../fleet/FleetManagerPanel';
+import { DroneFleetPanel } from '../drones/DroneFleetPanel';
 import { EmbeddedContext } from '../cockpit/EmbeddedContext';
 import ServiceRecordTab from './ServiceRecordTab';
 import ColoniesRosterTab from './ColoniesRosterTab';
@@ -493,8 +494,9 @@ const StatusBar: React.FC = () => {
               {activeTab === 'service' && <ServiceRecordTab />}
               {activeTab === 'fleet' && (
                 <EmbeddedContext.Provider value={true}>
-                  {/* LEG-INI-01 — coordination UI above hangar hull picker */}
+                  {/* LEG-INI-01 — coordination UI above drone deploy/recall + hangar hull picker */}
                   <FleetManagerPanel />
+                  <DroneFleetPanel />
                   <ShipSelector />
                 </EmbeddedContext.Provider>
               )}

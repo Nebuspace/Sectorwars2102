@@ -61,7 +61,8 @@ const Sidebar: React.FC = () => {
       items: [
         { to: '/users', label: 'Users', icon: '👤' },
         { to: '/players', label: 'Players', icon: '🎮' },
-        { to: '/teams', label: 'Teams', icon: '🤝' }
+        { to: '/teams', label: 'Teams', icon: '🤝' },
+        { to: '/medals', label: 'Medals', icon: '🏅' }
       ]
     },
     {

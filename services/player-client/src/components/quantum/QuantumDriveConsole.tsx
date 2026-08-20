@@ -3,6 +3,7 @@ import { useGame, type QuantumBearing, type QuantumScanResult, type QuantumJumpR
 import { quantumAPI } from '../../services/api';
 import { TurnsIcon } from '../icons/TurnsIcon';
 import QuantumBearingViewport, { type MinimapSector } from './QuantumBearingViewport';
+import CrystalRefiningPanel from './CrystalRefiningPanel';
 import './quantum-drive.css';
 
 /**
@@ -72,6 +73,7 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
     quantumJump,
     refineQuantumCharge,
     harvestNebula,
+    refreshQuantumStatus,
     quantumScanResult,
     setQuantumScanResult,
   } = useGame();
@@ -378,6 +380,15 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
       </div>
       )}
       {refineError && <div className="qd-inline-error">{refineError}</div>}
+
+      {statusReady && (
+        <CrystalRefiningPanel
+          shards={shards}
+          crystals={crystals}
+          isDocked={isDocked}
+          onBalancesChanged={refreshQuantumStatus}
+        />
+      )}
 
       {/* Bearing block — astrogation viewport (drag = yaw), pitch slider
           beside it, yaw fine-tune slider beneath. The viewport is a pure
