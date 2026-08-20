@@ -200,6 +200,39 @@ def _medal_privacy_block(player: Player) -> Dict[str, Any]:
     return dict(privacy) if isinstance(privacy, dict) else {}
 
 
+def _medal_privacy_block_from_settings(settings: Any) -> Dict[str, Any]:
+    """JSONB settings → medal_privacy dict (for dispatch queries without ORM load)."""
+    settings = settings if isinstance(settings, dict) else {}
+    privacy = settings.get(_MEDAL_PRIVACY_SETTINGS_KEY)
+    return dict(privacy) if isinstance(privacy, dict) else {}
+
+
+def medal_awarded_should_broadcast_team(
+    team_id: Any, settings: Any
+) -> bool:
+    """Team room fan-out when teamed and ``broadcast_to_team`` not opted out (medals.md:228)."""
+    if not team_id:
+        return False
+    privacy = _medal_privacy_block_from_settings(settings)
+    return privacy.get("broadcast_to_team", True) is not False
+
+
+def medal_awarded_should_broadcast_sector(
+    tier: Any, category: Any, sector_id: Any
+) -> bool:
+    """Sector room fan-out for GOLD+ tier or UNIQUE category (medal-service.md:278)."""
+    if sector_id is None:
+        return False
+    from src.services.medal_catalog import TIER_GOLD, TIER_PLATINUM, TIER_UNIQUE
+
+    tier_l = (tier or "").lower()
+    if tier_l in (TIER_GOLD, TIER_UNIQUE, TIER_PLATINUM):
+        return True
+    if (category or "").upper() == "UNIQUE":
+        return True
+    return False
+
+
 def public_medal_identity(
     player: Player,
     *,
@@ -356,23 +389,40 @@ def _dispatch_medal_awarded_event(
     skipped — never raised.
     """
     try:
-        user_id = (
-            db.query(Player.user_id).filter(Player.id == player_id).scalar()
+        player_row = (
+            db.query(
+                Player.user_id,
+                Player.team_id,
+                Player.current_sector_id,
+                Player.settings,
+            )
+            .filter(Player.id == player_id)
+            .one_or_none()
         )
-        if not user_id:
+        if not player_row or not player_row.user_id:
             return
 
+        user_id = player_row.user_id
         entry = get_catalog_entry(medal_id) or {}
         criteria = entry.get("criteria") or {}
+        medal_tier = entry.get("tier")
+        medal_category = entry.get("category")
         medal_payload = {
             "medal_id": medal_id,
             "medal_name": entry.get("name"),
-            "medal_category": entry.get("category"),
-            "medal_tier": entry.get("tier"),
+            "medal_category": medal_category,
+            "medal_tier": medal_tier,
             "medal_description": entry.get("description"),
             "medal_icon": criteria.get("icon"),
             "awarded_via": awarded_via,
         }
+
+        broadcast_team = medal_awarded_should_broadcast_team(
+            player_row.team_id, player_row.settings
+        )
+        broadcast_sector = medal_awarded_should_broadcast_sector(
+            medal_tier, medal_category, player_row.current_sector_id
+        )
 
         import asyncio
         from src.services.enhanced_websocket_service import (
@@ -382,7 +432,12 @@ def _dispatch_medal_awarded_event(
         loop = asyncio.get_running_loop()
         loop.create_task(
             get_enhanced_websocket_service().send_medal_awarded(
-                str(user_id), medal_payload
+                str(user_id),
+                medal_payload,
+                team_id=str(player_row.team_id) if player_row.team_id else None,
+                sector_id=player_row.current_sector_id,
+                broadcast_team=broadcast_team,
+                broadcast_sector=broadcast_sector,
             )
         )
     except Exception:
