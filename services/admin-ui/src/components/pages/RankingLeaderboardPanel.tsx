@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import './ranking-leaderboard-panel.css';
 
 export type AdminLeaderboardEntry = {
@@ -43,10 +44,12 @@ const RankingLeaderboardPanel: React.FC = () => {
         setTotalPlayers(typeof data?.total_players === 'number' ? data.total_players : null);
       } catch (err: unknown) {
         if (cancelled) return;
-        const msg =
-          (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
-          (err instanceof Error ? err.message : 'Failed to load leaderboard');
-        setError(typeof msg === 'string' ? msg : 'Failed to load leaderboard');
+        setError(
+          formatAdminApiError(err, {
+            fallback: 'Failed to load leaderboard',
+            scopeHint: 'admin.players.view scope (PLAYERS_VIEW) required for ranking leaderboard',
+          }),
+        );
         setEntries([]);
         setTotalPlayers(null);
       } finally {
