@@ -60,7 +60,7 @@
   right: 8px;
   border: none;
   background: transparent;
-  color: var(--cockpit-text-muted, #aaa);
+  color: var(--cockpit-text-secondary, #aaa);
   font-size: 1.25rem;
   line-height: 1;
   cursor: pointer;
