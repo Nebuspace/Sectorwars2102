@@ -6,6 +6,7 @@ import { DisputePanel } from '../combat/DisputePanel';
 import DroneOperationsTab from '../combat/DroneOperationsTab';
 import BalanceAnalytics from '../combat/BalanceAnalytics';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import { useCombatUpdates } from '../../contexts/WebSocketContext';
 import './combat-overview.css';
 
@@ -116,7 +117,12 @@ export const CombatOverview: React.FC = () => {
       setCombatEvents(eventsRes.value.data);
     } else {
       setCombatEvents([]);
-      errors.push('Combat feed unavailable');
+      errors.push(
+        formatAdminApiError(eventsRes.reason, {
+          fallback: 'Combat feed unavailable',
+          scopeHint: 'admin combat scopes required for live combat feed',
+        })
+      );
     }
 
     // Process combat statistics
@@ -124,7 +130,12 @@ export const CombatOverview: React.FC = () => {
       setCombatStats(statsRes.value.data as CombatStats);
     } else {
       setCombatStats(null);
-      errors.push('Combat statistics unavailable');
+      errors.push(
+        formatAdminApiError(statsRes.reason, {
+          fallback: 'Combat statistics unavailable',
+          scopeHint: 'admin combat scopes required for combat dashboard',
+        })
+      );
     }
 
     // Process combat logs into rankings
@@ -216,12 +227,22 @@ export const CombatOverview: React.FC = () => {
       setDisputes(disputesRes.value.data as CombatDispute[]);
     } else {
       setDisputes([]);
-      errors.push('Combat disputes unavailable');
+      errors.push(
+        formatAdminApiError(disputesRes.reason, {
+          fallback: 'Combat disputes unavailable',
+          scopeHint: 'admin combat scopes required for dispute review',
+        })
+      );
     }
 
     // Show combined error if all endpoints failed
     if (errors.length === 4) {
-      setError('Failed to load combat data. Please check if the gameserver is running.');
+      setError(
+        formatAdminApiError(eventsRes.status === 'rejected' ? eventsRes.reason : new Error('failed'), {
+          fallback: 'Failed to load combat data. Please check if the gameserver is running.',
+          scopeHint: 'admin combat scopes required for combat overview',
+        })
+      );
     } else if (errors.length > 0) {
       setError(errors.join(' | '));
     }
@@ -279,8 +300,13 @@ export const CombatOverview: React.FC = () => {
         setShowInterventionModal(false);
         setSelectedCombatId(null);
         await loadData();
-      } catch (error: any) {
-        setError(error.response?.data?.detail || 'Failed to intervene in combat');
+      } catch (error: unknown) {
+        setError(
+          formatAdminApiError(error, {
+            fallback: 'Failed to intervene in combat',
+            scopeHint: 'admin combat intervention scope required',
+          })
+        );
         setShowInterventionModal(false);
       }
     }
