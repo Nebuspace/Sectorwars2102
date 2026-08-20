@@ -20,6 +20,32 @@ type DroneRow = {
   status: string | null;
 };
 
+type DeploymentRow = {
+  deploymentId: string;
+  droneId: string;
+  sectorId: string;
+  deployedAt: string;
+  droneType: string;
+  health: number;
+  maxHealth: number;
+};
+
+const normalizeDeployment = (raw: unknown): DeploymentRow | null => {
+  const r = asRecord(raw);
+  if (!r) return null;
+  const deploymentId = typeof r.deploymentId === 'string' ? r.deploymentId : null;
+  if (!deploymentId) return null;
+  return {
+    deploymentId,
+    droneId: typeof r.droneId === 'string' ? r.droneId : '',
+    sectorId: typeof r.sectorId === 'string' ? r.sectorId : '',
+    deployedAt: typeof r.deployedAt === 'string' ? r.deployedAt : '',
+    droneType: typeof r.droneType === 'string' ? r.droneType : 'unknown',
+    health: typeof r.health === 'number' ? r.health : 0,
+    maxHealth: typeof r.maxHealth === 'number' ? r.maxHealth : 0,
+  };
+};
+
 const asRecord = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -54,6 +80,7 @@ export const DroneFleetPanel: React.FC = () => {
   const { currentSector, playerState } = useGame();
   const [types, setTypes] = useState<DroneTypeCatalogEntry[]>([]);
   const [drones, setDrones] = useState<DroneRow[]>([]);
+  const [deployments, setDeployments] = useState<DeploymentRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -75,9 +102,10 @@ export const DroneFleetPanel: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const [typesRes, listRes] = await Promise.all([
+      const [typesRes, listRes, deployedRes] = await Promise.all([
         droneFleetAPI.getTypes(),
         droneFleetAPI.getMyDrones(false),
+        combatAPI.getDeployedDrones(),
       ]);
       const catalog = asRecord(typesRes);
       const typeList = Array.isArray(catalog?.types) ? (catalog!.types as DroneTypeCatalogEntry[]) : [];
@@ -89,6 +117,13 @@ export const DroneFleetPanel: React.FC = () => {
         ? listRes.map(normalizeDrone).filter((d): d is DroneRow => d !== null)
         : [];
       setDrones(rows);
+      const deployedRecord = asRecord(deployedRes);
+      const deploymentRows = Array.isArray(deployedRecord?.deployments)
+        ? (deployedRecord!.deployments as unknown[])
+            .map(normalizeDeployment)
+            .filter((d): d is DeploymentRow => d !== null)
+        : [];
+      setDeployments(deploymentRows);
     } catch (err) {
       setError(errorMessage(err, 'Could not load drone fleet.'));
     } finally {
@@ -148,6 +183,13 @@ export const DroneFleetPanel: React.FC = () => {
     run(`recall-${droneId}`, async () => {
       await droneFleetAPI.recall(droneId);
       setNotice('Drone recalled.');
+      await refresh();
+    });
+
+  const onRecallDeployment = (deploymentId: string) =>
+    run(`recall-deployment-${deploymentId}`, async () => {
+      await combatAPI.recallDrones(deploymentId);
+      setNotice('Deployment recalled.');
       await refresh();
     });
 
@@ -281,6 +323,43 @@ export const DroneFleetPanel: React.FC = () => {
         </div>
         {!sectorUuid && (
           <p className="drone-fleet-hint">Waiting for current sector UUID before deploy is enabled.</p>
+        )}
+      </section>
+
+      <section className="drone-fleet-section" aria-labelledby="drone-deployed-list">
+        <h4 id="drone-deployed-list">Active deployments</h4>
+        <p className="drone-fleet-hint">
+          Sector deployments from GET /drones/deployed — recall by deployment id.
+        </p>
+        {deployments.length === 0 && !loading ? (
+          <p className="drone-fleet-empty" data-testid="drone-deployed-empty">
+            No active deployments.
+          </p>
+        ) : (
+          <ul className="drone-roster" data-testid="drone-deployed-list">
+            {deployments.map((dep) => (
+              <li key={dep.deploymentId} className="drone-roster-row">
+                <div className="drone-roster-meta">
+                  <strong>{dep.droneType}</strong>
+                  <span>
+                    Sector {dep.sectorId.slice(0, 8)}… · {dep.health}/{dep.maxHealth} HP
+                    {dep.deployedAt ? ` · since ${dep.deployedAt}` : ''}
+                  </span>
+                </div>
+                <div className="drone-roster-actions">
+                  <button
+                    type="button"
+                    className="drone-fleet-btn"
+                    data-testid={`deployment-recall-${dep.deploymentId}`}
+                    disabled={Boolean(busy)}
+                    onClick={() => void onRecallDeployment(dep.deploymentId)}
+                  >
+                    Recall
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
         )}
       </section>
 

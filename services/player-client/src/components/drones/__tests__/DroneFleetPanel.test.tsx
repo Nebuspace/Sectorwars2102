@@ -16,6 +16,8 @@ const {
   mockUpgrade,
   mockDeploy,
   mockRecall,
+  mockGetDeployedDrones,
+  mockRecallDrones,
 } = vi.hoisted(() => ({
   mockGetTypes: vi.fn(),
   mockGetMyDrones: vi.fn(),
@@ -24,6 +26,8 @@ const {
   mockUpgrade: vi.fn(),
   mockDeploy: vi.fn(),
   mockRecall: vi.fn(),
+  mockGetDeployedDrones: vi.fn(),
+  mockRecallDrones: vi.fn(),
 }));
 
 vi.mock('../../../contexts/GameContext', () => ({
@@ -49,6 +53,8 @@ vi.mock('../../../services/api', async () => {
     combatAPI: {
       ...actual.combatAPI,
       deployDrones: (...a: unknown[]) => mockDeploy(...a),
+      getDeployedDrones: (...a: unknown[]) => mockGetDeployedDrones(...a),
+      recallDrones: (...a: unknown[]) => mockRecallDrones(...a),
     },
   };
 });
@@ -69,6 +75,8 @@ describe('DroneFleetPanel', () => {
     mockUpgrade.mockReset();
     mockDeploy.mockReset();
     mockRecall.mockReset();
+    mockGetDeployedDrones.mockReset();
+    mockRecallDrones.mockReset();
     mockGetTypes.mockResolvedValue({
       types: [
         {
@@ -110,6 +118,8 @@ describe('DroneFleetPanel', () => {
     mockUpgrade.mockResolvedValue({ id: 'drone-1', level: 2 });
     mockDeploy.mockResolvedValue({ dronesDeployed: 1 });
     mockRecall.mockResolvedValue({ message: 'Drone recalled successfully' });
+    mockGetDeployedDrones.mockResolvedValue({ deployments: [] });
+    mockRecallDrones.mockResolvedValue({ dronesRecalled: 1 });
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -206,5 +216,57 @@ describe('DroneFleetPanel', () => {
       await flush();
     });
     expect(mockRecall).toHaveBeenCalledWith('drone-deployed');
+  });
+
+  it('shows empty state when getDeployedDrones returns no rows', async () => {
+    await act(async () => {
+      root.render(<DroneFleetPanel />);
+    });
+    await act(async () => {
+      await flush();
+      await flush();
+    });
+
+    expect(mockGetDeployedDrones).toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="drone-deployed-empty"]')).toBeTruthy();
+  });
+
+  it('lists active deployments and recalls by deploymentId via combatAPI', async () => {
+    mockGetDeployedDrones.mockResolvedValue({
+      deployments: [
+        {
+          deploymentId: 'dep-aaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+          droneId: 'drone-x',
+          sectorId: '22222222-2222-2222-2222-222222222222',
+          deployedAt: '2026-01-01T00:00:00Z',
+          droneType: 'attack',
+          health: 50,
+          maxHealth: 80,
+        },
+      ],
+    });
+
+    await act(async () => {
+      root.render(<DroneFleetPanel />);
+    });
+    await act(async () => {
+      await flush();
+      await flush();
+    });
+
+    const list = container.querySelector('[data-testid="drone-deployed-list"]');
+    expect(list).toBeTruthy();
+    expect(list!.textContent).toContain('attack');
+    const recallBtn = container.querySelector(
+      '[data-testid="deployment-recall-dep-aaa-bbbb-cccc-dddd-eeeeeeeeeeee"]',
+    ) as HTMLButtonElement;
+    expect(recallBtn).toBeTruthy();
+    await act(async () => {
+      recallBtn.click();
+      await flush();
+      await flush();
+    });
+    expect(mockRecallDrones).toHaveBeenCalledWith('dep-aaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+    expect(mockGetDeployedDrones.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 });
