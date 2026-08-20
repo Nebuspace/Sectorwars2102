@@ -39,10 +39,29 @@ const PlayerDetailEditor: React.FC<PlayerDetailEditorProps> = ({ player, onClose
   const [availableTeams, setAvailableTeams] = useState<any[]>([]);
   const [availableRegions, setAvailableRegions] = useState<any[]>([]);
   const [unsavedChanges, setUnsavedChanges] = useState(false);
+  const [metaLoadError, setMetaLoadError] = useState<string | null>(null);
 
   // Honesty: player-scoped emergency route does not exist (only ship-scoped
   // at admin_ships.py:224). Do not invent teleport/rescue/reset/clear chrome.
   const EMERGENCY_ENDPOINT = 'POST /api/v1/admin/players/{id}/emergency';
+
+  const responseStatus = (err: unknown): number | undefined =>
+    typeof err === 'object' && err !== null && 'response' in err
+      ? (err as { response?: { status?: number } }).response?.status
+      : undefined;
+
+  const adminHttpMessage = (
+    err: unknown,
+    fallback: string,
+    scopeCopy: string
+  ): string => {
+    const status = responseStatus(err);
+    if (status === 401 || status === 403) return scopeCopy;
+    if (status === 429) return 'Admin rate limit exceeded — wait a moment and try again.';
+    const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data
+      ?.detail;
+    return typeof detail === 'string' ? detail : fallback;
+  };
 
   useEffect(() => {
     loadAvailableTeams();
@@ -70,6 +89,13 @@ const PlayerDetailEditor: React.FC<PlayerDetailEditorProps> = ({ player, onClose
       setAvailableTeams((response.data as any)?.teams || []);
     } catch (error) {
       console.error('Failed to load teams:', error);
+      setMetaLoadError(
+        adminHttpMessage(
+          error,
+          'Failed to load teams',
+          'Access denied — loading teams requires the admin players view scope (PLAYERS_VIEW).'
+        )
+      );
     }
   };
 
@@ -79,6 +105,13 @@ const PlayerDetailEditor: React.FC<PlayerDetailEditorProps> = ({ player, onClose
       setAvailableRegions((response.data as any)?.regions || []);
     } catch (error) {
       console.error('Failed to load regions:', error);
+      setMetaLoadError(
+        adminHttpMessage(
+          error,
+          'Failed to load regions',
+          'Access denied — loading regions requires the admin players view scope (PLAYERS_VIEW).'
+        )
+      );
     }
   };
 
@@ -147,10 +180,15 @@ const PlayerDetailEditor: React.FC<PlayerDetailEditorProps> = ({ player, onClose
 
       onSave(updatedPlayer);
       onClose();
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Failed to update player:', error);
-      const errorMessage = error.response?.data?.detail || 'Failed to update player';
-      setErrors([errorMessage]);
+      setErrors([
+        adminHttpMessage(
+          error,
+          'Failed to update player',
+          'Access denied — updating a player requires PLAYERS_ADJUST_CREDITS, PLAYERS_SUSPEND, and PLAYERS_ADJUST_REP.'
+        ),
+      ]);
     } finally {
       setLoading(false);
     }
@@ -176,8 +214,14 @@ const PlayerDetailEditor: React.FC<PlayerDetailEditorProps> = ({ player, onClose
         </div>
       </div>
 
+      {metaLoadError && (
+        <div className="error-banner" role="alert">
+          <div className="error-message">{metaLoadError}</div>
+        </div>
+      )}
+
       {errors.length > 0 && (
-        <div className="error-banner">
+        <div className="error-banner" role="alert">
           {errors.map((error, index) => (
             <div key={index} className="error-message">{error}</div>
           ))}
