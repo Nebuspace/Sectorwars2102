@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy import func, or_, desc
 
 from src.models.combat_log import CombatLog
@@ -444,19 +445,76 @@ class CombatAnalyticsService:
         }
     
     def _restore_shields(self, combat: CombatLog, parameters: Dict[str, Any]) -> Dict[str, Any]:
-        """Restore shields for combat participants"""
+        """Restore shields for combat participants on live Ship.combat JSONB.
+
+        shield_percent is applied as a fraction of each ship's max_shields
+        (clamped 0..max). Missing ship rows for a requested target raise —
+        never silent success. Persisted via flag_modified + outer commit.
+        """
         target = parameters.get('target', 'both')  # 'attacker', 'defender', or 'both'
-        shield_percent = parameters.get('shield_percent', 50)
-        
-        # Note: The CombatLog model doesn't track shields directly
-        # This would need to update the actual Ship models
-        # For now, we can log the action
-        
+        try:
+            shield_percent = float(parameters.get('shield_percent', 50))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("shield_percent must be numeric") from exc
+        if shield_percent < 0 or shield_percent > 100:
+            raise ValueError("shield_percent must be between 0 and 100")
+
+        roles: List[str] = []
+        if target in ('attacker', 'both'):
+            roles.append('attacker')
+        if target in ('defender', 'both'):
+            roles.append('defender')
+        if not roles:
+            raise ValueError(
+                f"Unknown restore_shields target: {target!r} "
+                "(expected 'attacker', 'defender', or 'both')"
+            )
+
+        updated: List[Dict[str, Any]] = []
+        for role in roles:
+            ship_id = (
+                combat.attacker_ship_id if role == 'attacker' else combat.defender_ship_id
+            )
+            if ship_id is None:
+                raise ValueError(
+                    f"Cannot restore shields for {role}: combat has no {role}_ship_id"
+                )
+            ship = self.db.query(Ship).filter(Ship.id == ship_id).first()
+            if ship is None:
+                raise ValueError(
+                    f"Cannot restore shields for {role}: ship {ship_id} not found"
+                )
+            combat_state = dict(ship.combat or {})
+            max_shields = float(combat_state.get('max_shields') or 0)
+            new_shields = round(max_shields * (shield_percent / 100.0), 1)
+            if max_shields > 0:
+                new_shields = max(0.0, min(max_shields, new_shields))
+            else:
+                new_shields = 0.0
+            previous = combat_state.get('shields')
+            combat_state['shields'] = new_shields
+            ship.combat = combat_state
+            # JSONB in-place mutation needs an instrumentation flag on real
+            # ORM instances; SimpleNamespace stand-ins in unit tests skip it.
+            if hasattr(ship, '_sa_instance_state'):
+                flag_modified(ship, 'combat')
+            updated.append({
+                "role": role,
+                "ship_id": str(ship_id),
+                "previous_shields": previous,
+                "shields": new_shields,
+                "max_shields": max_shields,
+            })
+
         return {
             "action": "shields_restored",
             "target": target,
             "shield_percent": shield_percent,
-            "note": "Shield restoration would be applied to ship models"
+            "ships": updated,
+            "note": (
+                f"Restored shields to {shield_percent:g}% of max_shields "
+                f"on {len(updated)} ship(s)"
+            ),
         }
     
     def _declare_winner(self, combat: CombatLog, parameters: Dict[str, Any]) -> Dict[str, Any]:
