@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { api } from '../../utils/auth';
 import './system-health-status.css';
 
 interface ServerStatus {
@@ -87,33 +88,21 @@ const SystemHealthStatus: React.FC = () => {
   const checkServerStatus = async () => {
     try {
       const startTime = Date.now();
-      const response = await fetch('/api/v1/status/', {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('accessToken')}`,
-        },
+      // Shared api client attaches Bearer via interceptor — no raw fetch.
+      const { data } = await api.get<{
+        active_connections?: number;
+        admin_connections?: number;
+        connection_stats?: ServerStatus['connectionStats'];
+      }>('/api/v1/status/');
+      const responseTime = Date.now() - startTime;
+      setServerStatus({
+        status: 'online',
+        responseTime,
+        activeConnections: data.active_connections || 0,
+        adminConnections: data.admin_connections || 0,
+        connectionStats: data.connection_stats,
+        lastChecked: new Date().toLocaleTimeString()
       });
-      
-      const endTime = Date.now();
-      const responseTime = endTime - startTime;
-
-      if (response.ok) {
-        const data = await response.json();
-        setServerStatus({
-          status: 'online',
-          responseTime,
-          activeConnections: data.active_connections || 0,
-          adminConnections: data.admin_connections || 0,
-          connectionStats: data.connection_stats,
-          lastChecked: new Date().toLocaleTimeString()
-        });
-      } else {
-        setServerStatus(prev => ({
-          ...prev,
-          status: 'offline',
-          lastChecked: new Date().toLocaleTimeString()
-        }));
-      }
     } catch (error) {
       console.error('Failed to check server status:', error);
       setServerStatus(prev => ({
@@ -126,20 +115,8 @@ const SystemHealthStatus: React.FC = () => {
 
   const checkAIHealth = async () => {
     try {
-      const response = await fetch('/api/v1/status/ai/providers', {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('accessToken')}`,
-        },
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        setAiHealth(data);
-      } else {
-        console.error('Failed to fetch AI health status');
-        setAiHealth(null);
-      }
+      const { data } = await api.get<AllProvidersHealth>('/api/v1/status/ai/providers');
+      setAiHealth(data);
     } catch (error) {
       console.error('Failed to check AI health:', error);
       setAiHealth(null);
@@ -148,20 +125,8 @@ const SystemHealthStatus: React.FC = () => {
 
   const checkDatabaseHealth = async () => {
     try {
-      const response = await fetch('/api/v1/status/database/detailed', {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('accessToken')}`,
-        },
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        setDbHealth(data);
-      } else {
-        console.error('Failed to fetch database health status');
-        setDbHealth(null);
-      }
+      const { data } = await api.get<DatabaseHealth>('/api/v1/status/database/detailed');
+      setDbHealth(data);
     } catch (error) {
       console.error('Failed to check database health:', error);
       setDbHealth(null);
