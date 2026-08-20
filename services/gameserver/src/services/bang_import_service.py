@@ -82,7 +82,12 @@ from src.models.station import (
     StationStatus,
     StationType,
 )
-from src.models.warp_tunnel import WarpTunnel, WarpTunnelType
+from src.models.warp_tunnel import (
+    WarpTunnel,
+    WarpTunnelStability,
+    WarpTunnelStatus,
+    WarpTunnelType,
+)
 from src.models.zone import Zone, ZoneType
 from src.schemas.bang_config import BangConfig, RegionType
 from src.services.galaxy_validation import (
@@ -815,6 +820,54 @@ def _step9_stamp_isolated_clusters(
             feats.append(_ISOLATED_FEATURE)
             cs.special_features = feats
     return isolated
+
+
+# bang-import-pipeline.md step 10: long intra-region warps also get WarpTunnel
+# rows (sector_warps remains the lightweight routing association).
+def _step10_long_warp_threshold(total_sectors: int) -> int:
+    """Heuristic N = max(50, totalSectors / 20) from pipeline step 10."""
+    return max(50, total_sectors // 20)
+
+
+def _step10_is_long_warp(w: "WarpSpec", total_sectors: int) -> bool:
+    span = abs(w.from_sector_int - w.to_sector_int)
+    return span > _step10_long_warp_threshold(total_sectors)
+
+
+def _step10_warp_tunnel_properties() -> Dict[str, Any]:
+    """jsonb-schema.md#warptunnelproperties pins for bang-import step 10."""
+    return {
+        "traversal_cost": 1,
+        "discovered": True,
+        "affected_by_storms": False,
+    }
+
+
+def _step10_endpoint_json(
+    *,
+    sector_uuid: uuid.UUID,
+    cluster_uuid: uuid.UUID,
+    region_id: uuid.UUID,
+    x_coord: int,
+    y_coord: int,
+    z_coord: int,
+    controlling_faction: Optional[str],
+) -> Dict[str, Any]:
+    return {
+        "sector_id": str(sector_uuid),
+        "cluster_id": str(cluster_uuid),
+        "region_id": str(region_id),
+        "coordinates": {"x": x_coord, "y": y_coord, "z": z_coord},
+        "controlling_faction": controlling_faction,
+        "is_secured": False,
+        "access_requirements": None,
+    }
+
+
+def _step10_long_warp_specs(
+    warps: List["WarpSpec"], total_sectors: int
+) -> List["WarpSpec"]:
+    return [w for w in warps if _step10_is_long_warp(w, total_sectors)]
 
 
 #: WO-BANG-ONEWAY-RATE: GLOSSARY.md's canonical one-way-warp fraction
@@ -2267,6 +2320,56 @@ class BangImportService:
                 )
             )
         _record_phase_checksum(region_row, "warps", len(region_plan.warps), _sk17_t0)
+
+        # bang-import-pipeline.md step 10: NATURAL WarpTunnel for long warps.
+        sector_spec_by_int = {ss.sector_id: ss for ss in region_plan.sectors}
+        _sk17_t0 = time.monotonic()
+        long_tunnel_count = 0
+        for w in region_plan.warps:
+            if not _step10_is_long_warp(w, region_plan.total_sectors):
+                continue
+            src = sector_spec_by_int[w.from_sector_int]
+            dst = sector_spec_by_int[w.to_sector_int]
+            session.add(
+                WarpTunnel(
+                    name=(
+                        f"Natural long warp "
+                        f"{w.from_sector_int}→{w.to_sector_int}"
+                    ),
+                    origin_sector_id=sector_uuid_by_int[w.from_sector_int],
+                    destination_sector_id=sector_uuid_by_int[w.to_sector_int],
+                    type=WarpTunnelType.NATURAL,
+                    status=WarpTunnelStatus.ACTIVE,
+                    is_bidirectional=w.is_bidirectional,
+                    is_latent=w.is_latent,
+                    stability=1.0,
+                    stability_enum=WarpTunnelStability.STABLE,
+                    properties=_step10_warp_tunnel_properties(),
+                    source_endpoint=_step10_endpoint_json(
+                        sector_uuid=sector_uuid_by_int[w.from_sector_int],
+                        cluster_uuid=cluster_uuid_by_int[src.cluster_int_id],
+                        region_id=region_id,
+                        x_coord=src.x_coord,
+                        y_coord=src.y_coord,
+                        z_coord=src.z_coord,
+                        controlling_faction=src.controlling_faction,
+                    ),
+                    destination_endpoint=_step10_endpoint_json(
+                        sector_uuid=sector_uuid_by_int[w.to_sector_int],
+                        cluster_uuid=cluster_uuid_by_int[dst.cluster_int_id],
+                        region_id=region_id,
+                        x_coord=dst.x_coord,
+                        y_coord=dst.y_coord,
+                        z_coord=dst.z_coord,
+                        controlling_faction=dst.controlling_faction,
+                    ),
+                    turn_cost=w.turn_cost,
+                )
+            )
+            long_tunnel_count += 1
+        _record_phase_checksum(
+            region_row, "long_warp_tunnels", long_tunnel_count, _sk17_t0
+        )
 
         # WO-STN-SEC-1: sector→cluster-type lookup so the security-tier
         # derivation below can see "is this station in a frontier/lawless
