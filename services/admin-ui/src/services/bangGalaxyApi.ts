@@ -1,5 +1,6 @@
 /**
- * Thin axios wrappers around the sw2102-bang admin endpoints.
+ * Thin wrappers around the sw2102-bang admin endpoints via shared `api`
+ * (`utils/auth.ts` — JWT interceptor + empty baseURL / Vite proxy).
  *
  *   POST   /api/v1/admin/galaxy/jobs           — start a generation job
  *   POST   /api/v1/admin/galaxy/preview        — preview / validate only
@@ -9,11 +10,11 @@
  * SSE log stream is *not* here — see `hooks/useBangGenerationStream.ts`
  * (browsers can't set Authorization on EventSource so it uses `?token=`).
  *
- * All callers pass the bearer token explicitly to match the per-call
- * header pattern established in `AdminContext`. The shared response
- * interceptor in `AuthContext` will handle 401 refresh transparently.
+ * Callers still pass a bearer token so request headers stay explicit
+ * (same overlay as the old per-instance pattern). The shared interceptor
+ * also attaches `accessToken` from localStorage when present.
  */
-import axios from 'axios';
+import { api } from '../utils/auth';
 
 import type {
   BangConfig,
@@ -22,8 +23,6 @@ import type {
   BangJobResponse,
   BangPreviewResponse,
 } from '../components/universe/bang/types';
-
-const api = axios.create({ baseURL: '/api/v1' });
 
 function authHeaders(token: string | null): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {};
@@ -35,7 +34,7 @@ export async function createBangJob(
   token: string | null,
 ): Promise<BangJobResponse> {
   const response = await api.post<BangJobResponse>(
-    '/admin/galaxy/jobs',
+    '/api/v1/admin/galaxy/jobs',
     payload,
     { headers: authHeaders(token) },
   );
@@ -55,7 +54,7 @@ export async function addPlayerOwnedRegion(
   token: string | null,
 ): Promise<BangJobResponse> {
   const response = await api.post<BangJobResponse>(
-    `/admin/galaxy/${galaxyId}/regions`,
+    `/api/v1/admin/galaxy/${galaxyId}/regions`,
     payload,
     { headers: authHeaders(token) },
   );
@@ -68,7 +67,7 @@ export async function previewBangConfig(
   token: string | null,
 ): Promise<BangPreviewResponse> {
   const response = await api.post<BangPreviewResponse>(
-    '/admin/galaxy/preview',
+    '/api/v1/admin/galaxy/preview',
     config,
     { headers: authHeaders(token) },
   );
@@ -86,7 +85,7 @@ export async function listBangJobs(
   pageSize: number,
   token: string | null,
 ): Promise<BangJobHistoryPage> {
-  const response = await api.get<BangJobHistoryPage>('/admin/galaxy/jobs', {
+  const response = await api.get<BangJobHistoryPage>('/api/v1/admin/galaxy/jobs', {
     params: { page, page_size: pageSize },
     headers: authHeaders(token),
   });
@@ -105,7 +104,7 @@ export async function wipeBangGalaxy(
   confirmName: string,
   token: string | null,
 ): Promise<void> {
-  await api.delete(`/admin/galaxy/${galaxyId}`, {
+  await api.delete(`/api/v1/admin/galaxy/${galaxyId}`, {
     headers: {
       ...authHeaders(token),
       'X-Confirm-Galaxy-Name': confirmName,
