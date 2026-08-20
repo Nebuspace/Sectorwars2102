@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../../utils/auth';
 import { useConfirm } from '../../contexts/ToastContext';
+import { formatUniverseAdminError } from '../../utils/universeAdminError';
 import './sector-edit-modal.css';
 
 interface Sector {
@@ -220,9 +221,9 @@ const SectorEditModal: React.FC<SectorEditModalProps> = ({
         onClose();
       }
       
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error updating sector:', err);
-      setError(err.response?.data?.detail || 'Failed to update sector');
+      setError(formatUniverseAdminError(err, 'Failed to update sector'));
     } finally {
       setIsSaving(false);
     }
@@ -280,9 +281,9 @@ const SectorEditModal: React.FC<SectorEditModalProps> = ({
           resource_richness: 1.0
         });
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error creating planet:', err);
-      setError(err.response?.data?.detail || 'Failed to create planet');
+      setError(formatUniverseAdminError(err, 'Failed to create planet'));
     } finally {
       setIsSaving(false);
     }
@@ -314,9 +315,9 @@ const SectorEditModal: React.FC<SectorEditModalProps> = ({
           market_volatility: 50
         });
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error creating port:', err);
-      setError(err.response?.data?.detail || 'Failed to create port');
+      setError(formatUniverseAdminError(err, 'Failed to create port'));
     } finally {
       setIsSaving(false);
     }
@@ -372,9 +373,9 @@ const SectorEditModal: React.FC<SectorEditModalProps> = ({
           });
         }
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error saving warp tunnel:', err);
-      setError(err.response?.data?.detail || 'Failed to save warp tunnel');
+      setError(formatUniverseAdminError(err, 'Failed to save warp tunnel'));
     } finally {
       setIsSaving(false);
     }
@@ -417,9 +418,9 @@ const SectorEditModal: React.FC<SectorEditModalProps> = ({
         await fetchWarpTunnels(); // Refresh the list
         setError(null);
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error deleting warp tunnel:', err);
-      setError(err.response?.data?.detail || 'Failed to delete warp tunnel');
+      setError(formatUniverseAdminError(err, 'Failed to delete warp tunnel'));
     } finally {
       setIsSaving(false);
     }
