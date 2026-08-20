@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import PageHeader from '../ui/PageHeader';
 import PlanetDetailModal from '../universe/PlanetDetailModal';
 import './pages.css';
@@ -56,8 +57,13 @@ const PlanetsManager: React.FC = () => {
       setPlanets(response.data.planets || []);
       setTotalPlanets(response.data.total_count || 0);
       setError(null);
-    } catch (err: any) {
-      setError(err.response?.data?.detail || 'Failed to fetch planets');
+    } catch (err: unknown) {
+      setError(
+        formatAdminApiError(err, {
+          fallback: 'Failed to fetch planets',
+          scopeHint: 'admin universe planet management scopes required',
+        })
+      );
     } finally {
       setLoading(false);
     }
@@ -85,8 +91,13 @@ const PlanetsManager: React.FC = () => {
       await api.delete(`/api/v1/admin/planets/${planet.id}`);
       setPlanets(prev => prev.filter(p => p.id !== planet.id));
       setTotalPlanets(prev => prev - 1);
-    } catch (err: any) {
-      setError(err.response?.data?.detail || `Failed to delete planet "${planet.name}"`);
+    } catch (err: unknown) {
+      setError(
+        formatAdminApiError(err, {
+          fallback: `Failed to delete planet "${planet.name}"`,
+          scopeHint: 'admin universe planet management scopes required',
+        })
+      );
     }
   };
 
