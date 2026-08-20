@@ -1058,9 +1058,9 @@ class BountyService:
             # regenerating a pot for a colluding "hunter" to farm forever.
             self._restore_target_rep_after_system_payout(target)
 
-        total = total_player + total_system
+        total_raw = total_player + total_system
 
-        if total == 0:
+        if total_raw == 0:
             # No payout. Under the stored-pot model this is normally the
             # "no bounty on this head" case (had_bounty False — pot 0 and no
             # player-placed entries). The had_bounty-True-but-total-0 branch is
@@ -1090,6 +1090,11 @@ class BountyService:
                 "total_collected": 0,
                 "new_credits": collector.credits,
             }
+
+        # Lifecycle balancing lever — global faucet throttle (in-process).
+        from src.services.economy_balancing_levers import apply_bounty_payout_ratio
+
+        total = apply_bounty_payout_ratio(total_raw)
 
         # Award credits
         collector.credits += total
@@ -1257,7 +1262,10 @@ class BountyService:
             # bounties, so clear it now that the designated member has claimed it.
             self._set_bounties(target, [])
 
-        total = system_paid + player_paid
+        total_raw = system_paid + player_paid
+        from src.services.economy_balancing_levers import apply_bounty_payout_ratio
+
+        total = apply_bounty_payout_ratio(total_raw) if total_raw > 0 else 0
         if total > 0:
             hunter.credits += total
 

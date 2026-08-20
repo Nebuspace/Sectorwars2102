@@ -4,6 +4,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useAdmin } from '../../contexts/AdminContext';
 import PageHeader from '../ui/PageHeader';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 
 // Types
 interface User {
@@ -21,16 +22,11 @@ interface User {
  * string for HTTPException errors but an array of {loc, msg, type} objects
  * for 422 validation errors — rendering the raw value would break React.
  */
-const extractErrorDetail = (err: any, fallback: string): string => {
-  const detail = err?.response?.data?.detail;
-  if (typeof detail === 'string') return detail;
-  if (Array.isArray(detail)) {
-    return detail
-      .map((item: any) => (typeof item?.msg === 'string' ? item.msg : JSON.stringify(item)))
-      .join('; ');
-  }
-  return err?.message || fallback;
-};
+const extractErrorDetail = (err: unknown, fallback: string, scopeHint?: string): string =>
+  formatAdminApiError(err, {
+    fallback,
+    scopeHint: scopeHint ?? 'admin user management scopes required',
+  });
 
 /**
  * NPC filler-account detection (v1 heuristic, client-side).
