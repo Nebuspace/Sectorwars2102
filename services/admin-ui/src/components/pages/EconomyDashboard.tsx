@@ -6,6 +6,7 @@ import { useEconomyUpdates } from '../../contexts/WebSocketContext';
 import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import { useToast, useConfirm } from '../../contexts/ToastContext';
 import EconomyLeversPanel from './EconomyLeversPanel';
+import BountyAdminPanel from './BountyAdminPanel';
 import './economy-dashboard.css';
 
 interface MarketData {
@@ -618,6 +619,8 @@ const EconomyDashboard: React.FC = () => {
       </div>
 
       <EconomyLeversPanel />
+
+      <BountyAdminPanel />
       
       {loading ? (
         <div className="loading-spinner">Loading economic data...</div>
