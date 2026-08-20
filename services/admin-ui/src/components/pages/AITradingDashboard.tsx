@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import PageHeader from '../ui/PageHeader';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import { MarketPredictionInterface } from '../ai/MarketPredictionInterface';
 import { RouteOptimizationDisplay } from '../ai/RouteOptimizationDisplay';
@@ -105,9 +106,14 @@ const AITradingDashboard: React.FC = () => {
       // Fetch system metrics
       const metricsResponse = await api.get('/api/v1/admin/ai/metrics');
       setMetrics(metricsResponse.data);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Failed to fetch AI data:', err);
-      setError(err.response?.data?.detail || 'Failed to load AI trading data');
+      setError(
+        formatAdminApiError(err, {
+          fallback: 'Failed to load AI trading data',
+          scopeHint: 'admin.ai.view scope required for AI trading dashboard',
+        }),
+      );
     } finally {
       setLoading(false);
     }
