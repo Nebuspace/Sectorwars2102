@@ -98,6 +98,8 @@ describe('SystemHealthStatus (LEG-212 shared api)', () => {
 
     expect(screen.queryByText('Player Connections:')).not.toBeInTheDocument();
     await user.click(screen.getByTitle('Click to expand/collapse system details'));
+  });
+
   it('surfaces Access denied on server probe 403 (not console-only)', async () => {
     vi.mocked(api.get).mockRejectedValue(
       Object.assign(new Error('HTTP 403'), { response: { status: 403, data: {} } }),
