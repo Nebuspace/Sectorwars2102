@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAdmin } from '../../contexts/AdminContext';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import SectorEditModal from '../universe/SectorEditModal';
 
 interface Sector {
@@ -97,17 +98,15 @@ const SectorsManager: React.FC = () => {
         setSectors(data.sectors || []);
         setTotalSectors(data.total ?? data.total_count ?? (data.sectors || []).length);
         setSectorFetchError(null);
-      } catch (error: any) {
+      } catch (error: unknown) {
         console.error('Error fetching sectors:', error);
-        const status = error?.response?.status;
         setSectorFetchError(
-          status === 404
-            ? // Tip ships GET /api/v1/admin/sectors (admin.py) — a live 404 is
-              // auth/scope/baseURL/proxy misrouting, not a missing route.
-              'Sectors list route not found (404). GET /api/v1/admin/sectors ships on the gameserver — check auth/scope, API base URL, and that the /api proxy is reaching it.'
-            : status
-              ? `Failed to load sectors (HTTP ${status})`
-              : 'Gameserver unreachable — network error fetching sectors'
+          formatAdminApiError(error, {
+            fallback: 'Gameserver unreachable — network error fetching sectors',
+            scopeHint: 'admin.galaxy.manage scope required to list sectors',
+            notFoundMessage:
+              'Sectors list route not found (404). GET /api/v1/admin/sectors ships on the gameserver — check auth/scope, API base URL, and that the /api proxy is reaching it.',
+          })
         );
         setSectors([]);
         setTotalSectors(0);
