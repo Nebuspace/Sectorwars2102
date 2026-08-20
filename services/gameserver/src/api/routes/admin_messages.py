@@ -2,11 +2,11 @@
 Admin message moderation endpoints
 """
 
-from typing import Optional
+from typing import List, Optional
 from uuid import UUID
 from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session, joinedload
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from src.core.database import get_db
 from src.auth.admin_scopes import PLAYERS_VIEW, SECURITY_ACT
@@ -22,6 +22,26 @@ router = APIRouter(prefix="/admin/messages", tags=["admin-messages"])
 class ModerateMessageRequest(BaseModel):
     action: str  # 'delete', 'flag', 'unflag'
     reason: Optional[str] = None
+
+
+class BulkModerateRequest(BaseModel):
+    """LEG-266 — mass message moderation (admin-ui.md bulk tier via ``/bulk`` path)."""
+    message_ids: List[UUID] = Field(..., min_length=1, max_length=100)
+    action: str  # 'delete' | 'unflag' (same auth as single-row; flag rarely bulk)
+    reason: Optional[str] = None
+
+
+class BulkModerateItemResult(BaseModel):
+    message_id: str
+    success: bool
+    detail: Optional[str] = None
+
+
+class BulkModerateResponse(BaseModel):
+    action: str
+    succeeded: int
+    failed: int
+    results: List[BulkModerateItemResult]
 
 
 async def _list_admin_messages(
@@ -73,6 +93,72 @@ async def get_flagged_messages(
 ):
     """Get only flagged messages for review"""
     return await _list_admin_messages(page=page, flagged=True, db=db)
+
+
+# Register static ``/bulk-moderate`` before parameterized ``/{message_id}/…``
+# so the bulk path never competes with UUID capture (FastAPI route order).
+@router.post("/bulk-moderate", response_model=BulkModerateResponse)
+async def bulk_moderate_messages(
+    request: BulkModerateRequest,
+    admin: User = Depends(require_scope(SECURITY_ACT)),
+    db: Session = Depends(get_db),
+):
+    """Mass message moderation (OPERATIONS/admin-ui.md bulk tier).
+
+    Path contains ``/bulk`` so ``classify_admin_tier`` assigns ADMIN_TIER_BULK
+    (10/min). Reuses ``MessageService.moderate_message`` per id — partial
+    failure does not abort siblings (invalid / missing ids reported in
+    ``results``). Allowed actions: ``delete`` | ``unflag`` (same surface as
+    the single-row admin moderate path for multi-select UI).
+    """
+    if request.action not in ("delete", "unflag"):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid action. Must be 'delete' or 'unflag'",
+        )
+
+    results: list[BulkModerateItemResult] = []
+    succeeded = 0
+    failed = 0
+    for mid in request.message_ids:
+        try:
+            ok = await MessageService.moderate_message(
+                db=db,
+                message_id=mid,
+                action=request.action,
+                moderator_id=admin.id,
+                reason=request.reason,
+            )
+            if ok:
+                succeeded += 1
+                results.append(
+                    BulkModerateItemResult(message_id=str(mid), success=True)
+                )
+            else:
+                failed += 1
+                results.append(
+                    BulkModerateItemResult(
+                        message_id=str(mid),
+                        success=False,
+                        detail="message_not_found",
+                    )
+                )
+        except Exception as exc:  # noqa: BLE001 — per-id soft fail
+            failed += 1
+            results.append(
+                BulkModerateItemResult(
+                    message_id=str(mid),
+                    success=False,
+                    detail=str(exc)[:200],
+                )
+            )
+
+    return BulkModerateResponse(
+        action=request.action,
+        succeeded=succeeded,
+        failed=failed,
+        results=results,
+    )
 
 
 @router.post("/{message_id}/moderate")
