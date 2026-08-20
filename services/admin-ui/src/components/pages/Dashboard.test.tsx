@@ -75,4 +75,48 @@ describe('Dashboard (LEG-233)', () => {
     expect(screen.getByText('10')).toBeTruthy();
     expect(screen.queryByText(/Unable to load dashboard data/)).toBeNull();
   });
+
+  it('surfaces audit 403 as scope denial, not gameserver-down', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/admin/audit/logs')) {
+        throw Object.assign(new Error('HTTP 403'), { response: { status: 403 } });
+      }
+      return byUrl(url);
+    });
+
+    render(
+      <MemoryRouter>
+        <Dashboard />
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/Access denied/i)).toBeTruthy();
+    });
+
+    const msg = screen.getByText(/Access denied/i).textContent ?? '';
+    expect(msg).toMatch(/admin\.audit\.view|AUDIT_VIEW/i);
+    expect(msg).not.toMatch(/Unable to load recent audit events/i);
+  });
+
+  it('surfaces audit 429 as admin rate-limit copy', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/admin/audit/logs')) {
+        throw Object.assign(new Error('HTTP 429'), { response: { status: 429 } });
+      }
+      return byUrl(url);
+    });
+
+    render(
+      <MemoryRouter>
+        <Dashboard />
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/rate limit/i)).toBeTruthy();
+    });
+
+    expect(screen.getByText(/rate limit/i).textContent).not.toMatch(/Audit log request failed \(429\)/);
+  });
 });
