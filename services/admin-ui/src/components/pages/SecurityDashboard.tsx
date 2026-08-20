@@ -5,6 +5,7 @@ import { AuditLogViewer } from '../security/AuditLogViewer';
 import { MFASetup } from '../auth/MFASetup';
 import { useAuth } from '../../contexts/AuthContext';
 import { api } from '../../utils/auth';
+import { formatAdminApiError, formatSettledRejection } from '../../utils/adminApiError';
 import { useSystemAlerts } from '../../contexts/WebSocketContext';
 import './security-dashboard.css';
 
@@ -78,18 +79,28 @@ export const SecurityDashboard: React.FC = () => {
     if (reportResult.status === 'fulfilled') {
       setReport(reportResult.value.data as SecurityReport);
     } else {
-      const reason: any = reportResult.reason;
-      failures.push(`security report: ${reason?.response?.data?.detail || reason?.message || 'request failed'}`);
+      failures.push(
+        formatSettledRejection(
+          reportResult.reason,
+          'security report',
+          'admin security report scope required'
+        )
+      );
     }
 
     if (alertsResult.status === 'fulfilled') {
       setAlerts(alertsResult.value.data as SecurityAlertsResponse);
     } else {
-      const reason: any = alertsResult.reason;
-      failures.push(`security alerts: ${reason?.response?.data?.detail || reason?.message || 'request failed'}`);
+      failures.push(
+        formatSettledRejection(
+          alertsResult.reason,
+          'security alerts',
+          'admin security alerts scope required'
+        )
+      );
     }
 
-    setOverviewError(failures.length > 0 ? `Failed to load ${failures.join('; ')}` : null);
+    setOverviewError(failures.length > 0 ? failures.join(' | ') : null);
     setLoading(false);
   };
 
