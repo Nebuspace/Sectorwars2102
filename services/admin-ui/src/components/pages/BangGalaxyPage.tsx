@@ -18,6 +18,35 @@ import './bang-galaxy-page.css';
 type TabKey = 'form' | 'history';
 
 /**
+ * Invent=0 inline colonization (LEG-1215/#1286) — tip lacks adminApiError.ts.
+ * Wipe / add-region are BANG_REGENERATE / admin.universe.manage writes.
+ */
+function bangGalaxyActionError(err: unknown, fallback: string): string {
+  if (err && typeof err === 'object') {
+    const status = (err as { response?: { status?: number; data?: { detail?: unknown } } })
+      .response?.status;
+    const detail = (err as { response?: { data?: { detail?: unknown } } }).response?.data
+      ?.detail;
+    if (status === 401 || status === 403) {
+      if (typeof detail === 'string' && detail.trim()) {
+        return detail;
+      }
+      return 'Access denied — Bang galaxy wipe/add-region requires the admin.universe.manage scope.';
+    }
+    if (status === 429) {
+      return 'Admin rate limit exceeded — wait a moment and try again.';
+    }
+    if (status != null) {
+      return `${fallback} (HTTP ${status})`;
+    }
+  }
+  if (err instanceof Error && err.message.trim()) {
+    return err.message;
+  }
+  return fallback;
+}
+
+/**
  * BangGalaxyPage — single-stop UI for the sw2102-bang admin workflow.
  *
  * Tab layout (form / history) mirrors the audit's recommendation of a
@@ -80,8 +109,12 @@ const BangGalaxyPage: React.FC = () => {
       setWipeOpen(false);
       await loadGalaxyInfo();
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setWipeError(t('bang.wipe.failure', { error: message }));
+      setWipeError(
+        bangGalaxyActionError(
+          err,
+          t('bang.wipe.failure', { error: 'request failed' }),
+        ),
+      );
     } finally {
       setWipeBusy(false);
     }
@@ -164,8 +197,9 @@ const BangGalaxyPage: React.FC = () => {
               // Refresh galaxy info to surface the new region.
               setTimeout(() => { void loadGalaxyInfo(); }, 500);
             } catch (err) {
-              const message = err instanceof Error ? err.message : String(err);
-              setAddRegionError(message);
+              setAddRegionError(
+                bangGalaxyActionError(err, 'Failed to add player-owned region'),
+              );
             } finally {
               setAddRegionBusy(false);
             }
