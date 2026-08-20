@@ -546,6 +546,7 @@ class TestSpecialLocationNaming:
             ("rylan", "Rylan"),
             ("alpha_centauri", "Alpha Centauri"),
             ("fringe_homeworld", "Fringe Homeworld"),
+            ("cabal_hq", "Cabal Headquarters"),
         ],
     )
     def test_known_slugs_map_to_canonical_names(

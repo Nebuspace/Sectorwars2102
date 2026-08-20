@@ -46,7 +46,7 @@ from src.models.npc_character import (
     NPCLifecycleStage,
     NPCStatus,
 )
-from src.models.sector import Sector
+from src.models.sector import Sector, SectorType
 from src.models.ship import Ship, ShipSpecification, ShipStatus, ShipType
 
 logger = logging.getLogger(__name__)
@@ -61,6 +61,9 @@ PIRATE_CAPTAIN_KIND = "pirate_captain"
 PIRATE_CAPTAIN_TITLE = "Pirate Captain"
 PIRATE_LORD_TITLE = "Pirate Lord"  # ADR-0063 N-I1 / npc-scheduler.md hop-cap class
 MERCHANT_CAPTAIN_KIND = "merchant_captain"
+# DATA_MODELS/npcs.md role example for RESEARCHER — gameserver-seeded
+# (BANG emits no researcher kind today), same pattern as merchant_captain.
+NEBULA_SURVEYOR_KIND = "nebula_surveyor"
 
 # TRADER roster tunables. Canon is silent on both (flagged for
 # DECISIONS.md): trader counts are operator-tunable per region, and the
@@ -75,6 +78,24 @@ MERCHANT_CAPTAIN_KIND = "merchant_captain"
 # seed_trader_rosters re-syncs existing rosters to this value on boot.
 TRADERS_PER_REGION = 34
 TRADER_STARTING_CREDITS = 3_000
+
+# RESEARCHER / Rogue Scientist spawn (LEG-108 / quantum-resources.md §3).
+# Sparse on purpose: lodging capacity is 6 (npc-lodging.md); 3/region keeps
+# the Rogue Scientist quantum-drop row live without flooding lanes. Canon
+# is silent on exact count — operator-tunable via roster target_count.
+# Faction code matches auth seeding / emergent_reputation_service.
+RESEARCHERS_PER_REGION = 3
+NOVA_SCIENTIFIC_FACTION_CODE = "nova_scientific_institute"
+RESEARCHER_TITLES = (
+    "Surveyor",
+    "Field Scientist",
+    "Rogue Scientist",
+    "Nova Researcher",
+)
+RESEARCHER_NAME_POOL: Tuple[str, ...] = (
+    "Kei Amaranth", "Nora Quill", "Silas Vern", "Imani Okoro",
+    "Talia Shore", "Jonah Prest", "Mira Solenne", "Cadence Ruhl",
+)
 
 # Trader variety (canon-silent flavor — flagged in DECISIONS.md). Merchant
 # captains vary by hull, persona title and daily rhythm so the lanes read as a
@@ -214,6 +235,9 @@ PATROL_MINUTES_PER_SECTOR: Dict[str, int] = {
     "marshal_captain": 240,
     "nexus_sentinel": 180,
     "sentinel_captain": 180,
+    # Surveyors reuse the slower Marshal cadence when handed a patrol-shaped
+    # schedule (science routes are preferred at spawn).
+    NEBULA_SURVEYOR_KIND: 240,
 }
 
 
@@ -332,6 +356,21 @@ KIND_CONFIG: Dict[str, KindConfig] = {
         squad_kind=MERCHANT_CAPTAIN_KIND,
         defenses_key=PIRATE_PATROL_DEFENSES_KEY,  # unused: joins_squad=False
         default_faction_code="merchants",
+        kind_in_roster_ref=True,
+        is_police=False,
+        joins_squad=False,
+    ),
+    # RESEARCHER — Nova surveyors (npc-lifecycle.md). Independent actors
+    # (no patrol squad). Activates the Rogue Scientist quantum-drop row
+    # (quantum-resources.md §3) once Loop B / bulk-fill materializes them.
+    NEBULA_SURVEYOR_KIND: KindConfig(
+        archetype=NPCArchetype.RESEARCHER,
+        title="Surveyor",
+        ship_type=ShipType.SCOUT_SHIP,
+        ship_name_format="Surveyor {name}'s Scout",
+        squad_kind=NEBULA_SURVEYOR_KIND,
+        defenses_key=PIRATE_PATROL_DEFENSES_KEY,  # unused: joins_squad=False
+        default_faction_code=NOVA_SCIENTIFIC_FACTION_CODE,
         kind_in_roster_ref=True,
         is_police=False,
         joins_squad=False,
@@ -1105,6 +1144,81 @@ def seed_trader_rosters(db: Session, galaxy: Galaxy) -> Dict[str, Any]:
     return stats
 
 
+def _researcher_host_sector_id(db: Session, region_id) -> Optional[int]:
+    """Prefer a NEBULA sector in-region (npc-lifecycle.md surveyor cycles);
+    otherwise any sector in the region (region-wide sparse spawn is OK)."""
+    nebula = (
+        db.query(Sector.sector_id)
+        .filter(Sector.region_id == region_id, Sector.type == SectorType.NEBULA)
+        .order_by(Sector.sector_id)
+        .first()
+    )
+    if nebula is not None:
+        return int(nebula[0])
+    any_sector = (
+        db.query(Sector.sector_id)
+        .filter(Sector.region_id == region_id)
+        .order_by(Sector.sector_id)
+        .first()
+    )
+    return int(any_sector[0]) if any_sector is not None else None
+
+
+def seed_researcher_rosters(db: Session, galaxy: Galaxy) -> Dict[str, Any]:
+    """Seed nebula_surveyor NPCRoster rows — one per region with sectors.
+
+    Gameserver-side because BANG emits no researcher kind today. Sparse
+    counts default to RESEARCHERS_PER_REGION (operator-tunable via the
+    roster row's target_count). Idempotent by bang_roster_ref. LEG-108:
+    materializing RESEARCHER NPCs activates the Rogue Scientist quantum-
+    drop row already shipped in combat_service._roll_npc_quantum_drop.
+    """
+    from src.models.npc_character import NPCRoster
+    from src.models.region import Region
+
+    stats: Dict[str, Any] = {
+        "researcher_rosters_created": 0,
+        "researcher_rosters_existing": 0,
+        "warnings": [],
+    }
+
+    for region in db.query(Region).all():
+        roster_ref = f"{galaxy.id}:researcher:{region.id}"
+        existing = (
+            db.query(NPCRoster)
+            .filter(NPCRoster.bang_roster_ref == roster_ref)
+            .first()
+        )
+        if existing is not None:
+            if existing.target_count != RESEARCHERS_PER_REGION:
+                existing.target_count = RESEARCHERS_PER_REGION
+                stats["researcher_rosters_retargeted"] = (
+                    stats.get("researcher_rosters_retargeted", 0) + 1
+                )
+            stats["researcher_rosters_existing"] += 1
+            continue
+
+        host_sector_id = _researcher_host_sector_id(db, region.id)
+        if host_sector_id is None:
+            continue  # empty region — nothing to survey
+
+        db.add(NPCRoster(
+            region_id=region.id,
+            faction_code=NOVA_SCIENTIFIC_FACTION_CODE,
+            role=NEBULA_SURVEYOR_KIND,
+            default_archetype=NPCArchetype.RESEARCHER,
+            schedule_template={},
+            target_count=RESEARCHERS_PER_REGION,
+            name_pool={"names": list(RESEARCHER_NAME_POOL)},
+            host_sector_id=host_sector_id,
+            bang_roster_ref=roster_ref,
+        ))
+        stats["researcher_rosters_created"] += 1
+
+    db.flush()
+    return stats
+
+
 def backfill_npc_schedules(db: Session) -> int:
     """Give pre-runtime NPC rows (empty daily_schedule) their roster's
     schedule template + home region, and assign duty roles (ADR-0063
@@ -1132,9 +1246,9 @@ def backfill_npc_schedules(db: Session) -> int:
             npc.home_region_id = npc.home_region_id or roster.region_id
             backfilled += 1
 
-        # Duty roles, independent of the schedule pass. Traders are
-        # independent actors — no primary/backup chain.
-        if roster.role == MERCHANT_CAPTAIN_KIND:
+        # Duty roles, independent of the schedule pass. Traders and
+        # researchers are independent actors — no primary/backup chain.
+        if roster.role in (MERCHANT_CAPTAIN_KIND, NEBULA_SURVEYOR_KIND):
             continue
         roster_npcs = (
             db.query(NPCCharacter)
@@ -1197,10 +1311,12 @@ def backfill_orphan_npc_schedules(db: Session) -> int:
             NPCCharacter.lifecycle_stage.notin_(
                 (NPCLifecycleStage.KIA, NPCLifecycleStage.RETIRED)
             ),
-            # TRADERS are excluded: they get a generated trade route at spawn
-            # (Loop B). A trader should never be handed a patrol route — that
-            # would freeze its economy behaviour.
-            NPCCharacter.archetype != NPCArchetype.TRADER,
+            # TRADERS / RESEARCHERS are excluded: they get generated
+            # trade/science routes at spawn (Loop B). A surveyor should
+            # never be handed a LAW patrol route.
+            NPCCharacter.archetype.notin_(
+                (NPCArchetype.TRADER, NPCArchetype.RESEARCHER)
+            ),
             cast(NPCCharacter.daily_schedule, SAString) == '{}',
             NPCCharacter.current_sector_id.isnot(None),
         )
@@ -1226,6 +1342,9 @@ def bootstrap_galaxy(db: Session, galaxy: Galaxy) -> Dict[str, Any]:
     trader_stats = seed_trader_rosters(db, galaxy)
     stats.update({k: v for k, v in trader_stats.items() if k != "warnings"})
     stats["warnings"].extend(trader_stats.get("warnings") or [])
+    researcher_stats = seed_researcher_rosters(db, galaxy)
+    stats.update({k: v for k, v in researcher_stats.items() if k != "warnings"})
+    stats["warnings"].extend(researcher_stats.get("warnings") or [])
     stats["schedules_backfilled"] = backfill_npc_schedules(db)
     # Catch NPCs with no roster to inherit from (drifted snapshot) so they
     # still get a patrol schedule and are not frozen.

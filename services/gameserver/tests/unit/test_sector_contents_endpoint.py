@@ -154,6 +154,9 @@ class _NoWriteQuery:
     def limit(self, *a: Any, **k: Any) -> "_NoWriteQuery":
         return self
 
+    def group_by(self, *a: Any, **k: Any) -> "_NoWriteQuery":
+        return self
+
     def first(self) -> Any:
         return self._first
 
@@ -171,7 +174,12 @@ class _NoWriteSession:
     def __init__(self, specs: Dict[type, _NoWriteQuery]) -> None:
         self._specs = specs
 
-    def query(self, target: Any) -> _NoWriteQuery:
+    def query(self, *targets: Any) -> _NoWriteQuery:
+        # LEG-59+ enrich_presence issues multi-column medal aggregates —
+        # return an empty passthrough (no writes) rather than assert-fail.
+        if len(targets) != 1:
+            return _NoWriteQuery(all_results=[], count=0)
+        target = targets[0]
         assert target in self._specs, f"unexpected query for {target!r}"
         return self._specs[target]
 

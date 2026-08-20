@@ -1379,8 +1379,10 @@ class NexusGenerationService:
         source = sectors_map[source_num]
         dest = sectors_map[dest_num]
 
-        # Calculate distance
-        distance = self._calculate_sector_distance(source, dest)
+        # Calculate distance / canonical length-band turn cost (LEG-88).
+        from src.services.warp_tunnel_length import natural_tunnel_cost_fields
+
+        _length, turn_cost, properties = natural_tunnel_cost_fields(source, dest)
 
         # Create warp tunnel
         tunnel_name = f"Nexus Warp {source_num}-{dest_num}"
@@ -1397,7 +1399,8 @@ class NexusGenerationService:
             status=WarpTunnelStatus.ACTIVE,
             is_bidirectional=is_bidirectional,
             stability=self._get_stability_for_tunnel_type(tunnel_type),
-            turn_cost=self._get_turn_cost_for_tunnel_type(tunnel_type, distance),
+            turn_cost=turn_cost,
+            properties=properties,
             is_public=True,
             description=f"Warp tunnel connecting Sector {source_num} to Sector {dest_num}"
         )
@@ -1441,17 +1444,15 @@ class NexusGenerationService:
         return stability_map.get(tunnel_type, 0.8)
 
     def _get_turn_cost_for_tunnel_type(self, tunnel_type: WarpTunnelType, distance: float) -> int:
-        """Calculate turn cost for a warp tunnel.
+        """LEG-88: canonical length-band turn cost (movement.md § Long warp tunnels).
 
-        NO-CANON: routing cost is type-independent (sectors.md:47 — NATURAL
-        and generator-placed ARTIFICIAL tunnels are "indistinguishable in
-        routing cost and stability"). The prior per-type multiplier map
-        (NATURAL/STANDARD 1.0, ARTIFICIAL 0.7, QUANTUM 0.5, ANCIENT 0.8,
-        UNSTABLE 1.5) is removed; every tunnel this generator mints uses the
-        same distance-scaled base cost. tunnel_type is kept in the signature
-        for interface stability (WO-GWQ-TUNNELTYPE).
+        ``tunnel_type`` is unused — NATURAL and generator-placed ARTIFICIAL
+        tunnels share routing cost. Kept in the signature for call-site
+        stability. Prefer :func:`warp_tunnel_length.turn_cost_from_length`.
         """
-        return max(1, int(distance / 10))  # Ensure at least 1 turn
+        from src.services.warp_tunnel_length import turn_cost_from_length
+
+        return turn_cost_from_length(distance)
 
 
 # Singleton instance

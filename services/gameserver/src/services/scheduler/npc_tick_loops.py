@@ -34,6 +34,7 @@ from src.services import npc_movement_service
 from src.services.npc_spawn_service import (
     KIND_CONFIG,
     POLICE_WANTED_THRESHOLD,
+    RESEARCHER_TITLES,
     TRADER_SHIP_NOUN,
     TRADER_SHIP_TYPES,
     TRADER_STARTING_CREDITS,
@@ -196,6 +197,15 @@ def run_loop_a(db: Session, tick: int = 0) -> List[Dict[str, Any]]:
         npc_trading_service.release_stale_trader_slips(db)
     except Exception:
         logger.exception("Loop A: trader slip release sweep failed")
+
+    # LEG-394 / npc-traders.md § Restock by delivery: low-stock stations get
+    # a visible goods-carrying TRADER spawn (empty sector → sell via
+    # run_trade_stop). Best-effort; never wedges Loop A.
+    try:
+        from src.services import npc_trading_service
+        npc_trading_service.scan_and_dispatch_supply_deliveries(db)
+    except Exception:
+        logger.exception("Loop A: supply-delivery scan failed")
 
     # WO-ISP: advance/finish in-system legs + schedule burns for active NPCs.
     try:
@@ -782,6 +792,7 @@ def _fill_roster_deficit(
     )
 
     is_trader = roster.default_archetype == NPCArchetype.TRADER
+    is_researcher = roster.default_archetype == NPCArchetype.RESEARCHER
     # Per-hull spec cache so trader variety doesn't re-query the same spec.
     spec_cache: Dict[Any, ShipSpecification] = {}
 
@@ -820,6 +831,15 @@ def _fill_roster_deficit(
                 "trader spawn deferred", roster.region_id,
             )
             return []
+    elif is_researcher:
+        # Prefer science survey routes (npc-lifecycle.md field expeditions);
+        # still spawn if none exist so the Rogue Scientist drop row is live.
+        from src.services import npc_mission_service
+
+        for _ in range(min(spawn_count, 6)):
+            sr = npc_mission_service.generate_science_route(db, roster.host_sector_id)
+            if sr is not None:
+                science_pool.append(sr)
 
     events: List[Dict[str, Any]] = []
     for _ in range(spawn_count):
@@ -839,6 +859,9 @@ def _fill_roster_deficit(
             # that grow population and carry lootable colonists), a few are
             # science vessels surveying uninhabited worlds. Fall back to whatever
             # pool actually has routes.
+            from src.services import npc_trading_service
+            from src.services import npc_mission_service
+
             roll = random.random()
             if roll < 0.40 and colonist_pool:
                 route = random.choice(colonist_pool)
@@ -883,6 +906,17 @@ def _fill_roster_deficit(
                 f"{TRADER_SHIP_NOUN.get(hull, 'Hauler')}"
             )
             daily_schedule["shift_offset_hours"] = random.randint(0, 23)
+        elif is_researcher:
+            from src.services import npc_mission_service
+
+            spawn_title = random.choice(RESEARCHER_TITLES)
+            ship_name = f"{spawn_title} {npc_name}'s Scout"
+            if science_pool:
+                daily_schedule = npc_mission_service.build_mission_schedule(
+                    random.choice(science_pool),
+                    npc_mission_service.SCIENCE_MISSION,
+                )
+                daily_schedule["shift_offset_hours"] = random.randint(0, 23)
 
         ship = _build_npc_ship(
             spawn_spec,
@@ -892,6 +926,7 @@ def _fill_roster_deficit(
         db.add(ship)
         db.flush()
 
+        independent = is_trader or is_researcher
         npc = NPCCharacter(
             name=npc_name,
             title=spawn_title,
@@ -903,14 +938,14 @@ def _fill_roster_deficit(
             bang_roster_ref=roster.bang_roster_ref,
             home_region_id=roster.region_id,
             current_activity=(
-                NPCActivity.COMMUTE if is_trader else NPCActivity.PATROL
+                NPCActivity.COMMUTE if independent else NPCActivity.PATROL
             ),
             # ADR-0063: successors spawn immediately as reduced-stat recruits.
             lifecycle_stage=NPCLifecycleStage.RECRUIT,
             # N-F1: a roster with no live primary gets one immediately
             # (the emergency-spawn fallthrough); otherwise the recruit
-            # lands in a backup slot. Traders are independent — no chain.
-            duty_role=None if is_trader else (
+            # lands in a backup slot. Traders/researchers are independent.
+            duty_role=None if independent else (
                 f"backup_{roster.role}" if has_primary
                 else f"primary_{roster.role}"
             ),

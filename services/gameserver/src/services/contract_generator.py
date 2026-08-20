@@ -136,6 +136,13 @@ HAZARDOUS_TRANSPORT_TYPE_MULTIPLIER = Decimal("3.0")
 # directly fencing contraband on the black-market floor. Proposed to
 # DECISIONS.md.
 HAZARDOUS_TRANSPORT_FEDERATION_REP_PENALTY = -30
+# LEG-125: freeze `Contract.reputation_reward` at NPC generation when the
+# destination resolves to an issuing faction (faction_id set). Magnitude
+# reuses the existing HAZARDOUS_TRANSPORT_FEDERATION_REP_PENALTY pin via
+# abs() — same [NO-CANON] class already shipped for the penalty writer;
+# LEG-125 Accept prefers penalty symmetry over inventing a second number.
+# contract_service.complete (LEG-122) is the reader.
+NPC_CONTRACT_FACTION_REP_REWARD = abs(HAZARDOUS_TRANSPORT_FEDERATION_REP_PENALTY)
 
 # --- WO-CONTRACT-4-BULK (Lane B): bulk_procurement ---
 #
@@ -500,6 +507,8 @@ class _ContractSpec:
     # bump at every call site for a field only two of three types use).
     contract_type: ContractType = ContractType.CARGO_DELIVERY
     reputation_penalty: Optional[int] = None
+    # LEG-125: non-None when faction_id is set (issuing faction known).
+    reputation_reward: Optional[int] = None
 
 
 @dataclass
@@ -745,6 +754,11 @@ def compute_contract_generation_batch(inputs: GenerationInputs) -> GenerationBat
 
             faction_id = inputs.faction_cache.get(destination.faction_affiliation) \
                 if destination.faction_affiliation else None
+            # LEG-125: freeze reputation_reward only when an issuing faction
+            # resolves — no standing grant without a faction_id target.
+            reputation_reward = (
+                NPC_CONTRACT_FACTION_REP_REWARD if faction_id is not None else None
+            )
 
             contracts.append(_ContractSpec(
                 issuer_id=destination.id,
@@ -758,6 +772,7 @@ def compute_contract_generation_batch(inputs: GenerationInputs) -> GenerationBat
                 deadline_hours=deadline_hours,
                 contract_type=contract_type,
                 reputation_penalty=reputation_penalty,
+                reputation_reward=reputation_reward,
             ))
             pool_counts[destination.id] = pool_counts.get(destination.id, 0) + 1
             generated_by_type[contract_type.value] += 1
@@ -817,6 +832,9 @@ def write_contract_generation_batch(
             # type stays None, byte-identical to this column's pre-WO
             # always-unset state.
             reputation_penalty=spec.reputation_penalty,
+            # LEG-125: first real writer of reputation_reward at generation
+            # (LEG-122 reader on complete applies it for NPC issuers).
+            reputation_reward=spec.reputation_reward,
             deadline=now + timedelta(hours=float(spec.deadline_hours)),
             posted_at=now,
             posting_stations=[spec.destination_station_id],
