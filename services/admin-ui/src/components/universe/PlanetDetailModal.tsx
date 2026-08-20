@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../../utils/auth';
+import { formatUniverseAdminError } from '../../utils/universeAdminError';
 import './planet-detail-modal.css';
 
 interface Planet {
@@ -66,8 +67,8 @@ const PlanetDetailModal: React.FC<PlanetDetailModalProps> = ({
       });
       setIsEditing(false);
       if (onSave) onSave(editedPlanet);
-    } catch (err: any) {
-      setError(err.response?.data?.detail || 'Failed to save planet changes');
+    } catch (err: unknown) {
+      setError(formatUniverseAdminError(err, 'Failed to save planet changes'));
     } finally {
       setLoading(false);
     }
