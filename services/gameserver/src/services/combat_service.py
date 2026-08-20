@@ -1391,6 +1391,23 @@ class CombatService:
         except Exception as e:
             logger.error("Failed police engagement routing after combat: %s", e)
 
+        # Dynamic sector influence: rival kill −2% (factions-and-teams.md).
+        # Best-effort / flush-only — rides this combat's single commit.
+        try:
+            from src.services.faction_service import apply_rival_kill_sector_influence
+
+            sector_uuid = sector.id if sector else None
+            if combat_result["defender_ship_destroyed"]:
+                apply_rival_kill_sector_influence(
+                    self.db, sector_uuid, attacker.id, defender.id
+                )
+            if combat_result["attacker_ship_destroyed"]:
+                apply_rival_kill_sector_influence(
+                    self.db, sector_uuid, defender.id, attacker.id
+                )
+        except Exception as e:
+            logger.error("Failed rival-kill sector influence hook: %s", e)
+
         # Commit changes
         self.db.commit()
         outbox.flush()
@@ -2437,6 +2454,33 @@ class CombatService:
 
         # Update last_combat timestamp for sector
         sector.last_combat = datetime.now()
+
+        # Dynamic sector influence: drone defense survives → +1% for the
+        # defending drones' owner's dominant faction (factions-and-teams.md).
+        if drones_remaining > 0:
+            try:
+                from src.services.faction_service import (
+                    apply_defense_survived_sector_influence,
+                    dominant_reputation_faction_id,
+                )
+
+                defended_faction_id = None
+                for d in target_drones:
+                    owner_id = getattr(d, "player_id", None)
+                    if owner_id is None:
+                        continue
+                    if getattr(d, "health", 0) <= 0:
+                        continue
+                    defended_faction_id = dominant_reputation_faction_id(
+                        self.db, owner_id
+                    )
+                    if defended_faction_id is not None:
+                        break
+                apply_defense_survived_sector_influence(
+                    self.db, sector.id, defended_faction_id
+                )
+            except Exception as e:
+                logger.error("Failed sector-drone defense influence hook: %s", e)
 
         # Commit changes
         self.db.commit()
