@@ -24,6 +24,9 @@ from src.api.routes.market_prediction import router as market_prediction_router 
 from src.api.routes.audit import router as audit_router
 from src.api.routes.messages import router as messages_router
 from src.api.routes.admin_messages import router as admin_messages_router
+from src.api.routes.admin_moderation_messages import (
+    router as admin_moderation_messages_router,
+)
 from src.api.routes.admin_beacons import router as admin_beacons_router
 from src.api.routes.admin_construction import router as admin_construction_router  # LEG-40
 from src.api.routes.factions import router as factions_router
@@ -125,6 +128,9 @@ api_router.include_router(market_prediction_router, tags=["market"])  # WO-MP1 (
 api_router.include_router(audit_router, tags=["audit"])
 api_router.include_router(messages_router, tags=["messages"])
 api_router.include_router(admin_messages_router, tags=["admin-messages"])
+api_router.include_router(
+    admin_moderation_messages_router, tags=["admin-moderation-messages"]
+)
 api_router.include_router(admin_beacons_router, tags=["admin-beacons"])
 api_router.include_router(admin_construction_router, tags=["admin-construction"])  # LEG-40
 api_router.include_router(factions_router, tags=["factions"])
