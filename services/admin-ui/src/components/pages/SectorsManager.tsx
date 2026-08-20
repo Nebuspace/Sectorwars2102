@@ -102,7 +102,9 @@ const SectorsManager: React.FC = () => {
         const status = error?.response?.status;
         setSectorFetchError(
           status === 404
-            ? 'Sectors list endpoint not implemented — request returned 404'
+            ? // Tip ships GET /api/v1/admin/sectors (admin.py) — a live 404 is
+              // auth/scope/baseURL/proxy misrouting, not a missing route.
+              'Sectors list route not found (404). GET /api/v1/admin/sectors ships on the gameserver — check auth/scope, API base URL, and that the /api proxy is reaching it.'
             : status
               ? `Failed to load sectors (HTTP ${status})`
               : 'Gameserver unreachable — network error fetching sectors'
