@@ -57,6 +57,47 @@ from src.models.station import Station
 
 logger = logging.getLogger(__name__)
 
+# LEG-467 — bang Port.dockingSlips copied onto Station.services JSONB.
+_SERVICES_DOCKING_SLIPS_KEY = "docking_slips"
+
+
+def persisted_docking_slips(station: Any) -> Optional[Dict[str, int]]:
+    """Return bang-persisted four-class inventory, or None if absent.
+
+    Stored under ``Station.services['docking_slips']`` (existing JSONB — not a
+    second table of counts). Accepts bang camelCase leftovers if a writer
+    skipped normalize.
+    """
+    services = getattr(station, "services", None)
+    if not isinstance(services, dict):
+        return None
+    raw = services.get(_SERVICES_DOCKING_SLIPS_KEY)
+    if not isinstance(raw, dict):
+        return None
+
+    def _int_field(*keys: str) -> Optional[int]:
+        for key in keys:
+            if key not in raw or raw[key] is None:
+                continue
+            try:
+                return int(raw[key])
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    transient = _int_field("transient")
+    long_term = _int_field("long_term", "longTerm")
+    if transient is None or long_term is None:
+        return None
+    construction = _int_field("construction")
+    specialized = _int_field("specialized_construction", "specializedConstruction")
+    return {
+        "transient": transient,
+        "long_term": long_term,
+        "construction": construction if construction is not None else 0,
+        "specialized_construction": specialized if specialized is not None else 0,
+    }
+
 # Canon: long-term mooring rental (FEATURES/economy/docking-slips §Slip rental
 # fee structure). All long-term mooring costs the same regardless of station
 # class; the scarcity comes from the small pool, not the price tier.
@@ -179,14 +220,19 @@ def check_reputation_gate(
 def slip_capacity_for(station: Station) -> int:
     """Transient slip capacity by station kind (canon table).
 
-    Precedence: tradedock_tier is checked BEFORE is_spacedock, which is
-    checked before the station-class buckets.
+    Precedence: tradedock_tier (GS TradeDock A/B) BEFORE bang-persisted
+    inventory BEFORE is_spacedock BEFORE station-class buckets. Persisted
+    inventory is how Path A pirate/frontier ports get 6/4 instead of the
+    class-band 12/8 (LEG-467 / docking-slips.md).
     """
     tier = getattr(station, "tradedock_tier", None)
     if tier == "A":
         return 24
     if tier == "B":
         return 20
+    persisted = persisted_docking_slips(station)
+    if persisted is not None:
+        return persisted["transient"]
     if getattr(station, "is_spacedock", False):
         return 30
     cls = station.station_class.value if station.station_class is not None else None
@@ -214,15 +260,19 @@ def long_term_capacity_for(station: Station) -> int:
     """Long-term mooring slip count by station kind (canon table).
 
     Canon: FEATURES/economy/docking-slips §Per-station-class slip counts.
-    Same precedence as slip_capacity_for: tradedock_tier > is_spacedock >
-    station_class.  Stations with no long-term slips return 0; acquiring a
-    long-term slip at such a station immediately returns 'unavailable'.
+    Same precedence as slip_capacity_for: tradedock_tier > bang-persisted
+    inventory > is_spacedock > station_class.  Stations with no long-term
+    slips return 0; acquiring a long-term slip at such a station immediately
+    returns 'unavailable'.
     """
     tier = getattr(station, "tradedock_tier", None)
     if tier == "A":
         return 8
     if tier == "B":
         return 8
+    persisted = persisted_docking_slips(station)
+    if persisted is not None:
+        return persisted["long_term"]
     if getattr(station, "is_spacedock", False):
         return 10
     cls = station.station_class.value if station.station_class is not None else None
@@ -261,6 +311,9 @@ def construction_capacity_for(station: Station) -> int:
         return 8
     if tier == "B":
         return 12
+    persisted = persisted_docking_slips(station)
+    if persisted is not None:
+        return persisted["construction"]
     return 0
 
 
@@ -275,6 +328,9 @@ def specialized_construction_capacity_for(station: Station) -> int:
     tier = getattr(station, "tradedock_tier", None)
     if tier == "A":
         return 4
+    persisted = persisted_docking_slips(station)
+    if persisted is not None:
+        return persisted["specialized_construction"]
     return 0
 
 

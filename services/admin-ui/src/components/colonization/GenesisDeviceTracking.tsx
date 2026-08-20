@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import './genesis-device-tracking.css';
 
 interface GenesisDevice {
@@ -55,10 +56,7 @@ interface GenesisAlert {
   severity: 'low' | 'medium' | 'high' | 'critical';
 }
 
-const responseStatus = (err: unknown): number | undefined =>
-  typeof err === 'object' && err !== null && 'response' in err
-    ? (err as { response?: { status?: number } }).response?.status
-    : undefined;
+
 
 export const GenesisDeviceTracking: React.FC = () => {
   const [devices, setDevices] = useState<GenesisDevice[]>([]);
@@ -92,23 +90,16 @@ export const GenesisDeviceTracking: React.FC = () => {
       setError(null);
     } catch (err) {
       console.error('Error loading Genesis data:', err);
-      const status = responseStatus(err);
-      if (status === 401 || status === 403) {
-        setError(
-          'Access denied — Genesis device tracking requires the admin regions view scope (REGIONS_VIEW).'
-        );
-      } else if (status === 429) {
-        setError('Admin rate limit exceeded — wait a moment and try again.');
-      } else if (status === 404) {
-        setError(
-          'Genesis devices route not found (404). The gameserver ships /api/v1/admin/colonization/genesis-devices — ' +
-            'check that the gameserver is running and the /api proxy is reaching it.'
-        );
-      } else if (status !== undefined) {
-        setError(`Failed to load Genesis device data (HTTP ${status})`);
-      } else {
-        setError('Gameserver unreachable — network error fetching Genesis device data');
-      }
+      setError(
+        formatAdminApiError(err, {
+          fallback: 'Gameserver unreachable — network error fetching Genesis device data',
+          scopeHint:
+            'Genesis device tracking requires the admin regions view scope (REGIONS_VIEW).',
+          notFoundMessage:
+            'Genesis devices route not found (404). The gameserver ships /api/v1/admin/colonization/genesis-devices — ' +
+            'check that the gameserver is running and the /api proxy is reaching it.',
+        })
+      );
       setDevices([]);
       setStats(null);
       setAlerts([]);
