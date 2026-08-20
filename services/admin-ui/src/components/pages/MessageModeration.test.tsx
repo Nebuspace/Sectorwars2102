@@ -234,7 +234,9 @@ describe('MessageModeration', () => {
     await user.click(screen.getByRole('button', { name: 'Clear Flag' }));
 
     await waitFor(() => {
-      expect(toastError).toHaveBeenCalledWith('Failed to clear the flag.');
+      expect(toastError).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to clear the flag'),
+      );
     });
     // Row is still present -- the local removal only happens on the success path.
     expect(screen.getByText('Alice')).toBeTruthy();
@@ -358,5 +360,52 @@ describe('MessageModeration', () => {
       ).toBeTruthy();
     });
     expect(screen.getAllByRole('button', { name: 'Refresh' }).length).toBeGreaterThan(0);
+  });
+
+  it('surfaces scope denial on 403 flagged-message load (LEG-967)', async () => {
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url.startsWith('/api/v1/admin/messages/flagged')) {
+        return Promise.reject(
+          Object.assign(new Error('HTTP 403'), {
+            response: {
+              status: 403,
+              data: { detail: 'Missing scope admin.messages.moderate' },
+            },
+          }),
+        );
+      }
+      if (url === '/api/v1/admin/messages/stats') {
+        return Promise.resolve({ data: emptyStats });
+      }
+      return Promise.resolve({ data: emptyBeacons });
+    });
+
+    render(<MessageModeration />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Missing scope admin\.messages\.moderate/i)).toBeTruthy();
+    });
+  });
+
+  it('shows rate-limit copy on 429 stats load (LEG-967)', async () => {
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url === '/api/v1/admin/messages/stats') {
+        return Promise.reject(
+          Object.assign(new Error('HTTP 429'), {
+            response: { status: 429 },
+          }),
+        );
+      }
+      if (url.startsWith('/api/v1/admin/messages/flagged')) {
+        return Promise.resolve({ data: emptyMessages });
+      }
+      return Promise.resolve({ data: emptyBeacons });
+    });
+
+    render(<MessageModeration />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/rate limit/i)).toBeTruthy();
+    });
   });
 });
