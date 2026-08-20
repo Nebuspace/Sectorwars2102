@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { api } from '../../utils/auth';
 import { useResourceCatalog } from '../../hooks/useResourceCatalog';
+import { formatUniverseAdminError } from '../../utils/universeAdminError';
 import './universe-detail.css';
 
 interface PlanetDetailProps {
@@ -37,8 +38,8 @@ const PlanetDetail: React.FC<PlanetDetailProps> = ({ planet, onBack, onUpdate })
       if (onUpdate) onUpdate({ ...planet, [field]: newValue });
       setEditingField(null);
       setEditValues({});
-    } catch (err: any) {
-      alert(err.response?.data?.detail || `Failed to update ${field}`);
+    } catch (err: unknown) {
+      alert(formatUniverseAdminError(err, `Failed to update ${field}`));
       setEditingField(null);
     } finally {
       setIsLoading(false);
