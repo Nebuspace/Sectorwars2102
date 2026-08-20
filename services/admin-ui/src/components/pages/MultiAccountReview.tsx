@@ -164,11 +164,11 @@ export const MultiAccountReview: React.FC = () => {
         ))}
       </div>
 
-      {/* Honest-gap notice — detection service not yet shipped */}
+      {/* Honesty notice — hourly detection sweep is tip-shipped */}
       <p className="mar-honest-gap">
-        The detection sweep (P7-admin-multiacct-service-sweep) has not shipped yet. This queue
-        will be empty until the hourly sweep runs against live accounts. The review UI and
-        decision-recording REST layer are fully wired and ready.
+        The detection sweep runs hourly against live accounts. An empty queue means no open
+        clusters are awaiting review right now. The review UI and decision-recording REST
+        layer are fully wired.
       </p>
 
       <div className="mar-content">
