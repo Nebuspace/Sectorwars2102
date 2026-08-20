@@ -137,3 +137,41 @@ describe('StationDetail Soft-ORDER PATCH payloads', () => {
     });
   });
 });
+
+describe('StationDetail Soft-HOLD scope errors (LEG-1213 residual after Soft-ORDER)', () => {
+  beforeEach(() => {
+    vi.mocked(api.patch).mockReset();
+  });
+
+  it('surfaces admin.universe.manage on update 403 via role=alert', async () => {
+    vi.mocked(api.patch).mockRejectedValue(
+      Object.assign(new Error('HTTP 403'), { response: { status: 403, data: {} } }),
+    );
+
+    render(<PortDetail port={basePort} onBack={() => {}} />);
+    fireEvent.click(screen.getByText('Outpost Alpha'));
+    const input = await screen.findByDisplayValue('Outpost Alpha');
+    fireEvent.change(input, { target: { value: 'Renamed' } });
+    fireEvent.click(screen.getByRole('button', { name: '✓' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/admin\.universe\.manage|Access denied/i);
+    });
+  });
+
+  it('surfaces rate-limit on update 429 via role=alert', async () => {
+    vi.mocked(api.patch).mockRejectedValue(
+      Object.assign(new Error('HTTP 429'), { response: { status: 429, data: {} } }),
+    );
+
+    render(<PortDetail port={basePort} onBack={() => {}} />);
+    fireEvent.click(screen.getByText('Outpost Alpha'));
+    const input = await screen.findByDisplayValue('Outpost Alpha');
+    fireEvent.change(input, { target: { value: 'Renamed' } });
+    fireEvent.click(screen.getByRole('button', { name: '✓' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
+    });
+  });
+});
