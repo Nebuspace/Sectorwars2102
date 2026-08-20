@@ -696,6 +696,53 @@ class TestExplicitBlackMarketFlagImportMap:
 
 
 @pytest.mark.unit
+class TestBangDockingSlipsPersist:
+    """LEG-467 — Port.dockingSlips lands on Station.services, not class-band."""
+
+    def test_black_market_payload_persists_canon_6_2(self, service: BangImportService) -> None:
+        port = {
+            "class": 3,
+            "name": "Shadow Berth",
+            "commodities": {},
+            "black_market": True,
+            "dockingSlips": {
+                "transient": 6,
+                "longTerm": 2,
+                "construction": 0,
+                "specializedConstruction": 0,
+            },
+        }
+        spec = service._build_station_spec(sector_id=7, port=port, universe_seed=1)
+        assert spec.services["docking_slips"] == {
+            "transient": 6,
+            "long_term": 2,
+            "construction": 0,
+            "specialized_construction": 0,
+        }
+
+    def test_frontier_payload_persists_canon_4_1(self, service: BangImportService) -> None:
+        port = {
+            "class": 2,
+            "name": "Rim Post",
+            "commodities": {},
+            "dockingSlips": {
+                "transient": 4,
+                "longTerm": 1,
+                "construction": 0,
+                "specializedConstruction": 0,
+            },
+        }
+        spec = service._build_station_spec(sector_id=11, port=port, universe_seed=1)
+        assert spec.services["docking_slips"]["transient"] == 4
+        assert spec.services["docking_slips"]["long_term"] == 1
+
+    def test_absent_payload_does_not_invent_inventory(self, service: BangImportService) -> None:
+        port = {"class": 3, "name": "Ordinary Berth", "commodities": {}}
+        spec = service._build_station_spec(sector_id=7, port=port, universe_seed=1)
+        assert "docking_slips" not in spec.services
+
+
+@pytest.mark.unit
 class TestCapitalPlanetDedup:
     """WO-BANG-CAPITAL-DEDUP: bang names EVERY region's Capital-sector
     planet 'Earth' independently (sw2102-bang/src/content.ts:346-354,
