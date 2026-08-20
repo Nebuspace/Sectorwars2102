@@ -97,6 +97,8 @@ export const ProductionMonitoring: React.FC = () => {
         setError(
           'Access denied — production monitoring requires the admin regions view scope (REGIONS_VIEW).'
         );
+      } else if (status === 429) {
+        setError('Admin rate limit exceeded — wait a moment and try again.');
       } else if (status === 404) {
         setError(
           'Production monitoring route not found (404). The gameserver ships /api/v1/admin/colonization/production — ' +
