@@ -33,6 +33,30 @@ const STATION_TYPE_OPTIONS = [
   'CORPORATE',
 ] as const;
 
+/** Tip SectorType enum — select must stay ⊆ this set (NORMAL is not valid; use STANDARD). */
+const SECTOR_TYPE_OPTIONS = [
+  'STANDARD',
+  'NEBULA',
+  'ASTEROID_FIELD',
+  'BLACK_HOLE',
+  'STAR_CLUSTER',
+  'VOID',
+  'INDUSTRIAL',
+  'AGRICULTURAL',
+  'FORBIDDEN',
+  'WORMHOLE',
+  'ANOMALY',
+  'RADIATION_ZONE',
+  'WARP_STORM',
+] as const;
+
+function normalizeControllingFaction(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  const s = String(value).trim();
+  if (s === '' || s.toLowerCase() === 'none') return null;
+  return s;
+}
+
 interface SectorDetailProps {
   sector: any;
   onBack: () => void;
@@ -106,8 +130,11 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
   const handleSave = async (field: string) => {
     try {
       setIsUpdating(true);
-      const value = editValues[field];
-      
+      let value = editValues[field];
+      if (field === 'controlling_faction') {
+        value = normalizeControllingFaction(value);
+      }
+
       // Update sector via API (PUT — matches SectorEditModal; backend only has PUT)
       await api.put(`/api/v1/admin/sectors/${sector.id}`, {
         [field]: value
@@ -312,7 +339,7 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
                           field="type" 
                           value={sector.type} 
                           type="select"
-                          options={['NORMAL', 'NEBULA', 'ASTEROID_FIELD', 'RADIATION_ZONE', 'WARP_STORM']}
+                          options={[...SECTOR_TYPE_OPTIONS]}
                         />
                       </span>
                     </div>

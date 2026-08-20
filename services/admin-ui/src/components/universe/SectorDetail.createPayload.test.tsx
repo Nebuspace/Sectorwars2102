@@ -24,7 +24,7 @@ const sector = {
   id: 'sec-uuid-1',
   sector_id: 42,
   name: 'Alpha',
-  type: 'NORMAL',
+  type: 'STANDARD',
   x_coord: 0,
   y_coord: 0,
   z_coord: 0,
@@ -116,5 +116,69 @@ describe('SectorDetail Soft-ORDER create payload honesty', () => {
     expect(body).not.toHaveProperty('shield_level');
     expect(body).not.toHaveProperty('drones');
     expect(body).not.toHaveProperty('breeding_rate');
+  });
+});
+
+describe('SectorDetail Soft-ORDER SectorType + controlling_faction honesty', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.put).mockReset();
+    vi.mocked(api.post).mockReset();
+    vi.mocked(api.get).mockRejectedValue(new Error('404'));
+    vi.mocked(api.put).mockResolvedValue({ data: {}, status: 200 });
+  });
+
+  it('type select options include STANDARD not NORMAL and ⊆ tip SectorType', async () => {
+    const user = userEvent.setup();
+    render(
+      <SectorDetail
+        sector={sector}
+        onBack={() => undefined}
+        onPortClick={() => undefined}
+        onPlanetClick={() => undefined}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('STANDARD')).toBeTruthy();
+    });
+
+    await user.click(screen.getByText('STANDARD'));
+    const select = await screen.findByRole('combobox');
+    const optionTexts = Array.from(select.querySelectorAll('option')).map((o) => o.textContent);
+    expect(optionTexts).toContain('STANDARD');
+    expect(optionTexts).not.toContain('NORMAL');
+    expect(optionTexts).toContain('ANOMALY');
+    expect(optionTexts).toContain('BLACK_HOLE');
+    expect(optionTexts).toContain('RADIATION_ZONE');
+  });
+
+  it('saving controlling_faction None/empty PUTs null not string None', async () => {
+    const user = userEvent.setup();
+    render(
+      <SectorDetail
+        sector={sector}
+        onBack={() => undefined}
+        onPortClick={() => undefined}
+        onPlanetClick={() => undefined}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('None')).toBeTruthy();
+    });
+
+    await user.click(screen.getByText('None'));
+    const input = await screen.findByRole('textbox');
+    expect((input as HTMLInputElement).value).toBe('None');
+    await user.click(screen.getByRole('button', { name: '✓' }));
+
+    await waitFor(() => {
+      expect(api.put).toHaveBeenCalled();
+    });
+
+    const [url, body] = vi.mocked(api.put).mock.calls[0];
+    expect(url).toBe('/api/v1/admin/sectors/sec-uuid-1');
+    expect(body).toEqual({ controlling_faction: null });
   });
 });
