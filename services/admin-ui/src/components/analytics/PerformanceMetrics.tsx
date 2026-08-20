@@ -183,6 +183,8 @@ export const PerformanceMetrics: React.FC = () => {
         setError(
           'Access denied — reading performance metrics requires the admin.audit.view scope.'
         );
+      } else if (status === 429) {
+        setError('Admin rate limit exceeded — wait a moment and try again.');
       } else if (status === 404) {
         setError(
           'Performance metrics route not found (404). The endpoint ships in the gameserver — ' +
