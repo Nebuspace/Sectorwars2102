@@ -3328,6 +3328,12 @@ class BangImportService:
             random.Random(f"{universe_seed}:{sector_id}:{name}"),
         )
         services = _build_default_services(is_spacedock)
+        docking_slips = _docking_slips_from_port(port)
+        if docking_slips is not None:
+            # LEG-467: persist bang Port.dockingSlips on existing services
+            # JSONB (no second inventory table). docking_service prefers this
+            # when present so pirate/frontier counts are not class-band.
+            services = {**services, "docking_slips": docking_slips}
         # WO-BO / ADR-0079: derive the archetype-driven trader personality from
         # the station class at creation (human #7: personality generated at creation
         # + persistent). Single source of truth: core/trader_personalities.py.
@@ -3739,6 +3745,44 @@ def _build_full_commodities(
             "sells": sells,
         }
     return out
+
+
+def _docking_slips_from_port(port: Dict[str, Any]) -> Optional[Dict[str, int]]:
+    """Normalize bang ``Port.dockingSlips`` onto Station.services (LEG-467).
+
+    Bang SCHEMA 1.3.11 emits ``{transient, longTerm, construction,
+    specializedConstruction}``. Missing/malformed payload → None (class-band
+    fallback in docking_service). Construction stays 0 for pirate/frontier
+    until the black-market shipwright ships — copy the payload, do not invent.
+    """
+    raw = port.get("dockingSlips")
+    if raw is None:
+        raw = port.get("docking_slips")
+    if not isinstance(raw, dict):
+        return None
+
+    def _int_field(*keys: str) -> Optional[int]:
+        for key in keys:
+            if key not in raw or raw[key] is None:
+                continue
+            try:
+                return int(raw[key])
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    transient = _int_field("transient")
+    long_term = _int_field("long_term", "longTerm")
+    construction = _int_field("construction")
+    specialized = _int_field("specialized_construction", "specializedConstruction")
+    if transient is None or long_term is None:
+        return None
+    return {
+        "transient": transient,
+        "long_term": long_term,
+        "construction": construction if construction is not None else 0,
+        "specialized_construction": specialized if specialized is not None else 0,
+    }
 
 
 def _build_default_services(is_spacedock: bool) -> Dict[str, Any]:
