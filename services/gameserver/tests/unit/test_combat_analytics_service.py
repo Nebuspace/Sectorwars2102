@@ -41,6 +41,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from src.models.ship import Ship
 from src.services.combat_analytics_service import CombatAnalyticsService
 
 
@@ -227,12 +228,51 @@ class TestAdjustCombatDamage:
 
 
 class TestRestoreShields:
-    def test_returns_descriptive_result_without_mutating_combat(self):
-        svc, _ = _service()
-        c = _combat()
+    def test_restores_attacker_ship_combat_shields(self):
+        ship_id = uuid.uuid4()
+        ship = SimpleNamespace(
+            id=ship_id,
+            combat={"shields": 10.0, "max_shields": 100.0, "hull": 50, "max_hull": 50},
+        )
+        db = _FakeDb({Ship: [[ship]]})
+        svc = CombatAnalyticsService(db)
+        c = _combat(attacker_ship_id=ship_id, defender_ship_id=uuid.uuid4())
         result = svc._restore_shields(c, {"target": "attacker", "shield_percent": 75})
-        assert result["target"] == "attacker"
-        assert result["shield_percent"] == 75
+        assert ship.combat["shields"] == 75.0
+        assert result["ships"][0]["shields"] == 75.0
+        assert "would be applied" not in result["note"]
+        assert "Restored shields" in result["note"]
+
+    def test_restores_both_ships(self):
+        a_id, d_id = uuid.uuid4(), uuid.uuid4()
+        attacker = SimpleNamespace(
+            id=a_id, combat={"shields": 0.0, "max_shields": 80.0}
+        )
+        defender = SimpleNamespace(
+            id=d_id, combat={"shields": 5.0, "max_shields": 200.0}
+        )
+        # two successive Ship queries (attacker then defender)
+        db = _FakeDb({Ship: [[attacker], [defender]]})
+        svc = CombatAnalyticsService(db)
+        c = _combat(attacker_ship_id=a_id, defender_ship_id=d_id)
+        result = svc._restore_shields(c, {"target": "both", "shield_percent": 25})
+        assert attacker.combat["shields"] == 20.0
+        assert defender.combat["shields"] == 50.0
+        assert len(result["ships"]) == 2
+
+    def test_missing_ship_raises_honest_error(self):
+        ship_id = uuid.uuid4()
+        db = _FakeDb({Ship: [[]]})  # first() → None
+        svc = CombatAnalyticsService(db)
+        c = _combat(attacker_ship_id=ship_id)
+        with pytest.raises(ValueError, match="ship .* not found"):
+            svc._restore_shields(c, {"target": "attacker", "shield_percent": 50})
+
+    def test_missing_ship_id_on_combat_raises(self):
+        svc, _ = _service()
+        c = _combat(attacker_ship_id=None)
+        with pytest.raises(ValueError, match="no attacker_ship_id"):
+            svc._restore_shields(c, {"target": "attacker", "shield_percent": 50})
 
 
 class TestDeclareWinner:
