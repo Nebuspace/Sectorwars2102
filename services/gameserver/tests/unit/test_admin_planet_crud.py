@@ -54,7 +54,7 @@ def _make_planet(
     return planet
 
 
-def _make_db(planet=None):
+def _make_db(planet=None, player=None):
     """Return a mock Session whose Planet lookup resolves to `planet` and
     whose AdminScopeGrant lookup (require_scope(GALAXY_MANAGE) -- both
     routes are RBAC-E5-wrapped, gated on an active scope grant rather than
@@ -62,13 +62,20 @@ def _make_db(planet=None):
     `db.query.return_value...` accidentally coupled the two unrelated
     lookups (same mock answers both "planet exists?" and "admin has scope?"),
     which happened to pass when `planet` was truthy and 403'd instead of
-    404'd when it wasn't -- dispatch per queried model instead."""
+    404'd when it wasn't -- dispatch per queried model instead.
+
+    Optional `player` answers Player.id lookups for owner_id PATCH validation.
+    """
     db = MagicMock()
 
     def _query(model):
         q = MagicMock()
-        if str(model) == "AdminScopeGrant.id":
+        name = getattr(model, "__name__", str(model))
+        model_s = str(model)
+        if "AdminScopeGrant" in model_s or name == "AdminScopeGrant":
             q.filter.return_value.first.return_value = (uuid.uuid4(),)  # active grant
+        elif "Player" in model_s or name == "Player":
+            q.filter.return_value.first.return_value = player
         else:
             q.filter.return_value.first.return_value = planet
         return q
@@ -141,6 +148,59 @@ class TestPatchPlanetAuthz:
             json={"type": "NOT_A_REAL_TYPE"},
         )
         assert resp.status_code == 400
+
+
+
+# ---------------------------------------------------------------------------
+# PATCH owner_id (LEG-1446)
+# ---------------------------------------------------------------------------
+
+class TestPatchPlanetOwnerId:
+    """PATCH owner_id persists / clears; unknown player 404."""
+
+    def test_admin_patch_sets_owner_id(self, planet_client):
+        planet = _make_planet()
+        owner = SimpleNamespace(id=uuid.uuid4())
+        db = _make_db(planet=planet, player=owner)
+        app.dependency_overrides[get_current_user] = _admin_user
+        app.dependency_overrides[get_db] = lambda: db
+        resp = planet_client.patch(
+            f"{API}/{planet.id}",
+            json={"owner_id": str(owner.id)},
+        )
+        assert resp.status_code == 200
+        assert "owner_id" in resp.json()["updated_fields"]
+        assert planet.owner_id == str(owner.id)
+        db.commit.assert_called_once()
+
+    def test_admin_patch_clears_owner_id_with_null(self, planet_client):
+        planet = _make_planet(owner_id=uuid.uuid4())
+        db = _make_db(planet=planet)
+        app.dependency_overrides[get_current_user] = _admin_user
+        app.dependency_overrides[get_db] = lambda: db
+        resp = planet_client.patch(
+            f"{API}/{planet.id}",
+            json={"owner_id": None},
+        )
+        assert resp.status_code == 200
+        assert "owner_id" in resp.json()["updated_fields"]
+        assert planet.owner_id is None
+        db.commit.assert_called_once()
+
+    def test_admin_patch_unknown_owner_returns_404(self, planet_client):
+        planet = _make_planet()
+        db = _make_db(planet=planet, player=None)
+        app.dependency_overrides[get_current_user] = _admin_user
+        app.dependency_overrides[get_db] = lambda: db
+        resp = planet_client.patch(
+            f"{API}/{planet.id}",
+            json={"owner_id": str(uuid.uuid4())},
+        )
+        assert resp.status_code == 404
+        body = resp.json()
+        # Error middleware wraps HTTPException as {error, message, ...} not FastAPI {detail}.
+        msg = body.get("message") or body.get("detail") or str(body)
+        assert "Player not found" in str(msg)
 
 
 # ---------------------------------------------------------------------------
