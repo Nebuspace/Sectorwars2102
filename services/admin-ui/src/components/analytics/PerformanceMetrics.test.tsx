@@ -230,6 +230,21 @@ describe('PerformanceMetrics (LEG-153; port of LEG-114)', () => {
     expect(alert).not.toContain('not implemented');
   });
 
+  it('reports a 429 as an admin rate-limit, distinct from 404 honesty', async () => {
+    vi.mocked(api.get).mockRejectedValue(axiosError(429));
+
+    render(<PerformanceMetrics />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/rate limit/i);
+    expect(alert).not.toContain('404');
+    expect(alert).not.toContain('HTTP 429');
+  });
+
   it('distinguishes an unreachable gameserver from an HTTP error', async () => {
     vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
 
