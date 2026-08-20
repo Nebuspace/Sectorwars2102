@@ -111,6 +111,47 @@ describe('AdminContext / AdminProvider', () => {
     expect(screen.getByTestId('total-users')).toHaveTextContent('none');
   });
 
+  it('surfaces loadAdminStats 403 as PLAYERS_VIEW denial (LEG-1254)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    mockApiInstance.get.mockRejectedValue(
+      Object.assign(new Error('HTTP 403'), { response: { status: 403 } }),
+    );
+    const user = (await import('@testing-library/user-event')).default.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>
+    );
+
+    await user.click(screen.getByText('load-stats'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/PLAYERS_VIEW/),
+    );
+    expect(screen.getByTestId('error').textContent).not.toMatch(
+      /Failed to load admin statistics/,
+    );
+  });
+
+  it('surfaces loadUsers 429 as admin rate-limit (LEG-1254)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    mockApiInstance.get.mockRejectedValue(
+      Object.assign(new Error('HTTP 429'), { response: { status: 429 } }),
+    );
+    const user = (await import('@testing-library/user-event')).default.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>
+    );
+
+    await user.click(screen.getByText('load-users'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/rate limit/i),
+    );
+  });
+
   it('loads user accounts for an admin user', async () => {
     mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
     vi.mocked(api.get).mockResolvedValue({ data: { users: [{ id: 'u1' }, { id: 'u2' }] } });
