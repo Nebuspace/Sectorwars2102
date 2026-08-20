@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import { PlayerModel } from '../../types/playerManagement';
 import './player-asset-manager.css';
 
@@ -59,21 +60,13 @@ const PlayerAssetManager: React.FC<PlayerAssetManagerProps> = ({
       });
     } catch (err: unknown) {
       console.error('Failed to load player assets:', err);
-      const status =
-        typeof err === 'object' && err !== null && 'response' in err
-          ? (err as { response?: { status?: number } }).response?.status
-          : undefined;
-      if (status === 401 || status === 403) {
-        setError(
-          'Access denied — loading player assets requires the admin players view scope (PLAYERS_VIEW).'
-        );
-      } else if (status === 429) {
-        setError('Admin rate limit exceeded — wait a moment and try again.');
-      } else if (status !== undefined) {
-        setError(`Failed to load player assets (HTTP ${status})`);
-      } else {
-        setError('Gameserver unreachable — network error loading player assets');
-      }
+      setError(
+        formatAdminApiError(err, {
+          fallback: 'Gameserver unreachable — network error loading player assets',
+          scopeHint:
+            'loading player assets requires the admin players view scope (PLAYERS_VIEW).',
+        })
+      );
     } finally {
       setLoading(false);
     }
