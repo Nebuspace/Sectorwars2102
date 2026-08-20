@@ -29,7 +29,7 @@ from src.services.medal_service import (
     public_medal_identity,
     set_pinned_medal_id,
 )
-from src.services.medal_catalog import get_catalog_entry
+from src.services.medal_catalog import MEDAL_CATALOG, get_catalog_entry
 
 router = APIRouter(
     prefix="/medals",
@@ -294,6 +294,29 @@ async def admin_get_player_medal_collection(
             "view_hidden_medal_audits_written", 0
         ),
     )
+
+@router.get("/admin/catalog")
+async def admin_list_medal_catalog(
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
+):
+    """Read-only medal catalog for MedalAdmin (LEG-355 / medals.md admin catalog).
+
+    Shape matches Admin UI ``CatalogResponse``: ``{items, total}`` with
+    id/name/category/tier/description/criteria from ``MEDAL_CATALOG``.
+    """
+    items = []
+    for medal_id, entry in sorted(MEDAL_CATALOG.items(), key=lambda kv: kv[0]):
+        items.append(
+            {
+                "id": medal_id,
+                "name": entry.get("name"),
+                "category": entry.get("category"),
+                "tier": entry.get("tier"),
+                "description": entry.get("description"),
+                "criteria": entry.get("criteria"),
+            }
+        )
+    return {"items": items, "total": len(items)}
 
 
 @router.post("/admin/grant", response_model=AdminMedalActionResponse)
