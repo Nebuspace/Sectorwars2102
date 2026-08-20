@@ -75,6 +75,7 @@ export const CombatOverview: React.FC = () => {
   const [showInterventionModal, setShowInterventionModal] = useState(false);
   const [selectedCombatId, setSelectedCombatId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [interventionNote, setInterventionNote] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
 
   // WebSocket handlers
@@ -257,15 +258,26 @@ export const CombatOverview: React.FC = () => {
           setShowInterventionModal(false);
           return;
         }
-        await api.post(`/api/v1/admin/combat/${selectedCombatId}/intervene`, {
+        const response = await api.post(`/api/v1/admin/combat/${selectedCombatId}/intervene`, {
           intervention_type,
           parameters: {
             reason: `Admin intervention: ${action}`
           }
         });
+        const result = (response.data as { result?: { note?: unknown } } | undefined)?.result;
+        const note = typeof result?.note === 'string' ? result.note.trim() : '';
+        if (intervention_type === 'restore_shields') {
+          setInterventionNote(
+            note ||
+              'Logged only — CombatLog does not track shields; this action does not change ship hull or shields.'
+          );
+          setShowInterventionModal(false);
+          setSelectedCombatId(null);
+          return;
+        }
+        setInterventionNote(null);
         setShowInterventionModal(false);
         setSelectedCombatId(null);
-        // Refresh data
         await loadData();
       } catch (error: any) {
         setError(error.response?.data?.detail || 'Failed to intervene in combat');
@@ -311,6 +323,11 @@ export const CombatOverview: React.FC = () => {
           <span className="alert-message">
             {error}
           </span>
+        </div>
+      )}
+      {interventionNote && (
+        <div className="alert" role="status" style={{ marginBottom: '20px' }}>
+          <span className="alert-message">{interventionNote}</span>
         </div>
       )}
       
@@ -486,7 +503,7 @@ export const CombatOverview: React.FC = () => {
                 className="btn btn-success"
                 onClick={() => handleIntervention('restore')}
               >
-                Restore Ships
+                Log shield restore (audit only)
               </button>
             </div>
             <p
@@ -502,9 +519,9 @@ export const CombatOverview: React.FC = () => {
                 lineHeight: 1.4,
               }}
             >
-              This modal offers Force End (stop_combat) and Restore Ships (restore_shields)
-              only. Pause, Reset, adjust_damage, and declare_winner controls are not shown —
-              do not invent them here.
+              This modal offers Force End (stop_combat) and Log shield restore (restore_shields,
+              audit-only until Ship.shields writes land). Pause, Reset, adjust_damage, and
+              declare_winner controls are not shown — do not invent them here.
             </p>
             
             <button 

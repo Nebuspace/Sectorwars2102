@@ -1,0 +1,145 @@
+.drone-fleet-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  padding: 0.25rem 0 0.75rem;
+  color: rgba(226, 232, 240, 0.92);
+  font-size: 0.85rem;
+}
+
+.drone-fleet-title {
+  margin: 0;
+  font-size: 0.95rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.drone-fleet-blurb,
+.drone-fleet-hint,
+.drone-fleet-empty,
+.drone-fleet-status {
+  margin: 0.25rem 0 0;
+  color: rgba(148, 163, 184, 0.95);
+  line-height: 1.35;
+}
+
+.drone-fleet-error {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  color: #fca5a5;
+}
+
+.drone-fleet-notice {
+  color: #86efac;
+}
+
+.drone-fleet-section h4 {
+  margin: 0 0 0.4rem;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: rgba(203, 213, 225, 0.9);
+}
+
+.drone-type-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.drone-type-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 4px;
+  background: rgba(15, 23, 42, 0.45);
+}
+
+.drone-type-stats {
+  font-size: 0.75em;
+  color: rgba(148, 163, 184, 0.9);
+}
+
+.drone-fleet-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: flex-end;
+}
+
+.drone-fleet-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.75rem;
+}
+
+.drone-fleet-row select,
+.drone-fleet-row input,
+.drone-roster-actions input {
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 4px;
+  color: #e2e8f0;
+  padding: 0.3rem 0.4rem;
+  font: inherit;
+  min-width: 5rem;
+}
+
+.drone-fleet-btn {
+  background: rgba(51, 65, 85, 0.85);
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  color: #e2e8f0;
+  border-radius: 4px;
+  padding: 0.35rem 0.65rem;
+  cursor: pointer;
+  font: inherit;
+}
+
+.drone-fleet-btn.primary {
+  background: rgba(37, 99, 235, 0.55);
+  border-color: rgba(96, 165, 250, 0.55);
+}
+
+.drone-fleet-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.drone-roster {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.drone-roster-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 4px;
+}
+
+.drone-roster-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.drone-roster-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+}
