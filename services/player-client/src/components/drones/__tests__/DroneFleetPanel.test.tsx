@@ -269,4 +269,44 @@ describe('DroneFleetPanel', () => {
     expect(mockRecallDrones).toHaveBeenCalledWith('dep-aaa-bbbb-cccc-dddd-eeeeeeeeeeee');
     expect(mockGetDeployedDrones.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
+
+  it('surfaces combatAPI.recallDrones failure without claiming success', async () => {
+    mockGetDeployedDrones.mockResolvedValue({
+      deployments: [
+        {
+          deploymentId: 'dep-aaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+          droneId: 'drone-x',
+          sectorId: '22222222-2222-2222-2222-222222222222',
+          deployedAt: '2026-01-01T00:00:00Z',
+          droneType: 'attack',
+          health: 50,
+          maxHealth: 80,
+        },
+      ],
+    });
+    mockRecallDrones.mockRejectedValue(new Error('Recall blocked — deployment not found.'));
+
+    await act(async () => {
+      root.render(<DroneFleetPanel />);
+    });
+    await act(async () => {
+      await flush();
+      await flush();
+    });
+
+    const recallBtn = container.querySelector(
+      '[data-testid="deployment-recall-dep-aaa-bbbb-cccc-dddd-eeeeeeeeeeee"]',
+    ) as HTMLButtonElement;
+    expect(recallBtn).toBeTruthy();
+    await act(async () => {
+      recallBtn.click();
+      await flush();
+      await flush();
+    });
+    expect(mockRecallDrones).toHaveBeenCalledWith('dep-aaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+    const alert = container.querySelector('.drone-fleet-error');
+    expect(alert).toBeTruthy();
+    expect(alert!.textContent).toContain('Recall blocked — deployment not found.');
+    expect(container.querySelector('.drone-fleet-notice')).toBeNull();
+  });
 });
