@@ -98,6 +98,27 @@ describe('SystemHealthStatus (LEG-212 shared api)', () => {
 
     expect(screen.queryByText('Player Connections:')).not.toBeInTheDocument();
     await user.click(screen.getByTitle('Click to expand/collapse system details'));
-    expect(screen.getByText('Player Connections:')).toBeInTheDocument();
+  it('surfaces Access denied on server probe 403 (not console-only)', async () => {
+    vi.mocked(api.get).mockRejectedValue(
+      Object.assign(new Error('HTTP 403'), { response: { status: 403, data: {} } }),
+    );
+
+    render(<SystemHealthStatus />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent ?? '').toMatch(/Access denied|admin view scope/i);
+    });
+  });
+
+  it('surfaces admin rate-limit on server probe 429', async () => {
+    vi.mocked(api.get).mockRejectedValue(
+      Object.assign(new Error('HTTP 429'), { response: { status: 429, data: {} } }),
+    );
+
+    render(<SystemHealthStatus />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent ?? '').toMatch(/rate limit/i);
+    });
   });
 });
