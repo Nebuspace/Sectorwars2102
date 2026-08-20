@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import PageHeader from '../ui/PageHeader';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import FleetHealthReport from '../charts/FleetHealthReport';
 import FleetOperationsTab from '../fleet/FleetOperationsTab';
 import { useToast, useConfirm } from '../../contexts/ToastContext';
@@ -132,7 +133,12 @@ const FleetManagement: React.FC = () => {
       
     } catch (error) {
       console.error('Error fetching ships:', error);
-      setError('Failed to fetch fleet data');
+      setError(
+        formatAdminApiError(error, {
+          fallback: 'Failed to fetch fleet data',
+          scopeHint: 'admin.ships.manage scope required for fleet management',
+        })
+      );
       setShips([]);
       setStats(null);
     } finally {
