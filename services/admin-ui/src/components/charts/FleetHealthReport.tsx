@@ -55,7 +55,21 @@ const FleetHealthReport: React.FC = () => {
       setReport(response.data as FleetHealthReportData);
     } catch (err) {
       console.error('Error fetching fleet health report:', err);
-      setError('Failed to load fleet health report');
+      const status =
+        typeof err === 'object' && err !== null && 'response' in err
+          ? (err as { response?: { status?: number } }).response?.status
+          : undefined;
+      if (status === 401 || status === 403) {
+        setError(
+          'Access denied — fleet health report requires the admin players view scope (PLAYERS_VIEW).'
+        );
+      } else if (status === 429) {
+        setError('Admin rate limit exceeded — wait a moment and try again.');
+      } else if (status !== undefined) {
+        setError(`Failed to load fleet health report (HTTP ${status})`);
+      } else {
+        setError('Gameserver unreachable — network error fetching fleet health report');
+      }
       setReport(null);
     } finally {
       setLoading(false);
@@ -267,7 +281,7 @@ const FleetHealthReport: React.FC = () => {
   if (error) {
     return (
       <div className="fleet-health-report">
-        <div className="alert alert-error mb-6">
+        <div className="alert alert-error mb-6" role="alert">
           <div className="flex items-center gap-3">
             <span>⚠️</span>
             <span className="flex-1">{error}</span>

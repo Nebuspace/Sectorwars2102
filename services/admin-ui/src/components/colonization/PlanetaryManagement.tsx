@@ -128,6 +128,8 @@ export const PlanetaryManagement: React.FC = () => {
         setError(
           'Access denied — planetary management requires the admin regions view scope (REGIONS_VIEW).'
         );
+      } else if (status === 429) {
+        setError('Admin rate limit exceeded — wait a moment and try again.');
       } else if (status === 404) {
         setError(
           'Planetary management route not found (404). The gameserver ships /api/v1/admin/colonization/planets — ' +
@@ -162,6 +164,8 @@ export const PlanetaryManagement: React.FC = () => {
         setTickError(
           'Access denied — forcing a production tick requires GALAXY_MANAGE.'
         );
+      } else if (status === 429) {
+        setTickError('Admin rate limit exceeded — wait a moment and try again.');
       } else if (status !== undefined) {
         setTickError(`Failed to advance production (HTTP ${status})`);
       } else {

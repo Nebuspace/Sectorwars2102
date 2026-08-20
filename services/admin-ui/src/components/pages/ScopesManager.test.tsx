@@ -58,6 +58,18 @@ describe('ScopesManager', () => {
     expect(screen.getByRole('alert')).toHaveClass('scopes-alert-forbidden');
   });
 
+  it('shows rate-limit copy when the holders fetch returns 429', async () => {
+    vi.mocked(api.get).mockRejectedValue({
+      response: { status: 429, data: { detail: 'Too Many Requests' } },
+    });
+
+    renderScopes();
+
+    await waitFor(() =>
+      expect(screen.getByText(/rate limit/i)).toBeInTheDocument()
+    );
+  });
+
   it('renders holders after a successful load', async () => {
     vi.mocked(api.get).mockImplementation((url: string) => {
       if (url.includes('holders')) return Promise.resolve({ data: holders });
