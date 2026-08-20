@@ -72,6 +72,9 @@ export const AdvancedAnalytics: React.FC = () => {
       if (status === 401 || status === 403) {
         message =
           'Failed to generate report — access denied (requires admin.audit.view scope)';
+      } else if (status === 429) {
+        message =
+          'Failed to generate report — admin rate limit exceeded (Reports tier: 5/hour). Wait and try again.';
       } else if (status === 404) {
         message =
           'Failed to generate report — route not found (404). Generate ships in the gameserver; check proxy/routing.';
@@ -118,6 +121,9 @@ export const AdvancedAnalytics: React.FC = () => {
       let message: string;
       if (status === 401 || status === 403) {
         message = 'Export failed — access denied (requires admin.audit.view scope)';
+      } else if (status === 429) {
+        message =
+          'Export failed — admin rate limit exceeded (Reports tier: 5/hour). Wait and try again.';
       } else if (status === 400) {
         message = `Export failed — ${axiosDetail(error) ?? `HTTP ${status}`}`;
       } else if (status !== undefined) {
