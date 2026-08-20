@@ -78,6 +78,8 @@ export const AuditLogViewer: React.FC<AuditLogViewerProps> = ({ filters = {}, on
         setError(
           'Access denied — audit log viewer requires the admin.audit.view scope (AUDIT_VIEW).'
         );
+      } else if (status === 429) {
+        setError('Admin rate limit exceeded — wait a moment and try again.');
       } else if (status === 404) {
         setError(
           'Audit logs route not found (404). The gameserver ships /api/v1/admin/audit/logs — ' +
