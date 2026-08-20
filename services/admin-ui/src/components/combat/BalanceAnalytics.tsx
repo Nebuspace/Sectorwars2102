@@ -125,8 +125,25 @@ const BalanceAnalytics: React.FC = () => {
       setStats(null);
     }
 
-    const failed = [balanceRes, statsRes].filter((r) => r.status === 'rejected');
-    if (failed.length === 2) {
+    const rejectionStatus = (reason: unknown): number | undefined => {
+      if (typeof reason !== 'object' || reason === null || !('response' in reason)) {
+        return undefined;
+      }
+      return (reason as { response?: { status?: number } }).response?.status;
+    };
+
+    const failedReasons = [balanceRes, statsRes]
+      .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+      .map((r) => r.reason);
+    const statuses = failedReasons.map(rejectionStatus).filter((s): s is number => s !== undefined);
+
+    if (statuses.some((s) => s === 401 || s === 403)) {
+      setError(
+        'Access denied — combat balance analytics requires the admin players view scope (PLAYERS_VIEW).'
+      );
+    } else if (statuses.some((s) => s === 429)) {
+      setError('Admin rate limit exceeded — wait a moment and try again.');
+    } else if (failedReasons.length === 2) {
       setError('Failed to load balance analytics. Please check if the gameserver is running.');
     } else if (balanceRes.status === 'rejected') {
       setError('Balance analytics unavailable.');
@@ -176,7 +193,7 @@ const BalanceAnalytics: React.FC = () => {
       </div>
 
       {error && (
-        <div className="balance-analytics-alert error">
+        <div className="balance-analytics-alert error" role="alert">
           <span className="balance-analytics-alert-icon">⚠</span>
           <span>{error}</span>
         </div>
