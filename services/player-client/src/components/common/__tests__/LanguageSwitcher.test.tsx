@@ -23,6 +23,10 @@ vi.mock('../../../i18n', () => ({
   SUPPORTED_LANGUAGES: {
     en: { name: 'English', nativeName: 'English' },
     es: { name: 'Spanish', nativeName: 'Español' },
+    fr: { name: 'French', nativeName: 'Français' },
+    zh: { name: 'Chinese (Simplified)', nativeName: '中文(简体)' },
+    pt: { name: 'Portuguese', nativeName: 'Português' },
+    de: { name: 'German', nativeName: 'Deutsch' },
   },
   default: {},
 }));
@@ -76,6 +80,27 @@ describe('LanguageSwitcher', () => {
       (el) => el.textContent,
     );
     expect(options.some((t) => t?.includes('Español'))).toBe(true);
+    expect(options.some((t) => t?.includes('中文'))).toBe(true);
+  });
+
+  it('static fallback marks launch-complete locales at 100% completion', async () => {
+    await act(async () => {
+      root.render(<LanguageSwitcher variant="full" showProgress={true} />);
+    });
+    await act(async () => {
+      await flush();
+      await flush();
+    });
+
+    await act(async () => {
+      (container.querySelector('.player-language-button') as HTMLButtonElement).click();
+      await flush();
+    });
+
+    const esOption = Array.from(container.querySelectorAll('.language-option')).find((el) =>
+      el.textContent?.includes('Español'),
+    );
+    expect(esOption?.querySelector('.completion-text')).toBeNull();
   });
 
   it('calls i18n.changeLanguage when a different option is chosen', async () => {
