@@ -173,3 +173,38 @@ def test_dispatch_skips_team_when_broadcast_disabled():
     call_kw = mock_svc.send_medal_awarded.await_args.kwargs
     assert call_kw["team_id"] is None
     assert call_kw["sector_id"] is None
+
+
+def test_dispatch_personal_only_when_sector_id_missing():
+    player_id = uuid4()
+    user_id = uuid4()
+
+    player = MagicMock()
+    player.id = player_id
+    player.user_id = user_id
+    player.team_id = None
+    player.current_sector_id = None
+    player.settings = {}
+
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = player
+
+    mock_svc = MagicMock()
+    mock_svc.send_medal_awarded = AsyncMock()
+
+    _run_dispatch_with_loop(
+        db,
+        player_id,
+        "combat.quantum_cross",
+        mock_svc,
+        {
+            "name": "Gold",
+            "category": "Combat",
+            "tier": "gold",
+            "criteria": {},
+        },
+    )
+
+    mock_svc.send_medal_awarded.assert_awaited_once()
+    call_kw = mock_svc.send_medal_awarded.await_args.kwargs
+    assert call_kw["sector_id"] is None

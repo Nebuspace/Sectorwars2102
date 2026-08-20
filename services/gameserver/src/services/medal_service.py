@@ -399,7 +399,8 @@ def _dispatch_medal_awarded_event(
 
         sector_id: Optional[int] = None
         if _medal_qualifies_for_sector_broadcast(medal_tier, medal_category):
-            sector_id = int(player.current_sector_id)
+            if player.current_sector_id is not None:
+                sector_id = int(player.current_sector_id)
 
         import asyncio
         from src.services.enhanced_websocket_service import (
