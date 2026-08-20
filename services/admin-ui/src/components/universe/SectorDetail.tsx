@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../../utils/auth';
 import { useToast } from '../../contexts/ToastContext';
+import { formatUniverseAdminError } from '../../utils/universeAdminError';
 
 interface SectorDetailProps {
   sector: any;
@@ -91,7 +92,7 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
       setEditingField(null);
     } catch (error) {
       console.error(`Failed to update ${field}:`, error);
-      toast.error(`Failed to update ${field}`);
+      toast.error(formatUniverseAdminError(error, `Failed to update ${field}`));
     } finally {
       setIsUpdating(false);
     }
@@ -125,7 +126,7 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
       await loadSectorDetails(); // Reload to get the new port data
     } catch (error) {
       console.error('Failed to create port:', error);
-      toast.error('Failed to create port');
+      toast.error(formatUniverseAdminError(error, 'Failed to create port'));
     } finally {
       setIsUpdating(false);
     }
@@ -146,7 +147,7 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
       await loadSectorDetails(); // Reload to get the new planet data
     } catch (error) {
       console.error('Failed to create planet:', error);
-      toast.error('Failed to create planet');
+      toast.error(formatUniverseAdminError(error, 'Failed to create planet'));
     } finally {
       setIsUpdating(false);
     }
