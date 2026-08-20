@@ -89,8 +89,38 @@ def planet_client():
     return TestClient(app, base_url="http://localhost")
 
 
+def _clear_admin_rate_limit_buckets() -> None:
+    """Reset live RateLimitingMiddleware buckets for TestClient isolation.
+
+    Admin ``/admin`` paths are *not* skipped under User-Agent testclient
+    (only non-admin paths are). Dependency overrides authenticate without a
+    Bearer JWT, so peek_request_user_id falls through to ``admin-ip:<host>``
+    and every admin write in the DB-free suite shares one 30/min write
+    bucket — enough to bleed 429 into later delete-planet cases in CI.
+    """
+    from src.api.middleware.security import RateLimitingMiddleware
+
+    stack = getattr(app, "middleware_stack", None)
+    if stack is None:
+        try:
+            stack = app.build_middleware_stack()
+            app.middleware_stack = stack
+        except Exception:
+            return
+    seen: set[int] = set()
+    cur = stack
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, RateLimitingMiddleware):
+            cur.request_counts.clear()
+        cur = getattr(cur, "app", None)
+
+
 @pytest.fixture(autouse=True)
 def _isolate_overrides():
+    # Clear before each test so prior admin write traffic (this file or
+    # earlier suite modules) cannot 429 a colonized-guard / success DELETE.
+    _clear_admin_rate_limit_buckets()
     saved_user = app.dependency_overrides.get(get_current_user)
     saved_db = app.dependency_overrides.get(get_db)
     yield
@@ -99,6 +129,7 @@ def _isolate_overrides():
             app.dependency_overrides[key] = saved
         else:
             app.dependency_overrides.pop(key, None)
+    _clear_admin_rate_limit_buckets()
 
 
 # ---------------------------------------------------------------------------
