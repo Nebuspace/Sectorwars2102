@@ -61,13 +61,17 @@ TRADE_MODIFIERS = [
 ]
 TRADE_MODIFIER_PUBLIC_ENEMY = 1.50  # Fallback for -700 and below
 
-# Phase-1 consumer inventory (LEG-800): personal Reputation.current_value readers
-# used for faction *interaction* decisions (pricing / port access / patrol).
-# Wired this WO: (1) get_trade_modifier — team aggregate when player has team_id.
+# Phase-1/2 consumer inventory (LEG-800 / LEG-814): personal Reputation.current_value
+# readers used for faction *interaction* decisions (pricing / port access / patrol).
+# Wired:
+#   (1) get_trade_modifier — team aggregate when player has team_id (LEG-800)
+#   (2) docking_service.check_reputation_gate / _player_faction_rep_for_station
+#       — dock slip + defense_policy port access (LEG-814)
 # Follow-up backlog (same resolver, not forked formulas):
-#   (2) get_faction_pricing_modifier — GET /factions/{id}/pricing-modifier
-#   (3) check_territory_access — faction territory gate
-#   (4) mission-gate consumers — none located on tip; separate WO if found
+#   (3) construction_service.tradedock_access — TradeDock construction gate
+#   (4) get_faction_pricing_modifier — GET /factions/{id}/pricing-modifier
+#   (5) check_territory_access — faction territory gate
+#   (6) mission-gate consumers — none located on tip; separate WO if found
 # Not interaction consumers (personal-row maintenance / display only):
 #   update_reputation / apply_faction_rep_delta / apply_reputation_decay derived
 #   field writes; factions.py reputation API response fields.
