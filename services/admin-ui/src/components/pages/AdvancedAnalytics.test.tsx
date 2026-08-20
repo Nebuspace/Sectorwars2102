@@ -109,6 +109,24 @@ describe('AdvancedAnalytics generate/export (LEG-165)', () => {
     expect(msg).not.toContain('not implemented');
   });
 
+  it('reports generate 429 with reports-tier rate-limit copy', async () => {
+
+    vi.mocked(api.post).mockRejectedValue(axiosError(429));
+
+    render(<AdvancedAnalytics />);
+    fireEvent.click(screen.getByTestId('trigger-generate'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('analytics-save-message')).toBeTruthy();
+    });
+
+    const msg = screen.getByTestId('analytics-save-message').textContent ?? '';
+    expect(msg).toMatch(/5\/hour/i);
+    expect(msg).toMatch(/rate limit/i);
+    expect(msg).not.toMatch(/HTTP 429/i);
+    expect(msg).not.toMatch(/gameserver unreachable|not implemented/i);
+  });
+
   it('reports generate 404 as a routing fault, never as not-implemented', async () => {
     vi.mocked(api.post).mockRejectedValue(axiosError(404));
 

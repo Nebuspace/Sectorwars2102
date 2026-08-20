@@ -5,6 +5,7 @@ import PlayerDetailEditor from '../admin/PlayerDetailEditor';
 import BulkOperationPanel from '../admin/BulkOperationPanel';
 import PlayerAssetManager from '../admin/PlayerAssetManager';
 import EmergencyOperationsPanel from '../admin/EmergencyOperationsPanel';
+import PlayerBountyPanel from '../admin/PlayerBountyPanel';
 import RankingLeaderboardPanel from './RankingLeaderboardPanel';
 import { api } from '../../utils/auth';
 import {
@@ -856,6 +857,11 @@ const PlayerAnalytics: React.FC = () => {
                     </div>
                   </div>
                 </div>
+
+                <PlayerBountyPanel
+                  targetId={state.selectedPlayer.id}
+                  targetName={state.selectedPlayer.username}
+                />
               </div>
               
               <div className="modal-footer">
