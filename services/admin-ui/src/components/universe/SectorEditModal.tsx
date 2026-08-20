@@ -90,7 +90,7 @@ const SectorEditModal: React.FC<SectorEditModalProps> = ({
   });
   const [portFormData, setPortFormData] = useState({
     name: '',
-    port_class: 6,
+    station_class: 6,
     type: 'TRADING',
     size: 5,
     faction_affiliation: '',
@@ -307,7 +307,7 @@ const SectorEditModal: React.FC<SectorEditModalProps> = ({
         // Reset form
         setPortFormData({
           name: '',
-          port_class: 6,
+          station_class: 6,
           type: 'TRADING',
           size: 5,
           faction_affiliation: '',
@@ -679,8 +679,8 @@ const SectorEditModal: React.FC<SectorEditModalProps> = ({
             <div className="form-group">
               <label>Port Class</label>
               <select
-                value={portFormData.port_class}
-                onChange={(e) => setPortFormData({...portFormData, port_class: parseInt(e.target.value)})}
+                value={portFormData.station_class}
+                onChange={(e) => setPortFormData({...portFormData, station_class: parseInt(e.target.value)})}
               >
                 <option value={0}>Class 0 - Sol System</option>
                 <option value={1}>Class 1 - Mining Operation</option>
