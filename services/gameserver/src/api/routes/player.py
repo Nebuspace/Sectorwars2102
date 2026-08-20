@@ -189,6 +189,8 @@ class SectorResponse(BaseModel):
     anomaly_investigated: bool = False
     # LEG-333 / ship-registry.md:179 — in-progress salvage breaks peers see.
     salvage_breaks: List[Any] = []
+    # LEG-427 — asteroid depletion overlay (None when not ASTEROID_FIELD).
+    asteroid_depletion: Dict[str, Any] | None = None
 
 class MoveResponse(BaseModel):
     success: bool
@@ -626,6 +628,7 @@ async def get_current_sector(
         special_formations=formation_responses,
         anomaly_investigated=is_anomaly_investigated(sector),
         salvage_breaks=salvage_breaks,
+        asteroid_depletion=build_asteroid_depletion_readout(sector),
     )
 
 @router.post("/formations/{formation_id}/investigate", response_model=FormationInvestigateResponse)
