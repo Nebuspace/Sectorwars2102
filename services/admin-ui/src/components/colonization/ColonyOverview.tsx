@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import './colony-overview.css';
 
@@ -206,7 +207,12 @@ export const ColonyOverview: React.FC = () => {
       setRetryCount(0); // Reset retry count on success
     } catch (err) {
       console.error('Error loading colonies:', err);
-      setError('Failed to load colonies data');
+      setError(
+        formatAdminApiError(err, {
+          fallback: 'Failed to load colonies data',
+          scopeHint: 'admin.colonization.view scope required for colony overview',
+        }),
+      );
       setColonies([]);
       setStats(null);
       setRetryCount(prev => prev + 1); // Increment retry count
