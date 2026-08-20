@@ -37,6 +37,7 @@ from src.services.scheduler._common import (
     _ADVISORY_LOCK_KEY,
     _ARIA_PRUNE_STATE_KEY,
     _BULK_FILL_TRADERS_LOCK_KEY,
+    _BULK_FILL_RESEARCHERS_LOCK_KEY,
     _CITIZEN_REBAKE_LOCK_KEY,
     _CITIZEN_REBAKE_STATE_KEY,
     _LAW_PATROL_DISPERSAL_LOCK_KEY,
@@ -46,6 +47,7 @@ from src.services.scheduler._common import (
     _RETENTION_SWEEP_STATE_KEY,
     _ROUTE_RUNS_RETENTION_LOCK_KEY,
     _SEED_TRADER_ROSTERS_LOCK_KEY,
+    _SEED_RESEARCHER_ROSTERS_LOCK_KEY,
     _STRANDED_RELOCATE_LOCK_KEY,
     _TRADER_MISSION_LOCK_KEY,
     _TRADER_NOTORIETY_LOCK_KEY,
@@ -356,6 +358,35 @@ def _seed_trader_rosters_sync() -> int:
         db.close()
 
 
+def _seed_researcher_rosters_sync() -> int:
+    """Ensure nebula_surveyor NPCRoster rows exist so Loop B / bulk-fill
+    can materialize RESEARCHER NPCs (LEG-108 Rogue Scientist quantum drop).
+
+    Mirrors ``_seed_trader_rosters_sync`` — gameserver-seeded because BANG
+    emits no researcher kind. Idempotent by bang_roster_ref.
+    """
+    from src.core.database import SessionLocal
+    from src.models.galaxy import Galaxy
+    from src.services.npc_spawn_service import seed_researcher_rosters
+
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _SEED_RESEARCHER_ROSTERS_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return 0
+        galaxy = db.query(Galaxy).order_by(Galaxy.created_at.desc()).first()
+        if galaxy is None:
+            return 0
+        stats = seed_researcher_rosters(db, galaxy)
+        db.commit()
+        return stats.get("researcher_rosters_created", 0)
+    finally:
+        db.close()
+
+
 def bootstrap_region_sync(region_id: uuid.UUID) -> Dict[str, Any]:
     """ADR-0069 Phase 12.5c post-commit hook: seed initial NPCs + rosters
     for a freshly-imported region from its materialized BANG snapshot.
@@ -588,6 +619,33 @@ def _bulk_fill_traders_sync() -> int:
     finally:
         db.close()
 
+
+def _bulk_fill_researchers_sync() -> int:
+    """Spawn nebula surveyors up to each researcher roster's target_count
+    in one pass (LEG-108). Runs AFTER ``_seed_researcher_rosters_sync``.
+    Returns the number of researchers spawned."""
+    from src.core.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _BULK_FILL_RESEARCHERS_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return 0
+        rosters = (
+            db.query(NPCRoster)
+            .filter(NPCRoster.default_archetype == NPCArchetype.RESEARCHER)
+            .all()
+        )
+        spawned = 0
+        for roster in rosters:
+            spawned += len(_fill_roster_deficit(db, roster, fill_all=True))
+        db.commit()
+        return spawned
+    finally:
+        db.close()
 
 
 def _run_retention_sweep_sync() -> Dict[str, int]:

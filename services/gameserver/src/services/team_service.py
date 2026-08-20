@@ -10,6 +10,7 @@ from typing import Dict, Any, List, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import func
 
 from src.models.team import Team, TeamRecruitmentStatus
 from src.models.team_member import TeamMember, TeamRole
@@ -432,6 +433,9 @@ class TeamService:
     
     def get_team_members(self, team_id: uuid.UUID) -> List[Dict[str, Any]]:
         """Get all team members with their details"""
+        from src.models.medal import PlayerMedal
+        from src.services.medal_service import public_medal_identity
+
         members = (
             self.db.query(TeamMember, Player)
             .join(Player, TeamMember.player_id == Player.id)
@@ -439,26 +443,45 @@ class TeamService:
             .order_by(TeamMember.joined_at)
             .all()
         )
-        
-        return [{
-            "player_id": str(member.player_id),
-            # nickname is nullable — fall back to the Player.username
-            # property (nickname -> user.username -> "Unknown Player")
-            "nickname": player.nickname or player.username,
-            "role": member.role,
-            "joined_at": member.joined_at.isoformat() if member.joined_at else None,
-            "last_active": member.last_active.isoformat() if member.last_active else None,
-            "can_invite": member.can_invite,
-            "can_kick": member.can_kick,
-            "can_manage_treasury": member.can_manage_treasury,
-            "can_manage_missions": member.can_manage_missions,
-            "can_manage_alliances": member.can_manage_alliances,
-            "contribution_credits": member.contribution_credits,
-            "current_sector": player.current_sector_id,
-            # canon gap: no per-player combat rating exists yet
-            # (Team.combat_rating is the team aggregate)
-            "combat_rating": 0.0
-        } for member, player in members]
+
+        player_ids = [player.id for _, player in members]
+        counts: Dict[Any, int] = {}
+        if player_ids:
+            rows = (
+                self.db.query(PlayerMedal.player_id, func.count(PlayerMedal.medal_id))
+                .filter(PlayerMedal.player_id.in_(player_ids))
+                .group_by(PlayerMedal.player_id)
+                .all()
+            )
+            counts = {pid: int(n) for pid, n in rows}
+
+        result = []
+        for member, player in members:
+            identity = public_medal_identity(
+                player, medal_count=counts.get(player.id, 0)
+            )
+            result.append({
+                "player_id": str(member.player_id),
+                # nickname is nullable — fall back to the Player.username
+                # property (nickname -> user.username -> "Unknown Player")
+                "nickname": player.nickname or player.username,
+                "role": member.role,
+                "joined_at": member.joined_at.isoformat() if member.joined_at else None,
+                "last_active": member.last_active.isoformat() if member.last_active else None,
+                "can_invite": member.can_invite,
+                "can_kick": member.can_kick,
+                "can_manage_treasury": member.can_manage_treasury,
+                "can_manage_missions": member.can_manage_missions,
+                "can_manage_alliances": member.can_manage_alliances,
+                "contribution_credits": member.contribution_credits,
+                "current_sector": player.current_sector_id,
+                # canon gap: no per-player combat rating exists yet
+                # (Team.combat_rating is the team aggregate)
+                "combat_rating": 0.0,
+                "pinned_medal_id": identity["pinned_medal_id"],
+                "medal_count": identity["medal_count"],
+            })
+        return result
     
     def invite_player(self, team_id: uuid.UUID, inviter_id: uuid.UUID, 
                      player_nickname: str) -> Dict[str, Any]:

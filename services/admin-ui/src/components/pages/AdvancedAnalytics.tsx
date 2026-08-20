@@ -3,8 +3,10 @@ import PageHeader from '../ui/PageHeader';
 import { CustomReportBuilder } from '../analytics/CustomReportBuilder';
 import { PredictiveAnalytics } from '../analytics/PredictiveAnalytics';
 import { PerformanceMetrics } from '../analytics/PerformanceMetrics';
+import { api } from '../../utils/auth';
 import './advanced-analytics.css';
 
+/** Matches gameserver ReportResult (admin_reports.py). */
 interface ReportResult {
   id: string;
   name: string;
@@ -14,6 +16,17 @@ interface ReportResult {
 }
 
 const SAVED_TEMPLATES_KEY = 'reportTemplates';
+
+const responseStatus = (err: unknown): number | undefined =>
+  typeof err === 'object' && err !== null && 'response' in err
+    ? (err as { response?: { status?: number } }).response?.status
+    : undefined;
+
+const axiosDetail = (err: unknown): string | undefined => {
+  if (typeof err !== 'object' || err === null || !('response' in err)) return undefined;
+  const data = (err as { response?: { data?: { detail?: unknown } } }).response?.data;
+  return typeof data?.detail === 'string' ? data.detail : undefined;
+};
 
 export const AdvancedAnalytics: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'reports' | 'predictive' | 'performance' | 'export'>('reports');
@@ -44,57 +57,50 @@ export const AdvancedAnalytics: React.FC = () => {
 
   const handleGenerateReport = async (template: any) => {
     try {
-      const response = await fetch('/api/v1/admin/reports/generate', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('accessToken')}`
-        },
-        body: JSON.stringify(template)
-      });
-
-      if (!response.ok) {
-        setSaveMessage(
-          response.status === 404
-            ? 'Failed to generate report \u2014 /api/v1/admin/reports/generate endpoint not implemented (404)'
-            : `Failed to generate report \u2014 request failed (HTTP ${response.status})`
-        );
-        setTimeout(() => setSaveMessage(null), 6000);
-        return;
-      }
-
-      const report = await response.json();
-      setGeneratedReports([report, ...generatedReports]);
+      const { data: report } = await api.post<ReportResult>(
+        '/api/v1/admin/reports/generate',
+        template
+      );
+      setGeneratedReports((prev) => [report, ...prev]);
       setSelectedReport(report);
       setSaveMessage(`Report "${template.name}" generated successfully!`);
       setTimeout(() => setSaveMessage(null), 3000);
     } catch (error) {
       console.error('Error generating report:', error);
-      setSaveMessage('Failed to generate report \u2014 gameserver unreachable (network error)');
+      const status = responseStatus(error);
+      let message: string;
+      if (status === 401 || status === 403) {
+        message =
+          'Failed to generate report — access denied (requires admin.audit.view scope)';
+      } else if (status === 404) {
+        message =
+          'Failed to generate report — route not found (404). Generate ships in the gameserver; check proxy/routing.';
+      } else if (status === 400) {
+        message = `Failed to generate report — ${axiosDetail(error) ?? `HTTP ${status}`}`;
+      } else if (status !== undefined) {
+        message = `Failed to generate report — request failed (HTTP ${status})`;
+      } else {
+        message = 'Failed to generate report — gameserver unreachable (network error)';
+      }
+      setSaveMessage(message);
       setTimeout(() => setSaveMessage(null), 6000);
     }
   };
 
   const handleExportData = useCallback(async (datasetId: string) => {
     try {
-      const response = await fetch(
-        `/api/v1/admin/analytics/export?dataset=${datasetId}&format=${exportFormat}`,
-        {
-          headers: { 'Authorization': `Bearer ${localStorage.getItem('accessToken')}` }
-        }
-      );
+      const response = await api.get('/api/v1/admin/analytics/export', {
+        params: { dataset: datasetId, format: exportFormat },
+        responseType: 'blob',
+      });
 
-      if (!response.ok) {
-        setSaveMessage(
-          response.status === 400
-            ? `Export failed — ${(await response.json().catch(() => ({ detail: `HTTP ${response.status}` }))).detail}`
-            : `Export failed — HTTP ${response.status}`
-        );
-        setTimeout(() => setSaveMessage(null), 6000);
-        return;
-      }
-
-      const blob = await response.blob();
+      const contentType =
+        (response.headers?.['content-type'] as string | undefined) ||
+        (exportFormat === 'json' ? 'application/json' : 'text/csv');
+      const blob =
+        response.data instanceof Blob
+          ? response.data
+          : new Blob([response.data], { type: contentType });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
@@ -108,7 +114,18 @@ export const AdvancedAnalytics: React.FC = () => {
       setTimeout(() => setSaveMessage(null), 3000);
     } catch (error) {
       console.error('Export error:', error);
-      setSaveMessage('Export failed — gameserver unreachable (network error)');
+      const status = responseStatus(error);
+      let message: string;
+      if (status === 401 || status === 403) {
+        message = 'Export failed — access denied (requires admin.audit.view scope)';
+      } else if (status === 400) {
+        message = `Export failed — ${axiosDetail(error) ?? `HTTP ${status}`}`;
+      } else if (status !== undefined) {
+        message = `Export failed — HTTP ${status}`;
+      } else {
+        message = 'Export failed — gameserver unreachable (network error)';
+      }
+      setSaveMessage(message);
       setTimeout(() => setSaveMessage(null), 6000);
     }
   }, [exportFormat]);
@@ -177,7 +194,10 @@ export const AdvancedAnalytics: React.FC = () => {
           <div className="reports-section">
             <div className="reports-builder">
               {saveMessage && (
-                <div style={{
+                <div
+                  role="status"
+                  data-testid="analytics-save-message"
+                  style={{
                   padding: '10px 16px',
                   marginBottom: '12px',
                   borderRadius: '6px',
@@ -196,7 +216,7 @@ export const AdvancedAnalytics: React.FC = () => {
             </div>
             
             {generatedReports.length > 0 && (
-              <div className="generated-reports">
+              <div className="generated-reports" data-testid="generated-reports">
                 <h3>Generated Reports</h3>
                 <div className="reports-list">
                   {generatedReports.map(report => (
@@ -251,7 +271,10 @@ export const AdvancedAnalytics: React.FC = () => {
             </div>
 
             {saveMessage && (
-              <div style={{
+              <div
+                role="status"
+                data-testid="analytics-save-message"
+                style={{
                 padding: '10px 16px',
                 marginBottom: '12px',
                 borderRadius: '6px',
