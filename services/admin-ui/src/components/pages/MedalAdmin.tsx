@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import PageHeader from '../ui/PageHeader';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import { useToast } from '../../contexts/ToastContext';
 import './medal-admin.css';
 
@@ -63,9 +64,21 @@ interface AdminBulkGrantResponse {
 const REASON_MAX = 500;
 const BULK_MAX_RECIPIENTS = 1000;
 
-function detailFromErr(err: unknown, fallback: string): string {
-  const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-  return typeof detail === 'string' ? detail : fallback;
+function medalActionError(err: unknown, fallback: string): string {
+  return formatAdminApiError(err, {
+    fallback,
+    scopeHint:
+      'admin.players.adjust_rep scope (PLAYERS_ADJUST_REP) required to grant or revoke medals',
+  });
+}
+
+function medalCatalogError(err: unknown): string {
+  return formatAdminApiError(err, {
+    fallback: 'Failed to load medal catalog',
+    scopeHint: 'admin.players.view scope (PLAYERS_VIEW) required to view the medal catalog',
+    notFoundMessage:
+      'Medal catalog route not found (404). The gameserver admin catalog endpoint is not on this deployment tip — see FEATURES/gameplay/medals.md.',
+  });
 }
 
 /** Parse pasted IDs/usernames or CSV into recipient tokens (order preserved, empties dropped). */
@@ -110,7 +123,7 @@ const MedalAdmin: React.FC = () => {
       setCatalog(Array.isArray(data?.items) ? data.items : []);
     } catch (err: unknown) {
       setCatalog([]);
-      setCatalogError(detailFromErr(err, 'Failed to load medal catalog'));
+      setCatalogError(medalCatalogError(err));
     } finally {
       setLoadingCatalog(false);
     }
@@ -132,7 +145,12 @@ const MedalAdmin: React.FC = () => {
       setPlayers(rows);
     } catch (err: unknown) {
       setPlayers([]);
-      setPlayerError(detailFromErr(err, 'Failed to load players'));
+      setPlayerError(
+        formatAdminApiError(err, {
+          fallback: 'Failed to load players',
+          scopeHint: 'admin.players.view scope (PLAYERS_VIEW)',
+        })
+      );
     } finally {
       setLoadingPlayers(false);
     }
@@ -226,7 +244,9 @@ const MedalAdmin: React.FC = () => {
       toast.success(data?.message || (tab === 'grant' ? 'Medal granted' : 'Medal revoked'));
       setReason('');
     } catch (err: unknown) {
-      toast.error(detailFromErr(err, tab === 'grant' ? 'Grant failed' : 'Revoke failed'));
+      toast.error(
+        medalActionError(err, tab === 'grant' ? 'Grant failed' : 'Revoke failed')
+      );
     } finally {
       setSubmitting(false);
     }
@@ -252,8 +272,9 @@ const MedalAdmin: React.FC = () => {
     } catch (err: unknown) {
       setDryRunResult(null);
       setDryRunFingerprint(null);
-      setBulkError(detailFromErr(err, 'Bulk dry-run failed'));
-      toast.error(detailFromErr(err, 'Bulk dry-run failed'));
+      const bulkMsg = medalActionError(err, 'Bulk dry-run failed');
+      setBulkError(bulkMsg);
+      toast.error(bulkMsg);
     } finally {
       setBulkBusy(false);
     }
@@ -279,8 +300,9 @@ const MedalAdmin: React.FC = () => {
         : '';
       toast.success(`Granted ${data.granted_count} medal(s).${batch}${toastNote}`);
     } catch (err: unknown) {
-      setBulkError(detailFromErr(err, 'Bulk commit failed'));
-      toast.error(detailFromErr(err, 'Bulk commit failed'));
+      const bulkCommitMsg = medalActionError(err, 'Bulk commit failed');
+      setBulkError(bulkCommitMsg);
+      toast.error(bulkCommitMsg);
     } finally {
       setBulkBusy(false);
     }
