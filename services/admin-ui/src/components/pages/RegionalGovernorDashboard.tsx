@@ -334,7 +334,7 @@ const RegionalGovernorDashboard: React.FC = () => {
       setBeaconCapInput(data.beacon_sector_cap);
       setSuccess('Beacon sector cap updated successfully');
     } catch (err) {
-      setError(axiosDetail(err) || 'Failed to update beacon sector cap');
+      setError(regionAdminError(err, 'Failed to update beacon sector cap'));
     } finally {
       setBeaconCapLoading(false);
     }
