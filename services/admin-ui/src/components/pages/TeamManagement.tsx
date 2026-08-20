@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import PageHeader from '../ui/PageHeader';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import { useTeamUpdates } from '../../contexts/WebSocketContext';
 import './team-management.css';
 import './team-management-override.css';
@@ -96,9 +97,14 @@ export const TeamManagement: React.FC = () => {
       if (teamsData.teams && teamsData.teams.length > 0 && !selectedTeam) {
         setSelectedTeam(teamsData.teams[0]);
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Failed to load team data:', error);
-      setError(error.response?.data?.detail || 'Failed to load team data. Please check if the gameserver is running.');
+      setError(
+        formatAdminApiError(error, {
+          fallback: 'Failed to load team data. Please check if the gameserver is running.',
+          scopeHint: 'admin team management scopes required',
+        })
+      );
       // Clear data on error
       setTeams([]);
       setTeamStats(null);

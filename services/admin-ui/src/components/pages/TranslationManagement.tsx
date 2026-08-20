@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import PageHeader from '../ui/PageHeader';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import { useToast, useConfirm } from '../../contexts/ToastContext';
 import './translation-management.css';
 
@@ -98,7 +99,12 @@ const TranslationManagement: React.FC = () => {
       setLanguages(response.data ?? []);
     } catch (err) {
       console.error('Error fetching languages:', err);
-      setError('Failed to load languages. The translation service may be unavailable.');
+      setError(
+        formatAdminApiError(err, {
+          fallback: 'Failed to load languages',
+          scopeHint: 'admin.i18n.manage scope required to manage translations',
+        }),
+      );
       setLanguages([]);
     } finally {
       setLoading(false);
@@ -114,7 +120,12 @@ const TranslationManagement: React.FC = () => {
       setProgress(response.data ?? null);
     } catch (err) {
       console.error('Error fetching translation progress:', err);
-      setProgressError(`Failed to load progress for "${code}".`);
+      setProgressError(
+        formatAdminApiError(err, {
+          fallback: `Failed to load progress for "${code}"`,
+          scopeHint: 'admin.i18n.manage scope required to view translation progress',
+        }),
+      );
       setProgress(null);
     } finally {
       setProgressLoading(false);
@@ -140,9 +151,14 @@ const TranslationManagement: React.FC = () => {
         a.key.localeCompare(b.key)
       );
       setNamespaceKeys(rows);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error fetching namespace translations:', err);
-      setNamespaceKeysError(err.response?.data?.detail || `Failed to load keys for "${namespace}".`);
+      setNamespaceKeysError(
+        formatAdminApiError(err, {
+          fallback: `Failed to load keys for "${namespace}"`,
+          scopeHint: 'admin.i18n.manage scope required to browse translation keys',
+        }),
+      );
       setNamespaceKeys([]);
     } finally {
       setNamespaceKeysLoading(false);
@@ -203,9 +219,14 @@ const TranslationManagement: React.FC = () => {
       setEditingKey(null);
       await fetchNamespaceKeys(selectedCode, namespace);
       await fetchProgress(selectedCode);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error saving translation key:', err);
-      toast.error(err.response?.data?.detail || 'Failed to save translation key.');
+      toast.error(
+        formatAdminApiError(err, {
+          fallback: 'Failed to save translation key',
+          scopeHint: 'admin.i18n.manage scope required to edit translations',
+        }),
+      );
     } finally {
       setSavingKey(false);
     }
