@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 
 // Matches the backend CombatDisputeResponse schema in admin_combat.py
 interface CombatDispute {
@@ -53,23 +54,13 @@ export const DisputePanel: React.FC<DisputePanelProps> = ({
       setAdminNotes('');
       onResolve?.();
     } catch (error: unknown) {
-      const status =
-        typeof error === 'object' &&
-        error !== null &&
-        'response' in error
-          ? (error as { response?: { status?: number } }).response?.status
-          : undefined;
-      if (status === 401 || status === 403) {
-        setResolveError(
-          'Access denied — resolving combat disputes requires the admin combat intervene scope (COMBAT_INTERVENE).'
-        );
-      } else if (status === 429) {
-        setResolveError('Admin rate limit exceeded — wait a moment and try again.');
-      } else if (status !== undefined) {
-        setResolveError(`Failed to resolve dispute (HTTP ${status})`);
-      } else {
-        setResolveError('Gameserver unreachable — network error resolving dispute');
-      }
+      setResolveError(
+        formatAdminApiError(error, {
+          fallback: 'Gameserver unreachable — network error resolving dispute',
+          scopeHint:
+            'resolving combat disputes requires the admin combat intervene scope (COMBAT_INTERVENE).',
+        })
+      );
     } finally {
       setIsResolving(false);
     }
