@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
 import { Link } from 'react-router-dom';
 
 // Components
@@ -71,6 +70,23 @@ type AuditFeedState =
   | { status: 'ok'; entries: AuditLogEntry[] }
   | { status: 'error'; message: string };
 
+/** Map rejected api.get audit fetch without importing axios in this module. */
+function auditFetchErrorMessage(reason: unknown): string {
+  if (reason && typeof reason === 'object') {
+    const err = reason as { response?: { status?: number }; code?: string };
+    if (err.response?.status != null) {
+      return `Audit log request failed (${err.response.status}).`;
+    }
+    if (err.code === 'ECONNABORTED') {
+      return 'Audit log request timed out.';
+    }
+    if ('response' in err || 'request' in err) {
+      return 'Audit log request failed: network error.';
+    }
+  }
+  return 'Unable to load recent audit events.';
+}
+
 const Dashboard: React.FC = () => {
   const [dashboardData, setDashboardData] = useState<DashboardData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -93,18 +109,7 @@ const Dashboard: React.FC = () => {
         const logs = auditRes.value.data?.logs;
         setAuditFeed({ status: 'ok', entries: Array.isArray(logs) ? (logs as AuditLogEntry[]) : [] });
       } else {
-        const reason = auditRes.reason;
-        let message = 'Unable to load recent audit events.';
-        if (axios.isAxiosError(reason)) {
-          if (reason.response) {
-            message = `Audit log request failed (${reason.response.status}).`;
-          } else if (reason.code === 'ECONNABORTED') {
-            message = 'Audit log request timed out.';
-          } else {
-            message = 'Audit log request failed: network error.';
-          }
-        }
-        setAuditFeed({ status: 'error', message });
+        setAuditFeed({ status: 'error', message: auditFetchErrorMessage(auditRes.reason) });
       }
 
       // Process system health data with graceful degradation
