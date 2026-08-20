@@ -74,6 +74,14 @@ type AuditFeedState =
 function auditFetchErrorMessage(reason: unknown): string {
   if (reason && typeof reason === 'object') {
     const err = reason as { response?: { status?: number }; code?: string };
+    if (err.response?.status === 401 || err.response?.status === 403) {
+      return (
+        'Access denied — viewing the audit feed requires the admin.audit.view scope (AUDIT_VIEW).'
+      );
+    }
+    if (err.response?.status === 429) {
+      return 'Admin rate limit exceeded — wait a moment and try again.';
+    }
     if (err.response?.status != null) {
       return `Audit log request failed (${err.response.status}).`;
     }
