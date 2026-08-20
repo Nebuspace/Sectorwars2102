@@ -13,6 +13,7 @@ import { formatShipType } from '../../utils/formatters';
 import CockpitInstrument from '../cockpit/CockpitInstrument';
 import { useEmbedded } from '../cockpit/EmbeddedContext';
 import ShipRegistryPanel from './ShipRegistryPanel';
+import { getShipConditionColor } from './shipConditionColor';
 import './ship-selector.css';
 
 interface ShipSelectorProps {
@@ -186,14 +187,8 @@ export const ShipSelector: React.FC<ShipSelectorProps> = ({
     return capacity > 0 ? (used / capacity * 100) : 0;
   };
   
-  // Get ship condition color
-  const getConditionColor = (rating: number): string => {
-    if (rating >= 80) return 'excellent';
-    if (rating >= 60) return 'good';
-    if (rating >= 40) return 'fair';
-    if (rating >= 20) return 'poor';
-    return 'critical';
-  };
+  // Canon ships.md maintenance band boundaries: 75 / 50 / 25 / 10
+  const getConditionColor = (rating: number): string => getShipConditionColor(rating);
 
   // Format shields for display, handling both {current, max} and numeric formats
   const getShieldsDisplay = (ship: Ship): string => {
