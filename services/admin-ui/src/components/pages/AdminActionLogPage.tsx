@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import PageHeader from '../ui/PageHeader';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import './admin-action-log.css';
 
 type AuditTab = 'ledger' | 'review';
@@ -30,14 +31,11 @@ interface AdminActionPage {
   pages: number;
 }
 
-function scopeMissingMessage(err: any, fallback: string): string {
-  const detail = err?.response?.data?.detail || err?.response?.data?.message;
-  if (err?.response?.status === 403) {
-    return typeof detail === 'string'
-      ? detail
-      : 'You lack the required admin scope for this audit surface.';
-  }
-  return typeof detail === 'string' ? detail : fallback;
+function auditApiError(err: unknown, fallback: string): string {
+  return formatAdminApiError(err, {
+    fallback,
+    scopeHint: 'admin.audit.view / admin.audit.review required for this audit surface',
+  });
 }
 
 export const AdminActionLogPage: React.FC = () => {
@@ -102,7 +100,7 @@ export const AdminActionLogPage: React.FC = () => {
       if (err?.response?.status === 403) {
         setForbidden(true);
       }
-      setError(scopeMissingMessage(err, 'Failed to load admin action log'));
+      setError(auditApiError(err, 'Failed to load admin action log'));
     } finally {
       setIsLoading(false);
     }
@@ -197,7 +195,7 @@ export const AdminActionLogPage: React.FC = () => {
       setReviewTarget(null);
       await load();
     } catch (err: any) {
-      setMarkError(scopeMissingMessage(err, 'Failed to mark action reviewed'));
+      setMarkError(auditApiError(err, 'Failed to mark action reviewed'));
     } finally {
       setIsMarking(false);
     }
