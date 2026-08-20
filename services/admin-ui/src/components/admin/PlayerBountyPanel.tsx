@@ -27,6 +27,29 @@ function detailFromErr(err: unknown, fallback: string): string {
   return typeof detail === 'string' ? detail : fallback;
 }
 
+function responseStatus(err: unknown): number | undefined {
+  return typeof err === 'object' && err !== null && 'response' in err
+    ? (err as { response?: { status?: number } }).response?.status
+    : undefined;
+}
+
+function bountyPanelError(
+  err: unknown,
+  fallback: string,
+  scopeHint: 'PLAYERS_VIEW' | 'ECONOMY_INTERVENE'
+): string {
+  const status = responseStatus(err);
+  if (status === 401 || status === 403) {
+    return scopeHint === 'PLAYERS_VIEW'
+      ? 'Access denied — listing bounties requires the admin players view scope (PLAYERS_VIEW).'
+      : 'Access denied — bounty force-cancel / collapse requires ECONOMY_INTERVENE.';
+  }
+  if (status === 429) {
+    return 'Admin rate limit exceeded — wait a moment and try again.';
+  }
+  return detailFromErr(err, fallback);
+}
+
 export interface PlayerBountyPanelProps {
   targetId: string;
   targetName?: string;
@@ -53,7 +76,7 @@ const PlayerBountyPanel: React.FC<PlayerBountyPanelProps> = ({ targetId, targetN
       setList(data);
     } catch (err: unknown) {
       setList(null);
-      setListError(detailFromErr(err, 'Failed to load bounties'));
+      setListError(bountyPanelError(err, 'Failed to load bounties', 'PLAYERS_VIEW'));
     } finally {
       setLoading(false);
     }
@@ -81,7 +104,7 @@ const PlayerBountyPanel: React.FC<PlayerBountyPanelProps> = ({ targetId, targetN
       toast.success('Bounty force-cancelled');
       await loadBounties();
     } catch (err: unknown) {
-      toast.error(detailFromErr(err, 'Force-cancel failed'));
+      toast.error(bountyPanelError(err, 'Force-cancel failed', 'ECONOMY_INTERVENE'));
     } finally {
       setMutating(null);
     }
@@ -109,7 +132,7 @@ const PlayerBountyPanel: React.FC<PlayerBountyPanelProps> = ({ targetId, targetN
       );
       await loadBounties();
     } catch (err: unknown) {
-      toast.error(detailFromErr(err, 'Collapse failed'));
+      toast.error(bountyPanelError(err, 'Collapse failed', 'ECONOMY_INTERVENE'));
     } finally {
       setMutating(null);
     }
