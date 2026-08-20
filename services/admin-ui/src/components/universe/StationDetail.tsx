@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { api } from '../../utils/auth';
+import { formatUniverseAdminError } from '../../utils/universeAdminError';
 import './universe-detail.css';
 
 interface PortDetailProps {
@@ -37,7 +38,7 @@ const PortDetail: React.FC<PortDetailProps> = ({ port, onBack, onUpdate }) => {
       setEditingField(null);
     } catch (error) {
       console.error(`Failed to update ${field}:`, error);
-      alert(`Failed to update ${field}`);
+      alert(formatUniverseAdminError(error, `Failed to update ${field}`));
     } finally {
       setIsLoading(false);
     }
