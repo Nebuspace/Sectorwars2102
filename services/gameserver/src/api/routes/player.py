@@ -187,6 +187,8 @@ class SectorResponse(BaseModel):
     # Audit-27 #1: whether this SectorType.ANOMALY's one-time investigate
     # reward has been claimed (False for non-ANOMALY / uninvestigated).
     anomaly_investigated: bool = False
+    # LEG-427 — asteroid depletion overlay (None when not ASTEROID_FIELD).
+    asteroid_depletion: Dict[str, Any] | None = None
 
 class MoveResponse(BaseModel):
     success: bool
@@ -599,6 +601,9 @@ async def get_current_sector(
             is_investigated=is_formation_investigated(f) if discovered else False,
         ))
 
+    # LEG-427: server-authoritative depletion band + replenish ETA for overlay.
+    from src.services.mining_service import build_asteroid_depletion_readout
+
     return SectorResponse(
         id=str(sector.id),
         sector_id=sector.sector_id,
@@ -617,6 +622,7 @@ async def get_current_sector(
         z_coord=sector.z_coord,
         special_formations=formation_responses,
         anomaly_investigated=is_anomaly_investigated(sector),
+        asteroid_depletion=build_asteroid_depletion_readout(sector),
     )
 
 @router.post("/formations/{formation_id}/investigate", response_model=FormationInvestigateResponse)
