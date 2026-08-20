@@ -2121,6 +2121,9 @@ class PlanetUpdateRequest(BaseModel):
     habitability_score: Optional[int] = Field(None, ge=0, le=100)
     resource_richness: Optional[float] = Field(None, ge=0.0, le=3.0)
     defense_level: Optional[int] = Field(None, ge=0, le=100)
+    # LEG-1446: optional ownership mutation; explicit null clears (uncolonized).
+    # Omitted field leaves owner_id unchanged (exclude_unset).
+    owner_id: Optional[str] = None
 
 
 @router.patch("/planets/{planet_id}", response_model=Dict[str, Any])
@@ -2153,6 +2156,13 @@ async def update_planet(
                         planet.type = PlanetType(value)
                     except ValueError:
                         raise HTTPException(status_code=400, detail=f"Invalid planet type: {value}")
+                elif field == "owner_id":
+                    # Explicit null clears ownership; set requires an existing player.
+                    if value is not None:
+                        player = db.query(Player).filter(Player.id == value).first()
+                        if not player:
+                            raise HTTPException(status_code=404, detail="Player not found")
+                    planet.owner_id = value
                 else:
                     setattr(planet, field, value)
 
