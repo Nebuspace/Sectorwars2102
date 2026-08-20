@@ -5,7 +5,7 @@ self-resetting ``updated_at`` when the decay job writes. Write path
 (``adjust_sector_influence``) sets ``last_action_at``; decay never does.
 
 Revision ID: a8c3e1f4b902
-Revises: f6b2d8a41c90
+Revises: a9c2e4f71b08
 Create Date: 2026-08-16 14:20:00.000000
 """
 from alembic import op
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 
 revision = "a8c3e1f4b902"
-down_revision = "f6b2d8a41c90"
+down_revision = "a9c2e4f71b08"
 branch_labels = None
 depends_on = None
 
