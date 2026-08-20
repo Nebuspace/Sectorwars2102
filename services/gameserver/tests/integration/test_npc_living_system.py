@@ -542,6 +542,67 @@ class TestTraderNpc:
         assert first["trader_rosters_created"] >= 1
         assert second["trader_rosters_created"] == 0
 
+    def test_supply_delivery_spawns_and_sells_into_low_stock(self, db, world):
+        """LEG-394: low-stock → visible hauler spawn → sell increases stock."""
+        # Force ore at station B below DEFICIT_RATIO with elevated demand.
+        ore_cfg = world.station_b.commodities["ore"]
+        ore_cfg["quantity"] = 100
+        ore_cfg["npc_restock_demand"] = 1.5
+        from sqlalchemy.orm.attributes import flag_modified
+        flag_modified(world.station_b, "commodities")
+        ore_price = (
+            db.query(MarketPrice)
+            .filter(
+                MarketPrice.station_id == world.station_b.id,
+                MarketPrice.commodity == "ore",
+            )
+            .one()
+        )
+        ore_price.quantity = 100
+        db.flush()
+
+        stock_before = world.station_b.commodities["ore"]["quantity"]
+        dispatched = npc_trading_service.scan_and_dispatch_supply_deliveries(
+            db, limit=5,
+        )
+        ore_dispatches = [
+            d for d in dispatched
+            if d["station_id"] == str(world.station_b.id)
+            and d["commodity"] == "ore"
+        ]
+        assert ore_dispatches, f"expected ore supply delivery, got {dispatched}"
+        delivery = ore_dispatches[0]
+        assert delivery["spawn_sector_id"] != world.station_b.sector_id
+        assert delivery["quantity"] > 0
+
+        npc = (
+            db.query(NPCCharacter)
+            .filter(NPCCharacter.id == uuid.UUID(delivery["npc_id"]))
+            .one()
+        )
+        ship = db.query(Ship).filter(Ship.id == uuid.UUID(delivery["ship_id"])).one()
+        assert ship.cargo["contents"].get("ore", 0) == delivery["quantity"]
+        assert (npc.daily_schedule or {}).get("mission") == "supply_delivery"
+
+        # Colocate and sell (movement path is separate; stop math is the Accept).
+        npc.current_sector_id = world.station_b.sector_id
+        ship.sector_id = world.station_b.sector_id
+        db.flush()
+        npc_trading_service.run_trade_stop(db, npc, delivery["stop"])
+
+        assert world.station_b.commodities["ore"]["quantity"] == (
+            stock_before + delivery["quantity"]
+        )
+        assert "ore" not in (ship.cargo.get("contents") or {})
+        assert world.station_b.commodities["ore"]["npc_restock_demand"] < 1.5
+
+        # Idempotent: second scan must not spawn another ore hauler while live.
+        again = npc_trading_service.scan_and_dispatch_supply_deliveries(db, limit=5)
+        assert not any(
+            d["station_id"] == str(world.station_b.id) and d["commodity"] == "ore"
+            for d in again
+        )
+
 
 def _ensure_scout_spec(db: Session) -> ShipSpecification:
     existing = (

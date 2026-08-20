@@ -13,11 +13,29 @@ vi.mock('../../utils/auth', () => ({
 
 const toastSuccess = vi.fn();
 const toastError = vi.fn();
+const toastInfo = vi.fn();
+const toastWarning = vi.fn();
 const confirmMock = vi.fn();
 
 vi.mock('../../contexts/ToastContext', () => ({
-  useToast: () => ({ success: toastSuccess, error: toastError }),
+  useToast: () => ({
+    success: toastSuccess,
+    error: toastError,
+    info: toastInfo,
+    warning: toastWarning,
+  }),
   useConfirm: () => confirmMock,
+}));
+
+const subscribeMock = vi.fn();
+let isConnectedMock = true;
+let flaggedAlertHandler: ((data: any) => void) | null = null;
+
+vi.mock('../../contexts/WebSocketContext', () => ({
+  useWebSocket: () => ({
+    isConnected: isConnectedMock,
+    subscribe: subscribeMock,
+  }),
 }));
 
 const emptyMessages = { messages: [], total: 0, page: 1, limit: 20, pages: 1 };
@@ -85,7 +103,20 @@ describe('MessageModeration', () => {
     vi.mocked(api.post).mockReset();
     toastSuccess.mockReset();
     toastError.mockReset();
+    toastInfo.mockReset();
+    toastWarning.mockReset();
     confirmMock.mockReset();
+    subscribeMock.mockReset();
+    flaggedAlertHandler = null;
+    isConnectedMock = true;
+    subscribeMock.mockImplementation((event: string, handler: (data: any) => void) => {
+      if (event === 'flagged:message:alert') {
+        flaggedAlertHandler = handler;
+      }
+      return () => {
+        if (flaggedAlertHandler === handler) flaggedAlertHandler = null;
+      };
+    });
   });
 
   it('shows honest empty states when nothing is flagged', async () => {
@@ -203,7 +234,9 @@ describe('MessageModeration', () => {
     await user.click(screen.getByRole('button', { name: 'Clear Flag' }));
 
     await waitFor(() => {
-      expect(toastError).toHaveBeenCalledWith('Failed to clear the flag.');
+      expect(toastError).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to clear the flag'),
+      );
     });
     // Row is still present -- the local removal only happens on the success path.
     expect(screen.getByText('Alice')).toBeTruthy();
@@ -259,6 +292,120 @@ describe('MessageModeration', () => {
 
     await waitFor(() => {
       expect(api.get).toHaveBeenCalledWith('/api/v1/admin/messages/flagged?page=2');
+    });
+  });
+
+  it('subscribes to flagged:message:alert and debounced-refetches on alert', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    mockLoad();
+    render(<MessageModeration />);
+
+    await waitFor(() => {
+      expect(subscribeMock).toHaveBeenCalledWith(
+        'flagged:message:alert',
+        expect.any(Function),
+      );
+    });
+    await waitFor(() => {
+      expect(api.get).toHaveBeenCalledWith('/api/v1/admin/messages/flagged?page=1');
+    });
+
+    const getsAfterMount = vi.mocked(api.get).mock.calls.length;
+    expect(flaggedAlertHandler).toBeTruthy();
+
+    flaggedAlertHandler!({
+      type: 'flagged_message_alert',
+      flagged_by_name: 'Carol',
+      reason: 'harassment',
+      message_preview: 'bad text',
+    });
+
+    expect(toastInfo).toHaveBeenCalledWith(
+      expect.stringContaining('Carol: harassment'),
+    );
+
+    // Debounce window — no immediate second fetch stampede.
+    expect(vi.mocked(api.get).mock.calls.length).toBe(getsAfterMount);
+
+    await vi.advanceTimersByTimeAsync(450);
+
+    await waitFor(() => {
+      expect(vi.mocked(api.get).mock.calls.length).toBeGreaterThan(getsAfterMount);
+    });
+    expect(api.get).toHaveBeenCalledWith('/api/v1/admin/messages/flagged?page=1');
+    expect(api.get).toHaveBeenCalledWith('/api/v1/admin/messages/stats');
+
+    vi.useRealTimers();
+  });
+
+  it('does not register handlers for unrelated WS event types', async () => {
+    mockLoad();
+    render(<MessageModeration />);
+
+    await waitFor(() => expect(subscribeMock).toHaveBeenCalled());
+    const events = subscribeMock.mock.calls.map((c) => c[0]);
+    expect(events).toEqual(['flagged:message:alert']);
+    expect(events).not.toContain('ai:model-update');
+    expect(events).not.toContain('system:alert');
+  });
+
+  it('shows honest live-update demotion when WebSocket is disconnected', async () => {
+    isConnectedMock = false;
+    mockLoad();
+    render(<MessageModeration />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByText('Live updates unavailable — use Refresh'),
+      ).toBeTruthy();
+    });
+    expect(screen.getAllByRole('button', { name: 'Refresh' }).length).toBeGreaterThan(0);
+  });
+
+  it('surfaces scope denial on 403 flagged-message load (LEG-967)', async () => {
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url.startsWith('/api/v1/admin/messages/flagged')) {
+        return Promise.reject(
+          Object.assign(new Error('HTTP 403'), {
+            response: {
+              status: 403,
+              data: { detail: 'Missing scope admin.messages.moderate' },
+            },
+          }),
+        );
+      }
+      if (url === '/api/v1/admin/messages/stats') {
+        return Promise.resolve({ data: emptyStats });
+      }
+      return Promise.resolve({ data: emptyBeacons });
+    });
+
+    render(<MessageModeration />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Missing scope admin\.messages\.moderate/i)).toBeTruthy();
+    });
+  });
+
+  it('shows rate-limit copy on 429 stats load (LEG-967)', async () => {
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url === '/api/v1/admin/messages/stats') {
+        return Promise.reject(
+          Object.assign(new Error('HTTP 429'), {
+            response: { status: 429 },
+          }),
+        );
+      }
+      if (url.startsWith('/api/v1/admin/messages/flagged')) {
+        return Promise.resolve({ data: emptyMessages });
+      }
+      return Promise.resolve({ data: emptyBeacons });
+    });
+
+    render(<MessageModeration />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/rate limit/i)).toBeTruthy();
     });
   });
 });

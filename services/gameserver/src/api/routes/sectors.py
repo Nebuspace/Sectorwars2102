@@ -167,6 +167,8 @@ class SectorContentsResponse(BaseModel):
     # from the server instead of an independently-drifting local literal;
     # see WindshieldFlightContext.tsx's engageRangeEm.
     engage_range_em: float
+    # LEG-427 — asteroid depletion overlay (None when not ASTEROID_FIELD).
+    asteroid_depletion: Dict[str, Any] | None = None
 
 @router.get("/{sector_id}/planets", response_model=SectorPlanetsResponse)
 async def get_sector_planets(
@@ -541,6 +543,9 @@ async def get_sector_contents(
     # --- Warp-gate structures: read-only (no ADVANCE, no expiry write). ---
     gates = warp_gate_service.list_sector_structures(db, sector_id, read_only=True)
 
+    # LEG-427: same depletion band + replenish ETA as GET /player/current-sector.
+    from src.services.mining_service import build_asteroid_depletion_readout
+
     return SectorContentsResponse(
         sector_id=system.get("sector_id", sector_id),
         sector_type=system.get("sector_type"),
@@ -564,4 +569,5 @@ async def get_sector_contents(
         is_outlaw_zone=bool(getattr(sector, "is_outlaw_zone", False)),
         is_npc_barracks_sector=bool(getattr(sector, "is_npc_barracks_sector", False)),
         engage_range_em=isp.ENGAGE_RANGE_EM,
+        asteroid_depletion=build_asteroid_depletion_readout(sector),
     )
