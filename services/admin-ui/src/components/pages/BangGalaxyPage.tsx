@@ -12,6 +12,7 @@ import WipeGalaxyConfirmDialog from '../universe/bang/WipeGalaxyConfirmDialog';
 import AddRegionDialog from '../universe/bang/AddRegionDialog';
 import { useAuth } from '../../contexts/AuthContext';
 import { addPlayerOwnedRegion } from '../../services/bangGalaxyApi';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import type { BangConfig } from '../universe/bang/types';
 import './bang-galaxy-page.css';
 
@@ -80,8 +81,11 @@ const BangGalaxyPage: React.FC = () => {
       setWipeOpen(false);
       await loadGalaxyInfo();
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setWipeError(t('bang.wipe.failure', { error: message }));
+      const message = formatAdminApiError(err, {
+        fallback: t('bang.wipe.failure', { error: 'request failed' }),
+        scopeHint: 'admin.universe.manage',
+      });
+      setWipeError(message);
     } finally {
       setWipeBusy(false);
     }
@@ -164,8 +168,12 @@ const BangGalaxyPage: React.FC = () => {
               // Refresh galaxy info to surface the new region.
               setTimeout(() => { void loadGalaxyInfo(); }, 500);
             } catch (err) {
-              const message = err instanceof Error ? err.message : String(err);
-              setAddRegionError(message);
+              setAddRegionError(
+                formatAdminApiError(err, {
+                  fallback: 'Failed to add player-owned region',
+                  scopeHint: 'admin.universe.manage',
+                }),
+              );
             } finally {
               setAddRegionBusy(false);
             }
