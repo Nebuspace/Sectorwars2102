@@ -1,10 +1,20 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, act } from '@testing-library/react';
-import axios from 'axios';
+import { api } from '../utils/auth';
 import { AuthProvider, useAuth } from './AuthContext';
 
-vi.mock('axios');
-const mockedAxios = vi.mocked(axios, true);
+vi.mock('../utils/auth', () => ({
+  api: {
+    get: vi.fn(),
+    post: vi.fn(),
+    interceptors: {
+      response: { use: vi.fn().mockReturnValue(1), eject: vi.fn() },
+      request: { use: vi.fn().mockReturnValue(0), eject: vi.fn() },
+    },
+  },
+}));
+
+const mockedApi = vi.mocked(api, true);
 
 function jsonResponse(body: unknown, ok = true) {
   return Promise.resolve({
@@ -30,10 +40,10 @@ function Probe() {
 describe('AuthContext / AuthProvider', () => {
   beforeEach(() => {
     localStorage.clear();
-    mockedAxios.defaults = { headers: { common: {} } } as any;
-    mockedAxios.interceptors = {
-      response: { use: vi.fn().mockReturnValue(1), eject: vi.fn() },
-    } as any;
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    vi.mocked(api.interceptors.response.use).mockReturnValue(1);
+    vi.mocked(api.interceptors.response.eject).mockReset();
   });
 
   afterEach(() => {
@@ -54,9 +64,9 @@ describe('AuthContext / AuthProvider', () => {
 
   it('hydrates the user from /auth/me when a stored accessToken is valid', async () => {
     localStorage.setItem('accessToken', 'valid-token');
-    mockedAxios.get = vi.fn().mockResolvedValue({
+    vi.mocked(api.get).mockResolvedValue({
       data: { id: '1', username: 'alice', email: 'a@x.com', is_admin: true, is_active: true, last_login: null },
-    });
+    } as any);
 
     render(
       <AuthProvider>
@@ -66,11 +76,12 @@ describe('AuthContext / AuthProvider', () => {
 
     await waitFor(() => expect(screen.getByTestId('authed')).toHaveTextContent('true'));
     expect(screen.getByTestId('username')).toHaveTextContent('alice');
+    expect(api.get).toHaveBeenCalledWith('/api/v1/auth/me');
   });
 
   it('clears auth data when the stored token is rejected and refresh has no token', async () => {
     localStorage.setItem('accessToken', 'stale-token');
-    mockedAxios.get = vi.fn().mockRejectedValue({ response: { status: 401 } });
+    vi.mocked(api.get).mockRejectedValue({ response: { status: 401 } });
 
     render(
       <AuthProvider>
