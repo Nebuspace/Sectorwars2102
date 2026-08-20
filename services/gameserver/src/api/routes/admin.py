@@ -341,6 +341,50 @@ async def get_region_zones(
     }
 
 
+class BeaconSectorCapPatch(BaseModel):
+    """Admin PATCH body — Admin UI BeaconSectorCapEditor (LEG-1043 / #764)."""
+
+    beacon_sector_cap: int
+
+
+@router.get("/regions/{region_id}/beacon-sector-cap", response_model=dict)
+async def get_region_beacon_sector_cap(
+    region_id: str,
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    db: Session = Depends(get_db),
+):
+    """Read Region.trade_bonuses['beacon_sector_cap'] effective cap (1..50)."""
+    from src.services import message_beacon_service as mbs
+
+    region = db.query(Region).filter(Region.id == region_id).first()
+    if not region:
+        raise HTTPException(status_code=404, detail=f"Region {region_id} not found")
+    return mbs.get_region_beacon_sector_cap(region)
+
+
+@router.patch("/regions/{region_id}/beacon-sector-cap", response_model=dict)
+async def patch_region_beacon_sector_cap(
+    region_id: str,
+    body: BeaconSectorCapPatch,
+    current_admin: User = Depends(require_scope(GALAXY_MANAGE)),
+    db: Session = Depends(get_db),
+):
+    """Set Region.trade_bonuses['beacon_sector_cap'] (clamp 1..MAX_SECTOR_CAP)."""
+    from src.services import message_beacon_service as mbs
+    from src.services.message_beacon_service import BeaconError
+
+    region = db.query(Region).filter(Region.id == region_id).first()
+    if not region:
+        raise HTTPException(status_code=404, detail=f"Region {region_id} not found")
+    try:
+        result = mbs.set_region_beacon_sector_cap(db, region, body.beacon_sector_cap)
+        db.commit()
+    except BeaconError as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return result
+
+
 @router.get("/regions/{region_id}/zones/{zone_id}", response_model=ZoneResponse)
 async def get_zone_details(
     region_id: str,
