@@ -6,6 +6,7 @@ import { DisputePanel } from '../combat/DisputePanel';
 import DroneOperationsTab from '../combat/DroneOperationsTab';
 import BalanceAnalytics from '../combat/BalanceAnalytics';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import { useCombatUpdates } from '../../contexts/WebSocketContext';
 import './combat-overview.css';
 
@@ -75,6 +76,7 @@ export const CombatOverview: React.FC = () => {
   const [showInterventionModal, setShowInterventionModal] = useState(false);
   const [selectedCombatId, setSelectedCombatId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [interventionNote, setInterventionNote] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
 
   // WebSocket handlers
@@ -115,7 +117,12 @@ export const CombatOverview: React.FC = () => {
       setCombatEvents(eventsRes.value.data);
     } else {
       setCombatEvents([]);
-      errors.push('Combat feed unavailable');
+      errors.push(
+        formatAdminApiError(eventsRes.reason, {
+          fallback: 'Combat feed unavailable',
+          scopeHint: 'admin combat scopes required for live combat feed',
+        })
+      );
     }
 
     // Process combat statistics
@@ -123,7 +130,12 @@ export const CombatOverview: React.FC = () => {
       setCombatStats(statsRes.value.data as CombatStats);
     } else {
       setCombatStats(null);
-      errors.push('Combat statistics unavailable');
+      errors.push(
+        formatAdminApiError(statsRes.reason, {
+          fallback: 'Combat statistics unavailable',
+          scopeHint: 'admin combat scopes required for combat dashboard',
+        })
+      );
     }
 
     // Process combat logs into rankings
@@ -215,12 +227,22 @@ export const CombatOverview: React.FC = () => {
       setDisputes(disputesRes.value.data as CombatDispute[]);
     } else {
       setDisputes([]);
-      errors.push('Combat disputes unavailable');
+      errors.push(
+        formatAdminApiError(disputesRes.reason, {
+          fallback: 'Combat disputes unavailable',
+          scopeHint: 'admin combat scopes required for dispute review',
+        })
+      );
     }
 
     // Show combined error if all endpoints failed
     if (errors.length === 4) {
-      setError('Failed to load combat data. Please check if the gameserver is running.');
+      setError(
+        formatAdminApiError(eventsRes.status === 'rejected' ? eventsRes.reason : new Error('failed'), {
+          fallback: 'Failed to load combat data. Please check if the gameserver is running.',
+          scopeHint: 'admin combat scopes required for combat overview',
+        })
+      );
     } else if (errors.length > 0) {
       setError(errors.join(' | '));
     }
@@ -257,18 +279,34 @@ export const CombatOverview: React.FC = () => {
           setShowInterventionModal(false);
           return;
         }
-        await api.post(`/api/v1/admin/combat/${selectedCombatId}/intervene`, {
+        const response = await api.post(`/api/v1/admin/combat/${selectedCombatId}/intervene`, {
           intervention_type,
           parameters: {
             reason: `Admin intervention: ${action}`
           }
         });
+        const result = (response.data as { result?: { note?: unknown } } | undefined)?.result;
+        const note = typeof result?.note === 'string' ? result.note.trim() : '';
+        if (intervention_type === 'restore_shields') {
+          setInterventionNote(
+            note ||
+              'Logged only — CombatLog does not track shields; this action does not change ship hull or shields.'
+          );
+          setShowInterventionModal(false);
+          setSelectedCombatId(null);
+          return;
+        }
+        setInterventionNote(null);
         setShowInterventionModal(false);
         setSelectedCombatId(null);
-        // Refresh data
         await loadData();
-      } catch (error: any) {
-        setError(error.response?.data?.detail || 'Failed to intervene in combat');
+      } catch (error: unknown) {
+        setError(
+          formatAdminApiError(error, {
+            fallback: 'Failed to intervene in combat',
+            scopeHint: 'admin combat intervention scope required',
+          })
+        );
         setShowInterventionModal(false);
       }
     }
@@ -311,6 +349,11 @@ export const CombatOverview: React.FC = () => {
           <span className="alert-message">
             {error}
           </span>
+        </div>
+      )}
+      {interventionNote && (
+        <div className="alert" role="status" style={{ marginBottom: '20px' }}>
+          <span className="alert-message">{interventionNote}</span>
         </div>
       )}
       
@@ -486,7 +529,7 @@ export const CombatOverview: React.FC = () => {
                 className="btn btn-success"
                 onClick={() => handleIntervention('restore')}
               >
-                Restore Ships
+                Log shield restore (audit only)
               </button>
             </div>
             <p
@@ -502,9 +545,9 @@ export const CombatOverview: React.FC = () => {
                 lineHeight: 1.4,
               }}
             >
-              This modal offers Force End (stop_combat) and Restore Ships (restore_shields)
-              only. Pause, Reset, adjust_damage, and declare_winner controls are not shown —
-              do not invent them here.
+              This modal offers Force End (stop_combat) and Log shield restore (restore_shields,
+              audit-only until Ship.shields writes land). Pause, Reset, adjust_damage, and
+              declare_winner controls are not shown — do not invent them here.
             </p>
             
             <button 
