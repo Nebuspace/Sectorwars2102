@@ -219,6 +219,46 @@ def _sector_cap(region: Region) -> int:
     return max(1, min(MAX_SECTOR_CAP, cap))
 
 
+def _beacon_sector_cap_payload(region: Region) -> Dict[str, Any]:
+    """Admin GET/PATCH response shape for LEG-1043 / Admin UI #764."""
+    bonuses = region.trade_bonuses if isinstance(region.trade_bonuses, dict) else {}
+    raw = bonuses.get(REGION_BEACON_CAP_KEY)
+    return {
+        "region_id": str(region.id),
+        "beacon_sector_cap": _sector_cap(region),
+        "default_cap": DEFAULT_SECTOR_CAP,
+        "max_cap": MAX_SECTOR_CAP,
+        "configured_raw": raw,
+    }
+
+
+def get_region_beacon_sector_cap(region: Region) -> Dict[str, Any]:
+    """Read effective + configured beacon sector cap for a region."""
+    return _beacon_sector_cap_payload(region)
+
+
+def set_region_beacon_sector_cap(
+    db: Session, region: Region, beacon_sector_cap: int
+) -> Dict[str, Any]:
+    """Persist beacon_sector_cap into Region.trade_bonuses (clamp 1..50).
+
+    invent=0 magnitudes — DEFAULT_SECTOR_CAP / MAX_SECTOR_CAP from canon.
+    FLUSH-ONLY; caller commits.
+    """
+    if not isinstance(beacon_sector_cap, int) or isinstance(beacon_sector_cap, bool):
+        raise BeaconError("beacon_sector_cap must be an integer")
+    if beacon_sector_cap < 1 or beacon_sector_cap > MAX_SECTOR_CAP:
+        raise BeaconError(
+            f"beacon_sector_cap must be between 1 and {MAX_SECTOR_CAP} inclusive"
+        )
+    bonuses = dict(region.trade_bonuses) if isinstance(region.trade_bonuses, dict) else {}
+    bonuses[REGION_BEACON_CAP_KEY] = int(beacon_sector_cap)
+    region.trade_bonuses = bonuses
+    flag_modified(region, "trade_bonuses")
+    db.flush()
+    return _beacon_sector_cap_payload(region)
+
+
 def _decay_state(beacon: MessageBeacon, now: datetime) -> str:
     """WO-BEACON-LIFECYCLE -- the SINGLE source of truth for a beacon's
     decay state; never stored as a column, always re-derived from
