@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import PageHeader from '../ui/PageHeader';
 import { useToast, useConfirm } from '../../contexts/ToastContext';
 import './pages.css';
@@ -23,14 +24,11 @@ interface Station {
   commodities: string[];
 }
 
-// Extracts a human-readable message from an Axios-style error without using `any`.
-const getErrorMessage = (err: unknown): string => {
-  if (typeof err === 'object' && err !== null) {
-    const maybeAxios = err as { response?: { data?: { detail?: string } }; message?: string };
-    return maybeAxios.response?.data?.detail || maybeAxios.message || 'An unexpected error occurred';
-  }
-  return 'An unexpected error occurred';
-};
+const getErrorMessage = (err: unknown, fallback = 'An unexpected error occurred'): string =>
+  formatAdminApiError(err, {
+    fallback,
+    scopeHint: 'admin universe station management scopes required',
+  });
 
 const StationsManager: React.FC = () => {
   const toast = useToast();

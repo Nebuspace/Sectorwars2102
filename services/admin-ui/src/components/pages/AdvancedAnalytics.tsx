@@ -4,6 +4,7 @@ import { CustomReportBuilder } from '../analytics/CustomReportBuilder';
 import { PredictiveAnalytics } from '../analytics/PredictiveAnalytics';
 import { PerformanceMetrics } from '../analytics/PerformanceMetrics';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import './advanced-analytics.css';
 
 /** Matches gameserver ReportResult (admin_reports.py). */
@@ -17,16 +18,9 @@ interface ReportResult {
 
 const SAVED_TEMPLATES_KEY = 'reportTemplates';
 
-const responseStatus = (err: unknown): number | undefined =>
-  typeof err === 'object' && err !== null && 'response' in err
-    ? (err as { response?: { status?: number } }).response?.status
-    : undefined;
-
-const axiosDetail = (err: unknown): string | undefined => {
-  if (typeof err !== 'object' || err === null || !('response' in err)) return undefined;
-  const data = (err as { response?: { data?: { detail?: unknown } } }).response?.data;
-  return typeof data?.detail === 'string' ? data.detail : undefined;
-};
+/** Canon: OPERATIONS/admin-ui.md § Admin REST rate limits — Reports / exports = 5/hour. */
+const REPORTS_TIER_RATE_LIMIT =
+  'Admin reports/exports rate limit exceeded (5/hour) — wait and try again.';
 
 export const AdvancedAnalytics: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'reports' | 'predictive' | 'performance' | 'export'>('reports');
@@ -67,25 +61,15 @@ export const AdvancedAnalytics: React.FC = () => {
       setTimeout(() => setSaveMessage(null), 3000);
     } catch (error) {
       console.error('Error generating report:', error);
-      const status = responseStatus(error);
-      let message: string;
-      if (status === 401 || status === 403) {
-        message =
-          'Failed to generate report — access denied (requires admin.audit.view scope)';
-      } else if (status === 429) {
-        message =
-          'Failed to generate report — admin rate limit exceeded (Reports tier: 5/hour). Wait and try again.';
-      } else if (status === 404) {
-        message =
-          'Failed to generate report — route not found (404). Generate ships in the gameserver; check proxy/routing.';
-      } else if (status === 400) {
-        message = `Failed to generate report — ${axiosDetail(error) ?? `HTTP ${status}`}`;
-      } else if (status !== undefined) {
-        message = `Failed to generate report — request failed (HTTP ${status})`;
-      } else {
-        message = 'Failed to generate report — gameserver unreachable (network error)';
-      }
-      setSaveMessage(message);
+      setSaveMessage(
+        formatAdminApiError(error, {
+          fallback: 'Failed to generate report — gameserver unreachable (network error)',
+          scopeHint: 'admin.audit.view scope required to generate reports',
+          notFoundMessage:
+            'Failed to generate report — route not found (404). Generate ships in the gameserver; check proxy/routing.',
+          rateLimitMessage: REPORTS_TIER_RATE_LIMIT,
+        }),
+      );
       setTimeout(() => setSaveMessage(null), 6000);
     }
   };
@@ -117,21 +101,13 @@ export const AdvancedAnalytics: React.FC = () => {
       setTimeout(() => setSaveMessage(null), 3000);
     } catch (error) {
       console.error('Export error:', error);
-      const status = responseStatus(error);
-      let message: string;
-      if (status === 401 || status === 403) {
-        message = 'Export failed — access denied (requires admin.audit.view scope)';
-      } else if (status === 429) {
-        message =
-          'Export failed — admin rate limit exceeded (Reports tier: 5/hour). Wait and try again.';
-      } else if (status === 400) {
-        message = `Export failed — ${axiosDetail(error) ?? `HTTP ${status}`}`;
-      } else if (status !== undefined) {
-        message = `Export failed — HTTP ${status}`;
-      } else {
-        message = 'Export failed — gameserver unreachable (network error)';
-      }
-      setSaveMessage(message);
+      setSaveMessage(
+        formatAdminApiError(error, {
+          fallback: 'Export failed — gameserver unreachable (network error)',
+          scopeHint: 'admin.audit.view scope required to export analytics',
+          rateLimitMessage: REPORTS_TIER_RATE_LIMIT,
+        }),
+      );
       setTimeout(() => setSaveMessage(null), 6000);
     }
   }, [exportFormat]);

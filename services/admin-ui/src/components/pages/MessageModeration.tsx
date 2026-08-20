@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import { useToast, useConfirm } from '../../contexts/ToastContext';
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import './message-moderation.css';
@@ -174,7 +175,12 @@ const MessageModeration: React.FC = () => {
       setMessages([]);
       setTotalFlagged(0);
       setTotalPages(1);
-      setError('Failed to load the flagged-message review queue.');
+      setError(
+        formatAdminApiError(flaggedResult.reason, {
+          fallback: 'Failed to load the flagged-message review queue.',
+          scopeHint: 'admin messaging moderation scopes required',
+        })
+      );
     }
 
     if (statsResult.status === 'fulfilled') {
@@ -182,7 +188,12 @@ const MessageModeration: React.FC = () => {
     } else {
       console.error('Failed to load message stats:', statsResult.reason);
       setStats(null);
-      setStatsError('Statistics are currently unavailable.');
+      setStatsError(
+        formatAdminApiError(statsResult.reason, {
+          fallback: 'Statistics are currently unavailable.',
+          scopeHint: 'admin messaging statistics scope required',
+        })
+      );
     }
 
     if (beaconResult.status === 'fulfilled') {
@@ -195,7 +206,12 @@ const MessageModeration: React.FC = () => {
       setBeacons([]);
       setTotalFlaggedBeacons(0);
       setBeaconTotalPages(1);
-      setBeaconError('Failed to load the flagged-beacon review queue.');
+      setBeaconError(
+        formatAdminApiError(beaconResult.reason, {
+          fallback: 'Failed to load the flagged-beacon review queue.',
+          scopeHint: 'admin beacon moderation scopes required',
+        })
+      );
     }
 
     setLoading(false);
@@ -265,9 +281,12 @@ const MessageModeration: React.FC = () => {
       } catch (err) {
         console.error(`Failed to ${action} message:`, err);
         toast.error(
-          isDestructive
-            ? 'Failed to delete the message.'
-            : 'Failed to clear the flag.',
+          formatAdminApiError(err, {
+            fallback: isDestructive
+              ? 'Failed to delete the message'
+              : 'Failed to clear the flag',
+            scopeHint: 'admin.messages.moderate scope required for message moderation',
+          }),
         );
       } finally {
         setActingId(null);
@@ -297,7 +316,12 @@ const MessageModeration: React.FC = () => {
         await loadData();
       } catch (err) {
         console.error('Failed to clear beacon flag:', err);
-        toast.error('Failed to clear the beacon flag.');
+        toast.error(
+          formatAdminApiError(err, {
+            fallback: 'Failed to clear the beacon flag',
+            scopeHint: 'admin.beacons.moderate scope required for beacon moderation',
+          }),
+        );
       } finally {
         setActingId(null);
       }
@@ -331,7 +355,12 @@ const MessageModeration: React.FC = () => {
         await loadData();
       } catch (err) {
         console.error('Failed to confirm beacon abuse:', err);
-        toast.error('Failed to confirm abuse for this beacon.');
+        toast.error(
+          formatAdminApiError(err, {
+            fallback: 'Failed to confirm abuse for this beacon',
+            scopeHint: 'admin.beacons.moderate scope required for beacon abuse confirmation',
+          }),
+        );
       } finally {
         setActingId(null);
       }

@@ -126,3 +126,26 @@ describe('CombatOverview restore_shields honesty (LEG-482)', () => {
     });
   });
 });
+
+describe('CombatOverview scope errors (LEG-921)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('surfaces 403 scope detail when combat endpoints deny access', async () => {
+    const err403 = Object.assign(new Error('HTTP 403'), {
+      response: {
+        status: 403,
+        data: { detail: 'Missing scope admin.combat.view' },
+      },
+    });
+    vi.mocked(api.get).mockRejectedValue(err403);
+
+    render(<CombatOverview />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/admin\.combat\.view|Missing scope/i)).toBeTruthy();
+    });
+  });
+});
