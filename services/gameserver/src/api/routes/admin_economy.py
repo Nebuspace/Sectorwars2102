@@ -490,14 +490,30 @@ class UpgradeLeverPatch(BaseModel):
     cost_multiplier: Optional[float] = Field(None, ge=1.0, le=10.0)
 
 
+class BountyPayoutLeverPatch(BaseModel):
+    bounty_payout_ratio: float = Field(..., ge=0.0, le=5.0)
+
+
+class InsuranceLeverPatch(BaseModel):
+    insurance_premium_pct: Optional[dict[str, float]] = None
+    insurance_net_payout_pct: Optional[dict[str, float]] = None
+
+
+class StationCommodityLeverPatch(BaseModel):
+    base_price: Optional[int] = Field(None, ge=0, le=50_000_000)
+    production_rate: Optional[float] = Field(None, ge=0.0, le=1_000_000.0)
+
+
 @router.get("/levers")
 async def get_economy_levers(
     admin: User = Depends(require_scope(PLAYERS_VIEW)),
     db: Session = Depends(get_db),
 ):
-    """Snapshot of admin-editable balancing levers (regions, ship costs, upgrades)."""
+    """Snapshot of admin-editable balancing levers (regions, ship costs, upgrades,
+    bounty/insurance ratios, per-station commodity base_price/production_rate)."""
     from src.models.region import Region
     from src.models.ship import ShipSpecification
+    from src.services.economy_balancing_levers import snapshot as levers_snapshot
     from src.services.ship_upgrade_service import ShipUpgradeService
 
     regions = db.query(Region).order_by(Region.name).all()
@@ -511,6 +527,24 @@ async def get_economy_levers(
             "description": definition.get("description", ""),
         })
 
+    stations = db.query(Station).order_by(Station.name).limit(500).all()
+    station_commodities = []
+    for station in stations:
+        commodities = station.commodities or {}
+        if not isinstance(commodities, dict):
+            continue
+        for commodity_key, raw in commodities.items():
+            if not isinstance(raw, dict):
+                continue
+            station_commodities.append({
+                "station_id": str(station.id),
+                "station_name": station.name,
+                "commodity": str(commodity_key),
+                "base_price": int(raw.get("base_price") or 0),
+                "production_rate": float(raw.get("production_rate") or 0),
+            })
+
+    ratios = levers_snapshot()
     return {
         "regions": [
             {
@@ -532,6 +566,10 @@ async def get_economy_levers(
             for spec in specs
         ],
         "upgrades": upgrades,
+        "bounty_payout_ratio": ratios["bounty_payout_ratio"],
+        "insurance_premium_pct": ratios["insurance_premium_pct"],
+        "insurance_net_payout_pct": ratios["insurance_net_payout_pct"],
+        "station_commodities": station_commodities,
     }
 
 
@@ -635,5 +673,118 @@ async def patch_upgrade_lever(
         "type": ut.value,
         "applied": applied,
         "note": "In-process override; reverts on gameserver restart unless persisted elsewhere.",
+        "actor": str(admin.id),
+    }
+
+
+@router.patch("/levers/bounty-payout")
+async def patch_bounty_payout_lever(
+    body: BountyPayoutLeverPatch,
+    admin: User = Depends(require_scope(ECONOMY_INTERVENE)),
+):
+    """Adjust in-process bounty payout faucet ratio (lifecycle.md balancing levers)."""
+    from src.services.economy_balancing_levers import set_bounty_payout_ratio
+
+    try:
+        applied = set_bounty_payout_ratio(body.bounty_payout_ratio)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "bounty_payout_ratio": applied,
+        "note": "In-process override; reverts on gameserver restart.",
+        "actor": str(admin.id),
+    }
+
+
+@router.patch("/levers/insurance")
+async def patch_insurance_levers(
+    body: InsuranceLeverPatch,
+    admin: User = Depends(require_scope(ECONOMY_INTERVENE)),
+):
+    """Adjust in-process insurance premium / net-payout ratios by tier."""
+    from src.services.economy_balancing_levers import (
+        set_insurance_net_payout_pct,
+        set_insurance_premium_pct,
+        snapshot as levers_snapshot,
+    )
+
+    if body.insurance_premium_pct is None and body.insurance_net_payout_pct is None:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    applied: dict = {}
+    try:
+        if body.insurance_premium_pct is not None:
+            applied["insurance_premium_pct"] = set_insurance_premium_pct(
+                body.insurance_premium_pct
+            )
+        if body.insurance_net_payout_pct is not None:
+            applied["insurance_net_payout_pct"] = set_insurance_net_payout_pct(
+                body.insurance_net_payout_pct
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    snap = levers_snapshot()
+    return {
+        "applied": applied,
+        "insurance_premium_pct": snap["insurance_premium_pct"],
+        "insurance_net_payout_pct": snap["insurance_net_payout_pct"],
+        "note": "In-process override; reverts on gameserver restart.",
+        "actor": str(admin.id),
+    }
+
+
+@router.patch("/levers/stations/{station_id}/commodities/{commodity}")
+async def patch_station_commodity_lever(
+    station_id: UUID,
+    commodity: str,
+    body: StationCommodityLeverPatch,
+    admin: User = Depends(require_scope(ECONOMY_INTERVENE)),
+    db: Session = Depends(get_db),
+):
+    """Persist per-station commodity base_price and/or production_rate."""
+    from sqlalchemy.orm.attributes import flag_modified
+
+    if body.base_price is None and body.production_rate is None:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    station = db.query(Station).filter(Station.id == station_id).first()
+    if not station:
+        raise HTTPException(status_code=404, detail="Station not found")
+
+    commodities = dict(station.commodities or {})
+    entry = commodities.get(commodity)
+    if not isinstance(entry, dict):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Commodity '{commodity}' not stocked at this station",
+        )
+
+    applied: dict = {}
+    updated = dict(entry)
+    if body.base_price is not None:
+        applied["base_price"] = {
+            "old": int(updated.get("base_price") or 0),
+            "new": int(body.base_price),
+        }
+        updated["base_price"] = int(body.base_price)
+    if body.production_rate is not None:
+        applied["production_rate"] = {
+            "old": float(updated.get("production_rate") or 0),
+            "new": float(body.production_rate),
+        }
+        updated["production_rate"] = float(body.production_rate)
+
+    commodities[commodity] = updated
+    station.commodities = commodities
+    flag_modified(station, "commodities")
+    db.commit()
+
+    return {
+        "station_id": str(station.id),
+        "commodity": commodity,
+        "applied": applied,
+        "base_price": int(updated.get("base_price") or 0),
+        "production_rate": float(updated.get("production_rate") or 0),
         "actor": str(admin.id),
     }
