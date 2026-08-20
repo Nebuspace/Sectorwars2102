@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom';
 import PageHeader from '../ui/PageHeader';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import './scopes-manager.css';
 
 /** WO-RBAC-D frontend reminder — visually flag these four in the grant picker. */
@@ -36,14 +37,11 @@ interface ScopeCatalogItem {
   description: string;
 }
 
-function scopeMissingMessage(err: any, fallback: string): string {
-  const detail = err?.response?.data?.detail || err?.response?.data?.message;
-  if (err?.response?.status === 403) {
-    return typeof detail === 'string'
-      ? detail
-      : 'You lack admin.scopes.grant — cannot manage scopes.';
-  }
-  return typeof detail === 'string' ? detail : fallback;
+function scopeApiError(err: unknown, fallback: string): string {
+  return formatAdminApiError(err, {
+    fallback,
+    scopeHint: 'admin.scopes.grant — cannot manage scopes',
+  });
 }
 
 function scopeHintId(scope: string): string {
@@ -84,7 +82,7 @@ export const ScopesManager: React.FC = () => {
       if (err?.response?.status === 403) {
         setForbidden(true);
       }
-      setError(scopeMissingMessage(err, 'Failed to load scope holders'));
+      setError(scopeApiError(err, 'Failed to load scope holders'));
     } finally {
       setIsLoading(false);
     }
@@ -204,7 +202,7 @@ export const ScopesManager: React.FC = () => {
       setGrantScope('');
       await load();
     } catch (err: any) {
-      setActionError(scopeMissingMessage(err, 'Grant failed'));
+      setActionError(scopeApiError(err, 'Grant failed'));
     } finally {
       setIsMutating(false);
     }
@@ -222,7 +220,7 @@ export const ScopesManager: React.FC = () => {
       setRevokeTarget(null);
       await load();
     } catch (err: any) {
-      setActionError(scopeMissingMessage(err, 'Revoke failed'));
+      setActionError(scopeApiError(err, 'Revoke failed'));
       setRevokeTarget(null);
     } finally {
       setIsMutating(false);
