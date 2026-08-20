@@ -41,6 +41,7 @@ import os
 import random
 import time
 import uuid
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
@@ -81,7 +82,12 @@ from src.models.station import (
     StationStatus,
     StationType,
 )
-from src.models.warp_tunnel import WarpTunnel, WarpTunnelType
+from src.models.warp_tunnel import (
+    WarpTunnel,
+    WarpTunnelStability,
+    WarpTunnelStatus,
+    WarpTunnelType,
+)
 from src.models.zone import Zone, ZoneType
 from src.schemas.bang_config import BangConfig, RegionType
 from src.services.galaxy_validation import (
@@ -731,6 +737,138 @@ def _should_stamp_nexus_protected(region_type: str, sector_number: int) -> bool:
         <= sector_number
         <= NEXUS_GATEWAY_PLAZA_SECTOR_HI
     )
+
+
+# bang-import-pipeline.md step 9: isolated clusters (no dedicated boolean —
+# stamp Cluster.special_features with this token). Observational 10–20%
+# target; never synthesize extra isolation. Warn above 25% and proceed.
+_ISOLATED_FEATURE = "isolated"
+_ISOLATED_SHARE_WARN = 0.25
+
+
+def _step9_isolated_cluster_int_ids(
+    cluster_specs: List["ClusterSpec"],
+    sector_specs: List["SectorSpec"],
+    warp_specs: List["WarpSpec"],
+) -> set[int]:
+    """Return cluster_int_ids with no fedspace-reachable sector via bang warps.
+
+    Canon (bang-import-pipeline.md:198-204): a cluster is isolated when none
+    of its sectors is reachable from a fedspace sector via natural warps.
+    Graph is the bang warp list (directed; bidirectional adds the reverse).
+    Latent bang warps still count as natural — do not invent a latent skip.
+    Empty fedspace set → every populated cluster is isolated (inherit bang;
+    do not invent sector 1 as a fedspace root). Empty clusters are skipped.
+    """
+    members: Dict[int, List[int]] = defaultdict(list)
+    for ss in sector_specs:
+        members[ss.cluster_int_id].append(ss.sector_id)
+
+    adj: Dict[int, List[int]] = defaultdict(list)
+    for w in warp_specs:
+        adj[w.from_sector_int].append(w.to_sector_int)
+        if w.is_bidirectional:
+            adj[w.to_sector_int].append(w.from_sector_int)
+
+    roots = [
+        ss.sector_id
+        for ss in sector_specs
+        if "fedspace" in (ss.special_features or [])
+    ]
+    reachable: set[int] = set(roots)
+    queue: deque[int] = deque(roots)
+    while queue:
+        cur = queue.popleft()
+        for nxt in adj.get(cur, ()):
+            if nxt not in reachable:
+                reachable.add(nxt)
+                queue.append(nxt)
+
+    isolated: set[int] = set()
+    for cs in cluster_specs:
+        secs = members.get(cs.cluster_int_id) or []
+        if not secs:
+            continue
+        if not any(sid in reachable for sid in secs):
+            isolated.add(cs.cluster_int_id)
+    return isolated
+
+
+def _step9_stamp_isolated_clusters(
+    cluster_specs: List["ClusterSpec"],
+    sector_specs: List["SectorSpec"],
+    warp_specs: List["WarpSpec"],
+) -> set[int]:
+    """Append ``isolated`` onto ClusterSpec.special_features; warn if >25%."""
+    isolated = _step9_isolated_cluster_int_ids(
+        cluster_specs, sector_specs, warp_specs
+    )
+    n = len(cluster_specs)
+    if n and (len(isolated) / n) > _ISOLATED_SHARE_WARN:
+        logger.warning(
+            "bang-import step-9: %s/%s clusters isolated (>%s); "
+            "proceeding without synthesizing extra isolation",
+            len(isolated),
+            n,
+            _ISOLATED_SHARE_WARN,
+        )
+    by_id = {cs.cluster_int_id: cs for cs in cluster_specs}
+    for cid in isolated:
+        cs = by_id[cid]
+        feats = list(cs.special_features or [])
+        if _ISOLATED_FEATURE not in feats:
+            feats.append(_ISOLATED_FEATURE)
+            cs.special_features = feats
+    return isolated
+
+
+# bang-import-pipeline.md step 10: long intra-region warps also get WarpTunnel
+# rows (sector_warps remains the lightweight routing association).
+def _step10_long_warp_threshold(total_sectors: int) -> int:
+    """Heuristic N = max(50, totalSectors / 20) from pipeline step 10."""
+    return max(50, total_sectors // 20)
+
+
+def _step10_is_long_warp(w: "WarpSpec", total_sectors: int) -> bool:
+    span = abs(w.from_sector_int - w.to_sector_int)
+    return span > _step10_long_warp_threshold(total_sectors)
+
+
+def _step10_warp_tunnel_properties() -> Dict[str, Any]:
+    """jsonb-schema.md#warptunnelproperties pins for bang-import step 10."""
+    return {
+        "traversal_cost": 1,
+        "discovered": True,
+        "affected_by_storms": False,
+    }
+
+
+def _step10_endpoint_json(
+    *,
+    sector_uuid: uuid.UUID,
+    cluster_uuid: uuid.UUID,
+    region_id: uuid.UUID,
+    x_coord: int,
+    y_coord: int,
+    z_coord: int,
+    controlling_faction: Optional[str],
+) -> Dict[str, Any]:
+    return {
+        "sector_id": str(sector_uuid),
+        "cluster_id": str(cluster_uuid),
+        "region_id": str(region_id),
+        "coordinates": {"x": x_coord, "y": y_coord, "z": z_coord},
+        "controlling_faction": controlling_faction,
+        "is_secured": False,
+        "access_requirements": None,
+    }
+
+
+def _step10_long_warp_specs(
+    warps: List["WarpSpec"], total_sectors: int
+) -> List["WarpSpec"]:
+    return [w for w in warps if _step10_is_long_warp(w, total_sectors)]
+
 
 #: WO-BANG-ONEWAY-RATE: GLOSSARY.md's canonical one-way-warp fraction
 #: target (~5%). Every BangConfig construction site below pins this
@@ -2183,6 +2321,56 @@ class BangImportService:
             )
         _record_phase_checksum(region_row, "warps", len(region_plan.warps), _sk17_t0)
 
+        # bang-import-pipeline.md step 10: NATURAL WarpTunnel for long warps.
+        sector_spec_by_int = {ss.sector_id: ss for ss in region_plan.sectors}
+        _sk17_t0 = time.monotonic()
+        long_tunnel_count = 0
+        for w in region_plan.warps:
+            if not _step10_is_long_warp(w, region_plan.total_sectors):
+                continue
+            src = sector_spec_by_int[w.from_sector_int]
+            dst = sector_spec_by_int[w.to_sector_int]
+            session.add(
+                WarpTunnel(
+                    name=(
+                        f"Natural long warp "
+                        f"{w.from_sector_int}→{w.to_sector_int}"
+                    ),
+                    origin_sector_id=sector_uuid_by_int[w.from_sector_int],
+                    destination_sector_id=sector_uuid_by_int[w.to_sector_int],
+                    type=WarpTunnelType.NATURAL,
+                    status=WarpTunnelStatus.ACTIVE,
+                    is_bidirectional=w.is_bidirectional,
+                    is_latent=w.is_latent,
+                    stability=1.0,
+                    stability_enum=WarpTunnelStability.STABLE,
+                    properties=_step10_warp_tunnel_properties(),
+                    source_endpoint=_step10_endpoint_json(
+                        sector_uuid=sector_uuid_by_int[w.from_sector_int],
+                        cluster_uuid=cluster_uuid_by_int[src.cluster_int_id],
+                        region_id=region_id,
+                        x_coord=src.x_coord,
+                        y_coord=src.y_coord,
+                        z_coord=src.z_coord,
+                        controlling_faction=src.controlling_faction,
+                    ),
+                    destination_endpoint=_step10_endpoint_json(
+                        sector_uuid=sector_uuid_by_int[w.to_sector_int],
+                        cluster_uuid=cluster_uuid_by_int[dst.cluster_int_id],
+                        region_id=region_id,
+                        x_coord=dst.x_coord,
+                        y_coord=dst.y_coord,
+                        z_coord=dst.z_coord,
+                        controlling_faction=dst.controlling_faction,
+                    ),
+                    turn_cost=w.turn_cost,
+                )
+            )
+            long_tunnel_count += 1
+        _record_phase_checksum(
+            region_row, "long_warp_tunnels", long_tunnel_count, _sk17_t0
+        )
+
         # WO-STN-SEC-1: sector→cluster-type lookup so the security-tier
         # derivation below can see "is this station in a frontier/lawless
         # cluster" without a second DB round-trip (region_plan already carries
@@ -3055,6 +3243,11 @@ class BangImportService:
                 )
             )
 
+        # Step 9 (bang-import-pipeline.md:198-204): stamp isolated clusters
+        # from the bang warp graph before formations / persist. Persist copies
+        # ClusterSpec.special_features onto Cluster at insert.
+        _step9_stamp_isolated_clusters(cluster_specs, sector_specs, warp_specs)
+
         # Formations
         formation_specs: List[FormationSpec] = []
         for f in raw.get("specialFormations") or []:
@@ -3135,6 +3328,12 @@ class BangImportService:
             random.Random(f"{universe_seed}:{sector_id}:{name}"),
         )
         services = _build_default_services(is_spacedock)
+        docking_slips = _docking_slips_from_port(port)
+        if docking_slips is not None:
+            # LEG-467: persist bang Port.dockingSlips on existing services
+            # JSONB (no second inventory table). docking_service prefers this
+            # when present so pirate/frontier counts are not class-band.
+            services = {**services, "docking_slips": docking_slips}
         # WO-BO / ADR-0079: derive the archetype-driven trader personality from
         # the station class at creation (human #7: personality generated at creation
         # + persistent). Single source of truth: core/trader_personalities.py.
@@ -3546,6 +3745,44 @@ def _build_full_commodities(
             "sells": sells,
         }
     return out
+
+
+def _docking_slips_from_port(port: Dict[str, Any]) -> Optional[Dict[str, int]]:
+    """Normalize bang ``Port.dockingSlips`` onto Station.services (LEG-467).
+
+    Bang SCHEMA 1.3.11 emits ``{transient, longTerm, construction,
+    specializedConstruction}``. Missing/malformed payload → None (class-band
+    fallback in docking_service). Construction stays 0 for pirate/frontier
+    until the black-market shipwright ships — copy the payload, do not invent.
+    """
+    raw = port.get("dockingSlips")
+    if raw is None:
+        raw = port.get("docking_slips")
+    if not isinstance(raw, dict):
+        return None
+
+    def _int_field(*keys: str) -> Optional[int]:
+        for key in keys:
+            if key not in raw or raw[key] is None:
+                continue
+            try:
+                return int(raw[key])
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    transient = _int_field("transient")
+    long_term = _int_field("long_term", "longTerm")
+    construction = _int_field("construction")
+    specialized = _int_field("specialized_construction", "specializedConstruction")
+    if transient is None or long_term is None:
+        return None
+    return {
+        "transient": transient,
+        "long_term": long_term,
+        "construction": construction if construction is not None else 0,
+        "specialized_construction": specialized if specialized is not None else 0,
+    }
 
 
 def _build_default_services(is_spacedock: bool) -> Dict[str, Any]:
