@@ -99,6 +99,12 @@ const CentralNexusManager: React.FC = () => {
       setStats(response.data);
     } catch (err) {
       console.error('Failed to load stats:', err);
+      setError(
+        formatAdminApiError(err, {
+          fallback: 'Failed to load nexus stats',
+          scopeHint: 'admin nexus scopes required',
+        }),
+      );
     }
   };
 
