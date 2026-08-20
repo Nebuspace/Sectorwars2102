@@ -8,10 +8,13 @@ longest-tenured occupant with >= 4 canonical hours of tenure. Tenure is
 measured through src.core.game_time (GAME_TIME_SCALE compresses time on dev).
 
 REPUTATION GATE: Station.reputation_threshold is an integer representing the
-minimum faction reputation value (Reputation.current_value) a player must have
-with the station's controlling faction before they are allowed to dock.
+minimum faction standing a player must have with the station's controlling
+faction before they are allowed to dock. Standing resolves via
+``faction_service.resolve_effective_faction_standing_value`` (team aggregate
+when the player belongs to a team; personal ``Reputation.current_value``
+otherwise — LEG-800/LEG-814).
   - If the station has no faction_affiliation the gate is skipped.
-  - If the player has no reputation record they are treated as 0 (neutral).
+  - If the player has no personal or team standing they are treated as 0.
   - On failure, acquire() returns {'status': 'reputation_denied', ...} without
     queuing or granting a slip. The route should translate this to HTTP 403.
 
@@ -121,31 +124,26 @@ class ReputationGateError(Exception):
 # ---------------------------------------------------------------------------
 
 def _player_faction_rep_for_station(db: Session, player: Player, station: Station) -> int:
-    """Return the player's current_value toward the station's controlling
-    faction, or 0 if the station is unaffiliated or no record exists.
+    """Return effective standing toward the station's controlling faction.
 
-    Mirrors the pattern in construction_service._faction_rep_tier and
-    trading_service (all use Faction.name + Reputation.current_value).
+    Uses the shared team/personal resolver (``resolve_effective_faction_standing_value``)
+    so dock gates honor team aggregate standing when ``player.team_id`` is set.
+    Returns 0 when the station is unaffiliated or the faction row is missing.
     """
     faction_name = getattr(station, "faction_affiliation", None)
     if not faction_name:
         return 0
     try:
         from src.models.faction import Faction
-        from src.models.reputation import Reputation
+        from src.services.faction_service import resolve_effective_faction_standing_value
 
         faction = db.query(Faction).filter(Faction.name == faction_name).first()
         if faction is None:
             return 0
-        rep = (
-            db.query(Reputation)
-            .filter(
-                Reputation.player_id == player.id,
-                Reputation.faction_id == faction.id,
-            )
-            .first()
+        value, _source = resolve_effective_faction_standing_value(
+            db, player.id, faction.id
         )
-        return rep.current_value if rep is not None else 0
+        return value
     except Exception:
         logger.warning(
             "reputation gate lookup failed for player=%s station=%s; defaulting to 0",
