@@ -8,8 +8,8 @@ Additive-only on ``outlaw_bases``:
 - relocation_pending (placement rule remains DECISION-NEEDED)
 - raid_audit_log (material outcome trail)
 
-Revision ID: a1b2c3d4e5f6
-Revises: f6b2d8a41c90
+Revision ID: e8c4a1f29b70
+Revises: a9c2e4f71b08
 Create Date: 2026-08-16 16:24:00.000000
 """
 from alembic import op
@@ -17,8 +17,8 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 
-revision = "a1b2c3d4e5f6"
-down_revision = "f6b2d8a41c90"
+revision = "e8c4a1f29b70"
+down_revision = "a9c2e4f71b08"
 branch_labels = None
 depends_on = None
 
