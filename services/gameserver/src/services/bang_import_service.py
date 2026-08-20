@@ -603,6 +603,62 @@ def _gx1_sector_bias(
     return resources, defenses, controlling_faction, force_nebula
 
 
+# bang-import-pipeline.md §8 — special-type pass after the nebula pass.
+# 15% of remaining STANDARD sectors are candidates; cluster table then
+# assigns types. Seeded per (universe.seed, sector number) so re-imports
+# match. Do not reuse GX1 `_GX1_RESOURCE_RICH_ASTEROID_P` as the type stamp.
+_STEP8_SPECIAL_P = 0.15
+_STEP8_DEFAULT_SPECIALS = (
+    SectorType.ASTEROID_FIELD,
+    SectorType.RADIATION_ZONE,
+    SectorType.WARP_STORM,
+    SectorType.BLACK_HOLE,
+)
+
+
+def _step8_special_type(
+    cluster_type: ClusterType,
+    universe_seed: int,
+    sid: int,
+    current_type: SectorType,
+) -> SectorType:
+    """Canon step-8 special-type roll. Only rewrites STANDARD.
+
+    Nested 15% candidate, then per-cluster weights from
+    ``SYSTEMS/bang-import-pipeline.md:190-194`` / mining.md:17-23:
+
+    * RESOURCE_RICH — 60% ASTEROID_FIELD / 40% STANDARD of the slice
+    * MILITARY_ZONE — 80% STANDARD / 10% RADIATION_ZONE / 10% WARP_STORM
+    * FRONTIER_OUTPOST — 70% STANDARD / 15% BLACK_HOLE / 15% RADIATION_ZONE
+    * all others — equal split across the four special types (the 15%
+      candidate *is* the special flag; do not nest a second 85% STANDARD)
+    """
+    if current_type != SectorType.STANDARD:
+        return current_type
+    rng = random.Random(f"step8:{universe_seed}:{sid}")
+    if rng.random() >= _STEP8_SPECIAL_P:
+        return SectorType.STANDARD
+    v = rng.random()
+    if cluster_type == ClusterType.RESOURCE_RICH:
+        return (
+            SectorType.ASTEROID_FIELD if v < 0.60 else SectorType.STANDARD
+        )
+    if cluster_type == ClusterType.MILITARY_ZONE:
+        if v < 0.80:
+            return SectorType.STANDARD
+        if v < 0.90:
+            return SectorType.RADIATION_ZONE
+        return SectorType.WARP_STORM
+    if cluster_type == ClusterType.FRONTIER_OUTPOST:
+        if v < 0.70:
+            return SectorType.STANDARD
+        if v < 0.85:
+            return SectorType.BLACK_HOLE
+        return SectorType.RADIATION_ZONE
+    idx = min(int(v * 4), 3)
+    return _STEP8_DEFAULT_SPECIALS[idx]
+
+
 #: Canon color/hex table + the [NO-CANON] density-boundary derivation now
 #: live in one SHARED home (WO-GWQ-NEXUS-NEBULA-FIELDS lifted them out so
 #: nexus_generation_service can derive the identical colors for its
@@ -2943,6 +2999,26 @@ class BangImportService:
                 if anomaly_rng.random() < 0.015:
                     sector_type = SectorType.ANOMALY
 
+            # LEG-470 / bang-import-pipeline.md §8: copy bang resources when
+            # present (GX1 bias_resources remains the fallback). Bang
+            # `has_asteroids` is payload truth → ASTEROID_FIELD on remaining
+            # STANDARD only (never overrides NEBULA / ANOMALY).
+            bang_resources = sector_payload.get("resources")
+            if isinstance(bang_resources, dict):
+                resources_out: Optional[Dict[str, Any]] = dict(bang_resources)
+                if (
+                    bang_resources.get("has_asteroids")
+                    and sector_type == SectorType.STANDARD
+                ):
+                    sector_type = SectorType.ASTEROID_FIELD
+            else:
+                resources_out = bias_resources
+
+            if sector_type == SectorType.STANDARD:
+                sector_type = _step8_special_type(
+                    cluster_spec.type, universe.seed, sid, sector_type
+                )
+
             special_features: List[str] = []
             if sid in special_location_by_sector:
                 special_features.append(
@@ -3011,7 +3087,8 @@ class BangImportService:
                     special_features=special_features,
                     is_discovered=bool(sector_payload.get("explored", False)),
                     # WO-GX1 Lane 2 (Gap B): seeding biases (None → column default)
-                    resources=bias_resources,
+                    # LEG-470: bang Sector.resources wins when the payload has it
+                    resources=resources_out,
                     defenses=bias_defenses,
                     controlling_faction=bias_faction,
                 )
