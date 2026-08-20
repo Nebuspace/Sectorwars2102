@@ -9,6 +9,7 @@ import {
   ConversationFilters as Filters
 } from '../../types/firstLogin';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import '../../styles/first-login-conversations.css';
 
 const FirstLoginConversations: React.FC = () => {
@@ -46,9 +47,14 @@ const FirstLoginConversations: React.FC = () => {
 
       // Backend returns a bare array — no total. Don't invent "Page X of Y".
       setHasMore(response.data.length === (filters.limit || 50));
-    } catch (err) {
+    } catch (err: unknown) {
       console.error('Error fetching conversations:', err);
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(
+        formatAdminApiError(err, {
+          fallback: 'An error occurred',
+          scopeHint: 'admin first-login conversation scopes required',
+        })
+      );
     } finally {
       setLoading(false);
     }
@@ -65,9 +71,14 @@ const FirstLoginConversations: React.FC = () => {
       );
 
       setSelectedConversation(response.data);
-    } catch (err) {
+    } catch (err: unknown) {
       console.error('Error fetching conversation details:', err);
-      setError(err instanceof Error ? err.message : 'Failed to load conversation details');
+      setError(
+        formatAdminApiError(err, {
+          fallback: 'Failed to load conversation details',
+          scopeHint: 'admin first-login conversation scopes required',
+        })
+      );
     }
   };
 
