@@ -200,6 +200,15 @@ def run_loop_a(db: Session, tick: int = 0) -> List[Dict[str, Any]]:
     except Exception:
         logger.exception("Loop A: trader slip release sweep failed")
 
+    # LEG-394 / npc-traders.md § Restock by delivery: low-stock stations get
+    # a visible goods-carrying TRADER spawn (empty sector → sell via
+    # run_trade_stop). Best-effort; never wedges Loop A.
+    try:
+        from src.services import npc_trading_service
+        npc_trading_service.scan_and_dispatch_supply_deliveries(db)
+    except Exception:
+        logger.exception("Loop A: supply-delivery scan failed")
+
     # WO-ISP: advance/finish in-system legs + schedule burns for active NPCs.
     try:
         from src.services import intrasystem_movement_service as isp

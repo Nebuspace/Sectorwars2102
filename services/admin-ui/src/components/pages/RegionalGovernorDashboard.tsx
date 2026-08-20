@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
+import { api } from '../../utils/auth';
 import './regional-governor-dashboard.css';
 
 interface Region {
@@ -39,6 +40,13 @@ interface RegionalMember {
 
 // Canon citizen-tier voting_power target (SYSTEMS/regional-governance.md:71-76).
 const CITIZEN_DEFAULT_VOTING_POWER = 1.5;
+
+const axiosDetail = (err: unknown): string | undefined => {
+  if (typeof err !== 'object' || err === null || !('response' in err)) return undefined;
+  const detail = (err as { response?: { data?: { detail?: unknown } } }).response?.data?.detail;
+  return typeof detail === 'string' ? detail : undefined;
+};
+
 
 interface RegionalStats {
   total_population: number;
@@ -97,7 +105,7 @@ interface Treaty {
 }
 
 const RegionalGovernorDashboard: React.FC = () => {
-  const { token, user } = useAuth();
+  const { user } = useAuth();
   const [region, setRegion] = useState<Region | null>(null);
   const [allRegions, setAllRegions] = useState<Region[]>([]);
   const [stats, setStats] = useState<RegionalStats | null>(null);
@@ -163,68 +171,62 @@ const RegionalGovernorDashboard: React.FC = () => {
   const loadRegionInfo = async () => {
     try {
       // First try to load the user's own region
-      const response = await fetch('/api/v1/regions/my-region', {
-        headers: { 'Authorization': `Bearer ${token}` }
+      const { data } = await api.get('/api/v1/regions/my-region');
+      setRegion(data);
+      setEconomicConfig({
+        tax_rate: data.tax_rate,
+        starting_credits: data.starting_credits,
+        trade_bonuses: data.trade_bonuses || {},
+        economic_specialization: data.economic_specialization || ''
       });
-      if (response.ok) {
-        const data = await response.json();
-        setRegion(data);
-        setEconomicConfig({
-          tax_rate: data.tax_rate,
-          starting_credits: data.starting_credits,
-          trade_bonuses: data.trade_bonuses || {},
-          economic_specialization: data.economic_specialization || ''
-        });
-        setGovernanceConfig({
-          governance_type: data.governance_type,
-          voting_threshold: data.voting_threshold,
-          election_frequency_days: data.election_frequency_days || 90,
-          constitutional_text: data.constitutional_text || '',
-          governance_quorum_pct: data.governance_quorum_pct ?? 0.33
-        });
-        return;
-      }
+      setGovernanceConfig({
+        governance_type: data.governance_type,
+        voting_threshold: data.voting_threshold,
+        election_frequency_days: data.election_frequency_days || 90,
+        constitutional_text: data.constitutional_text || '',
+        governance_quorum_pct: data.governance_quorum_pct ?? 0.33
+      });
+      return;
+    } catch {
+      // not a region owner — admin fallback below
+    }
 
+    try {
       // If the user doesn't own a region but is admin, fetch all regions
       if (isAdmin) {
-        const adminResponse = await fetch('/api/v1/admin/regions', {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
-        if (adminResponse.ok) {
-          const adminData = await adminResponse.json();
-          const regions = adminData.regions || [];
-          setAllRegions(regions);
-          if (regions.length > 0) {
-            // Use the first region as default view
-            const firstRegion = regions[0];
-            setRegion({
-              ...firstRegion,
-              owner_id: firstRegion.owner_id || '',
-              subscription_tier: firstRegion.subscription_tier || 'free',
-              voting_threshold: firstRegion.voting_threshold || 0.51,
-              economic_specialization: firstRegion.economic_specialization || '',
-              active_players_30d: firstRegion.active_players_30d || 0,
-              total_trade_volume: firstRegion.total_trade_volume || 0,
-              starting_ship: firstRegion.starting_ship || 'basic',
-              constitutional_text: firstRegion.constitutional_text || '',
-              language_pack: firstRegion.language_pack || {},
-              aesthetic_theme: firstRegion.aesthetic_theme || {},
-              trade_bonuses: firstRegion.trade_bonuses || {},
-            });
-            setEconomicConfig({
-              tax_rate: firstRegion.tax_rate || 0.10,
-              starting_credits: firstRegion.starting_credits || 1000,
-              trade_bonuses: firstRegion.trade_bonuses || {},
-              economic_specialization: firstRegion.economic_specialization || ''
-            });
-            setGovernanceConfig({
-              governance_type: firstRegion.governance_type || 'autocracy',
-              voting_threshold: firstRegion.voting_threshold || 0.51,
-              election_frequency_days: firstRegion.election_frequency_days || 90,
-              constitutional_text: firstRegion.constitutional_text || '',
-              governance_quorum_pct: firstRegion.governance_quorum_pct ?? 0.33
-            });
-          }
+        const { data: adminData } = await api.get('/api/v1/admin/regions');
+        const regions = adminData.regions || [];
+        setAllRegions(regions);
+        if (regions.length > 0) {
+          // Use the first region as default view
+          const firstRegion = regions[0];
+          setRegion({
+            ...firstRegion,
+            owner_id: firstRegion.owner_id || '',
+            subscription_tier: firstRegion.subscription_tier || 'free',
+            voting_threshold: firstRegion.voting_threshold || 0.51,
+            economic_specialization: firstRegion.economic_specialization || '',
+            active_players_30d: firstRegion.active_players_30d || 0,
+            total_trade_volume: firstRegion.total_trade_volume || 0,
+            starting_ship: firstRegion.starting_ship || 'basic',
+            constitutional_text: firstRegion.constitutional_text || '',
+            language_pack: firstRegion.language_pack || {},
+            aesthetic_theme: firstRegion.aesthetic_theme || {},
+            trade_bonuses: firstRegion.trade_bonuses || {},
+          });
+          setEconomicConfig({
+            tax_rate: firstRegion.tax_rate || 0.10,
+            starting_credits: firstRegion.starting_credits || 1000,
+            trade_bonuses: firstRegion.trade_bonuses || {},
+            economic_specialization: firstRegion.economic_specialization || ''
+          });
+          setGovernanceConfig({
+            governance_type: firstRegion.governance_type || 'autocracy',
+            voting_threshold: firstRegion.voting_threshold || 0.51,
+            election_frequency_days: firstRegion.election_frequency_days || 90,
+            constitutional_text: firstRegion.constitutional_text || '',
+            governance_quorum_pct: firstRegion.governance_quorum_pct ?? 0.33
+          });
         }
       }
     } catch (err) {
@@ -234,13 +236,8 @@ const RegionalGovernorDashboard: React.FC = () => {
 
   const loadRegionalStats = async () => {
     try {
-      const response = await fetch('/api/v1/regions/my-region/stats', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setStats(data);
-      }
+      const { data } = await api.get('/api/v1/regions/my-region/stats');
+      setStats(data);
     } catch (err) {
       console.error('Failed to load regional stats:', err);
     }
@@ -248,13 +245,8 @@ const RegionalGovernorDashboard: React.FC = () => {
 
   const loadPolicies = async () => {
     try {
-      const response = await fetch('/api/v1/regions/my-region/policies', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setPolicies(data);
-      }
+      const { data } = await api.get('/api/v1/regions/my-region/policies');
+      setPolicies(data);
     } catch (err) {
       console.error('Failed to load policies:', err);
     }
@@ -262,13 +254,8 @@ const RegionalGovernorDashboard: React.FC = () => {
 
   const loadElections = async () => {
     try {
-      const response = await fetch('/api/v1/regions/my-region/elections', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setElections(data);
-      }
+      const { data } = await api.get('/api/v1/regions/my-region/elections');
+      setElections(data);
     } catch (err) {
       console.error('Failed to load elections:', err);
     }
@@ -276,13 +263,8 @@ const RegionalGovernorDashboard: React.FC = () => {
 
   const loadTreaties = async () => {
     try {
-      const response = await fetch('/api/v1/regions/my-region/treaties', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setTreaties(data);
-      }
+      const { data } = await api.get('/api/v1/regions/my-region/treaties');
+      setTreaties(data);
     } catch (err) {
       console.error('Failed to load treaties:', err);
     }
@@ -290,13 +272,8 @@ const RegionalGovernorDashboard: React.FC = () => {
 
   const loadMembers = async () => {
     try {
-      const response = await fetch('/api/v1/regions/my-region/members', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setMembers(data);
-      }
+      const { data } = await api.get('/api/v1/regions/my-region/members');
+      setMembers(data);
     } catch (err) {
       console.error('Failed to load regional members:', err);
     }
@@ -305,24 +282,11 @@ const RegionalGovernorDashboard: React.FC = () => {
   const updateEconomicConfig = async () => {
     setLoading(true);
     try {
-      const response = await fetch('/api/v1/regions/my-region/economy', {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify(economicConfig)
-      });
-
-      if (response.ok) {
-        setSuccess('Economic configuration updated successfully');
-        await loadRegionInfo();
-      } else {
-        const error = await response.json();
-        setError(error.detail || 'Failed to update economic configuration');
-      }
+      await api.put('/api/v1/regions/my-region/economy', economicConfig);
+      setSuccess('Economic configuration updated successfully');
+      await loadRegionInfo();
     } catch (err) {
-      setError('Network error occurred');
+      setError(axiosDetail(err) || 'Failed to update economic configuration');
       console.error('Update error:', err);
     } finally {
       setLoading(false);
@@ -332,24 +296,11 @@ const RegionalGovernorDashboard: React.FC = () => {
   const updateGovernanceConfig = async () => {
     setLoading(true);
     try {
-      const response = await fetch('/api/v1/regions/my-region/governance', {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify(governanceConfig)
-      });
-
-      if (response.ok) {
-        setSuccess('Governance configuration updated successfully');
-        await loadRegionInfo();
-      } else {
-        const error = await response.json();
-        setError(error.detail || 'Failed to update governance configuration');
-      }
+      await api.put('/api/v1/regions/my-region/governance', governanceConfig);
+      setSuccess('Governance configuration updated successfully');
+      await loadRegionInfo();
     } catch (err) {
-      setError('Network error occurred');
+      setError(axiosDetail(err) || 'Failed to update governance configuration');
       console.error('Update error:', err);
     } finally {
       setLoading(false);
@@ -359,31 +310,18 @@ const RegionalGovernorDashboard: React.FC = () => {
   const createPolicy = async () => {
     setLoading(true);
     try {
-      const response = await fetch('/api/v1/regions/my-region/policies', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify(newPolicy)
+      await api.post('/api/v1/regions/my-region/policies', newPolicy);
+      setSuccess('Policy proposal created successfully');
+      setShowPolicyForm(false);
+      setNewPolicy({
+        policy_type: 'tax_rate',
+        title: '',
+        description: '',
+        proposed_changes: {}
       });
-
-      if (response.ok) {
-        setSuccess('Policy proposal created successfully');
-        setShowPolicyForm(false);
-        setNewPolicy({
-          policy_type: 'tax_rate',
-          title: '',
-          description: '',
-          proposed_changes: {}
-        });
-        await loadPolicies();
-      } else {
-        const error = await response.json();
-        setError(error.detail || 'Failed to create policy');
-      }
+      await loadPolicies();
     } catch (err) {
-      setError('Network error occurred');
+      setError(axiosDetail(err) || 'Failed to create policy');
       console.error('Create policy error:', err);
     } finally {
       setLoading(false);
@@ -400,27 +338,14 @@ const RegionalGovernorDashboard: React.FC = () => {
 
     setLoading(true);
     try {
-      const response = await fetch(`/api/v1/regions/my-region/members/${playerId}`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          voting_power: member.voting_power,
-          local_rank: member.local_rank || null
-        })
+      await api.patch(`/api/v1/regions/my-region/members/${playerId}`, {
+        voting_power: member.voting_power,
+        local_rank: member.local_rank || null
       });
-
-      if (response.ok) {
-        setSuccess(`Updated governance dials for ${member.username}`);
-        await loadMembers();
-      } else {
-        const error = await response.json();
-        setError(error.detail || 'Failed to update member dials');
-      }
+      setSuccess(`Updated governance dials for ${member.username}`);
+      await loadMembers();
     } catch (err) {
-      setError('Network error occurred');
+      setError(axiosDetail(err) || 'Failed to update member dials');
       console.error('Update member dials error:', err);
     } finally {
       setLoading(false);
@@ -430,27 +355,14 @@ const RegionalGovernorDashboard: React.FC = () => {
   const startElection = async (position: string) => {
     setLoading(true);
     try {
-      const response = await fetch('/api/v1/regions/my-region/elections', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          position,
-          voting_duration_days: 7
-        })
+      await api.post('/api/v1/regions/my-region/elections', {
+        position,
+        voting_duration_days: 7
       });
-
-      if (response.ok) {
-        setSuccess(`Election for ${position} started successfully`);
-        await loadElections();
-      } else {
-        const error = await response.json();
-        setError(error.detail || 'Failed to start election');
-      }
+      setSuccess(`Election for ${position} started successfully`);
+      await loadElections();
     } catch (err) {
-      setError('Network error occurred');
+      setError(axiosDetail(err) || 'Failed to start election');
       console.error('Start election error:', err);
     } finally {
       setLoading(false);
