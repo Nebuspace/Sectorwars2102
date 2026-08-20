@@ -33,6 +33,7 @@ const PlayerAssetManager: React.FC<PlayerAssetManagerProps> = ({
 
   const [activeTab, setActiveTab] = useState<'ships' | 'planets' | 'ports'>('ships');
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const ASSET_ASSIGN_ENDPOINT = 'POST /api/v1/admin/players/{id}/assets/assign';
   const ASSET_REMOVE_ENDPOINT = 'POST /api/v1/admin/players/{id}/assets/remove';
@@ -43,6 +44,7 @@ const PlayerAssetManager: React.FC<PlayerAssetManagerProps> = ({
 
   const loadPlayerAssets = async () => {
     setLoading(true);
+    setError(null);
     try {
       const [shipsRes, planetsRes, portsRes] = await Promise.all([
         api.get(`/api/v1/admin/ships?ownerId=${player.id}`),
@@ -55,8 +57,23 @@ const PlayerAssetManager: React.FC<PlayerAssetManagerProps> = ({
         planets: (planetsRes.data as any)?.planets || [],
         ports: (portsRes.data as any)?.ports || []
       });
-    } catch (error) {
-      console.error('Failed to load player assets:', error);
+    } catch (err: unknown) {
+      console.error('Failed to load player assets:', err);
+      const status =
+        typeof err === 'object' && err !== null && 'response' in err
+          ? (err as { response?: { status?: number } }).response?.status
+          : undefined;
+      if (status === 401 || status === 403) {
+        setError(
+          'Access denied — loading player assets requires the admin players view scope (PLAYERS_VIEW).'
+        );
+      } else if (status === 429) {
+        setError('Admin rate limit exceeded — wait a moment and try again.');
+      } else if (status !== undefined) {
+        setError(`Failed to load player assets (HTTP ${status})`);
+      } else {
+        setError('Gameserver unreachable — network error loading player assets');
+      }
     } finally {
       setLoading(false);
     }
@@ -129,6 +146,25 @@ const PlayerAssetManager: React.FC<PlayerAssetManagerProps> = ({
         <div className="loading-spinner">
           <div className="spinner"></div>
           <span>Loading player assets...</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="player-asset-manager" onClick={(e) => e.stopPropagation()}>
+        <div className="manager-header">
+          <h3>Asset Manager: {player.username}</h3>
+          <button onClick={onClose} className="close-btn">×</button>
+        </div>
+        <div role="alert" className="error-banner" style={{ margin: '16px' }}>
+          {error}
+        </div>
+        <div style={{ margin: '0 16px 16px' }}>
+          <button type="button" onClick={() => void loadPlayerAssets()}>
+            Retry
+          </button>
         </div>
       </div>
     );
