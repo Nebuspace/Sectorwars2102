@@ -17,7 +17,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from pydantic import BaseModel
 
 from src.core.database import get_db
-from src.auth.admin_scopes import PLAYERS_ADJUST_REP
+from src.auth.admin_scopes import PLAYERS_ADJUST_REP, PLAYERS_VIEW
 from src.auth.dependencies import get_current_player, require_scope
 from src.models.player import Player
 from src.models.user import User
@@ -29,7 +29,7 @@ from src.services.medal_service import (
     public_medal_identity,
     set_pinned_medal_id,
 )
-from src.services.medal_catalog import get_catalog_entry
+from src.services.medal_catalog import MEDAL_CATALOG, get_catalog_entry
 
 router = APIRouter(
     prefix="/medals",
@@ -134,6 +134,30 @@ class AdminBulkGrantResponse(BaseModel):
     toast_suppressed: bool = False
 
 
+class AdminCollectionMedal(BaseModel):
+    """Full award row for Admin player view (medals.md:194) — existing columns only."""
+    medal_id: str
+    name: str
+    category: str
+    tier: Optional[str] = None
+    description: Optional[str] = None
+    awarded_at: Optional[str] = None
+    awarded_via: Optional[str] = None
+    awarded_by_user_id: Optional[str] = None
+    reason: Optional[str] = None
+    source_event_key: Optional[str] = None
+    source_combat_log_id: Optional[str] = None
+    is_hidden_catalog: bool = False
+    privacy_overridden: bool = False
+
+
+class AdminPlayerMedalCollectionResponse(BaseModel):
+    player_id: str
+    items: List[AdminCollectionMedal]
+    total: int
+    view_hidden_medal_audits_written: int = 0
+
+
 # ------------------------------------------------------------------
 # Player endpoint
 # ------------------------------------------------------------------
@@ -232,6 +256,68 @@ async def pin_my_medal(
 # ------------------------------------------------------------------
 # Admin endpoints
 # ------------------------------------------------------------------
+
+@router.get(
+    "/admin/players/{player_id}/collection",
+    response_model=AdminPlayerMedalCollectionResponse,
+)
+async def admin_get_player_medal_collection(
+    player_id: uuid.UUID,
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    db: Session = Depends(get_db),
+):
+    """Admin player view: full medal collection + audit fields (medals.md:194).
+
+    Always includes hidden-catalog medals regardless of player privacy.
+    Each privacy-overridden hidden medal view writes ``audit_logs`` action
+    ``view_hidden_medal`` (medals.md:263).
+    """
+    medal_service = MedalService(db)
+    result = medal_service.admin_get_player_collection(
+        player_id, viewing_admin_id=admin.id
+    )
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=result.get("error") or "Player not found",
+        )
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return AdminPlayerMedalCollectionResponse(
+        player_id=str(player_id),
+        items=[AdminCollectionMedal(**m) for m in result["items"]],
+        total=result["total"],
+        view_hidden_medal_audits_written=result.get(
+            "view_hidden_medal_audits_written", 0
+        ),
+    )
+
+@router.get("/admin/catalog")
+async def admin_list_medal_catalog(
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
+):
+    """Read-only medal catalog for MedalAdmin (LEG-355 / medals.md admin catalog).
+
+    Shape matches Admin UI ``CatalogResponse``: ``{items, total}`` with
+    id/name/category/tier/description/criteria from ``MEDAL_CATALOG``.
+    """
+    items = []
+    for medal_id, entry in sorted(MEDAL_CATALOG.items(), key=lambda kv: kv[0]):
+        items.append(
+            {
+                "id": medal_id,
+                "name": entry.get("name"),
+                "category": entry.get("category"),
+                "tier": entry.get("tier"),
+                "description": entry.get("description"),
+                "criteria": entry.get("criteria"),
+            }
+        )
+    return {"items": items, "total": len(items)}
+
 
 @router.post("/admin/grant", response_model=AdminMedalActionResponse)
 async def admin_grant_medal(

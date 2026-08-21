@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Line, Doughnut } from 'react-chartjs-2';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import './production-monitoring.css';
 
 interface ProductionData {
@@ -51,10 +52,7 @@ interface ProductionStats {
   }>;
 }
 
-const responseStatus = (err: unknown): number | undefined =>
-  typeof err === 'object' && err !== null && 'response' in err
-    ? (err as { response?: { status?: number } }).response?.status
-    : undefined;
+
 
 export const ProductionMonitoring: React.FC = () => {
   const [timeRange, setTimeRange] = useState<'hour' | 'day' | 'week' | 'month'>('day');
@@ -92,21 +90,16 @@ export const ProductionMonitoring: React.FC = () => {
       setError(null);
     } catch (err) {
       console.error('Error loading production data:', err);
-      const status = responseStatus(err);
-      if (status === 401 || status === 403) {
-        setError(
-          'Access denied — production monitoring requires the admin regions view scope (REGIONS_VIEW).'
-        );
-      } else if (status === 404) {
-        setError(
-          'Production monitoring route not found (404). The gameserver ships /api/v1/admin/colonization/production — ' +
-            'check that the gameserver is running and the /api proxy is reaching it.'
-        );
-      } else if (status !== undefined) {
-        setError(`Failed to load production data (HTTP ${status})`);
-      } else {
-        setError('Gameserver unreachable — network error fetching production data');
-      }
+      setError(
+        formatAdminApiError(err, {
+          fallback: 'Gameserver unreachable — network error fetching production data',
+          scopeHint:
+            'production monitoring requires the admin regions view scope (REGIONS_VIEW).',
+          notFoundMessage:
+            'Production monitoring route not found (404). The gameserver ships /api/v1/admin/colonization/production — ' +
+            'check that the gameserver is running and the /api proxy is reaching it.',
+        })
+      );
       setProductionHistory([]);
       setTrends([]);
       setAlerts([]);

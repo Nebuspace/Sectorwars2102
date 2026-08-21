@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 
 // Matches the backend CombatDisputeResponse schema in admin_combat.py
 interface CombatDispute {
@@ -52,9 +53,14 @@ export const DisputePanel: React.FC<DisputePanelProps> = ({
       setResolution('');
       setAdminNotes('');
       onResolve?.();
-    } catch (error: any) {
-      const detail = error?.response?.data?.detail || error?.message || 'Unknown error';
-      setResolveError(`Failed to resolve dispute: ${detail}`);
+    } catch (error: unknown) {
+      setResolveError(
+        formatAdminApiError(error, {
+          fallback: 'Gameserver unreachable — network error resolving dispute',
+          scopeHint:
+            'resolving combat disputes requires the admin combat intervene scope (COMBAT_INTERVENE).',
+        })
+      );
     } finally {
       setIsResolving(false);
     }

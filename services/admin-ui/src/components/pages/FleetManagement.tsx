@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import PageHeader from '../ui/PageHeader';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import FleetHealthReport from '../charts/FleetHealthReport';
 import FleetOperationsTab from '../fleet/FleetOperationsTab';
 import { useToast, useConfirm } from '../../contexts/ToastContext';
@@ -41,14 +42,18 @@ interface FleetStats {
   total_cargo_capacity: number;
 }
 
+// Tip ShipType enum (models/ship.py) — player-facing only; exclude NPC_* hulls.
 const SHIP_TYPES = [
+  'ESCAPE_POD',
   'LIGHT_FREIGHTER',
-  'MEDIUM_FREIGHTER', 
-  'HEAVY_FREIGHTER',
-  'BATTLESHIP',
-  'CRUISER',
-  'DESTROYER',
-  'FIGHTER'
+  'CARGO_HAULER',
+  'FAST_COURIER',
+  'CITIZEN_CLIPPER',
+  'SCOUT_SHIP',
+  'COLONY_SHIP',
+  'DEFENDER',
+  'CARRIER',
+  'WARP_JUMPER',
 ];
 
 const FleetManagement: React.FC = () => {
@@ -132,7 +137,12 @@ const FleetManagement: React.FC = () => {
       
     } catch (error) {
       console.error('Error fetching ships:', error);
-      setError('Failed to fetch fleet data');
+      setError(
+        formatAdminApiError(error, {
+          fallback: 'Failed to fetch fleet data',
+          scopeHint: 'admin.ships.manage scope required for fleet management',
+        })
+      );
       setShips([]);
       setStats(null);
     } finally {
@@ -235,9 +245,12 @@ const FleetManagement: React.FC = () => {
     if (!selectedShip) return;
     
     try {
-      await api.post(`/api/v1/admin/ships/${selectedShip.id}/teleport`, {
-        target_sector_id: teleportSector
-      });
+      // tip teleport_ship takes target_sector_id as a FastAPI query param (not JSON body)
+      await api.post(
+        `/api/v1/admin/ships/${selectedShip.id}/teleport`,
+        null,
+        { params: { target_sector_id: teleportSector } },
+      );
       setShowTeleportForm(false);
       setSelectedShip(null);
       setTeleportSector(1);
