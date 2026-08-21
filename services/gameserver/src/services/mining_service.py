@@ -86,6 +86,9 @@ _LICENSE_FEE_BY_TIER: Dict[int, int] = {
 LICENSE_COST_PER_TIER = 500  # § License cost: "500 cr × richness_tier"
 LICENSE_DURATION_HOURS = 24  # § License model: "24 real-time hours per purchase"
 LICENSE_RENEWAL_FACTOR = 0.8  # § License cost: renewal at 80% of base (400 × tier)
+# License panel "recently expired" window (LEG-435 / coord pin): one ClaimLicense
+# duration — expired_at within the last LICENSE_DURATION_HOURS. Not multi-week.
+RECENTLY_EXPIRED_LICENSE_HOURS = LICENSE_DURATION_HOURS
 
 # § Output — precious_metals rare-drop: 5% base + 2% per laser level, frozen
 # at the Laser L2 value (9%) per ADR-0062 E-F3 vs Laser L3 ruling, 2026-08-04
@@ -1192,6 +1195,52 @@ class MiningService:
         row.terminal_reason = reason_code
         self.db.flush()
         return {"success": False, "reason": reason_code, **empty}
+
+    # ------------------------------------------------------------------
+    # License list (active + recently expired)
+    # ------------------------------------------------------------------
+    def list_player_licenses(self, player_id: uuid.UUID) -> Dict[str, Any]:
+        """Owner-scoped ClaimLicense rows for the license panel.
+
+        Returns active licenses plus those whose ``expires_at`` falls within
+        the last ``RECENTLY_EXPIRED_LICENSE_HOURS`` (24h — one ClaimLicense
+        duration; FEATURES/economy/mining.md license panel / LEG-435).
+        Rows expired older than that window are omitted. Never returns another
+        player's rows.
+        """
+        now = datetime.utcnow()
+        cutoff = now - timedelta(hours=RECENTLY_EXPIRED_LICENSE_HOURS)
+        rows = (
+            self.db.query(ClaimLicense)
+            .filter(
+                ClaimLicense.player_id == player_id,
+                ClaimLicense.expires_at > cutoff,
+            )
+            .order_by(ClaimLicense.expires_at.desc())
+            .all()
+        )
+        items = []
+        for row in rows:
+            expires_at = row.expires_at
+            purchased_at = row.purchased_at
+            items.append(
+                {
+                    "id": str(row.id),
+                    "region_id": str(row.region_id) if row.region_id else None,
+                    "sector_number": int(row.sector_number),
+                    "expires_at": expires_at.isoformat() if expires_at else None,
+                    "purchased_at": (
+                        purchased_at.isoformat() if purchased_at else None
+                    ),
+                    "cost_paid_cr": int(row.cost_paid_cr or 0),
+                    "is_active": bool(expires_at and expires_at > now),
+                }
+            )
+        return {
+            "items": items,
+            "total": len(items),
+            "recently_expired_window_hours": RECENTLY_EXPIRED_LICENSE_HOURS,
+        }
 
     # ------------------------------------------------------------------
     # License purchase / renewal
