@@ -1,5 +1,10 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../../utils/auth';
+import {
+  axiosResponseStatus,
+  detailFromResponse,
+  formatAdminApiError,
+} from '../../utils/adminApiError';
 import { useToast, useConfirm } from '../../contexts/ToastContext';
 
 interface PlayerBountyEntry {
@@ -22,32 +27,21 @@ interface BountyListResponse {
   message?: string;
 }
 
-function detailFromErr(err: unknown, fallback: string): string {
-  const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-  return typeof detail === 'string' ? detail : fallback;
-}
-
-function responseStatus(err: unknown): number | undefined {
-  return typeof err === 'object' && err !== null && 'response' in err
-    ? (err as { response?: { status?: number } }).response?.status
-    : undefined;
-}
-
 function bountyPanelError(
   err: unknown,
   fallback: string,
   scopeHint: 'PLAYERS_VIEW' | 'ECONOMY_INTERVENE'
 ): string {
-  const status = responseStatus(err);
-  if (status === 401 || status === 403) {
-    return scopeHint === 'PLAYERS_VIEW'
-      ? 'Access denied — listing bounties requires the admin players view scope (PLAYERS_VIEW).'
-      : 'Access denied — bounty force-cancel / collapse requires ECONOMY_INTERVENE.';
+  const scope =
+    scopeHint === 'PLAYERS_VIEW'
+      ? 'listing bounties requires the admin players view scope (PLAYERS_VIEW).'
+      : 'bounty force-cancel / collapse requires ECONOMY_INTERVENE.';
+  const status = axiosResponseStatus(err);
+  if (status === 401 || status === 403 || status === 429) {
+    return formatAdminApiError(err, { fallback, scopeHint: scope });
   }
-  if (status === 429) {
-    return 'Admin rate limit exceeded — wait a moment and try again.';
-  }
-  return detailFromErr(err, fallback);
+  // Preserve GS string detail for 404 / status-less errors (helper 404 path ignores detail).
+  return detailFromResponse(err) ?? formatAdminApiError(err, { fallback, scopeHint: scope });
 }
 
 export interface PlayerBountyPanelProps {
