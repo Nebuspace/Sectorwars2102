@@ -187,6 +187,8 @@ class SectorResponse(BaseModel):
     # Audit-27 #1: whether this SectorType.ANOMALY's one-time investigate
     # reward has been claimed (False for non-ANOMALY / uninvestigated).
     anomaly_investigated: bool = False
+    # LEG-427 — asteroid depletion overlay (None when not ASTEROID_FIELD).
+    asteroid_depletion: Dict[str, Any] | None = None
 
 class MoveResponse(BaseModel):
     success: bool
@@ -201,6 +203,10 @@ class MoveResponse(BaseModel):
     tunnel_events: list = []
 
 class MoveOption(BaseModel):
+    # Sector row UUID (mirrors SectorResponse.id) for fleet move-as-one /
+    # any client that must POST a destination UUID without a second lookup.
+    # Numeric global `sector_id` stays the player/move / NAV identity.
+    id: str | None = None
     sector_id: int
     sector_number: int | None = None  # Display number
     name: str
@@ -595,6 +601,9 @@ async def get_current_sector(
             is_investigated=is_formation_investigated(f) if discovered else False,
         ))
 
+    # LEG-427: server-authoritative depletion band + replenish ETA for overlay.
+    from src.services.mining_service import build_asteroid_depletion_readout
+
     return SectorResponse(
         id=str(sector.id),
         sector_id=sector.sector_id,
@@ -613,6 +622,7 @@ async def get_current_sector(
         z_coord=sector.z_coord,
         special_formations=formation_responses,
         anomaly_investigated=is_anomaly_investigated(sector),
+        asteroid_depletion=build_asteroid_depletion_readout(sector),
     )
 
 @router.post("/formations/{formation_id}/investigate", response_model=FormationInvestigateResponse)
@@ -785,6 +795,7 @@ async def get_available_moves(
         region_name = (sector.region.display_name or sector.region.name) if sector and sector.region else None
 
         warps.append(MoveOption(
+            id=str(sector.id) if sector is not None else None,
             sector_id=warp["sector_id"],
             sector_number=sector.sector_number if sector and sector.sector_number else warp["sector_id"],
             name=warp["name"],
@@ -807,6 +818,7 @@ async def get_available_moves(
         region_name = (sector.region.display_name or sector.region.name) if sector and sector.region else None
 
         tunnels.append(MoveOption(
+            id=str(sector.id) if sector is not None else None,
             sector_id=tunnel["sector_id"],
             sector_number=sector.sector_number if sector and sector.sector_number else tunnel["sector_id"],
             name=tunnel["name"],

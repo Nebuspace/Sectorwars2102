@@ -808,11 +808,13 @@ _PRICE_HISTORY_LOCK_KEY = _mnemonic_lock_key("PXHS")
 _ROUTE_RUNS_RETENTION_LOCK_KEY = _mnemonic_lock_key("RTRT")
 _ORPHAN_SCHEDULE_REPAIR_LOCK_KEY = _mnemonic_lock_key("ORPH")
 _SEED_TRADER_ROSTERS_LOCK_KEY = _mnemonic_lock_key("SEED")
+_SEED_RESEARCHER_ROSTERS_LOCK_KEY = _mnemonic_lock_key("RSED")
 _LAW_PATROL_DISPERSAL_LOCK_KEY = _mnemonic_lock_key("LAWP")
 _STRANDED_RELOCATE_LOCK_KEY = _mnemonic_lock_key("STRN")
 _TRADER_NOTORIETY_LOCK_KEY = _mnemonic_lock_key("NTRY")
 _TRADER_MISSION_LOCK_KEY = _mnemonic_lock_key("TMSN")
 _BULK_FILL_TRADERS_LOCK_KEY = _mnemonic_lock_key("BFIL")
+_BULK_FILL_RESEARCHERS_LOCK_KEY = _mnemonic_lock_key("RBFL")
 # P9-realtime-npc-crash-watermark: startup catch-up, own key -- NOT the
 # global _ADVISORY_LOCK_KEY (that stays reserved for _run_due_ticks_sync
 # alone, per the house convention documented above). Prevents two
@@ -1180,6 +1182,36 @@ async def _broadcast_events(events: List[Dict[str, Any]]) -> None:
         # Best-effort, same as every broadcast here — a WS failure is logged,
         # never raised, so the underlying flood op is unaffected.
         if event.get("type") == "npc.coordinated_genocide_detected":
+            region_id = event.get("region_id")
+            if region_id is not None:
+                try:
+                    await connection_manager.broadcast_to_region(
+                        str(region_id), dict(event)
+                    )
+                except Exception:
+                    logger.exception(
+                        "NPC scheduler: region broadcast failed for %s",
+                        event.get("type"),
+                    )
+            try:
+                await connection_manager.broadcast_to_admins(dict(event))
+            except Exception:
+                logger.exception(
+                    "NPC scheduler: admin broadcast failed for %s",
+                    event.get("type"),
+                )
+            continue
+
+        # LEG-157 / SYSTEMS/anchor-repair-service.md: lifecycle ops alerts for
+        # missing / repaired / repair_failed anchors. Same region+admin fan-out
+        # as coordinated_genocide — NOT sector rooms (sector_id may be null and
+        # the operator dashboard is the intended audience). Best-effort only;
+        # never raise into the governance sweep / repair commit path.
+        if event.get("type") in (
+            "region_anchor_missing",
+            "region_anchor_repaired",
+            "region_anchor_repair_failed",
+        ):
             region_id = event.get("region_id")
             if region_id is not None:
                 try:

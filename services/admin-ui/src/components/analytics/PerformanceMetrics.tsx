@@ -11,6 +11,8 @@ import {
   Tooltip,
   Legend
 } from 'chart.js';
+import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import './performance-metrics.css';
 
 ChartJS.register(
@@ -74,6 +76,62 @@ interface OptimizationSuggestion {
   estimatedImprovement: string;
 }
 
+// GET /api/v1/admin/performance/metrics ships, but several of its fields are
+// hardcoded placeholders rather than measurements — the gameserver has no
+// psutil, no pg_stat_statements, and no in-band request/error instrumentation
+// (sw2102-docs OPERATIONS/admin-ui.md § GET /performance/metrics). Those fields
+// arrive as literal 0 and must never be rendered as a measured value: a 0 that
+// means "never measured" and a 0 that means "genuinely none right now" look
+// identical in the payload, so availability is decided per FIELD here, never by
+// testing whether a value happens to be zero.
+const NO_PSUTIL = 'psutil not installed on the gameserver';
+const NO_PG_STAT_STATEMENTS = 'requires the pg_stat_statements extension';
+const NO_REQUEST_TIMING = 'no in-band request timing';
+const NO_ERROR_TRACKING = 'no in-band error tracking';
+
+const UnavailableCard: React.FC<{ icon: string; label: string; reason: string }> = ({
+  icon,
+  label,
+  reason,
+}) => (
+  <div className="metric-card unavailable">
+    <div className="metric-icon">
+      <i className={`fas ${icon}`}></i>
+    </div>
+    <div className="metric-content">
+      <span className="metric-label">{label}</span>
+      <span className="metric-value unavailable">n/a</span>
+      <span className="metric-note">{reason}</span>
+    </div>
+  </div>
+);
+
+const UnavailableStat: React.FC<{ label: string; reason: string }> = ({ label, reason }) => (
+  <div className="stat-item">
+    <span className="stat-label">{label}</span>
+    <span className="stat-value unavailable">n/a</span>
+    <span className="metric-note">{reason}</span>
+  </div>
+);
+
+// The endpoint reports Postgres uptime as the postmaster's age expressed as a
+// share of a 30-day window (capped at 100), NOT as an availability percentage.
+// Recover the underlying age so the card can say what it actually measured.
+// At the cap the true age is unknowable from the payload — anything at or past
+// 30 days arrives as exactly 100 — so report the bound, not a precise "30d 0h".
+const formatPostgresAge = (windowPct: number) => {
+  if (windowPct >= 100) return '≥30d';
+
+  const totalMinutes = Math.max(0, Math.round((windowPct / 100) * 30 * 24 * 60));
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+};
+
 export const PerformanceMetrics: React.FC = () => {
   const [systemMetrics, setSystemMetrics] = useState<SystemMetrics | null>(null);
   const [databaseMetrics, setDatabaseMetrics] = useState<DatabaseMetrics | null>(null);
@@ -93,7 +151,7 @@ export const PerformanceMetrics: React.FC = () => {
   }, [selectedTimeRange]);
 
   // Polling interval — paused while in an error state so we don't hammer a
-  // missing endpoint. No immediate fetch in this effect, so toggling error
+  // failing endpoint. No immediate fetch in this effect, so toggling error
   // only starts/stops the timer.
   useEffect(() => {
     if (!autoRefresh || error) return;
@@ -103,20 +161,10 @@ export const PerformanceMetrics: React.FC = () => {
 
   const fetchPerformanceData = async () => {
     try {
-      const response = await fetch(`/api/v1/admin/performance/metrics?timeRange=${selectedTimeRange}`, {
-        headers: { 'Authorization': `Bearer ${localStorage.getItem('accessToken')}` }
+      const { data } = await api.get('/api/v1/admin/performance/metrics', {
+        params: { timeRange: selectedTimeRange },
       });
 
-      if (!response.ok) {
-        setError(
-          response.status === 404
-            ? 'Performance metrics endpoint not implemented — /api/v1/admin/performance/metrics returned 404'
-            : `Performance metrics request failed (HTTP ${response.status})`
-        );
-        return;
-      }
-
-      const data = await response.json();
       setSystemMetrics(data.system);
       setDatabaseMetrics(data.database);
       setApplicationMetrics(data.application);
@@ -125,54 +173,31 @@ export const PerformanceMetrics: React.FC = () => {
       setError(null);
     } catch (err) {
       console.error('Error fetching performance data:', err);
-      setError('Gameserver unreachable — network error fetching performance metrics');
+      setError(
+        formatAdminApiError(err, {
+          fallback: 'Gameserver unreachable — network error fetching performance metrics',
+          scopeHint: 'reading performance metrics requires the admin.audit.view scope.',
+          notFoundMessage:
+            'Performance metrics route not found (404). The endpoint ships in the gameserver — ' +
+            'check that the gameserver is running and the /api proxy is reaching it.',
+        }),
+      );
     } finally {
       setLoading(false);
     }
   };
 
-  const getHealthStatus = (value: number, thresholds: { good: number; warning: number }) => {
-    if (value <= thresholds.good) return 'good';
-    if (value <= thresholds.warning) return 'warning';
-    return 'critical';
-  };
-
-  const formatUptime = (uptime: number) => {
-    const totalMinutes = Math.floor((100 - uptime) * 525600 / 100); // Minutes in a year
-    const days = Math.floor(totalMinutes / 1440);
-    const hours = Math.floor((totalMinutes % 1440) / 60);
-    const minutes = totalMinutes % 60;
-    
-    if (days > 0) return `${uptime}% (${days}d ${hours}h downtime/year)`;
-    if (hours > 0) return `${uptime}% (${hours}h ${minutes}m downtime/year)`;
-    return `${uptime}% (${minutes}m downtime/year)`;
-  };
-
+  // Only the transaction-volume series carries real data; the load and error
+  // series arrive zero-padded and are reported as unavailable below rather than
+  // drawn as flat lines that look like a measured steady state.
   const historicalChartData = historicalData ? {
     labels: historicalData.timestamps,
     datasets: [
       {
-        label: 'Server Load %',
-        data: historicalData.serverLoad,
-        borderColor: '#3b82f6',
-        backgroundColor: 'rgba(59, 130, 246, 0.1)',
-        yAxisID: 'y',
-        tension: 0.3
-      },
-      {
-        label: 'Response Time (ms)',
+        label: 'Market transactions per bucket',
         data: historicalData.responseTime,
         borderColor: '#10b981',
         backgroundColor: 'rgba(16, 185, 129, 0.1)',
-        yAxisID: 'y1',
-        tension: 0.3
-      },
-      {
-        label: 'Error Rate %',
-        data: historicalData.errorRate,
-        borderColor: '#ef4444',
-        backgroundColor: 'rgba(239, 68, 68, 0.1)',
-        yAxisID: 'y',
         tension: 0.3
       }
     ]
@@ -206,6 +231,7 @@ export const PerformanceMetrics: React.FC = () => {
         type: 'linear' as const,
         display: true,
         position: 'left' as const,
+        beginAtZero: true,
         grid: {
           color: 'rgba(148, 163, 184, 0.1)'
         },
@@ -214,36 +240,27 @@ export const PerformanceMetrics: React.FC = () => {
         },
         title: {
           display: true,
-          text: 'Percentage',
-          color: '#94a3b8'
-        }
-      },
-      y1: {
-        type: 'linear' as const,
-        display: true,
-        position: 'right' as const,
-        grid: {
-          drawOnChartArea: false,
-        },
-        ticks: {
-          color: '#94a3b8'
-        },
-        title: {
-          display: true,
-          text: 'Response Time (ms)',
+          text: 'Transactions',
           color: '#94a3b8'
         }
       }
     }
   };
 
+  // `total` counts every non-null pg_stat_activity state, while active/idle
+  // cover only a subset — the remainder is other states, not spare capacity.
   const doughnutData = databaseMetrics ? {
-    labels: ['Active', 'Idle', 'Available'],
+    labels: ['Active', 'Idle', 'Other states'],
     datasets: [{
       data: [
         databaseMetrics.connectionPool.active,
         databaseMetrics.connectionPool.idle,
-        databaseMetrics.connectionPool.total - databaseMetrics.connectionPool.active - databaseMetrics.connectionPool.idle
+        Math.max(
+          0,
+          databaseMetrics.connectionPool.total -
+            databaseMetrics.connectionPool.active -
+            databaseMetrics.connectionPool.idle
+        )
       ],
       backgroundColor: ['#3b82f6', '#fbbf24', '#10b981'],
       borderWidth: 0
@@ -279,7 +296,7 @@ export const PerformanceMetrics: React.FC = () => {
         <div className="metrics-header">
           <h2>Performance Optimization Metrics</h2>
         </div>
-        <div className="alert alert-error">
+        <div className="alert alert-error" role="alert">
           <span className="alert-icon">⚠️</span>
           <span className="alert-message">{error}</span>
         </div>
@@ -344,42 +361,45 @@ export const PerformanceMetrics: React.FC = () => {
           <div className="metric-section system-metrics">
             <h3>System Metrics</h3>
             <div className="metric-cards">
-              <div className={`metric-card ${getHealthStatus(systemMetrics.serverLoad, { good: 70, warning: 85 })}`}>
+              <div className="metric-card">
                 <div className="metric-icon">
-                  <i className="fas fa-server"></i>
+                  <i className="fas fa-plug"></i>
                 </div>
                 <div className="metric-content">
-                  <span className="metric-label">Server Load</span>
-                  <span className="metric-value">{systemMetrics.serverLoad.toFixed(1)}%</span>
+                  <span className="metric-label">Active DB Connections</span>
+                  <span className="metric-value">{systemMetrics.activeConnections}</span>
+                  <span className="metric-note">live pg_stat_activity count</span>
                 </div>
               </div>
-              <div className={`metric-card ${getHealthStatus(systemMetrics.memoryUsage, { good: 75, warning: 90 })}`}>
+              <div className="metric-card">
                 <div className="metric-icon">
-                  <i className="fas fa-memory"></i>
+                  <i className="fas fa-exchange-alt"></i>
                 </div>
                 <div className="metric-content">
-                  <span className="metric-label">Memory Usage</span>
-                  <span className="metric-value">{systemMetrics.memoryUsage.toFixed(1)}%</span>
+                  <span className="metric-label">Market Trades / sec</span>
+                  <span className="metric-value">{systemMetrics.requestsPerSecond.toFixed(3)}</span>
+                  <span className="metric-note">last minute — a trade-rate proxy, not HTTP request rate</span>
                 </div>
               </div>
-              <div className={`metric-card ${getHealthStatus(systemMetrics.networkLatency, { good: 50, warning: 100 })}`}>
-                <div className="metric-icon">
-                  <i className="fas fa-network-wired"></i>
-                </div>
-                <div className="metric-content">
-                  <span className="metric-label">Network Latency</span>
-                  <span className="metric-value">{systemMetrics.networkLatency.toFixed(0)}ms</span>
-                </div>
-              </div>
-              <div className="metric-card good">
+              <div className="metric-card">
                 <div className="metric-icon">
                   <i className="fas fa-clock"></i>
                 </div>
                 <div className="metric-content">
-                  <span className="metric-label">Uptime</span>
-                  <span className="metric-value">{formatUptime(systemMetrics.uptime)}</span>
+                  <span className="metric-label">Postgres Process Age</span>
+                  <span className="metric-value">{formatPostgresAge(systemMetrics.uptime)}</span>
+                  <span className="metric-note">
+                    {systemMetrics.uptime >= 100
+                      ? 'at or past the endpoint\u2019s 30-day cap — process age, not an availability SLA'
+                      : `${systemMetrics.uptime.toFixed(2)}% of a 30-day window — process age, not an availability SLA`}
+                  </span>
                 </div>
               </div>
+              <UnavailableCard icon="fa-server" label="Server Load" reason={NO_PSUTIL} />
+              <UnavailableCard icon="fa-memory" label="Memory Usage" reason={NO_PSUTIL} />
+              <UnavailableCard icon="fa-hdd" label="Disk Usage" reason={NO_PSUTIL} />
+              <UnavailableCard icon="fa-network-wired" label="Network Latency" reason={NO_PSUTIL} />
+              <UnavailableCard icon="fa-bug" label="Error Rate" reason={NO_ERROR_TRACKING} />
             </div>
           </div>
 
@@ -388,21 +408,22 @@ export const PerformanceMetrics: React.FC = () => {
               <h3>Database Performance</h3>
               <div className="database-grid">
                 <div className="db-stats">
-                  <div className="stat-item">
-                    <span className="stat-label">Average Query Time</span>
-                    <span className="stat-value">{databaseMetrics.queryTime.toFixed(0)}ms</span>
-                  </div>
+                  <UnavailableStat label="Average Query Time" reason={NO_PG_STAT_STATEMENTS} />
                   <div className="stat-item">
                     <span className="stat-label">Active Queries</span>
                     <span className="stat-value">{databaseMetrics.activeQueries}</span>
                   </div>
                   <div className="stat-item">
-                    <span className="stat-label">Slow Queries</span>
-                    <span className="stat-value warning">{databaseMetrics.slowQueries}</span>
+                    <span className="stat-label">Slow Queries (&gt;1s)</span>
+                    <span className={`stat-value ${databaseMetrics.slowQueries > 0 ? 'warning' : ''}`}>
+                      {databaseMetrics.slowQueries}
+                    </span>
                   </div>
                   <div className="stat-item">
                     <span className="stat-label">Cache Hit Rate</span>
-                    <span className="stat-value good">{databaseMetrics.cacheHitRate.toFixed(1)}%</span>
+                    <span className={`stat-value ${databaseMetrics.cacheHitRate >= 95 ? 'good' : ''}`}>
+                      {databaseMetrics.cacheHitRate.toFixed(1)}%
+                    </span>
                   </div>
                 </div>
                 <div className="connection-pool">
@@ -423,80 +444,59 @@ export const PerformanceMetrics: React.FC = () => {
               <div className="app-stats">
                 <div className="response-times">
                   <h4>Response Time Percentiles</h4>
-                  <div className="percentile-bars">
-                    <div className="percentile">
-                      <span className="percentile-label">P50</span>
-                      <div className="percentile-bar">
-                        <div 
-                          className="percentile-fill good"
-                          style={{ width: `${(applicationMetrics.responseTime.p50 / 500) * 100}%` }}
-                        ></div>
-                      </div>
-                      <span className="percentile-value">{applicationMetrics.responseTime.p50}ms</span>
-                    </div>
-                    <div className="percentile">
-                      <span className="percentile-label">P95</span>
-                      <div className="percentile-bar">
-                        <div 
-                          className="percentile-fill warning"
-                          style={{ width: `${(applicationMetrics.responseTime.p95 / 500) * 100}%` }}
-                        ></div>
-                      </div>
-                      <span className="percentile-value">{applicationMetrics.responseTime.p95}ms</span>
-                    </div>
-                    <div className="percentile">
-                      <span className="percentile-label">P99</span>
-                      <div className="percentile-bar">
-                        <div 
-                          className="percentile-fill critical"
-                          style={{ width: `${(applicationMetrics.responseTime.p99 / 500) * 100}%` }}
-                        ></div>
-                      </div>
-                      <span className="percentile-value">{applicationMetrics.responseTime.p99}ms</span>
-                    </div>
-                  </div>
+                  <p className="unavailable-note">
+                    P50 / P95 / P99 are <strong>n/a</strong> — {NO_REQUEST_TIMING}. The endpoint
+                    returns zeros for these, so no percentiles are shown.
+                  </p>
                 </div>
                 <div className="app-metrics-summary">
                   <div className="summary-item">
                     <i className="fas fa-tachometer-alt"></i>
-                    <span className="summary-label">Throughput</span>
-                    <span className="summary-value">{applicationMetrics.throughput} req/s</span>
+                    <span className="summary-label">Trade Throughput</span>
+                    <span className="summary-value">{applicationMetrics.throughput} /s</span>
+                    <span className="metric-note">market transactions over the selected window</span>
                   </div>
                   <div className="summary-item">
                     <i className="fas fa-check-circle"></i>
                     <span className="summary-label">Success Rate</span>
-                    <span className="summary-value good">{applicationMetrics.successRate.toFixed(1)}%</span>
+                    <span className="summary-value unavailable">n/a</span>
+                    <span className="metric-note">{NO_ERROR_TRACKING}</span>
                   </div>
                   <div className="summary-item">
                     <i className="fas fa-exclamation-triangle"></i>
-                    <span className="summary-label">Errors (24h)</span>
-                    <span className="summary-value warning">{applicationMetrics.errorCount}</span>
+                    <span className="summary-label">Error Count</span>
+                    <span className="summary-value unavailable">n/a</span>
+                    <span className="metric-note">{NO_ERROR_TRACKING}</span>
                   </div>
                 </div>
               </div>
-              <div className="endpoint-performance">
-                <h4>Top Endpoints by Usage</h4>
-                <div className="endpoint-list">
-                  {applicationMetrics.endpoints.map(endpoint => (
-                    <div key={endpoint.path} className="endpoint-item">
-                      <div className="endpoint-info">
-                        <span className="endpoint-path">{endpoint.path}</span>
-                        <div className="endpoint-stats">
-                          <span>{endpoint.calls.toLocaleString()} calls</span>
-                          <span>{endpoint.avgTime}ms avg</span>
-                          <span className={endpoint.errors > 10 ? 'error' : ''}>{endpoint.errors} errors</span>
+              {applicationMetrics.endpoints?.length > 0 && (
+                <div className="endpoint-performance">
+                  <h4>Top Commodities by Trade Volume</h4>
+                  <p className="unavailable-note">
+                    Derived from market transactions, not route telemetry — per-path timings and
+                    error counts are n/a ({NO_REQUEST_TIMING}).
+                  </p>
+                  <div className="endpoint-list">
+                    {applicationMetrics.endpoints.map(endpoint => (
+                      <div key={endpoint.path} className="endpoint-item">
+                        <div className="endpoint-info">
+                          <span className="endpoint-path">{endpoint.path}</span>
+                          <div className="endpoint-stats">
+                            <span>{endpoint.calls.toLocaleString()} trades</span>
+                          </div>
+                        </div>
+                        <div className="endpoint-bar">
+                          <div
+                            className="endpoint-fill"
+                            style={{ width: `${Math.min(100, (endpoint.calls / 10000) * 100)}%` }}
+                          ></div>
                         </div>
                       </div>
-                      <div className="endpoint-bar">
-                        <div 
-                          className="endpoint-fill"
-                          style={{ width: `${(endpoint.calls / 10000) * 100}%` }}
-                        ></div>
-                      </div>
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
           )}
         </div>
@@ -504,7 +504,11 @@ export const PerformanceMetrics: React.FC = () => {
 
       {historicalChartData && (
         <div className="historical-trends">
-          <h3>Performance Trends</h3>
+          <h3>Trade Volume Trend</h3>
+          <p className="unavailable-note">
+            Transaction volume per bucket over the selected window. Server-load and error-rate
+            history are n/a — the endpoint zero-pads those series ({NO_PSUTIL}; {NO_ERROR_TRACKING}).
+          </p>
           <div className="trends-chart">
             <Line data={historicalChartData} options={chartOptions} />
           </div>

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as d3 from 'd3';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import './charts.css';
 
 // Matches backend HealthReportResponse (admin_ships.py:73, GET /admin/ships/health-report)
@@ -55,7 +56,13 @@ const FleetHealthReport: React.FC = () => {
       setReport(response.data as FleetHealthReportData);
     } catch (err) {
       console.error('Error fetching fleet health report:', err);
-      setError('Failed to load fleet health report');
+      setError(
+        formatAdminApiError(err, {
+          fallback: 'Gameserver unreachable — network error fetching fleet health report',
+          scopeHint:
+            'fleet health report requires the admin players view scope (PLAYERS_VIEW).',
+        })
+      );
       setReport(null);
     } finally {
       setLoading(false);
@@ -267,7 +274,7 @@ const FleetHealthReport: React.FC = () => {
   if (error) {
     return (
       <div className="fleet-health-report">
-        <div className="alert alert-error mb-6">
+        <div className="alert alert-error mb-6" role="alert">
           <div className="flex items-center gap-3">
             <span>⚠️</span>
             <span className="flex-1">{error}</span>
