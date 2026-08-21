@@ -48,6 +48,7 @@ describe('RegisterForm', () => {
   let switchToLogin: () => void;
 
   beforeEach(() => {
+    sessionStorage.clear();
     register.mockReset();
     registerWithOAuth.mockReset();
     onRegisterSuccess = vi.fn<() => void>();
@@ -136,7 +137,7 @@ describe('RegisterForm', () => {
       await flush();
     });
 
-    expect(register).toHaveBeenCalledWith('newbie', 'n@ex.com', 'password1');
+    expect(register).toHaveBeenCalledWith('newbie', 'n@ex.com', 'password1', undefined);
     expect(onRegisterSuccess).toHaveBeenCalled();
   });
 
@@ -167,5 +168,56 @@ describe('RegisterForm', () => {
       signIn.click();
     });
     expect(switchToLogin).toHaveBeenCalled();
+  });
+
+  it('hydrates region invite from sessionStorage', async () => {
+    sessionStorage.setItem('region_invite_code', 'AbC_12-xy');
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <RegisterForm onRegisterSuccess={onRegisterSuccess} switchToLogin={switchToLogin} />,
+      );
+    });
+    expect((container.querySelector('#region-invite') as HTMLInputElement).value).toBe(
+      'AbC_12-xy',
+    );
+  });
+
+  it('forwards a sanitized invite_code on register', async () => {
+    register.mockResolvedValueOnce(undefined);
+    await fillValidForm(container);
+    await setInputValue(
+      container.querySelector('#region-invite') as HTMLInputElement,
+      '  Invite_OK-1  ',
+    );
+
+    await act(async () => {
+      container.querySelector('form')!.dispatchEvent(
+        new Event('submit', { bubbles: true, cancelable: true }),
+      );
+      await flush();
+    });
+
+    expect(register).toHaveBeenCalledWith('newbie', 'n@ex.com', 'password1', 'Invite_OK-1');
+  });
+
+  it('GitHub OAuth register passes the invite field', async () => {
+    await setInputValue(
+      container.querySelector('#region-invite') as HTMLInputElement,
+      'code_from_owner',
+    );
+    const github = Array.from(container.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('GitHub'),
+    ) as HTMLButtonElement;
+    await act(async () => {
+      github.click();
+    });
+    expect(registerWithOAuth).toHaveBeenCalledWith('github', 'code_from_owner');
   });
 });

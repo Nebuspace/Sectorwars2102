@@ -1,6 +1,12 @@
 import React, { createContext, useState, useContext, useEffect, useRef, ReactNode } from 'react';
 import axios from 'axios';
 import { refreshAccessToken } from '../services/apiClient';
+import {
+  clearStoredRegionInvite,
+  oauthInviteQuerySuffix,
+  readStoredRegionInvite,
+  sanitizeOauthInvite,
+} from '../components/auth/regionInvite';
 
 interface User {
   id: string;
@@ -37,9 +43,14 @@ interface AuthContextType {
   isAuthenticated: boolean;
   isLoading: boolean;
   login: (username: string, password: string, mfaCode?: string) => Promise<void>;
-  register: (username: string, email: string, password: string) => Promise<void>;
+  register: (
+    username: string,
+    email: string,
+    password: string,
+    inviteCode?: string,
+  ) => Promise<void>;
   loginWithOAuth: (provider: string) => void;
-  registerWithOAuth: (provider: string) => void;
+  registerWithOAuth: (provider: string, inviteCode?: string) => void;
   logout: () => void;
   refreshToken: () => Promise<void>;
   // Monotonic counter (mirrors newMessageSignal/medalAwardedSignal in
@@ -264,16 +275,25 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }: AuthProv
     }
   };
 
-  const register = async (username: string, email: string, password: string): Promise<void> => {
+  const register = async (
+    username: string,
+    email: string,
+    password: string,
+    inviteCode?: string,
+  ): Promise<void> => {
     setIsLoading(true);
 
     try {
-      // Register user
-      await axios.post<AuthResponse>(`${apiUrl}/api/v1/auth/register`, {
+      const payload: { username: string; email: string; password: string; invite_code?: string } = {
         username,
         email,
         password,
-      });
+      };
+      const invite = sanitizeOauthInvite(inviteCode);
+      if (invite) payload.invite_code = invite;
+
+      await axios.post<AuthResponse>(`${apiUrl}/api/v1/auth/register`, payload);
+      clearStoredRegionInvite();
 
       // After registration, automatically log in
       await login(username, password);
@@ -314,11 +334,13 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }: AuthProv
     window.location.href = oauthUrl;
   };
 
-  const registerWithOAuth = (provider: string) => {
+  const registerWithOAuth = (provider: string, inviteCode?: string) => {
     // Currently, the backend uses the same endpoint for both login and registration
     // The OAuth provider will handle first-time users as registrations
     // Store in session storage that this was a registration attempt
     sessionStorage.setItem('oauth_register', 'true');
+    const invite = sanitizeOauthInvite(inviteCode) ?? readStoredRegionInvite();
+    const inviteQs = oauthInviteQuerySuffix(invite);
 
     // For GitHub Codespaces, construct the correct URL directly
     let oauthUrl;
@@ -334,10 +356,10 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }: AuthProv
       const codespaceName = lastDashIndex !== -1 ? hostnamePart.substring(0, lastDashIndex) : hostnamePart;
 
       // Construct the URL directly to the gameserver port
-      oauthUrl = `https://${codespaceName}-8080.app.github.dev/api/v1/auth/${provider}?register=true`;
+      oauthUrl = `https://${codespaceName}-8080.app.github.dev/api/v1/auth/${provider}?register=true${inviteQs}`;
     } else {
       // For non-Codespaces environments
-      oauthUrl = `${apiUrl}/api/v1/auth/${provider}?register=true`;
+      oauthUrl = `${apiUrl}/api/v1/auth/${provider}?register=true${inviteQs}`;
     }
     window.location.href = oauthUrl;
   };
