@@ -188,12 +188,11 @@ class FleetService:
 
         # Derive fleet.sector_id from the flagship's live ship position
         # (fleet-tactics.md:71,81 — the flagship is the fleet's single
-        # position anchor; fleets have no travel-as-a-unit mechanic of their
-        # own). Ship.sector_id is the Integer sector_number; Fleet.sector_id
-        # is the Sector UUID — same resolution move_fleet used before it was
-        # retired as dead/superseded code. Best-effort: no flagship or an
-        # unresolvable sector leaves the prior value untouched rather than
-        # clobbering a known-good position with an unknown one.
+        # position anchor). Explicit travel-as-a-unit still goes through
+        # move_fleet (fleet-coordination.md Inputs/Outputs). Ship.sector_id
+        # is the Integer sector_number; Fleet.sector_id is the Sector UUID.
+        # Best-effort: no flagship or an unresolvable sector leaves the prior
+        # value untouched rather than clobbering a known-good position.
         flagship = next(
             (m for m in fleet.members if (m.role or "") == FleetRole.FLAGSHIP.value and m.ship),
             None,
@@ -553,6 +552,60 @@ class FleetService:
         self.db.refresh(fleet)
 
         return fleet
+
+    def move_fleet(self, fleet_id: UUID, sector_id: UUID) -> Dict[str, Any]:
+        """Move an entire fleet to a new sector (fleet-coordination.md).
+
+        Updates ``Fleet.sector_id`` and every member ship's integer
+        ``Ship.sector_id`` (sector_number) to match. Rejects while
+        ``IN_BATTLE`` (invariant 4). Returns the refreshed fleet plus a
+        ``fleet_moved`` event payload (origin + destination) for the route
+        to publish on the realtime bus.
+        """
+        locked = self._lock_fleets_ascending({fleet_id})
+        fleet = locked.get(fleet_id)
+        if not fleet:
+            raise ValueError(f"Fleet {fleet_id} not found")
+
+        if fleet.status == FleetStatus.IN_BATTLE.value:
+            raise ValueError("Cannot move fleet during battle")
+
+        if fleet.status == FleetStatus.DISBANDED.value:
+            raise ValueError("Cannot move a disbanded fleet")
+
+        sector = self.db.query(Sector).filter(Sector.id == sector_id).first()
+        if not sector:
+            raise ValueError(f"Sector {sector_id} not found")
+
+        origin_uuid = fleet.sector_id
+        origin_number: Optional[int] = None
+        if origin_uuid is not None:
+            origin_row = self.db.query(Sector).filter(Sector.id == origin_uuid).first()
+            if origin_row is not None:
+                origin_number = origin_row.sector_id
+
+        # Move all member ships — Ship.sector_id is an Integer (sector_number)
+        for member in fleet.members:
+            if member.ship:
+                member.ship.sector_id = sector.sector_id
+
+        fleet.sector_id = sector_id
+        self.db.commit()
+        self.db.refresh(fleet)
+
+        event = {
+            "type": "fleet_moved",
+            "fleet_id": str(fleet.id),
+            "origin_sector_id": str(origin_uuid) if origin_uuid else None,
+            "destination_sector_id": str(sector_id),
+            "origin_sector_number": origin_number,
+            "destination_sector_number": sector.sector_id,
+        }
+        logger.info(
+            "Moved fleet %s to sector %s (number %s)",
+            fleet_id, sector_id, sector.sector_id,
+        )
+        return {"fleet": fleet, "event": event}
 
     def disband_fleet(self, fleet_id: UUID) -> bool:
         """Disband a fleet."""
