@@ -577,6 +577,85 @@ class MiningService:
         return bool(_relocate_npc(self.db, candidate, sector.sector_id))
 
     # ------------------------------------------------------------------
+    # Yield-band preview (read-only — LEG-424 / mining.md:252)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def matrix_yield_band(richness_tier: int, laser_level: int) -> Tuple[int, int]:
+        """Canon ``_YIELD_MATRIX`` band for (tier, laser). No invent."""
+        tier = max(1, min(5, int(richness_tier)))
+        laser_col = max(0, min(3, int(laser_level)))
+        return _YIELD_MATRIX[tier][laser_col]
+
+    def preview_yield(
+        self, ship_id: uuid.UUID, player_id: uuid.UUID
+    ) -> Dict[str, Any]:
+        """Server-authoritative yield band before committing harvest turns.
+
+        Returns matrix ``ore_lo``/``ore_hi`` for current sector richness ×
+        Mining Laser level, plus the live ``depletion_modifier`` already used
+        at resolve. Does **not** spend turns or mutate depletion. Gates:
+        ``not_an_asteroid_field``, ``no_mining_laser``, ownership failures.
+        """
+        empty = {
+            "ore_lo": 0,
+            "ore_hi": 0,
+            "richness_tier": None,
+            "laser_level": None,
+            "depletion_modifier": None,
+            "turns_cost": HARVEST_TURN_COST,
+        }
+
+        player, ship, reason = self._lock_player_and_ship(ship_id, player_id)
+        if reason:
+            return {"success": False, "reason": reason, **empty}
+
+        sector = self._resolve_current_sector(player)
+        if sector is None or sector.type != SectorType.ASTEROID_FIELD:
+            return {
+                "success": False,
+                "reason": "not_an_asteroid_field",
+                **empty,
+            }
+
+        laser_level = self._laser_level(ship)
+        if laser_level is None:
+            return {
+                "success": False,
+                "reason": "no_mining_laser",
+                **empty,
+            }
+        laser_col = max(0, min(3, laser_level))
+
+        # Read-only richness / depletion — do not persist backfill on preview.
+        resources = sector.resources if isinstance(sector.resources, dict) else {}
+        richness = resources.get("asteroid_richness")
+        if isinstance(richness, dict) and "richness_tier" in richness:
+            tier = max(1, min(5, int(richness.get("richness_tier", 3))))
+        else:
+            tier = _derive_richness_tier(sector.resource_regeneration)
+
+        pool_size = tier * DEPLETION_POOL_PER_TIER
+        depletion_pool = resources.get("depletion_pool", pool_size)
+        if not isinstance(depletion_pool, int):
+            depletion_pool = pool_size
+        consumed = max(0, pool_size - depletion_pool)
+        consumed_fraction = (consumed / pool_size) if pool_size > 0 else 0.0
+        depletion_mod = _depletion_yield_modifier(consumed_fraction)
+
+        ore_lo, ore_hi = self.matrix_yield_band(tier, laser_col)
+
+        return {
+            "success": True,
+            "reason": None,
+            "ore_lo": ore_lo,
+            "ore_hi": ore_hi,
+            "richness_tier": tier,
+            "laser_level": laser_col,
+            "depletion_modifier": depletion_mod,
+            "turns_cost": HARVEST_TURN_COST,
+        }
+
+    # ------------------------------------------------------------------
     # Harvest — start (async) / resolve / interrupt
     # ------------------------------------------------------------------
     def harvest(self, ship_id: uuid.UUID, player_id: uuid.UUID) -> Dict[str, Any]:

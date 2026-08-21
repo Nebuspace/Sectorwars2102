@@ -1310,6 +1310,57 @@ class ARIAPersonalIntelligenceService:
         )
         result = await db.execute(stmt)
         return result.scalar_one_or_none()
+
+    def market_intelligence_to_read_model(
+        self, intelligence: ARIAMarketIntelligence,
+    ) -> Dict[str, Any]:
+        """Map a stored row to the player-facing read shape (aria-companion.md:21-31).
+
+        Prediction fields remain empty until ``MIN_DATA_POINTS_FOR_PREDICTION``
+        observations — never fabricate prices on read."""
+        row: Dict[str, Any] = {
+            "commodity": intelligence.commodity,
+            "observation_count": intelligence.data_points,
+            "average_price": None,
+            "price_band": None,
+            "next_prediction": None,
+            "prediction_confidence": None,
+        }
+        if intelligence.data_points >= self.MIN_DATA_POINTS_FOR_PREDICTION:
+            row["average_price"] = intelligence.average_price
+            row["price_band"] = intelligence.price_volatility
+            row["next_prediction"] = intelligence.next_prediction
+            row["prediction_confidence"] = intelligence.prediction_confidence
+        return row
+
+    async def list_market_intelligence_at_station(
+        self,
+        player_id: str,
+        station_id: str,
+        db: AsyncSession,
+        commodity: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return the requester's own market-intelligence rows at a port (ADR-0016).
+
+        Wraps ``_get_market_intelligence`` for a single commodity; lists all
+        commodities for the player+station pair otherwise."""
+        if commodity:
+            intel = await self._get_market_intelligence(
+                player_id, station_id, commodity, db,
+            )
+            if not intel:
+                return []
+            return [self.market_intelligence_to_read_model(intel)]
+
+        stmt = select(ARIAMarketIntelligence).where(
+            and_(
+                ARIAMarketIntelligence.player_id == player_id,
+                ARIAMarketIntelligence.station_id == station_id,
+            )
+        )
+        result = await db.execute(stmt)
+        rows = result.scalars().all()
+        return [self.market_intelligence_to_read_model(r) for r in rows]
     
     async def _get_explored_sectors(self, player_id: str, 
                                   db: AsyncSession) -> List[ARIAExplorationMap]:

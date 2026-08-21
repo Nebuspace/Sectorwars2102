@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field, validator
 from src.core.database import get_async_session
 from src.auth.dependencies import get_current_player
 from src.models.player import Player
+from src.models.station import Station
 from src.services.enhanced_ai_service import (
     EnhancedAIService, AISystemType
 )
@@ -283,6 +284,29 @@ class ARIAMemoryOut(BaseModel):
                 "content": {"event": "trade_transaction", "commodity": "organics"},
             }
         }
+
+
+class ARIAMarketIntelligenceOut(BaseModel):
+    """Player-owned market intelligence at a visited port (aria-companion.md:21-31)."""
+    commodity: str
+    observation_count: int
+    average_price: Optional[float] = Field(
+        None, description="Mean observed price; null until ≥5 observations",
+    )
+    price_band: Optional[float] = Field(
+        None, description="± band from stored price_volatility; null until ≥5 observations",
+    )
+    next_prediction: Optional[float] = Field(
+        None, description="Stored next_prediction; null until ≥5 observations",
+    )
+    prediction_confidence: Optional[float] = Field(
+        None, description="0–1 confidence; null until ≥5 observations",
+    )
+
+
+class ARIAMarketIntelligenceListOut(BaseModel):
+    station_id: str
+    items: List[ARIAMarketIntelligenceOut]
 
 
 # =============================================================================
@@ -900,6 +924,77 @@ async def get_aria_data_index(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="ARIA data index temporarily unavailable"
+        )
+
+
+@router.get(
+    "/market-intelligence/{station_id}",
+    response_model=ARIAMarketIntelligenceListOut,
+    summary="Read your ARIA market intelligence at a docked station",
+    description=(
+        "Returns the authenticated player's own ARIAMarketIntelligence rows for "
+        "the requested station while docked there (aria-companion.md Market "
+        "predictions). Prediction fields stay empty until ≥5 observations."
+    ),
+)
+async def get_aria_market_intelligence(
+    station_id: str,
+    commodity: Optional[str] = Query(
+        None, description="Optional filter to one commodity at this station",
+    ),
+    current_player: Player = Depends(get_current_player),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Owner-only by construction (ADR-0016): player id comes from JWT, never
+    from path/query spoof parameters."""
+    station = await db.get(Station, station_id)
+    if not station:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Station not found",
+        )
+
+    if not current_player.is_docked or not current_player.current_port_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You must be docked at a station to view ARIA market intelligence",
+        )
+
+    if str(current_player.current_port_id) != str(station_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You must be docked at this station to view its market intelligence",
+        )
+
+    from src.services.trading_service import TradingService
+
+    can_trade, reason = TradingService.can_player_trade(current_player, station)
+    if not can_trade:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=reason,
+        )
+
+    try:
+        from src.services.aria_personal_intelligence_service import (
+            get_aria_intelligence_service,
+        )
+
+        aria_service = get_aria_intelligence_service()
+        items = await aria_service.list_market_intelligence_at_station(
+            str(current_player.id),
+            station_id,
+            db,
+            commodity=commodity,
+        )
+        return {"station_id": station_id, "items": items}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error reading ARIA market intelligence: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="ARIA market intelligence temporarily unavailable",
         )
 
 
