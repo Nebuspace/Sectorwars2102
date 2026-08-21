@@ -77,6 +77,11 @@ export const CombatOverview: React.FC = () => {
   const [selectedCombatId, setSelectedCombatId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [interventionNote, setInterventionNote] = useState<string | null>(null);
+  const [restoreTarget, setRestoreTarget] = useState<'attacker' | 'defender' | 'both'>('both');
+  const [restoreShieldPercent, setRestoreShieldPercent] = useState(50);
+  const [damageTarget, setDamageTarget] = useState<'attacker' | 'defender'>('attacker');
+  const [damageMultiplier, setDamageMultiplier] = useState(1);
+  const [declareWinnerSide, setDeclareWinnerSide] = useState<'attacker' | 'defender'>('attacker');
   const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
 
   // WebSocket handlers
@@ -269,46 +274,65 @@ export const CombatOverview: React.FC = () => {
     setShowInterventionModal(true);
   };
 
-  const handleIntervention = async (action: string) => {
-    if (selectedCombatId) {
-      try {
-        const intervention_type =
-          action === 'end' ? 'stop_combat' : action === 'restore' ? 'restore_shields' : null;
-        if (!intervention_type) {
-          setError('Unsupported intervention action');
-          setShowInterventionModal(false);
-          return;
-        }
-        const response = await api.post(`/api/v1/admin/combat/${selectedCombatId}/intervene`, {
-          intervention_type,
-          parameters: {
-            reason: `Admin intervention: ${action}`
-          }
-        });
-        const result = (response.data as { result?: { note?: unknown } } | undefined)?.result;
-        const note = typeof result?.note === 'string' ? result.note.trim() : '';
-        if (intervention_type === 'restore_shields') {
-          setInterventionNote(
-            note ||
-              'Logged only — CombatLog does not track shields; this action does not change ship hull or shields.'
-          );
-          setShowInterventionModal(false);
-          setSelectedCombatId(null);
-          return;
-        }
-        setInterventionNote(null);
-        setShowInterventionModal(false);
-        setSelectedCombatId(null);
-        await loadData();
-      } catch (error: unknown) {
-        setError(
-          formatAdminApiError(error, {
-            fallback: 'Failed to intervene in combat',
-            scopeHint: 'admin combat intervention scope required',
-          })
-        );
-        setShowInterventionModal(false);
+  const handleIntervention = async (
+    action: 'end' | 'restore' | 'adjust_damage' | 'declare_winner'
+  ) => {
+    if (!selectedCombatId) return;
+    try {
+      let intervention_type: string;
+      let parameters: Record<string, unknown>;
+      if (action === 'end') {
+        intervention_type = 'stop_combat';
+        parameters = { reason: 'Admin intervention: end' };
+      } else if (action === 'restore') {
+        const percent = Number.isFinite(restoreShieldPercent)
+          ? Math.min(100, Math.max(0, restoreShieldPercent))
+          : 50;
+        intervention_type = 'restore_shields';
+        parameters = {
+          reason: 'Admin intervention: restore',
+          target: restoreTarget,
+          shield_percent: percent,
+        };
+      } else if (action === 'adjust_damage') {
+        intervention_type = 'adjust_damage';
+        parameters = {
+          reason: 'Admin intervention: adjust_damage',
+          target: damageTarget,
+          damage_multiplier: Number.isFinite(damageMultiplier) ? damageMultiplier : 1,
+        };
+      } else {
+        intervention_type = 'declare_winner';
+        parameters = {
+          reason: 'Admin intervention: declare_winner',
+          winner: declareWinnerSide,
+        };
       }
+
+      const response = await api.post(`/api/v1/admin/combat/${selectedCombatId}/intervene`, {
+        intervention_type,
+        parameters,
+      });
+      const result = (response.data as { result?: { note?: unknown } } | undefined)?.result;
+      const note = typeof result?.note === 'string' ? result.note.trim() : '';
+      if (intervention_type === 'restore_shields') {
+        setInterventionNote(note || 'Shield restore requested.');
+      } else if (note) {
+        setInterventionNote(note);
+      } else {
+        setInterventionNote(null);
+      }
+      setShowInterventionModal(false);
+      setSelectedCombatId(null);
+      await loadData();
+    } catch (error: unknown) {
+      setError(
+        formatAdminApiError(error, {
+          fallback: 'Failed to intervene in combat',
+          scopeHint: 'admin combat intervention scope required',
+        })
+      );
+      setShowInterventionModal(false);
     }
   };
 
@@ -518,19 +542,101 @@ export const CombatOverview: React.FC = () => {
             <p>Select intervention action for combat: {selectedCombatId}</p>
             
             <div className="intervention-options">
-              <button 
+              <button
                 className="btn btn-danger"
                 onClick={() => handleIntervention('end')}
               >
                 Force End Combat
               </button>
-              
-              <button 
-                className="btn btn-success"
-                onClick={() => handleIntervention('restore')}
-              >
-                Log shield restore (audit only)
-              </button>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
+                <label>
+                  Restore target{' '}
+                  <select
+                    aria-label="Restore shields target"
+                    value={restoreTarget}
+                    onChange={(e) =>
+                      setRestoreTarget(e.target.value as 'attacker' | 'defender' | 'both')
+                    }
+                  >
+                    <option value="both">Both</option>
+                    <option value="attacker">Attacker</option>
+                    <option value="defender">Defender</option>
+                  </select>
+                </label>
+                <label>
+                  Shield percent{' '}
+                  <input
+                    aria-label="Restore shield percent"
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={restoreShieldPercent}
+                    onChange={(e) => setRestoreShieldPercent(Number(e.target.value))}
+                  />
+                </label>
+                <button
+                  className="btn btn-success"
+                  onClick={() => handleIntervention('restore')}
+                >
+                  Restore shields
+                </button>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
+                <label>
+                  Damage target{' '}
+                  <select
+                    aria-label="Adjust damage target"
+                    value={damageTarget}
+                    onChange={(e) =>
+                      setDamageTarget(e.target.value as 'attacker' | 'defender')
+                    }
+                  >
+                    <option value="attacker">Attacker</option>
+                    <option value="defender">Defender</option>
+                  </select>
+                </label>
+                <label>
+                  Damage multiplier{' '}
+                  <input
+                    aria-label="Damage multiplier"
+                    type="number"
+                    step={0.1}
+                    min={0}
+                    value={damageMultiplier}
+                    onChange={(e) => setDamageMultiplier(Number(e.target.value))}
+                  />
+                </label>
+                <button
+                  className="btn btn-warning"
+                  onClick={() => handleIntervention('adjust_damage')}
+                >
+                  Adjust damage
+                </button>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
+                <label>
+                  Declare winner{' '}
+                  <select
+                    aria-label="Declare winner side"
+                    value={declareWinnerSide}
+                    onChange={(e) =>
+                      setDeclareWinnerSide(e.target.value as 'attacker' | 'defender')
+                    }
+                  >
+                    <option value="attacker">Attacker</option>
+                    <option value="defender">Defender</option>
+                  </select>
+                </label>
+                <button
+                  className="btn btn-primary"
+                  onClick={() => handleIntervention('declare_winner')}
+                >
+                  Declare winner
+                </button>
+              </div>
             </div>
             <p
               role="note"
@@ -545,12 +651,12 @@ export const CombatOverview: React.FC = () => {
                 lineHeight: 1.4,
               }}
             >
-              This modal offers Force End (stop_combat) and Log shield restore (restore_shields,
-              audit-only until Ship.shields writes land). Pause, Reset, adjust_damage, and
-              declare_winner controls are not shown — do not invent them here.
+              Force End stops combat. Restore shields writes live Ship.combat JSONB shields to
+              the chosen percent of max_shields (GS #763). Adjust damage and declare winner post
+              to the same intervene API. Pause/Reset remain unavailable.
             </p>
-            
-            <button 
+
+            <button
               className="btn btn-secondary"
               onClick={() => setShowInterventionModal(false)}
             >

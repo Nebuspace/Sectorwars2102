@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
+import { formatAdminApiError, axiosResponseStatus } from '../../utils/adminApiError';
 import { api } from '../../utils/auth';
 import './regional-governor-dashboard.css';
 
@@ -41,12 +42,13 @@ interface RegionalMember {
 // Canon citizen-tier voting_power target (SYSTEMS/regional-governance.md:71-76).
 const CITIZEN_DEFAULT_VOTING_POWER = 1.5;
 
-const axiosDetail = (err: unknown): string | undefined => {
-  if (typeof err !== 'object' || err === null || !('response' in err)) return undefined;
-  const detail = (err as { response?: { data?: { detail?: unknown } } }).response?.data?.detail;
-  return typeof detail === 'string' ? detail : undefined;
-};
-
+function regionAdminError(err: unknown, fallback: string): string {
+  return formatAdminApiError(err, {
+    fallback,
+    scopeHint:
+      'region owner or admin.regions scope required for regional governor operations',
+  });
+}
 
 interface RegionalStats {
   total_population: number;
@@ -151,6 +153,7 @@ const RegionalGovernorDashboard: React.FC = () => {
 
   const loadRegionalData = async () => {
     setLoading(true);
+    setError(null);
     try {
       await Promise.all([
         loadRegionInfo(),
@@ -161,7 +164,7 @@ const RegionalGovernorDashboard: React.FC = () => {
         loadMembers()
       ]);
     } catch (err) {
-      setError('Failed to load regional data');
+      setError(regionAdminError(err, 'Failed to load regional data'));
       console.error('Load error:', err);
     } finally {
       setLoading(false);
@@ -187,7 +190,12 @@ const RegionalGovernorDashboard: React.FC = () => {
         governance_quorum_pct: data.governance_quorum_pct ?? 0.33
       });
       return;
-    } catch {
+    } catch (err) {
+      const status = axiosResponseStatus(err);
+      if (status === 403 || status === 429) {
+        setError(regionAdminError(err, 'Failed to load region info'));
+        return;
+      }
       // not a region owner — admin fallback below
     }
 
@@ -230,6 +238,7 @@ const RegionalGovernorDashboard: React.FC = () => {
         }
       }
     } catch (err) {
+      setError(regionAdminError(err, 'Failed to load region info'));
       console.error('Failed to load region info:', err);
     }
   };
@@ -239,6 +248,7 @@ const RegionalGovernorDashboard: React.FC = () => {
       const { data } = await api.get('/api/v1/regions/my-region/stats');
       setStats(data);
     } catch (err) {
+      setError(regionAdminError(err, 'Failed to load regional stats'));
       console.error('Failed to load regional stats:', err);
     }
   };
@@ -248,6 +258,7 @@ const RegionalGovernorDashboard: React.FC = () => {
       const { data } = await api.get('/api/v1/regions/my-region/policies');
       setPolicies(data);
     } catch (err) {
+      setError(regionAdminError(err, 'Failed to load policies'));
       console.error('Failed to load policies:', err);
     }
   };
@@ -257,6 +268,7 @@ const RegionalGovernorDashboard: React.FC = () => {
       const { data } = await api.get('/api/v1/regions/my-region/elections');
       setElections(data);
     } catch (err) {
+      setError(regionAdminError(err, 'Failed to load elections'));
       console.error('Failed to load elections:', err);
     }
   };
@@ -266,6 +278,7 @@ const RegionalGovernorDashboard: React.FC = () => {
       const { data } = await api.get('/api/v1/regions/my-region/treaties');
       setTreaties(data);
     } catch (err) {
+      setError(regionAdminError(err, 'Failed to load treaties'));
       console.error('Failed to load treaties:', err);
     }
   };
@@ -275,6 +288,7 @@ const RegionalGovernorDashboard: React.FC = () => {
       const { data } = await api.get('/api/v1/regions/my-region/members');
       setMembers(data);
     } catch (err) {
+      setError(regionAdminError(err, 'Failed to load regional members'));
       console.error('Failed to load regional members:', err);
     }
   };
@@ -286,7 +300,7 @@ const RegionalGovernorDashboard: React.FC = () => {
       setSuccess('Economic configuration updated successfully');
       await loadRegionInfo();
     } catch (err) {
-      setError(axiosDetail(err) || 'Failed to update economic configuration');
+      setError(regionAdminError(err, 'Failed to update economic configuration'));
       console.error('Update error:', err);
     } finally {
       setLoading(false);
@@ -300,7 +314,7 @@ const RegionalGovernorDashboard: React.FC = () => {
       setSuccess('Governance configuration updated successfully');
       await loadRegionInfo();
     } catch (err) {
-      setError(axiosDetail(err) || 'Failed to update governance configuration');
+      setError(regionAdminError(err, 'Failed to update governance configuration'));
       console.error('Update error:', err);
     } finally {
       setLoading(false);
@@ -321,7 +335,7 @@ const RegionalGovernorDashboard: React.FC = () => {
       });
       await loadPolicies();
     } catch (err) {
-      setError(axiosDetail(err) || 'Failed to create policy');
+      setError(regionAdminError(err, 'Failed to create policy'));
       console.error('Create policy error:', err);
     } finally {
       setLoading(false);
@@ -345,7 +359,7 @@ const RegionalGovernorDashboard: React.FC = () => {
       setSuccess(`Updated governance dials for ${member.username}`);
       await loadMembers();
     } catch (err) {
-      setError(axiosDetail(err) || 'Failed to update member dials');
+      setError(regionAdminError(err, 'Failed to update member dials'));
       console.error('Update member dials error:', err);
     } finally {
       setLoading(false);
@@ -362,7 +376,7 @@ const RegionalGovernorDashboard: React.FC = () => {
       setSuccess(`Election for ${position} started successfully`);
       await loadElections();
     } catch (err) {
-      setError(axiosDetail(err) || 'Failed to start election');
+      setError(regionAdminError(err, 'Failed to start election'));
       console.error('Start election error:', err);
     } finally {
       setLoading(false);
@@ -435,6 +449,12 @@ const RegionalGovernorDashboard: React.FC = () => {
   if (!region) {
     return (
       <div className="regional-governor-dashboard">
+        {error && (
+          <div className="error-message" role="alert">
+            {error}
+            <button onClick={() => setError(null)} className="error-close">×</button>
+          </div>
+        )}
         <div className="loading-message">
           {loading ? 'Loading regional data...' : 'No region found. You need to own a region to access this dashboard.'}
         </div>
@@ -470,7 +490,7 @@ const RegionalGovernorDashboard: React.FC = () => {
       </div>
 
       {error && (
-        <div className="error-message">
+        <div className="error-message" role="alert">
           {error}
           <button onClick={() => setError(null)} className="error-close">×</button>
         </div>
