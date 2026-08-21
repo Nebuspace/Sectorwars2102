@@ -492,3 +492,201 @@ class MessageService:
         logger.info(f"Message {message_id} moderated by {moderator_id}: {action}")
         
         return True
+
+    # Canon messaging.md § Moderation actions (LEG-263 / LEG-DEC-157).
+    REDACT_BODY = "[Moderated]"
+    REDACT_NOTIFY = "Your message was moderated for rule violation"
+    BLOCK_NOTIFY = "Repeated violations may result in account restriction"
+    REDACT_REP_DELTA = -50
+    BLOCK_REP_DELTA = -100
+    BLOCK_ESCALATION_WINDOW_DAYS = 30
+    BLOCK_ESCALATION_THRESHOLD = 2
+
+    @staticmethod
+    async def moderation_canon_action(
+        db: Session,
+        message_id: UUID,
+        action: str,
+        moderator_id: UUID,
+        reason: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Apply accept / redact / block per FEATURES/gameplay/messaging.md.
+
+        LEG-DEC-157: do **not** invent an ``account_review`` player column —
+        at the 2-block/30d threshold write an audit-log escalation marker only.
+        """
+        if action not in ("accept", "redact", "block"):
+            return {"success": False, "reason": "invalid_action"}
+
+        message = db.query(Message).filter(Message.id == message_id).first()
+        if not message:
+            return {"success": False, "reason": "message_not_found"}
+
+        now = datetime.utcnow()
+        message.moderated_at = now
+        message.moderated_by = moderator_id
+        rep_delta = 0
+        notified = False
+        escalation_logged = False
+        block_count_30d = 0
+
+        if action == "accept":
+            # Message stays visible; flag cleared. No penalty / notify.
+            message.flagged = False
+            message.flagged_reason = None
+        elif action == "redact":
+            message.content = MessageService.REDACT_BODY
+            message.flagged = False
+            message.flagged_reason = None
+            rep_delta = MessageService.REDACT_REP_DELTA
+            notified = MessageService._notify_sender_moderation(
+                db, message.sender_id, MessageService.REDACT_NOTIFY
+            )
+            MessageService._apply_sender_rep(
+                db, message.sender_id, rep_delta, reason="message_moderation_redact"
+            )
+        else:  # block
+            # Hidden from recipient (and all player-facing reads via
+            # moderation_status IS NULL filter).
+            message.moderation_status = "blocked"
+            message.flagged = False
+            message.flagged_reason = None
+            rep_delta = MessageService.BLOCK_REP_DELTA
+            notified = MessageService._notify_sender_moderation(
+                db, message.sender_id, MessageService.BLOCK_NOTIFY
+            )
+            MessageService._apply_sender_rep(
+                db, message.sender_id, rep_delta, reason="message_moderation_block"
+            )
+            block_count_30d, escalation_logged = (
+                MessageService._record_block_and_maybe_escalate(
+                    db,
+                    moderator_id=moderator_id,
+                    sender_id=message.sender_id,
+                    message_id=message.id,
+                    reason=reason,
+                )
+            )
+
+        db.commit()
+        logger.info(
+            "Message %s canon-moderation %s by %s (rep_delta=%s block_count_30d=%s)",
+            message_id,
+            action,
+            moderator_id,
+            rep_delta,
+            block_count_30d,
+        )
+        return {
+            "success": True,
+            "action": action,
+            "message_id": str(message_id),
+            "rep_delta": rep_delta,
+            "sender_notified": notified,
+            "block_count_30d": block_count_30d,
+            "escalation_audit_logged": escalation_logged,
+        }
+
+    @staticmethod
+    def _apply_sender_rep(
+        db: Session, sender_id: UUID, amount: int, reason: str
+    ) -> None:
+        from src.services.personal_reputation_service import PersonalReputationService
+
+        PersonalReputationService(db).adjust_reputation(sender_id, amount, reason)
+
+    @staticmethod
+    def _notify_sender_moderation(
+        db: Session, sender_id: UUID, content: str
+    ) -> bool:
+        """Deliver a system message to the moderated sender. Soft-fail."""
+        try:
+            # System row: sender is the moderated player (self-addressed
+            # system notice) — recipient_id = sender so it lands in inbox.
+            notice = Message(
+                sender_id=sender_id,
+                recipient_id=sender_id,
+                subject="Moderation notice",
+                content=content,
+                message_type="system",
+                priority="high",
+            )
+            db.add(notice)
+            db.flush()
+            return True
+        except Exception as exc:  # noqa: BLE001 — must not void the moderation
+            logger.warning(
+                "Failed to notify sender %s of moderation: %s", sender_id, exc
+            )
+            return False
+
+    @staticmethod
+    def _record_block_and_maybe_escalate(
+        db: Session,
+        *,
+        moderator_id: UUID,
+        sender_id: UUID,
+        message_id: UUID,
+        reason: Optional[str],
+    ) -> tuple:
+        """Audit each block; at 2+ in 30d log escalation (no account_review invent)."""
+        from datetime import timedelta
+
+        from src.models.audit_log import AuditLog
+        from src.services.audit_service import AuditAction, AuditService
+
+        AuditService(db).log_action(
+            user_id=moderator_id,
+            action=AuditAction.INTERVENTION,
+            resource_type="message",
+            resource_id=str(message_id),
+            details={
+                "moderation_action": "block",
+                "sender_id": str(sender_id),
+                "reason": reason,
+            },
+        )
+
+        window_start = datetime.utcnow() - timedelta(
+            days=MessageService.BLOCK_ESCALATION_WINDOW_DAYS
+        )
+        recent = (
+            db.query(AuditLog)
+            .filter(
+                AuditLog.resource_type == "message",
+                AuditLog.action == "intervention",
+                AuditLog.timestamp >= window_start,
+            )
+            .all()
+        )
+        block_count = 0
+        for row in recent:
+            body = row.request_body or {}
+            if not isinstance(body, dict):
+                continue
+            if (
+                body.get("moderation_action") == "block"
+                and body.get("sender_id") == str(sender_id)
+            ):
+                block_count += 1
+
+        escalation_logged = False
+        if block_count >= MessageService.BLOCK_ESCALATION_THRESHOLD:
+            AuditService(db).log_action(
+                user_id=moderator_id,
+                action=AuditAction.INTERVENTION,
+                resource_type="message",
+                resource_id=str(message_id),
+                details={
+                    "moderation_action": "block_escalation_threshold",
+                    "sender_id": str(sender_id),
+                    "block_count_30d": block_count,
+                    "note": (
+                        "account_review status flip deferred — no column "
+                        "(LEG-DEC-157); counter+audit only"
+                    ),
+                },
+            )
+            escalation_logged = True
+
+        return block_count, escalation_logged

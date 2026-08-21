@@ -1,6 +1,61 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../../utils/auth';
 import { useToast } from '../../contexts/ToastContext';
+import { formatUniverseAdminError } from '../../utils/universeAdminError';
+
+/** Tip PlanetType enum — create options must stay ⊆ this set (no legacy M_CLASS…). */
+const PLANET_TYPE_OPTIONS = [
+  'TERRAN',
+  'DESERT',
+  'OCEANIC',
+  'ICE',
+  'VOLCANIC',
+  'GAS_GIANT',
+  'BARREN',
+  'JUNGLE',
+  'ARCTIC',
+  'TROPICAL',
+  'MOUNTAINOUS',
+  'ARTIFICIAL',
+] as const;
+
+/** Tip StationType enum for StationCreateRequest.type */
+const STATION_TYPE_OPTIONS = [
+  'TRADING',
+  'MILITARY',
+  'INDUSTRIAL',
+  'MINING',
+  'SCIENTIFIC',
+  'SHIPYARD',
+  'OUTPOST',
+  'BLACK_MARKET',
+  'DIPLOMATIC',
+  'CORPORATE',
+] as const;
+
+/** Tip SectorType enum — select must stay ⊆ this set (NORMAL is not valid; use STANDARD). */
+const SECTOR_TYPE_OPTIONS = [
+  'STANDARD',
+  'NEBULA',
+  'ASTEROID_FIELD',
+  'BLACK_HOLE',
+  'STAR_CLUSTER',
+  'VOID',
+  'INDUSTRIAL',
+  'AGRICULTURAL',
+  'FORBIDDEN',
+  'WORMHOLE',
+  'ANOMALY',
+  'RADIATION_ZONE',
+  'WARP_STORM',
+] as const;
+
+function normalizeControllingFaction(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  const s = String(value).trim();
+  if (s === '' || s.toLowerCase() === 'none') return null;
+  return s;
+}
 
 interface SectorDetailProps {
   sector: any;
@@ -75,8 +130,16 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
   const handleSave = async (field: string) => {
     try {
       setIsUpdating(true);
-      const value = editValues[field];
-      
+      let value = editValues[field];
+      if (field === 'controlling_faction') {
+        value = normalizeControllingFaction(value);
+      }
+      // SectorUpdateRequest: radiation_level / resource_regeneration are ge=0.0
+      if (field === 'radiation_level' || field === 'resource_regeneration') {
+        const n = Number(value);
+        value = Number.isFinite(n) ? Math.max(0, n) : 0;
+      }
+
       // Update sector via API (PUT — matches SectorEditModal; backend only has PUT)
       await api.put(`/api/v1/admin/sectors/${sector.id}`, {
         [field]: value
@@ -91,7 +154,7 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
       setEditingField(null);
     } catch (error) {
       console.error(`Failed to update ${field}:`, error);
-      toast.error(`Failed to update ${field}`);
+      toast.error(formatUniverseAdminError(error, `Failed to update ${field}`));
     } finally {
       setIsUpdating(false);
     }
@@ -125,7 +188,7 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
       await loadSectorDetails(); // Reload to get the new port data
     } catch (error) {
       console.error('Failed to create port:', error);
-      toast.error('Failed to create port');
+      toast.error(formatUniverseAdminError(error, 'Failed to create station'));
     } finally {
       setIsUpdating(false);
     }
@@ -146,7 +209,7 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
       await loadSectorDetails(); // Reload to get the new planet data
     } catch (error) {
       console.error('Failed to create planet:', error);
-      toast.error('Failed to create planet');
+      toast.error(formatUniverseAdminError(error, 'Failed to create planet'));
     } finally {
       setIsUpdating(false);
     }
@@ -281,7 +344,7 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
                           field="type" 
                           value={sector.type} 
                           type="select"
-                          options={['NORMAL', 'NEBULA', 'ASTEROID_FIELD', 'RADIATION_ZONE', 'WARP_STORM']}
+                          options={[...SECTOR_TYPE_OPTIONS]}
                         />
                       </span>
                     </div>
@@ -319,6 +382,36 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
                       <span className="font-medium text-muted">Controlling Faction:</span>
                       <span>
                         <EditableField field="controlling_faction" value={sector.controlling_faction || 'None'} type="text" />
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center col-span-2">
+                      <span className="font-medium text-muted">Description:</span>
+                      <span className="text-primary flex-1 text-right ml-4">
+                        <EditableField
+                          field="description"
+                          value={sector.description ?? ''}
+                          type="text"
+                        />
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="font-medium text-muted">Radiation Level:</span>
+                      <span className="font-mono">
+                        <EditableField
+                          field="radiation_level"
+                          value={sector.radiation_level ?? 0}
+                          type="number"
+                        />
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="font-medium text-muted">Resource Regeneration:</span>
+                      <span className="font-mono">
+                        <EditableField
+                          field="resource_regeneration"
+                          value={sector.resource_regeneration ?? 0}
+                          type="number"
+                        />
                       </span>
                     </div>
                     <div className="flex justify-between items-center">
@@ -420,7 +513,7 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
           </div>
         )}
 
-        {/* Create Station Modal */}
+        {/* Create Station Modal — StationCreateRequest: name + station_class + type */}
       {showCreatePortModal && (
         <div className="modal-overlay" onClick={() => setShowCreatePortModal(false)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
@@ -430,51 +523,43 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
               const formData = new FormData(e.target as HTMLFormElement);
               const portData = {
                 name: formData.get('name'),
-                port_class: parseInt(formData.get('port_class') as string),
-                tax_rate: parseFloat(formData.get('tax_rate') as string),
-                defense_fighters: parseInt(formData.get('defense_fighters') as string),
-                ore_price: parseInt(formData.get('ore_price') as string),
-                organics_price: parseInt(formData.get('organics_price') as string),
-                equipment_price: parseInt(formData.get('equipment_price') as string)
+                station_class: parseInt(formData.get('station_class') as string, 10),
+                type: formData.get('type') as string,
               };
               submitCreatePort(portData);
             }}>
               <div className="form-group">
                 <label>Station Name:</label>
-                <input type="text" name="name" required placeholder="Enter port name" />
+                <input type="text" name="name" required placeholder="Enter station name" />
               </div>
               <div className="form-group">
                 <label>Station Class:</label>
-                <select name="port_class" required>
-                  <option value="1">Class 1 - Basic Trading Post</option>
-                  <option value="2">Class 2 - Standard Station</option>
-                  <option value="3">Class 3 - Major Trading Hub</option>
-                  <option value="4">Class 4 - Commercial Center</option>
-                  <option value="5">Class 5 - Mega Port</option>
+                <select name="station_class" required defaultValue="6">
+                  <option value="0">Class 0 - Sol System</option>
+                  <option value="1">Class 1 - Mining Operation</option>
+                  <option value="2">Class 2 - Agricultural Center</option>
+                  <option value="3">Class 3 - Industrial Hub</option>
+                  <option value="4">Class 4 - Distribution Center</option>
+                  <option value="5">Class 5 - Collection Hub</option>
+                  <option value="6">Class 6 - Mixed Market</option>
+                  <option value="7">Class 7 - Resource Exchange</option>
+                  <option value="8">Class 8 - Black Hole</option>
+                  <option value="9">Class 9 - Nova</option>
+                  <option value="10">Class 10 - Luxury Market</option>
+                  <option value="11">Class 11 - Premium Tech</option>
                 </select>
               </div>
               <div className="form-group">
-                <label>Tax Rate (%):</label>
-                <input type="number" name="tax_rate" min="0" max="50" step="0.1" defaultValue="5.0" required />
+                <label>Station Type:</label>
+                <select name="type" required defaultValue="TRADING">
+                  {STATION_TYPE_OPTIONS.map((t) => (
+                    <option key={t} value={t}>{t}</option>
+                  ))}
+                </select>
               </div>
-              <div className="form-group">
-                <label>Defense Drones:</label>
-                <input type="number" name="defense_fighters" min="0" max="10000" defaultValue="100" required />
-              </div>
-              <div className="form-row">
-                <div className="form-group">
-                  <label>Ore Price:</label>
-                  <input type="number" name="ore_price" min="1" max="200" defaultValue="25" required />
-                </div>
-                <div className="form-group">
-                  <label>Organics Price:</label>
-                  <input type="number" name="organics_price" min="1" max="200" defaultValue="15" required />
-                </div>
-                <div className="form-group">
-                  <label>Equipment Price:</label>
-                  <input type="number" name="equipment_price" min="1" max="200" defaultValue="50" required />
-                </div>
-              </div>
+              <p className="form-note">
+                Tax rate, defenses, and commodity prices are set after create on the station detail page.
+              </p>
               <div className="form-actions">
                 <button type="button" onClick={() => setShowCreatePortModal(false)}>Cancel</button>
                 <button type="submit" disabled={isUpdating}>Create Station</button>
@@ -484,7 +569,7 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
         </div>
       )}
       
-      {/* Create Planet Modal */}
+      {/* Create Planet Modal — PlanetCreateRequest: name + type (no citadel/shield/drones/breeding) */}
       {showCreatePlanetModal && (
         <div className="modal-overlay" onClick={() => setShowCreatePlanetModal(false)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
@@ -494,11 +579,7 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
               const formData = new FormData(e.target as HTMLFormElement);
               const planetData = {
                 name: formData.get('name'),
-                planet_type: formData.get('planet_type'),
-                citadel_level: parseInt(formData.get('citadel_level') as string),
-                shield_level: parseInt(formData.get('shield_level') as string),
-                drones: parseInt(formData.get('drones') as string),
-                breeding_rate: parseFloat(formData.get('breeding_rate') as string)
+                type: formData.get('type') as string,
               };
               submitCreatePlanet(planetData);
             }}>
@@ -508,49 +589,15 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
               </div>
               <div className="form-group">
                 <label>Planet Type:</label>
-                <select name="planet_type" required>
-                  <option value="TERRA">Terra - Earth-like planet</option>
-                  <option value="M_CLASS">M-Class - Standard habitable</option>
-                  <option value="L_CLASS">L-Class - Rocky with thin atmosphere</option>
-                  <option value="O_CLASS">O-Class - Ocean planet</option>
-                  <option value="K_CLASS">K-Class - Desert/arid planet</option>
-                  <option value="H_CLASS">H-Class - Harsh environment</option>
-                  <option value="D_CLASS">D-Class - Barren/dead world</option>
-                  <option value="C_CLASS">C-Class - Cold/ice planet</option>
+                <select name="type" required defaultValue="TERRAN">
+                  {PLANET_TYPE_OPTIONS.map((t) => (
+                    <option key={t} value={t}>{t}</option>
+                  ))}
                 </select>
               </div>
-              <div className="form-row">
-                <div className="form-group">
-                  <label>Citadel Level:</label>
-                  <select name="citadel_level" required>
-                    <option value="0">0 - No Citadel</option>
-                    <option value="1">1 - Basic Fortification</option>
-                    <option value="2">2 - Standard Citadel</option>
-                    <option value="3">3 - Advanced Citadel</option>
-                    <option value="4">4 - Fortress Citadel</option>
-                    <option value="5">5 - Maximum Citadel</option>
-                  </select>
-                </div>
-                <div className="form-group">
-                  <label>Shield Level:</label>
-                  <select name="shield_level" required>
-                    <option value="0">0 - No Shields</option>
-                    <option value="1">1 - Basic Shields</option>
-                    <option value="2">2 - Improved Shields</option>
-                    <option value="3">3 - Maximum Shields</option>
-                  </select>
-                </div>
-              </div>
-              <div className="form-row">
-                <div className="form-group">
-                  <label>Defense Drones:</label>
-                  <input type="number" name="drones" min="0" max="50000" defaultValue="0" required />
-                </div>
-                <div className="form-group">
-                  <label>Breeding Rate (%):</label>
-                  <input type="number" name="breeding_rate" min="0" max="10" step="0.1" defaultValue="2.0" required />
-                </div>
-              </div>
+              <p className="form-note">
+                Citadel, shields, drones, and breeding are not part of create — configure after create if the API supports them.
+              </p>
               <div className="form-actions">
                 <button type="button" onClick={() => setShowCreatePlanetModal(false)}>Cancel</button>
                 <button type="submit" disabled={isUpdating}>Create Planet</button>
