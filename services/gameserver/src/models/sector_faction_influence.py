@@ -53,6 +53,10 @@ class SectorFactionInfluence(Base):
     influence_percentage = Column(Float, nullable=False, default=0.0)
     # Patrol-versus-pirate spawn weight derived from influence (ADR-0021 effect).
     patrol_spawn_weight = Column(Float, nullable=False, default=0.0)
+    # Activity clock for LEG-65 idle decay — set only by adjust_sector_influence;
+    # the midnight decay sweep never writes this column (so decay cannot
+    # self-reset idle). Nullable for rows created before the column existed.
+    last_action_at = Column(DateTime(timezone=True), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(
