@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom';
 // Components
 import PageHeader from '../ui/PageHeader';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 
 // Define types for our dashboard data
 interface SystemHealth {
@@ -70,21 +71,13 @@ type AuditFeedState =
   | { status: 'ok'; entries: AuditLogEntry[] }
   | { status: 'error'; message: string };
 
-/** Map rejected api.get audit fetch without importing axios in this module. */
+/** Map rejected api.get audit fetch via shared admin helper (RBAC / rate-limit). */
 function auditFetchErrorMessage(reason: unknown): string {
-  if (reason && typeof reason === 'object') {
-    const err = reason as { response?: { status?: number }; code?: string };
-    if (err.response?.status != null) {
-      return `Audit log request failed (${err.response.status}).`;
-    }
-    if (err.code === 'ECONNABORTED') {
-      return 'Audit log request timed out.';
-    }
-    if ('response' in err || 'request' in err) {
-      return 'Audit log request failed: network error.';
-    }
-  }
-  return 'Unable to load recent audit events.';
+  return formatAdminApiError(reason, {
+    fallback: 'Unable to load recent audit events.',
+    scopeHint:
+      'viewing the audit feed requires the admin.audit.view scope (AUDIT_VIEW).',
+  });
 }
 
 const Dashboard: React.FC = () => {

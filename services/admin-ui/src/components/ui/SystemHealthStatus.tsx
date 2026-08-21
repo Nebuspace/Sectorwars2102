@@ -84,6 +84,19 @@ const SystemHealthStatus: React.FC = () => {
   // REMOVED: Container health monitoring no longer available (Docker socket removed for security)
   const [isLoading, setIsLoading] = useState(true);
   const [isExpanded, setIsExpanded] = useState(false);
+  /** Operator-visible RBAC / rate-limit honesty (LEG-1233) — not console-only. */
+  const [authProbeError, setAuthProbeError] = useState<string | null>(null);
+
+  const classifyProbeError = (error: unknown): string | null => {
+    const status = (error as { response?: { status?: number } })?.response?.status;
+    if (status === 401 || status === 403) {
+      return 'Access denied — system health probes require an admin view scope.';
+    }
+    if (status === 429) {
+      return 'Admin rate limit exceeded — wait a moment and try again.';
+    }
+    return null;
+  };
 
   const checkServerStatus = async () => {
     try {
@@ -105,6 +118,8 @@ const SystemHealthStatus: React.FC = () => {
       });
     } catch (error) {
       console.error('Failed to check server status:', error);
+      const authMsg = classifyProbeError(error);
+      if (authMsg) setAuthProbeError(authMsg);
       setServerStatus(prev => ({
         ...prev,
         status: 'offline',
@@ -119,6 +134,8 @@ const SystemHealthStatus: React.FC = () => {
       setAiHealth(data);
     } catch (error) {
       console.error('Failed to check AI health:', error);
+      const authMsg = classifyProbeError(error);
+      if (authMsg) setAuthProbeError(authMsg);
       setAiHealth(null);
     }
   };
@@ -129,6 +146,8 @@ const SystemHealthStatus: React.FC = () => {
       setDbHealth(data);
     } catch (error) {
       console.error('Failed to check database health:', error);
+      const authMsg = classifyProbeError(error);
+      if (authMsg) setAuthProbeError(authMsg);
       setDbHealth(null);
     }
   };
@@ -137,6 +156,7 @@ const SystemHealthStatus: React.FC = () => {
 
   const checkAllStatus = async () => {
     setIsLoading(true);
+    setAuthProbeError(null);
     await Promise.all([
       checkServerStatus(),
       checkAIHealth(),
@@ -262,6 +282,11 @@ const SystemHealthStatus: React.FC = () => {
       </div>
       
       <div className="system-health-content">
+        {authProbeError && (
+          <div className="alert error" role="alert" style={{ marginBottom: '8px' }}>
+            <span className="alert-message">{authProbeError}</span>
+          </div>
+        )}
         <div className="status-summary">
           <div className="service-status">
             <span 
