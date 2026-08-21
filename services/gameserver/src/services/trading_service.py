@@ -652,6 +652,18 @@ CLASS_9_SELL_PREMIUM = 1.25  # Nova charges players 25% more for what it sells
 # "once per game tick / hour" docstring. NO-CANON on the period itself.
 REGEN_TICK_HOURS = 1.0
 
+# --- Thin-floor dial-down (npc-traders.md § Restock by delivery, LEG-398) ---
+# Canon: passive tick_production survives only as a thin baseline floor; the
+# great majority of stock movement is real product (visible NPC delivery /
+# player trade). Magnitudes are gameserver-tunable (npc-traders.md § Tunables)
+# — not player-facing canon.
+#
+# THIN_FLOOR_RATIO: regen never fills past this fraction of capacity.
+# RATE_SCALE: multiplies production_rate while below the floor (further
+# softens invisible fill so delivery remains the primary recovery path).
+TICK_PRODUCTION_THIN_FLOOR_RATIO = 0.15   # NO-CANON
+TICK_PRODUCTION_RATE_SCALE = 0.25        # NO-CANON
+
 # Per-station wall-clock price-recompute debounce window, in SECONDS
 # (ADR-0051 SK30, WO-DBB-EC4). A full price recompute on the hot market-read
 # path is rate-limited to at most once per this window per station; a recompute
@@ -1203,6 +1215,12 @@ class TradingService:
 
             quantity = min(capacity, quantity + int(production_rate * hours))
 
+        LEG-398 / npc-traders.md thin floor: passive regen is dialed down so
+        it cannot fully substitute for visible supply delivery —
+          * production_rate is scaled by TICK_PRODUCTION_RATE_SCALE
+          * quantity is capped at capacity * TICK_PRODUCTION_THIN_FLOOR_RATIO
+        Both magnitudes are gameserver-tunable (NO-CANON).
+
         Called lazily from update_market_prices with the canonical hours
         elapsed since the station's last market update (advance-on-read —
         there is no scheduler). Returns a dict of commodity_name →
@@ -1221,17 +1239,27 @@ class TradingService:
                 station, commodity_data.get("capacity", 0)
             )
 
-            if quantity >= capacity:
-                # Already at per-commodity capacity — no production
+            if capacity <= 0:
                 continue
 
-            units = int(production_rate * hours)
+            # Thin floor: never invisibly regen past the baseline fraction.
+            floor_qty = int(capacity * TICK_PRODUCTION_THIN_FLOOR_RATIO)
+            if floor_qty <= 0:
+                continue
+            if quantity >= floor_qty:
+                continue
+
+            # Dialed-down rate — delivery path remains the primary fill.
+            scaled_rate = production_rate * TICK_PRODUCTION_RATE_SCALE
+            units = int(scaled_rate * hours)
             if units <= 0:
                 continue
 
-            # Produce up to capacity
-            new_quantity = min(quantity + units, capacity)
+            new_quantity = min(quantity + units, floor_qty)
             units_added = new_quantity - quantity
+            if units_added <= 0:
+                continue
+
             commodity_data["quantity"] = new_quantity
             produced[commodity_name] = units_added
 
