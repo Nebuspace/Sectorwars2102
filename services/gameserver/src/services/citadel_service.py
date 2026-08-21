@@ -1391,9 +1391,21 @@ class CitadelService:
                     "success": False, "reason": reason,
                     "error_code": "ERR_CITADEL_PREREQUISITE_OFFLINE",
                     "message": msg,
+                    "building_key": key,
+                    "building_name": name,
                 }
-            msg = f"Upgrade to {level_name_str} requires {name} — build it first."
-            return {"success": False, "reason": reason, "message": msg}
+            msg = (
+                f"ERR_CITADEL_PREREQUISITE_MISSING: Upgrade to {level_name_str} "
+                f"requires {name} — build it first."
+            )
+            return {
+                "success": False,
+                "reason": reason,
+                "error_code": "ERR_CITADEL_PREREQUISITE_MISSING",
+                "message": msg,
+                "building_key": key,
+                "building_name": name,
+            }
 
         if req["type"] == "shield":
             min_level = req["min"]
@@ -1415,12 +1427,21 @@ class CitadelService:
                     "success": False, "reason": reason,
                     "error_code": "ERR_CITADEL_PREREQUISITE_OFFLINE",
                     "message": msg,
+                    "building_key": "shield_generator",
+                    "building_name": name,
                 }
             msg = (
-                f"Upgrade to {level_name_str} requires {name} "
-                f"(current shield generator: L{current})."
+                f"ERR_CITADEL_PREREQUISITE_MISSING: Upgrade to {level_name_str} requires "
+                f"{name} (current shield generator: L{current})."
             )
-            return {"success": False, "reason": reason, "message": msg}
+            return {
+                "success": False,
+                "reason": reason,
+                "error_code": "ERR_CITADEL_PREREQUISITE_MISSING",
+                "message": msg,
+                "building_key": "shield_generator",
+                "building_name": name,
+            }
 
         # Unknown requirement type: log a warning and return a blocking failure.
         # Silently returning None (= satisfied) here would let a future config

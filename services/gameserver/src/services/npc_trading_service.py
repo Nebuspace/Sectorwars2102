@@ -287,7 +287,12 @@ def generate_trade_route(
                 options.append((nxt, goods))
         if not options:
             break
-        best, best_goods = random.choice(options)
+        # Soft-ORDER LEG-2056: weight complementary next-stops by canon
+        # demand_factor (port-ownership.md:174) so higher tariffs reduce
+        # visit probability without inventing a new elasticity model.
+        from src.services.port_ownership_service import demand_factor as _demand_factor
+        weights = [_demand_factor(getattr(nxt, "tax_rate", None)) for nxt, _ in options]
+        best, best_goods = random.choices(options, weights=weights, k=1)[0]
         route.append({
             "station_id": str(current.id),
             "sector_id": current.sector_id,

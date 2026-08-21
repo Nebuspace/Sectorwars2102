@@ -2789,6 +2789,19 @@ class CombatService:
         station.defenses = defenses
         flag_modified(station, "defenses")
 
+        # Soft-ORDER LEG-2060: durable ownership stamp for condition_multiplier
+        # (port-ownership.md:60-66). Stamp after a resolved station-defense
+        # incident — invent=0 path, no new column.
+        try:
+            from src.services.port_ownership_service import stamp_last_defense_incident
+            stamp_last_defense_incident(station)
+        except Exception:
+            logger.warning(
+                "stamp_last_defense_incident failed for station %s (non-fatal)",
+                getattr(station, "id", None),
+                exc_info=True,
+            )
+
         # If port was captured, transfer ownership (unreachable in current kernel)
         if combat_result["port_captured"]:
             self._transfer_port_ownership(station, attacker)
