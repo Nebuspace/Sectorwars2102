@@ -1957,6 +1957,46 @@ export const warpGatesAPI = {
     apiRequest(`/api/v1/warp-gates/${siteId}/advance-construction`, {
       method: 'POST',
     }),
+
+  /** Owner: set access mode / whitelist / allies / toll (POST …/permissions). */
+  setPermissions: (
+    gateId: string,
+    body: {
+      mode: string;
+      whitelist?: string[];
+      allies?: string[];
+      toll?: number;
+    },
+  ) =>
+    apiRequest(`/api/v1/warp-gates/${gateId}/permissions`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  /** Owner: layered access (faction-rep / toll_bypass / npc_factions). */
+  setAccessLayers: (
+    gateId: string,
+    body: {
+      faction_rep_min?: { faction_type: string; value: number };
+      faction_rep_max?: { faction_type: string; value: number };
+      toll_bypass?: string[];
+      npc_factions?: string[];
+    },
+  ) =>
+    apiRequest(`/api/v1/warp-gates/${gateId}/access-requirements`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+
+  /** Owner: transfer (optional sale) to another player. */
+  transfer: (gateId: string, newOwnerId: string, salePrice?: number) =>
+    apiRequest(`/api/v1/warp-gates/${gateId}/transfer`, {
+      method: 'POST',
+      body: JSON.stringify({
+        new_owner_id: newOwnerId,
+        ...(salePrice != null ? { sale_price: salePrice } : {}),
+      }),
+    }),
 };
 
 /** Quantum Crystal / Lumen Crystal refining (DISTINCT from quantum refine-charge). */
