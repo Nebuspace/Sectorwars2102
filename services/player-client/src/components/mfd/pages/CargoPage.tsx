@@ -22,6 +22,12 @@
  * Genesis bay slot visual is untouched by this pass — it's a pre-existing
  * lamp row (◉ loaded / ○ empty, glow-animated) shared verbatim with
  * VesselPage.tsx via pages-ship.css, out of this page's WO fence.
+ *
+ * LEG-145: quantum shards/crystals live on `quantumStatus` (same inventory
+ * source as QuantumPage / QuantumDriveConsole), not in ship.cargo contents.
+ * Canon (quantum-resources.md § Player-facing affordances) requires MANIFEST
+ * to list them as separate stackable lines plus a 5→1 refine conversion hint.
+ * HOLD tank math stays on ship.cargo used/capacity only — no invented occupancy.
  */
 import React, { useState } from 'react';
 import { useGame } from '../../../contexts/GameContext';
@@ -33,6 +39,8 @@ import './pages-cargo.css';
 
 const ACCENT = '#9EC5FF';
 const TANK_SEGMENTS = 12;
+/** Canon conversion ratio — credits stay on RefiningVenue; do not invent costs. */
+const QUANTUM_REFINE_HINT = 'Refine: 5 quantum shards → 1 quantum crystal';
 
 const asRecord = (v: unknown): Record<string, unknown> | null =>
   v !== null && typeof v === 'object' && !Array.isArray(v)
@@ -43,7 +51,7 @@ const num = (v: unknown): number | null =>
   typeof v === 'number' && Number.isFinite(v) ? v : null;
 
 const CargoPage: React.FC = () => {
-  const { currentShip } = useGame();
+  const { currentShip, quantumStatus } = useGame();
   const { getLabel, getColor } = useResourceCatalog();
   const [showGenesis, setShowGenesis] = useState(false);
 
@@ -71,6 +79,13 @@ const CargoPage: React.FC = () => {
       );
   const items = entries.filter(([, qty]) => qty > 0);
   const itemsTotal = items.reduce((sum, [, qty]) => sum + qty, 0);
+
+  const quantumShards = quantumStatus?.quantum_shards ?? 0;
+  const quantumCrystals = quantumStatus?.quantum_crystals ?? 0;
+  const quantumLines: Array<[string, number]> = [];
+  if (quantumShards > 0) quantumLines.push(['quantum_shards', quantumShards]);
+  if (quantumCrystals > 0) quantumLines.push(['quantum_crystals', quantumCrystals]);
+  const hasManifest = items.length > 0 || quantumLines.length > 0;
 
   const used = num(cargo['used']);
   const capacity = num(cargo['capacity']) ?? num(currentShip.cargo_capacity);
@@ -121,38 +136,40 @@ const CargoPage: React.FC = () => {
 
         <div className="mfd-page-section">
           <div className="mfd-page-section-title">MANIFEST</div>
-          {items.length > 0 ? (
+          {hasManifest ? (
             <>
-              <svg
-                viewBox="0 0 100 10"
-                className="mfd-cargo-stack-svg"
-                role="img"
-                aria-label={`Cargo composition: ${items
-                  .map(([resource, qty]) => `${getLabel(resource)} ${qty}`)
-                  .join(', ')}`}
-              >
-                {(() => {
-                  let cx = 6;
-                  const barWidth = 88;
-                  return items.map(([resource, qty]) => {
-                    const w = itemsTotal > 0 ? (qty / itemsTotal) * barWidth : 0;
-                    const seg = (
-                      <rect
-                        key={resource}
-                        x={cx}
-                        y="2"
-                        width={Math.max(1.5, w - 0.8)}
-                        height="6"
-                        rx="1"
-                        fill={getColor(resource)}
-                        opacity={0.85}
-                      />
-                    );
-                    cx += w;
-                    return seg;
-                  });
-                })()}
-              </svg>
+              {items.length > 0 && (
+                <svg
+                  viewBox="0 0 100 10"
+                  className="mfd-cargo-stack-svg"
+                  role="img"
+                  aria-label={`Cargo composition: ${items
+                    .map(([resource, qty]) => `${getLabel(resource)} ${qty}`)
+                    .join(', ')}`}
+                >
+                  {(() => {
+                    let cx = 6;
+                    const barWidth = 88;
+                    return items.map(([resource, qty]) => {
+                      const w = itemsTotal > 0 ? (qty / itemsTotal) * barWidth : 0;
+                      const seg = (
+                        <rect
+                          key={resource}
+                          x={cx}
+                          y="2"
+                          width={Math.max(1.5, w - 0.8)}
+                          height="6"
+                          rx="1"
+                          fill={getColor(resource)}
+                          opacity={0.85}
+                        />
+                      );
+                      cx += w;
+                      return seg;
+                    });
+                  })()}
+                </svg>
+              )}
               <ul className="mfd-page-cargo-list">
                 {items.map(([resource, qty]) => (
                   <li key={resource} className="mfd-page-cargo-row">
@@ -167,7 +184,33 @@ const CargoPage: React.FC = () => {
                     <span className="mfd-page-cargo-qty">× {qty}</span>
                   </li>
                 ))}
+                {quantumLines.map(([resource, qty]) => (
+                  <li
+                    key={resource}
+                    className="mfd-page-cargo-row mfd-cargo-quantum-row"
+                    data-resource={resource}
+                  >
+                    <span className="mfd-page-cargo-name">
+                      <span
+                        className="mfd-cargo-swatch"
+                        style={{ backgroundColor: getColor(resource) }}
+                        aria-hidden="true"
+                      />
+                      {getLabel(resource)}
+                    </span>
+                    <span className="mfd-page-cargo-qty">× {qty}</span>
+                  </li>
+                ))}
               </ul>
+              {quantumLines.length > 0 && (
+                <p
+                  className="mfd-cargo-quantum-hint"
+                  title={QUANTUM_REFINE_HINT}
+                  role="note"
+                >
+                  {QUANTUM_REFINE_HINT}
+                </p>
+              )}
             </>
           ) : (
             <MFDEmpty text="CARGO BAY EMPTY" />

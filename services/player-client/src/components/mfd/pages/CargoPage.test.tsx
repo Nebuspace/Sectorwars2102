@@ -43,9 +43,13 @@ const baseShip = (overrides: Record<string, unknown> = {}) => ({
 });
 
 let mockCurrentShip: ReturnType<typeof baseShip> | null = baseShip();
+let mockQuantumStatus: {
+  quantum_shards: number;
+  quantum_crystals: number;
+} | null = null;
 
 vi.mock('../../../contexts/GameContext', () => ({
-  useGame: () => ({ currentShip: mockCurrentShip }),
+  useGame: () => ({ currentShip: mockCurrentShip, quantumStatus: mockQuantumStatus }),
 }));
 
 vi.mock('../../planetary/GenesisDeployment', () => ({
@@ -60,6 +64,7 @@ describe('CargoPage', () => {
 
   beforeEach(() => {
     mockCurrentShip = baseShip();
+    mockQuantumStatus = null;
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -174,5 +179,45 @@ describe('CargoPage', () => {
 
     expect(container.querySelector('.mfd-empty')?.textContent).toBe('NO ACTIVE VESSEL');
     expect(container.querySelector('.mfd-cargo-tank-svg')).toBeNull();
+  });
+
+  // LEG-145 — quantum MANIFEST lines + 5→1 refine hint (canon cargo affordance)
+  it('lists quantum shards and crystals as MANIFEST lines with the 5-to-1 hint when balances > 0', async () => {
+    mockQuantumStatus = { quantum_shards: 7, quantum_crystals: 2 };
+    await mount();
+
+    const shardRow = container.querySelector('[data-resource="quantum_shards"]');
+    const crystalRow = container.querySelector('[data-resource="quantum_crystals"]');
+    expect(shardRow?.textContent).toMatch(/Quantum Shards/);
+    expect(shardRow?.querySelector('.mfd-page-cargo-qty')?.textContent).toBe('× 7');
+    expect(crystalRow?.textContent).toMatch(/Quantum Crystals/);
+    expect(crystalRow?.querySelector('.mfd-page-cargo-qty')?.textContent).toBe('× 2');
+
+    const hint = container.querySelector('.mfd-cargo-quantum-hint');
+    expect(hint).not.toBeNull();
+    expect(hint?.textContent).toMatch(/5 quantum shards/i);
+    expect(hint?.textContent).toMatch(/1 quantum crystal/i);
+    expect(hint?.textContent).not.toMatch(/\d[\d,]*\s*cr/i);
+  });
+
+  it('omits quantum lines and hint when shard/crystal balances are zero', async () => {
+    mockQuantumStatus = { quantum_shards: 0, quantum_crystals: 0 };
+    await mount();
+
+    expect(container.querySelector('[data-resource="quantum_shards"]')).toBeNull();
+    expect(container.querySelector('[data-resource="quantum_crystals"]')).toBeNull();
+    expect(container.querySelector('.mfd-cargo-quantum-hint')).toBeNull();
+  });
+
+  it('shows quantum lines when commodity cargo is empty but quantum balances exist', async () => {
+    mockCurrentShip = baseShip({ cargo: { used: 0, capacity: 50, contents: {} } });
+    mockQuantumStatus = { quantum_shards: 5, quantum_crystals: 0 };
+    await mount();
+
+    expect(container.querySelector('.mfd-empty')).toBeNull();
+    expect(container.querySelector('[data-resource="quantum_shards"]')?.textContent).toMatch(
+      /Quantum Shards/,
+    );
+    expect(container.querySelector('.mfd-cargo-quantum-hint')?.textContent).toMatch(/5 quantum shards/i);
   });
 });
