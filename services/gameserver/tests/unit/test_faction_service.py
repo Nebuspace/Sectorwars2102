@@ -1108,14 +1108,19 @@ class TestCheckTerritoryAccess:
         assert result["reason"] == "Neutral territory"
 
     @pytest.mark.asyncio
-    async def test_controlled_sector_with_no_reputation_is_denied(self):
+    async def test_controlled_sector_with_no_reputation_reads_as_neutral_via_resolver(self):
+        """Soft-ORDER #1963: missing personal standing → resolve value 0 (NEUTRAL).
+
+        invent=0 resolver contract (same as dock/Fringe Soft-ORDERs). Federation
+        allows value 0 (threshold -400); prior 'No standing' deny path retired.
+        """
         sector_id = uuid4()
-        faction = _faction(name="Pirates United", territory_sectors=[sector_id])
+        faction = _faction(name="Terran Federation", territory_sectors=[sector_id])
         db = _FakeDb(results={Faction: [[faction]], Reputation: [None]})
         svc = FactionService(db)
         result = await svc.check_territory_access(uuid4(), sector_id)
-        assert result["allowed"] is False
-        assert "No standing" in result["reason"]
+        assert result["allowed"] is True
+        assert result["reason"] == "Good standing"
 
     @pytest.mark.asyncio
     async def test_controlled_sector_with_sufficient_reputation_is_allowed(self):

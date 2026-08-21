@@ -363,20 +363,24 @@ def apply_premium_floor(total_cost: int) -> int:
 # ---------------------------------------------------------------------------
 
 def _tradedock_player_rep(db: Session, player_id, station: Station) -> int:
-    """Numeric reputation current_value toward the station's controlling
-    faction; 0 when unaffiliated or no record.  Mirrors _faction_rep_tier
-    but returns current_value (an integer score) instead of the numeric tier.
+    """Effective standing value toward the station's controlling faction.
+
+    Uses ``resolve_effective_faction_standing_value`` so teamed players consume
+    team aggregate standing (Soft-ORDER #1961 / follow-up 3). Solo players still
+    use personal ``Reputation.current_value``. Returns 0 when unaffiliated or
+    no faction/standing record. Thresholds unchanged (200 full / 1 guest).
     """
     if not station.faction_affiliation:
         return 0
     faction = db.query(Faction).filter(Faction.name == station.faction_affiliation).first()
     if faction is None:
         return 0
-    rep = db.query(Reputation).filter(
-        Reputation.player_id == player_id,
-        Reputation.faction_id == faction.id,
-    ).first()
-    return rep.current_value if rep is not None else 0
+    from src.services.faction_service import resolve_effective_faction_standing_value
+
+    value, _source = resolve_effective_faction_standing_value(
+        db, player_id, faction.id
+    )
+    return int(value)
 
 
 def tradedock_access(
