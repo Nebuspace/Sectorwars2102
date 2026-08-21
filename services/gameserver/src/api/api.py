@@ -79,6 +79,7 @@ from src.api.routes.medals import router as medals_router
 from src.api.routes.haggle import router as haggle_router
 from src.api.routes.research_cockpit import router as research_cockpit_router
 from src.api.routes.black_market import router as black_market_router
+from src.api.routes.syndicate_fence import router as syndicate_fence_router
 from src.api.routes.resources import router as resources_router  # WO-ARCH-RES-1-KERNEL (router carries /resources prefix)
 from src.api.routes.pirate_ecosystem import router as pirate_ecosystem_router  # WO-PIRATE-ECO-1
 from src.api.routes.contracts import router as contracts_router  # WO-ECON-CONTRACT-1-KERNEL
@@ -221,6 +222,7 @@ api_router.include_router(bang_galaxy_router, prefix="/admin", tags=["admin-bang
 # sell with detection roll (router carries its own /trading prefix → endpoints at
 # /trading/black-market/...)
 api_router.include_router(black_market_router, tags=["black-market"])
+api_router.include_router(syndicate_fence_router, tags=["syndicate-fence"])
 # Resource registry catalog (WO-ARCH-RES-1-KERNEL): read-only seeded canon
 # resource list (router carries its own /resources prefix → GET /resources).
 api_router.include_router(resources_router, tags=["resources"])
