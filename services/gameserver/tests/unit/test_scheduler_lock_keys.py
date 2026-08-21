@@ -140,6 +140,8 @@ EXPECTED_NAME_SITE_MAP = {
     "_run_station_recovery_sync": "_STATION_RECOVERY_LOCK_KEY",
     "_run_reclaim_flag_sweep_sync": "_RECLAIM_FLAG_LOCK_KEY",
     "_run_price_history_sweep_sync": "_PRICE_HISTORY_LOCK_KEY",
+    # LEG-INI-05 / SectorFactionInfluence UTC idle decay (faction_influence_sweeps).
+    "_run_sector_faction_influence_decay_sync": "_SFI_DECAY_LOCK_KEY",
     "_run_route_runs_retention_sync": "_ROUTE_RUNS_RETENTION_LOCK_KEY",
     "_run_due_ticks_sync": "_ADVISORY_LOCK_KEY",  # the main tick -- KEEPS the global key
     "_repair_orphan_schedules_sync": "_ORPHAN_SCHEDULE_REPAIR_LOCK_KEY",
