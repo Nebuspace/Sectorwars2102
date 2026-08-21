@@ -35,6 +35,7 @@ from src.models.fleet import Fleet, FleetStatus
 from src.models.message import Message
 from src.models.player import Player
 from src.models.sector import Sector
+from src.models.station import Station
 from src.models.team import Team
 from src.models.team_member import TeamMember, TeamRole
 from src.services.team_service import TeamService
@@ -174,6 +175,11 @@ class _FakeSession:
         if model is TeamMember:
             self.query_counts["TeamMember"] = self.query_counts.get("TeamMember", 0) + 1
             return _FakeQuery(self.team_members, model_name="TeamMember", lock_log=self.lock_log)
+        if model is Station:
+            # Soft-ORDER LEG-2033: delete_team may scan team-owned stations;
+            # empty list = no-op force-sell (this suite has no Station fixtures).
+            self.query_counts["Station"] = self.query_counts.get("Station", 0) + 1
+            return _FakeQuery([], model_name="Station", lock_log=self.lock_log)
         raise AssertionError(f"unexpected query for {model!r}")
 
     def add(self, obj: Any) -> None:
