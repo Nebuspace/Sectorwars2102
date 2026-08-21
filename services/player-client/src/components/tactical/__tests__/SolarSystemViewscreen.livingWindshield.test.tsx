@@ -431,3 +431,151 @@ describe('SolarSystemViewscreen — interaction wiring (full mount)', () => {
     expect(container.querySelector('canvas')).not.toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// LEG-64 — planet LAND lives on orbital closeup, not the unreachable popup
+// ---------------------------------------------------------------------------
+
+const PLANET_SYSTEM = {
+  ...TEST_SYSTEM,
+  bodies: [
+    {
+      slot: 0,
+      orbit_au: 0.55,
+      kind: 'ROCKY',
+      size_class: 2,
+      palette: { hue: 30, sat: 0.4 },
+      rings: false,
+      moons: 0,
+      phase_deg: 40,
+      real: true,
+      planet_id: 'planet-home',
+      name: 'Homeworld',
+      habitability: 62,
+      owned: true,
+    },
+  ],
+};
+
+describe('LEG-64 — planet LAND on orbital closeup only', () => {
+  let container: HTMLElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    mockGetSystem.mockReset();
+    mockGetSystem.mockResolvedValue(PLANET_SYSTEM);
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      matches: true,
+      media: query,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    })) as unknown as typeof window.matchMedia;
+    class MockResizeObserver {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = MockResizeObserver;
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({
+      width: W, height: H, top: 0, left: 0, right: W, bottom: H, x: 0, y: 0,
+      toJSON() { return {}; },
+    } as DOMRect);
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(
+      (() => makeNoopCtx()) as unknown as typeof HTMLCanvasElement.prototype.getContext
+    );
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => { root.unmount(); });
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  const planetTarget = (): HitTarget => {
+    const hitTargets: HitTarget[] = [];
+    drawScene(
+      makeNoopCtx(), W, H, SECTOR_ID, PLANET_SYSTEM as any, 0, hitTargets, null, 0, 0, // eslint-disable-line @typescript-eslint/no-explicit-any
+      [], [], null, [], null, [], [], false
+    );
+    const planet = hitTargets.find((t) => t.kind === 'planet' && t.meta.kind === 'planet');
+    if (!planet) throw new Error('expected planet hit target');
+    return planet;
+  };
+
+  it('left-click planet enters closeup LAND HUD; popup has no LAND button', async () => {
+    const onRequestLand = vi.fn();
+    await act(async () => {
+      root.render(
+        <SolarSystemViewscreen
+          sectorId={SECTOR_ID}
+          scene="flight"
+          ships={[]}
+          onRequestLand={onRequestLand}
+        />
+      );
+    });
+    await flush();
+    // Closeup HUD reveals after ~520ms enterOrbit timeout
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const planet = planetTarget();
+    const canvas = container.querySelector('canvas')!;
+    await act(async () => {
+      canvas.dispatchEvent(
+        new MouseEvent('click', { bubbles: true, clientX: planet.x, clientY: planet.y })
+      );
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(600);
+    });
+    expect(container.querySelector('[data-testid="ssv-orbit-land"]')).not.toBeNull();
+    const popup = container.querySelector('.ssv-popup');
+    if (popup) {
+      expect(popup.textContent).not.toMatch(/🛬 LAND/);
+    }
+    vi.useRealTimers();
+  });
+
+  it('context-menu Inspect on a planet enters closeup (not popup LAND)', async () => {
+    const onRequestLand = vi.fn();
+    await act(async () => {
+      root.render(
+        <SolarSystemViewscreen
+          sectorId={SECTOR_ID}
+          scene="flight"
+          ships={[]}
+          onRequestLand={onRequestLand}
+        />
+      );
+    });
+    await flush();
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const planet = planetTarget();
+    const canvas = container.querySelector('canvas')!;
+    await act(async () => {
+      canvas.dispatchEvent(
+        new MouseEvent('contextmenu', {
+          bubbles: true,
+          cancelable: true,
+          clientX: planet.x,
+          clientY: planet.y,
+        })
+      );
+    });
+    const inspect = container.querySelector(
+      '[data-testid="ssv-ctx-inspect"]'
+    ) as HTMLButtonElement;
+    expect(inspect).toBeTruthy();
+    await act(async () => {
+      inspect.click();
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(600);
+    });
+    expect(container.querySelector('[data-testid="ssv-orbit-land"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="ssv-planet-popup-closeup-hint"]')).toBeNull();
+    vi.useRealTimers();
+  });
+});

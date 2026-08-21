@@ -200,9 +200,9 @@ interface SolarSystemViewscreenProps {
    */
   landedPlanetId?: string;
   /**
-   * flight scene only: when provided, the real-planet info popup offers a
-   * 🛬 LAND action that calls this with the planet id (wire to the same
-   * helm land handler — it owns the helmBusy latch).
+   * flight scene only: orbital-closeup HUD offers 🛬 LAND (LEG-64 / cockpit-
+   * shell.md § flow: planet click → closeup → LAND). Not shown on the info
+   * popup — left-click / Inspect enter the closeup instead.
    */
   onRequestLand?: (planetId: string) => void;
   /**
@@ -8428,12 +8428,9 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
           </>
         );
       case 'planet': {
-        // NOTE: clicking a real planet now enters the orbital closeup
-        // (handleClick intercepts kind==='planet'), so this popup branch is a
-        // fallback only — kept for the LAND action if a planet popup is ever
-        // opened by another path.
-        // Owner detail lives on the sector planet snapshot the dashboard
-        // already passes (the system snapshot only carries an owned flag)
+        // LEG-64: planet left-click / Inspect enter orbital closeup; LAND lives
+        // on the closeup HUD only (cockpit-shell.md). Info popup is read-only
+        // if opened (e.g. legacy path) — no dead LAND affordance here.
         const sectorPlanet = planets.find((p) => p && p.id === meta.planetId);
         const ownerName: string | null = meta.owned
           ? (typeof sectorPlanet?.owner_name === 'string' && sectorPlanet.owner_name
@@ -8448,18 +8445,9 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
               <div className="ssv-popup-line">HABITABILITY {Math.round(meta.habitability)}%</div>
             )}
             {ownerName && <div className="ssv-popup-line">OWNER — {ownerName}</div>}
-            {onRequestLand && (
-              <button
-                type="button"
-                className="ssv-popup-action"
-                onClick={() => {
-                  setPopup(null);
-                  onRequestLand(meta.planetId);
-                }}
-              >
-                🛬 LAND
-              </button>
-            )}
+            <div className="ssv-popup-status" data-testid="ssv-planet-popup-closeup-hint">
+              LEFT-CLICK OR INSPECT FOR ORBITAL CLOSEUP
+            </div>
           </>
         );
       }
@@ -8561,7 +8549,16 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
           <button
             type="button"
             className="ssv-popup-action"
-            onClick={() => openPopupFor(target)}
+            data-testid="ssv-ctx-inspect"
+            onClick={() => {
+              // LEG-64: planets go to orbital closeup (LAND HUD); others keep
+              // the info popup. Matches left-click planet → enterOrbit.
+              if (target.kind === 'planet' && target.meta.kind === 'planet') {
+                enterOrbit(target);
+                return;
+              }
+              openPopupFor(target);
+            }}
           >
             🔎 INSPECT
           </button>
@@ -8729,6 +8726,7 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
               {onRequestLand && (
                 <button
                   type="button"
+                  data-testid="ssv-orbit-land"
                   onClick={() => { exitOrbit(); onRequestLand(orbit.planetId); }}
                   style={{
                     marginTop: 9, ...glass, color: '#00ff41',
