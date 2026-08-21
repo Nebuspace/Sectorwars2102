@@ -589,10 +589,19 @@ def dominant_reputation_faction_id(db: Session, player_id: UUID) -> Optional[UUI
     return top.faction_id
 
 
-# Canon Dynamic influence deltas (factions-and-teams.md action table).
-# Fair-tariff +2% is owned by a separate tip-land WO — do not wire here.
+# Canon dynamic-influence deltas (factions-and-teams.md influence action table).
 RIVAL_KILL_INFLUENCE_DELTA = -2.0
 DEFEND_SECTOR_INFLUENCE_DELTA = 1.0
+FAIR_OPS_SECTOR_INFLUENCE_DELTA = 2.0
+
+
+def faction_id_for_station_affiliation(db: Session, station) -> Optional[UUID]:
+    """Resolve a station's display-name faction affiliation to a Faction.id."""
+    name = getattr(station, "faction_affiliation", None)
+    if not name:
+        return None
+    faction = db.query(Faction).filter(Faction.name == name).first()
+    return faction.id if faction else None
 
 
 def apply_rival_kill_sector_influence(
