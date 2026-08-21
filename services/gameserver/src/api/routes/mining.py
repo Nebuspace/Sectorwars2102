@@ -163,6 +163,29 @@ async def get_harvest_status(
     }
 
 
+@router.get(
+    "/licenses",
+    summary="List caller's claim licenses (active + recently expired)",
+    response_description=(
+        "Owner-scoped ClaimLicense rows: active, or expired within the last "
+        "24 real-time hours (one ClaimLicense duration)."
+    ),
+)
+async def list_claim_licenses(
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """List the authenticated player's AM claim licenses for the license panel.
+
+    Includes **active** licenses and those **recently expired** — ``expires_at``
+    within the last 24 hours (one ClaimLicense duration; see
+    ``RECENTLY_EXPIRED_LICENSE_HOURS`` / ``LICENSE_DURATION_HOURS`` in
+    ``mining_service``). Older expired rows are omitted. Never returns another
+    player's licenses (FEATURES/economy/mining.md § license panel; LEG-435).
+    """
+    return MiningService(db).list_player_licenses(player.id)
+
+
 @router.post("/license")
 async def purchase_claim_license(
     request: LicenseRequest,
