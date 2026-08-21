@@ -12,6 +12,7 @@ import {
   Legend
 } from 'chart.js';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import './performance-metrics.css';
 
 ChartJS.register(
@@ -131,11 +132,6 @@ const formatPostgresAge = (windowPct: number) => {
   return `${minutes}m`;
 };
 
-const responseStatus = (err: unknown): number | undefined =>
-  typeof err === 'object' && err !== null && 'response' in err
-    ? (err as { response?: { status?: number } }).response?.status
-    : undefined;
-
 export const PerformanceMetrics: React.FC = () => {
   const [systemMetrics, setSystemMetrics] = useState<SystemMetrics | null>(null);
   const [databaseMetrics, setDatabaseMetrics] = useState<DatabaseMetrics | null>(null);
@@ -177,24 +173,15 @@ export const PerformanceMetrics: React.FC = () => {
       setError(null);
     } catch (err) {
       console.error('Error fetching performance data:', err);
-      const status = responseStatus(err);
-
-      if (status === 401 || status === 403) {
-        setError(
-          'Access denied — reading performance metrics requires the admin.audit.view scope.'
-        );
-      } else if (status === 429) {
-        setError('Admin rate limit exceeded — wait a moment and try again.');
-      } else if (status === 404) {
-        setError(
-          'Performance metrics route not found (404). The endpoint ships in the gameserver — ' +
-            'check that the gameserver is running and the /api proxy is reaching it.'
-        );
-      } else if (status !== undefined) {
-        setError(`Performance metrics request failed (HTTP ${status})`);
-      } else {
-        setError('Gameserver unreachable — network error fetching performance metrics');
-      }
+      setError(
+        formatAdminApiError(err, {
+          fallback: 'Gameserver unreachable — network error fetching performance metrics',
+          scopeHint: 'reading performance metrics requires the admin.audit.view scope.',
+          notFoundMessage:
+            'Performance metrics route not found (404). The endpoint ships in the gameserver — ' +
+            'check that the gameserver is running and the /api proxy is reaching it.',
+        }),
+      );
     } finally {
       setLoading(false);
     }

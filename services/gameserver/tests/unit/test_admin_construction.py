@@ -177,10 +177,92 @@ def test_admin_reservation_detail_advances_active():
 
 
 def test_admin_construction_router_mounts():
-    """Smoke: module import + three read routes registered."""
+    """Smoke: module import + read + force-cancel routes registered."""
     from src.api.routes import admin_construction
 
     paths = {getattr(r, "path", None) for r in admin_construction.router.routes}
     assert "/admin/construction/tradedocks" in paths
     assert "/admin/construction/tradedocks/{station_id}" in paths
     assert "/admin/construction/reservations/{reservation_id}" in paths
+    assert "/admin/construction/reservations/{reservation_id}/force-cancel" in paths
+
+
+def test_admin_force_cancel_404_missing_reservation():
+    from src.models.construction import ConstructionReservation
+    from src.models.player import Player
+
+    db = _FakeDb({ConstructionReservation: [], Player: []})
+    with pytest.raises(ConstructionError) as exc:
+        construction_service.admin_force_cancel(db, uuid4())
+    assert exc.value.status_code == 404
+    assert "reservation" in exc.value.detail.lower()
+
+
+def test_admin_force_cancel_404_missing_player():
+    from src.models.construction import ConstructionReservation
+    from src.models.player import Player
+
+    rid = uuid4()
+    reservation = SimpleNamespace(id=rid, player_id=uuid4(), state="building")
+    db = _FakeDb({ConstructionReservation: [reservation], Player: []})
+    with pytest.raises(ConstructionError) as exc:
+        construction_service.admin_force_cancel(db, rid)
+    assert exc.value.status_code == 404
+    assert "player" in exc.value.detail.lower()
+
+
+def test_admin_force_cancel_reuses_cancel_math():
+    """Refund schedule + resources_refunded=0 come from cancel(), not a fork."""
+    from src.models.construction import ConstructionReservation
+    from src.models.player import Player
+
+    rid = uuid4()
+    pid = uuid4()
+    reservation = SimpleNamespace(id=rid, player_id=pid, state="building")
+    player = SimpleNamespace(id=pid, credits=100_000)
+    db = _FakeDb({ConstructionReservation: [reservation], Player: [player]})
+
+    cancel_result = {
+        "refund": 5_000,
+        "credits_paid": 10_000,
+        "credits_remaining": 105_000,
+        "resources_refunded": 0,
+    }
+
+    with patch.object(
+        construction_service, "cancel", return_value=dict(cancel_result)
+    ) as cancel_mock:
+        out = construction_service.admin_force_cancel(db, rid)
+
+    cancel_mock.assert_called_once()
+    assert cancel_mock.call_args.args[1] is reservation
+    assert cancel_mock.call_args.args[2] is player
+    assert out["refund"] == 5_000
+    assert out["resources_refunded"] == 0
+    assert out["reservation_id"] == str(rid)
+    assert out["player_id"] == str(pid)
+    # Same schedule player cancel uses (pre-hull 50%).
+    assert construction_service.cancel_refund(10_000, False) == 5_000
+    assert construction_service.cancel_refund(10_000, True) == 7_000
+
+
+def test_admin_force_cancel_idempotent_terminal():
+    """Second force-cancel on a terminal reservation surfaces cancel()'s 400."""
+    from src.models.construction import ConstructionReservation
+    from src.models.player import Player
+
+    rid = uuid4()
+    pid = uuid4()
+    reservation = SimpleNamespace(id=rid, player_id=pid, state="cancelled")
+    player = SimpleNamespace(id=pid, credits=50_000)
+    db = _FakeDb({ConstructionReservation: [reservation], Player: [player]})
+
+    with patch.object(
+        construction_service,
+        "cancel",
+        side_effect=ConstructionError(400, "This reservation is already cancelled"),
+    ):
+        with pytest.raises(ConstructionError) as exc:
+            construction_service.admin_force_cancel(db, rid)
+    assert exc.value.status_code == 400
+    assert "already" in exc.value.detail.lower()

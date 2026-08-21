@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Bar, Radar } from 'react-chartjs-2';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import './planetary-management.css';
 
 interface Planet {
@@ -82,10 +83,7 @@ interface TerraformingProject {
   };
 }
 
-const responseStatus = (err: unknown): number | undefined =>
-  typeof err === 'object' && err !== null && 'response' in err
-    ? (err as { response?: { status?: number } }).response?.status
-    : undefined;
+
 
 export const PlanetaryManagement: React.FC = () => {
   const [planets, setPlanets] = useState<Planet[]>([]);
@@ -123,23 +121,16 @@ export const PlanetaryManagement: React.FC = () => {
       setError(null);
     } catch (err) {
       console.error('Error loading planetary data:', err);
-      const status = responseStatus(err);
-      if (status === 401 || status === 403) {
-        setError(
-          'Access denied — planetary management requires the admin regions view scope (REGIONS_VIEW).'
-        );
-      } else if (status === 429) {
-        setError('Admin rate limit exceeded — wait a moment and try again.');
-      } else if (status === 404) {
-        setError(
-          'Planetary management route not found (404). The gameserver ships /api/v1/admin/colonization/planets — ' +
-            'check that the gameserver is running and the /api proxy is reaching it.'
-        );
-      } else if (status !== undefined) {
-        setError(`Failed to load planetary data (HTTP ${status})`);
-      } else {
-        setError('Gameserver unreachable — network error fetching planetary data');
-      }
+      setError(
+        formatAdminApiError(err, {
+          fallback: 'Gameserver unreachable — network error fetching planetary data',
+          scopeHint:
+            'planetary management requires the admin regions view scope (REGIONS_VIEW).',
+          notFoundMessage:
+            'Planetary management route not found (404). The gameserver ships /api/v1/admin/colonization/planets — ' +
+            'check that the gameserver is running and the /api proxy is reaching it.',
+        })
+      );
       setPlanets([]);
       setStats(null);
       setTerraformingProjects([]);
@@ -159,18 +150,12 @@ export const PlanetaryManagement: React.FC = () => {
       await loadPlanetaryData();
     } catch (err) {
       console.error('Error forcing production tick:', err);
-      const status = responseStatus(err);
-      if (status === 401 || status === 403) {
-        setTickError(
-          'Access denied — forcing a production tick requires GALAXY_MANAGE.'
-        );
-      } else if (status === 429) {
-        setTickError('Admin rate limit exceeded — wait a moment and try again.');
-      } else if (status !== undefined) {
-        setTickError(`Failed to advance production (HTTP ${status})`);
-      } else {
-        setTickError('Gameserver unreachable — network error advancing production');
-      }
+      setTickError(
+        formatAdminApiError(err, {
+          fallback: 'Gameserver unreachable — network error advancing production',
+          scopeHint: 'forcing a production tick requires GALAXY_MANAGE.',
+        })
+      );
       setTickResult(null);
     } finally {
       setTicking(false);
