@@ -1,19 +1,19 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import PageHeader from '../ui/PageHeader';
 import { api } from '../../utils/auth';
-import { useToast } from '../../contexts/ToastContext';
+import { useToast, useConfirm } from '../../contexts/ToastContext';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import './trade-dock-admin.css';
 
 /**
- * LEG-58 — TradeDockAdmin wired to LEG-40 admin construction read API.
+ * LEG-58 / LEG-1487 — TradeDockAdmin construction admin surface.
  * Canon: FEATURES/economy/tradedock-shipyard.md — 12 slips = standard + specialized pools.
  *
- * Live shapes (LEG-40 / PR #598):
+ * Live shapes:
  * GET  /api/v1/admin/construction/tradedocks
  * GET  /api/v1/admin/construction/tradedocks/{station_id}
  * GET  /api/v1/admin/construction/reservations/{reservation_id}
- *
- * Read-only v1 — no force-cancel write path.
+ * POST /api/v1/admin/construction/reservations/{reservation_id}/force-cancel (LEG-339 / LEG-1487)
  */
 
 interface TradeDockSummary {
@@ -92,9 +92,11 @@ interface TradeDockOverview {
   reservation_count_total?: number;
 }
 
-function detailFromErr(err: unknown, fallback: string): string {
-  const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-  return typeof detail === 'string' ? detail : fallback;
+function constructionAdminError(err: unknown, fallback: string): string {
+  return formatAdminApiError(err, {
+    fallback,
+    scopeHint: 'PLAYERS_VIEW scope required for construction admin reads',
+  });
 }
 
 function poolLabel(pool: SlipPool | undefined): string {
@@ -104,6 +106,7 @@ function poolLabel(pool: SlipPool | undefined): string {
 
 const TradeDockAdmin: React.FC = () => {
   const toast = useToast();
+  const confirm = useConfirm();
   const [docks, setDocks] = useState<TradeDockSummary[]>([]);
   const [selectedId, setSelectedId] = useState('');
   const [overview, setOverview] = useState<TradeDockOverview | null>(null);
@@ -111,6 +114,7 @@ const TradeDockAdmin: React.FC = () => {
   const [loadingList, setLoadingList] = useState(true);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [loadingReservation, setLoadingReservation] = useState(false);
+  const [forceCancelling, setForceCancelling] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
 
@@ -129,7 +133,7 @@ const TradeDockAdmin: React.FC = () => {
       });
     } catch (err: unknown) {
       setDocks([]);
-      setListError(detailFromErr(err, 'Failed to load TradeDocks'));
+      setListError(constructionAdminError(err, 'Failed to load TradeDocks'));
     } finally {
       setLoadingList(false);
     }
@@ -163,7 +167,7 @@ const TradeDockAdmin: React.FC = () => {
       });
     } catch (err: unknown) {
       setOverview(null);
-      setDetailError(detailFromErr(err, 'Failed to load TradeDock overview'));
+      setDetailError(constructionAdminError(err, 'Failed to load TradeDock overview'));
     } finally {
       setLoadingDetail(false);
     }
@@ -188,9 +192,51 @@ const TradeDockAdmin: React.FC = () => {
       setReservation(data);
     } catch (err: unknown) {
       setReservation(null);
-      toast.error(detailFromErr(err, 'Failed to load reservation detail'));
+      toast.error(constructionAdminError(err, 'Failed to load reservation detail'));
     } finally {
       setLoadingReservation(false);
+    }
+  };
+
+  const forceCancelReservation = async (reservationId: string) => {
+    const ok = await confirm({
+      title: 'Force-cancel reservation',
+      message:
+        `Force-cancel reservation ${reservationId}? Credits refund via cancel_refund ` +
+        '(resources never returned). This cannot be undone from Admin UI.',
+      confirmLabel: 'Force-cancel',
+      danger: true,
+    });
+    if (!ok) return;
+
+    setForceCancelling(true);
+    try {
+      const { data } = await api.post<{
+        message?: string;
+        refund?: number;
+      }>(
+        `/api/v1/admin/construction/reservations/${encodeURIComponent(reservationId)}/force-cancel`
+      );
+      const refund =
+        typeof data?.refund === 'number' ? data.refund.toLocaleString() : '—';
+      toast.success(
+        data?.message?.trim()
+          ? data.message
+          : `Reservation force-cancelled — ${refund} credits refunded`
+      );
+      setReservation(null);
+      if (selectedId) {
+        await loadOverview(selectedId);
+      }
+    } catch (err: unknown) {
+      toast.error(
+        formatAdminApiError(err, {
+          fallback: 'Force-cancel failed',
+          scopeHint: 'PLAYERS_VIEW scope required for construction force-cancel',
+        })
+      );
+    } finally {
+      setForceCancelling(false);
     }
   };
 
@@ -217,7 +263,7 @@ const TradeDockAdmin: React.FC = () => {
     <div className="trade-dock-admin" data-testid="trade-dock-admin">
       <PageHeader
         title="TradeDock management"
-        subtitle="Shipyard slip pools · active builds · queue · reservation detail (read-only v1)"
+        subtitle="Shipyard slip pools · active builds · queue · reservation detail · force-cancel"
       />
 
       <section className="section">
@@ -432,11 +478,26 @@ const TradeDockAdmin: React.FC = () => {
           <div className="section-header">
             <div>
               <h3 className="section-title">Reservation detail</h3>
-              <p className="section-subtitle">Read-only · force-cancel is a follow-up</p>
+              <p className="section-subtitle">
+                Detail view · force-cancel refunds credits via tip cancel_refund
+              </p>
             </div>
-            <button type="button" className="btn btn-sm btn-ghost" onClick={() => setReservation(null)}>
-              Close
-            </button>
+            <div className="section-actions">
+              {reservation && (
+                <button
+                  type="button"
+                  className="btn btn-sm btn-danger"
+                  disabled={forceCancelling}
+                  aria-label={`Force-cancel reservation ${reservation.id}`}
+                  onClick={() => void forceCancelReservation(reservation.id)}
+                >
+                  {forceCancelling ? 'Force-cancelling…' : 'Force-cancel'}
+                </button>
+              )}
+              <button type="button" className="btn btn-sm btn-ghost" onClick={() => setReservation(null)}>
+                Close
+              </button>
+            </div>
           </div>
           {loadingReservation ? (
             <p className="text-muted">Loading reservation…</p>
