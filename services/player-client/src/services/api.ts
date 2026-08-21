@@ -1891,6 +1891,16 @@ export const tradeAPI = {
     apiRequest(`/api/v1/trade/${sessionId}/cancel`, { method: 'POST' }),
   get: (sessionId: string) => apiRequest(`/api/v1/trade/${sessionId}`),
   getOpen: () => apiRequest('/api/v1/trade/open'),
+  /** Same-sector fuel-for-credits (LEG-479). Server-enforced co-location. */
+  deliverFuel: (body: {
+    recipient_player_id: string;
+    fuel_amount: number;
+    payment_credits: number;
+  }) =>
+    apiRequest('/api/v1/trade/deliver-fuel', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
 };
 
 // Quantum drive (Warp Jumper) — status / scan / jump / refine / harvest.
