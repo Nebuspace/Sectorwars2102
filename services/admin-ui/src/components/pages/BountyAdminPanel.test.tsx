@@ -131,4 +131,33 @@ describe('BountyAdminPanel', () => {
       expect(api.post).toHaveBeenCalledWith('/api/v1/admin/players/t1/bounties/collapse');
     });
   });
+
+  const axiosError = (status: number) =>
+    Object.assign(new Error(`HTTP ${status}`), { response: { status } });
+
+  it('reports load 403 as PLAYERS_VIEW scope problem, not bare Failed to load', async () => {
+    vi.mocked(api.get).mockRejectedValue(axiosError(403));
+    render(<BountyAdminPanel />);
+    fireEvent.change(screen.getByLabelText('Target player UUID'), { target: { value: 't1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Load' }));
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/PLAYERS_VIEW|Access denied/i);
+    expect(alert).not.toMatch(/^Failed to load bounties$/);
+  });
+
+  it('reports load 429 as admin rate-limit', async () => {
+    vi.mocked(api.get).mockRejectedValue(axiosError(429));
+    render(<BountyAdminPanel />);
+    fireEvent.change(screen.getByLabelText('Target player UUID'), { target: { value: 't1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Load' }));
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/rate limit/i);
+    expect(alert).not.toMatch(/Failed to load bounties/);
+  });
 });

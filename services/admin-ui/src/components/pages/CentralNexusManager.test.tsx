@@ -57,4 +57,95 @@ describe('CentralNexusManager (LEG-212 shared api)', () => {
     );
     expect(screen.getByRole('heading', { name: 'Central Nexus Management' })).toBeTruthy();
   });
+
+  it('surfaces scope denial on 403 cluster load', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/nexus/clusters')) {
+        throw Object.assign(new Error('HTTP 403'), {
+          response: { status: 403, data: { detail: 'Missing scope admin.universe.view' } },
+        });
+      }
+      if (String(url).includes('/nexus/status')) {
+        return { data: { exists: false, status: 'not_generated', total_sectors: 0, total_ports: 0, total_planets: 0 } };
+      }
+      return { data: {} };
+    });
+
+    render(<CentralNexusManager />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Missing scope admin\.universe\.view/i)).toBeTruthy();
+    });
+  });
+
+  it('shows rate-limit copy on 429 cluster load', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/nexus/clusters')) {
+        throw Object.assign(new Error('HTTP 429'), {
+          response: { status: 429, data: {} },
+        });
+      }
+      if (String(url).includes('/nexus/status')) {
+        return { data: { exists: false, status: 'not_generated', total_sectors: 0, total_ports: 0, total_planets: 0 } };
+      }
+      return { data: {} };
+    });
+
+    render(<CentralNexusManager />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/rate limit/i)).toBeTruthy();
+    });
+  });
+
+
+  it('surfaces scope denial on 403 stats load', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/nexus/stats')) {
+        throw Object.assign(new Error('HTTP 403'), {
+          response: { status: 403, data: { detail: 'Missing scope admin.universe.view' } },
+        });
+      }
+      if (String(url).includes('/nexus/status')) {
+        return { data: { exists: false, status: 'not_generated', total_sectors: 0, total_ports: 0, total_planets: 0 } };
+      }
+      if (String(url).includes('/nexus/clusters')) {
+        return { data: [] };
+      }
+      return { data: {} };
+    });
+
+    render(<CentralNexusManager />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Missing scope admin\.universe\.view/i)).toBeTruthy();
+    });
+  });
+
+  it('shows rate-limit copy on 429 stats load', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/nexus/stats')) {
+        throw Object.assign(new Error('HTTP 429'), {
+          response: { status: 429, data: {} },
+        });
+      }
+      if (String(url).includes('/nexus/status')) {
+        return { data: { exists: false, status: 'not_generated', total_sectors: 0, total_ports: 0, total_planets: 0 } };
+      }
+      if (String(url).includes('/nexus/clusters')) {
+        return { data: [] };
+      }
+      return { data: {} };
+    });
+
+    render(<CentralNexusManager />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/rate limit/i)).toBeTruthy();
+    });
+  });
 });

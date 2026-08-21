@@ -41,6 +41,7 @@ import os
 import random
 import time
 import uuid
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
@@ -53,6 +54,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
 from src.core.commodity_economy import base_price as _commodity_base_price
+from src.core.faction_profiles import (
+    build_cluster_faction_influence,
+    cluster_midpoint_sector,
+    galaxy_area_weighted_average,
+    zone_type_for_sector,
+)
 from src.core.market_bootstrap import build_market_prices
 from src.core.station_class_map import apply_class_pattern
 
@@ -81,7 +88,13 @@ from src.models.station import (
     StationStatus,
     StationType,
 )
-from src.models.warp_tunnel import WarpTunnel, WarpTunnelType
+from src.models.warp_tunnel import (
+    WarpTunnel,
+    WarpTunnelStability,
+    WarpTunnelStatus,
+    WarpTunnelType,
+)
+from src.models.zone import Zone, ZoneType
 from src.schemas.bang_config import BangConfig, RegionType
 from src.services.galaxy_validation import (
     ERR_BANG_VALIDATION_FAILED,
@@ -102,8 +115,8 @@ logger = logging.getLogger(__name__)
 # resume from the last verified phase on restart. That orchestrator is not
 # committed gameserver code -- the actual generation pipeline is
 # BangImportService.run_generation_job(): bang runs 3x out-of-process,
-# translate() is pure, and apply() writes every region's rows (clusters ->
-# sectors -> warps -> stations -> planets -> formations, see _apply_region)
+# translate() is pure, and apply() writes every region's rows (zones ->
+# clusters -> sectors -> warps -> stations -> planets -> formations, see _apply_region)
 # inside ONE Postgres transaction (module docstring above; run_generation_job
 # wraps it in `async with session.begin(): ...`). A crash mid-apply already
 # rolls the whole transaction back to nothing -- there is no partially-
@@ -113,7 +126,7 @@ logger = logging.getLogger(__name__)
 # What SK17 buys under that real architecture:
 #   1. Per-stage telemetry (row_count/duration_ms/completed_at) written into
 #      the SAME transaction as the inserts, keyed by the REAL insert-order
-#      stage names (clusters/sectors/warps/stations/planets/formations) --
+#      stage names (zones/clusters/sectors/warps/stations/planets/formations) --
 #      not fabricated phase_1..phase_14 labels for stages that don't exist.
 #      Once a generation succeeds this is durable, useful ops visibility
 #      into where time/rows went.
@@ -151,12 +164,142 @@ def _record_phase_checksum(
 # `warps` is handled separately below (it's an association table joined
 # through Sector, not a mapped class with its own region_id column).
 _SK17_PHASE_MODELS: Dict[str, Any] = {
+    "zones": Zone,
     "clusters": Cluster,
     "sectors": Sector,
     "stations": Station,
     "planets": Planet,
     "formations": SpecialFormation,
 }
+
+# ---------------------------------------------------------------------------
+# Bang-import pipeline step 4 — Zone partition (SYSTEMS/bang-import-pipeline.md)
+# ---------------------------------------------------------------------------
+#
+# Driven by region context, not bang payload. Magnitudes are canon-cited:
+# EXPANSE 3/6; FEDERATION 9/1; BORDER 5/4; FRONTIER 2/8. Do not invent.
+
+
+@dataclass(frozen=True)
+class ZonePartitionSpec:
+    """Pure plan for one Zone row before persist."""
+
+    name: str
+    zone_type: ZoneType
+    start_sector: int
+    end_sector: int
+    policing_level: int
+    danger_rating: int
+
+    def contains(self, sector_number: int) -> bool:
+        return self.start_sector <= sector_number <= self.end_sector
+
+
+def _step4_thirds_counts(total_sectors: int) -> Tuple[int, int, int]:
+    """FED first 33%, BORDER middle 34%, FRONTIER last 33%.
+
+    Integer split floors both 33% ends; remainder (the extra ~1% plus
+    rounding) lands in BORDER so ranges stay contiguous with no gaps
+    (bang-import-pipeline.md:132-136). Favours FEDERATION on the low
+    sector numbers and FRONTIER on the high end.
+
+    ``total_sectors < 3`` cannot host three non-empty ranges (Zone
+    ``end_sector >= start_sector``). Then: N=1 → FED only; N=2 → FED +
+    FRONTIER (skip empty BORDER).
+    """
+    if total_sectors < 1:
+        raise ValueError("step-4 zone partition requires total_sectors >= 1")
+    if total_sectors == 1:
+        return (1, 0, 0)
+    if total_sectors == 2:
+        return (1, 0, 1)
+    fed = total_sectors * 33 // 100
+    front = total_sectors * 33 // 100
+    if fed < 1:
+        fed = 1
+    if front < 1:
+        front = 1
+    border = total_sectors - fed - front
+    if border < 1:
+        if fed >= front and fed > 1:
+            fed -= 1
+        elif front > 1:
+            front -= 1
+        border = total_sectors - fed - front
+    return (fed, border, front)
+
+
+def _step4_zone_specs(
+    region_type: RegionType, total_sectors: int
+) -> List[ZonePartitionSpec]:
+    """Canon step-4 Zone set for one imported region."""
+    if total_sectors < 1:
+        raise ValueError("step-4 zone partition requires total_sectors >= 1")
+    if region_type == "central_nexus":
+        # Production Nexus is 5000 local sectors (1..5000). Cover the
+        # actual import width so a smaller fixture has no uncovered
+        # sector_number — Accept is no-gap coverage, not a hardcoded
+        # 5000-wide empty tail.
+        return [
+            ZonePartitionSpec(
+                name="The Expanse",
+                zone_type=ZoneType.EXPANSE,
+                start_sector=1,
+                end_sector=total_sectors,
+                policing_level=3,
+                danger_rating=6,
+            )
+        ]
+    fed_n, border_n, front_n = _step4_thirds_counts(total_sectors)
+    specs: List[ZonePartitionSpec] = []
+    cursor = 1
+    if fed_n:
+        specs.append(
+            ZonePartitionSpec(
+                name="Federation Space",
+                zone_type=ZoneType.FEDERATION,
+                start_sector=cursor,
+                end_sector=cursor + fed_n - 1,
+                policing_level=9,
+                danger_rating=1,
+            )
+        )
+        cursor += fed_n
+    if border_n:
+        specs.append(
+            ZonePartitionSpec(
+                name="Border Space",
+                zone_type=ZoneType.BORDER,
+                start_sector=cursor,
+                end_sector=cursor + border_n - 1,
+                policing_level=5,
+                danger_rating=4,
+            )
+        )
+        cursor += border_n
+    if front_n:
+        specs.append(
+            ZonePartitionSpec(
+                name="Frontier Space",
+                zone_type=ZoneType.FRONTIER,
+                start_sector=cursor,
+                end_sector=cursor + front_n - 1,
+                policing_level=2,
+                danger_rating=8,
+            )
+        )
+    return specs
+
+
+def _step4_spec_for_sector(
+    specs: List[ZonePartitionSpec], sector_number: int
+) -> ZonePartitionSpec:
+    for spec in specs:
+        if spec.contains(sector_number):
+            return spec
+    raise ValueError(
+        f"step-4 zone partition does not cover sector_number={sector_number}"
+    )
 
 
 async def verify_region_phase_checksums(
@@ -471,6 +614,62 @@ def _gx1_sector_bias(
     return resources, defenses, controlling_faction, force_nebula
 
 
+# bang-import-pipeline.md §8 — special-type pass after the nebula pass.
+# 15% of remaining STANDARD sectors are candidates; cluster table then
+# assigns types. Seeded per (universe.seed, sector number) so re-imports
+# match. Do not reuse GX1 `_GX1_RESOURCE_RICH_ASTEROID_P` as the type stamp.
+_STEP8_SPECIAL_P = 0.15
+_STEP8_DEFAULT_SPECIALS = (
+    SectorType.ASTEROID_FIELD,
+    SectorType.RADIATION_ZONE,
+    SectorType.WARP_STORM,
+    SectorType.BLACK_HOLE,
+)
+
+
+def _step8_special_type(
+    cluster_type: ClusterType,
+    universe_seed: int,
+    sid: int,
+    current_type: SectorType,
+) -> SectorType:
+    """Canon step-8 special-type roll. Only rewrites STANDARD.
+
+    Nested 15% candidate, then per-cluster weights from
+    ``SYSTEMS/bang-import-pipeline.md:190-194`` / mining.md:17-23:
+
+    * RESOURCE_RICH — 60% ASTEROID_FIELD / 40% STANDARD of the slice
+    * MILITARY_ZONE — 80% STANDARD / 10% RADIATION_ZONE / 10% WARP_STORM
+    * FRONTIER_OUTPOST — 70% STANDARD / 15% BLACK_HOLE / 15% RADIATION_ZONE
+    * all others — equal split across the four special types (the 15%
+      candidate *is* the special flag; do not nest a second 85% STANDARD)
+    """
+    if current_type != SectorType.STANDARD:
+        return current_type
+    rng = random.Random(f"step8:{universe_seed}:{sid}")
+    if rng.random() >= _STEP8_SPECIAL_P:
+        return SectorType.STANDARD
+    v = rng.random()
+    if cluster_type == ClusterType.RESOURCE_RICH:
+        return (
+            SectorType.ASTEROID_FIELD if v < 0.60 else SectorType.STANDARD
+        )
+    if cluster_type == ClusterType.MILITARY_ZONE:
+        if v < 0.80:
+            return SectorType.STANDARD
+        if v < 0.90:
+            return SectorType.RADIATION_ZONE
+        return SectorType.WARP_STORM
+    if cluster_type == ClusterType.FRONTIER_OUTPOST:
+        if v < 0.70:
+            return SectorType.STANDARD
+        if v < 0.85:
+            return SectorType.BLACK_HOLE
+        return SectorType.RADIATION_ZONE
+    idx = min(int(v * 4), 3)
+    return _STEP8_DEFAULT_SPECIALS[idx]
+
+
 #: Canon color/hex table + the [NO-CANON] density-boundary derivation now
 #: live in one SHARED home (WO-GWQ-NEXUS-NEBULA-FIELDS lifted them out so
 #: nexus_generation_service can derive the identical colors for its
@@ -544,6 +743,138 @@ def _should_stamp_nexus_protected(region_type: str, sector_number: int) -> bool:
         <= sector_number
         <= NEXUS_GATEWAY_PLAZA_SECTOR_HI
     )
+
+
+# bang-import-pipeline.md step 9: isolated clusters (no dedicated boolean —
+# stamp Cluster.special_features with this token). Observational 10–20%
+# target; never synthesize extra isolation. Warn above 25% and proceed.
+_ISOLATED_FEATURE = "isolated"
+_ISOLATED_SHARE_WARN = 0.25
+
+
+def _step9_isolated_cluster_int_ids(
+    cluster_specs: List["ClusterSpec"],
+    sector_specs: List["SectorSpec"],
+    warp_specs: List["WarpSpec"],
+) -> set[int]:
+    """Return cluster_int_ids with no fedspace-reachable sector via bang warps.
+
+    Canon (bang-import-pipeline.md:198-204): a cluster is isolated when none
+    of its sectors is reachable from a fedspace sector via natural warps.
+    Graph is the bang warp list (directed; bidirectional adds the reverse).
+    Latent bang warps still count as natural — do not invent a latent skip.
+    Empty fedspace set → every populated cluster is isolated (inherit bang;
+    do not invent sector 1 as a fedspace root). Empty clusters are skipped.
+    """
+    members: Dict[int, List[int]] = defaultdict(list)
+    for ss in sector_specs:
+        members[ss.cluster_int_id].append(ss.sector_id)
+
+    adj: Dict[int, List[int]] = defaultdict(list)
+    for w in warp_specs:
+        adj[w.from_sector_int].append(w.to_sector_int)
+        if w.is_bidirectional:
+            adj[w.to_sector_int].append(w.from_sector_int)
+
+    roots = [
+        ss.sector_id
+        for ss in sector_specs
+        if "fedspace" in (ss.special_features or [])
+    ]
+    reachable: set[int] = set(roots)
+    queue: deque[int] = deque(roots)
+    while queue:
+        cur = queue.popleft()
+        for nxt in adj.get(cur, ()):
+            if nxt not in reachable:
+                reachable.add(nxt)
+                queue.append(nxt)
+
+    isolated: set[int] = set()
+    for cs in cluster_specs:
+        secs = members.get(cs.cluster_int_id) or []
+        if not secs:
+            continue
+        if not any(sid in reachable for sid in secs):
+            isolated.add(cs.cluster_int_id)
+    return isolated
+
+
+def _step9_stamp_isolated_clusters(
+    cluster_specs: List["ClusterSpec"],
+    sector_specs: List["SectorSpec"],
+    warp_specs: List["WarpSpec"],
+) -> set[int]:
+    """Append ``isolated`` onto ClusterSpec.special_features; warn if >25%."""
+    isolated = _step9_isolated_cluster_int_ids(
+        cluster_specs, sector_specs, warp_specs
+    )
+    n = len(cluster_specs)
+    if n and (len(isolated) / n) > _ISOLATED_SHARE_WARN:
+        logger.warning(
+            "bang-import step-9: %s/%s clusters isolated (>%s); "
+            "proceeding without synthesizing extra isolation",
+            len(isolated),
+            n,
+            _ISOLATED_SHARE_WARN,
+        )
+    by_id = {cs.cluster_int_id: cs for cs in cluster_specs}
+    for cid in isolated:
+        cs = by_id[cid]
+        feats = list(cs.special_features or [])
+        if _ISOLATED_FEATURE not in feats:
+            feats.append(_ISOLATED_FEATURE)
+            cs.special_features = feats
+    return isolated
+
+
+# bang-import-pipeline.md step 10: long intra-region warps also get WarpTunnel
+# rows (sector_warps remains the lightweight routing association).
+def _step10_long_warp_threshold(total_sectors: int) -> int:
+    """Heuristic N = max(50, totalSectors / 20) from pipeline step 10."""
+    return max(50, total_sectors // 20)
+
+
+def _step10_is_long_warp(w: "WarpSpec", total_sectors: int) -> bool:
+    span = abs(w.from_sector_int - w.to_sector_int)
+    return span > _step10_long_warp_threshold(total_sectors)
+
+
+def _step10_warp_tunnel_properties() -> Dict[str, Any]:
+    """jsonb-schema.md#warptunnelproperties pins for bang-import step 10."""
+    return {
+        "traversal_cost": 1,
+        "discovered": True,
+        "affected_by_storms": False,
+    }
+
+
+def _step10_endpoint_json(
+    *,
+    sector_uuid: uuid.UUID,
+    cluster_uuid: uuid.UUID,
+    region_id: uuid.UUID,
+    x_coord: int,
+    y_coord: int,
+    z_coord: int,
+    controlling_faction: Optional[str],
+) -> Dict[str, Any]:
+    return {
+        "sector_id": str(sector_uuid),
+        "cluster_id": str(cluster_uuid),
+        "region_id": str(region_id),
+        "coordinates": {"x": x_coord, "y": y_coord, "z": z_coord},
+        "controlling_faction": controlling_faction,
+        "is_secured": False,
+        "access_requirements": None,
+    }
+
+
+def _step10_long_warp_specs(
+    warps: List["WarpSpec"], total_sectors: int
+) -> List["WarpSpec"]:
+    return [w for w in warps if _step10_is_long_warp(w, total_sectors)]
+
 
 #: WO-BANG-ONEWAY-RATE: GLOSSARY.md's canonical one-way-warp fraction
 #: target (~5%). Every BangConfig construction site below pins this
@@ -807,6 +1138,30 @@ class RegionInsertPlan:
     special_location_by_sector: Dict[int, str]  # sector_id → slug
     raw_npc_rosters: List[Dict[str, Any]]
     raw_universe: Dict[str, Any]  # verbatim, lands on Galaxy.bang_snapshot
+    # LEG-139 / bang-import §15: optional admin faction_influence weights from
+    # region_metadata / bang_snapshot (canon key ``faction_influence``). Merged
+    # into per-cluster zone profiles at _apply_region with renormalization.
+    faction_influence_overrides: Optional[Dict[str, Any]] = None
+
+
+def _extract_faction_influence_overrides(
+    region_meta: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Pull admin faction_influence weights from a per-region metadata dict.
+
+    Canon (bang-import-pipeline.md intro + §15) names the override key
+    ``faction_influence``. LEG-136's getattr path used
+    ``faction_influence_overrides`` — accept either; prefer the canon key
+    when both are present. Empty / non-mapping → None (pure zone profile).
+    """
+    if not region_meta:
+        return None
+    raw = region_meta.get("faction_influence")
+    if raw is None:
+        raw = region_meta.get("faction_influence_overrides")
+    if not isinstance(raw, dict) or not raw:
+        return None
+    return dict(raw)
 
 
 @dataclass
@@ -1111,6 +1466,13 @@ class BangImportService:
                     seen_capital_planet_names.add(capital_planet.name)
             # ADR-0041 Phase 10.5: seed TradeDocks per region quota
             plan = self._apply_tradedock_seeding(region_type, plan, warnings)
+            # LEG-139: plumb step-3 admin faction_influence overrides onto the
+            # plan so _apply_region's §15 merge path is reachable (region_meta
+            # is also spread into bang_snapshot["regions"][rt] below).
+            region_meta = (region_metadata.get("regions") or {}).get(region_type) or {}
+            plan.faction_influence_overrides = _extract_faction_influence_overrides(
+                region_meta if isinstance(region_meta, dict) else None
+            )
             if running_offset:
                 self._offset_region_sector_ids(plan, running_offset)
             per_region[region_type] = plan
@@ -1219,6 +1581,9 @@ class BangImportService:
                 )
 
         attachment_by_region: Dict[RegionType, RegionAttachment] = {}
+        # LEG-136 / bang-import §15: accumulate (sector_count, influence) for
+        # Galaxy.faction_influence area-weighted average after all regions.
+        influence_samples: List[Tuple[int, Dict[str, Any]]] = []
         for region_type, region_plan in plan.regions.items():
             region_id = region_ids.get(region_type)
             if region_id is None:
@@ -1228,7 +1593,7 @@ class BangImportService:
                     "InsertPlan.bang_snapshot['regions'][region_type]['region_id']"
                 )
             attachment_by_region[region_type] = await self._apply_region(
-                session, region_plan, region_id
+                session, region_plan, region_id, influence_samples=influence_samples
             )
 
         # Inter-region warp tunnels. Bang only generates the in-region
@@ -1250,6 +1615,9 @@ class BangImportService:
                     session, spoke_rt,
                     attachment_by_region.get(spoke_rt), nexus_attachment,
                 )
+
+        # §15: Galaxy.faction_influence = area-weighted average of clusters.
+        galaxy.faction_influence = galaxy_area_weighted_average(influence_samples)  # type: ignore[assignment]
 
         # Final state flip lives on the same transaction as the inserts so
         # there is no observable partial state.
@@ -1302,8 +1670,19 @@ class BangImportService:
 
         # Write the region's content. _apply_region returns the region's
         # attachment (gate anchor + ADR-0043 Frontier Gateway Plaza landing).
+        # LEG-136: seed cluster faction_influence inside _apply_region, then
+        # refresh Galaxy avg from every Cluster row (singleton galaxy).
         attachment = await self._apply_region(session, region_plan, region_id)
         new_gate = attachment.gate_sector_id
+
+        existing = (
+            await session.execute(select(Cluster.sector_count, Cluster.faction_influence))
+        ).all()
+        all_samples: List[Tuple[int, Dict[str, Any]]] = [
+            (int(row[0] or 0), dict(row[1] or {})) for row in existing
+        ]
+        galaxy.faction_influence = galaxy_area_weighted_average(all_samples)  # type: ignore[assignment]
+        flag_modified(galaxy, "faction_influence")
 
         # Inter-region tunnel: new region ↔ central_nexus. Mirrors apply()'s
         # ADR-0043 pattern — spoke endpoint is the Frontier landing sector,
@@ -1476,6 +1855,12 @@ class BangImportService:
 
                 # Translate ONE region.
                 region_plan = self._translate_region("player_owned", parsed)
+                po_meta = (region_metadata.get("regions") or {}).get("player_owned") or {}
+                region_plan.faction_influence_overrides = (
+                    _extract_faction_influence_overrides(
+                        po_meta if isinstance(po_meta, dict) else None
+                    )
+                )
                 if sector_id_offset > 0:
                     self._offset_region_sector_ids(region_plan, sector_id_offset)
 
@@ -1586,7 +1971,7 @@ class BangImportService:
     ) -> None:
         """Delete every CONTENT row owned by ``region_id`` — keep the Region.
 
-        Tears down clusters / sectors / warps / stations / market_prices /
+        Tears down zones / clusters / sectors / warps / stations / market_prices /
         planets / special_formations for a single region while leaving the
         ``regions`` row (and its operator/customer-bound identity columns)
         completely untouched.
@@ -1601,7 +1986,12 @@ class BangImportService:
            ``sector_warps`` (both endpoints), ``warp_tunnels`` (both
            endpoints), ``stations`` (→ ``market_prices`` / ``price_history`` /
            ``price_alerts`` via their own CASCADE), and ``planets``.
-        3. ``clusters`` last — sectors are already gone, so the cluster→sector
+           ``Sector.zone_id`` is ``ON DELETE SET NULL``, so Zone rows survive
+           this delete and MUST be removed explicitly (step 3) or regen
+           accumulates duplicate zones.
+        3. ``zones`` — after sectors so SET NULL has already fired; before
+           clusters (no FK between them).
+        4. ``clusters`` last — sectors are already gone, so the cluster→sector
            CASCADE is a no-op; we delete them explicitly because the regen
            keeps the parent Region (cluster rows would otherwise survive and
            accumulate on every regeneration).
@@ -1615,6 +2005,10 @@ class BangImportService:
         )
         await session.execute(
             text("DELETE FROM sectors WHERE region_id = :rid"),
+            {"rid": region_id},
+        )
+        await session.execute(
+            text("DELETE FROM zones WHERE region_id = :rid"),
             {"rid": region_id},
         )
         await session.execute(
@@ -1841,14 +2235,21 @@ class BangImportService:
         session: AsyncSession,
         region_plan: RegionInsertPlan,
         region_id: uuid.UUID,
+        *,
+        influence_samples: Optional[List[Tuple[int, Dict[str, Any]]]] = None,
     ) -> RegionAttachment:
-        """Write one region's clusters, sectors, warps, stations, planets, formations.
+        """Write one region's zones, clusters, sectors, warps, stations, planets, formations.
 
         Returns a :class:`RegionAttachment` carrying the region's legacy gate
         sector (lowest sector_id in its offset range) and — for spoke regions —
         the ADR-0043 Gateway Plaza landing sector (Frontier outer reaches,
         natural+latent Nexus warp). apply() uses these to wire the inter-region
         WarpTunnel rows after every region is in place.
+
+        ``influence_samples`` (LEG-136 / bang-import §15): when provided, each
+        seeded Cluster's ``(sector_count, faction_influence)`` is appended so
+        the caller can compute Galaxy.faction_influence as an area-weighted
+        average.
         """
         # ADR-0050 SK17: resolve the Region row up front so each insert stage
         # below can write its row-count sentinel as it completes. Fetching
@@ -1856,9 +2257,50 @@ class BangImportService:
         # this function already did (identity-map cached, same object).
         region_row = await session.get(Region, region_id)
 
+        # Optional admin faction_influence overrides (canon step 3 → §15 merge).
+        # LEG-139: RegionInsertPlan.faction_influence_overrides is populated
+        # from region_metadata / bang_snapshot in translate() / add-region.
+        fi_overrides: Optional[Dict[str, Any]] = (
+            region_plan.faction_influence_overrides
+        )
+        total_sectors = int(getattr(region_plan, "total_sectors", 0) or 0)
+        if total_sectors <= 0:
+            total_sectors = sum(int(cs.sector_count or 0) for cs in region_plan.clusters) or max(
+                (int(cs.sector_range_end or 0) for cs in region_plan.clusters),
+                default=0,
+            )
+
+# Step 4 — Zone partition (bang-import-pipeline.md:126-136). Persist
+        # before sectors so Sector.zone_id is a real FK at insert. Canon
+        # order is also before clusters; clusters do not reference zones.
+        _sk17_t0 = time.monotonic()
+        zone_specs = _step4_zone_specs(
+            region_plan.region_type, region_plan.total_sectors
+        )
+        zone_uuid_by_start: Dict[int, uuid.UUID] = {}
+        for zs in zone_specs:
+            zone = Zone(
+                region_id=region_id,
+                name=zs.name,
+                zone_type=zs.zone_type,
+                start_sector=zs.start_sector,
+                end_sector=zs.end_sector,
+                policing_level=zs.policing_level,
+                danger_rating=zs.danger_rating,
+            )
+            session.add(zone)
+            await session.flush()
+            zone_uuid_by_start[zs.start_sector] = zone.id  # type: ignore[assignment]
+        _record_phase_checksum(region_row, "zones", len(zone_specs), _sk17_t0)
+
         cluster_uuid_by_int: Dict[int, uuid.UUID] = {}
         _sk17_t0 = time.monotonic()
         for cs in region_plan.clusters:
+            midpoint = cluster_midpoint_sector(cs.sector_range_start, cs.sector_range_end)
+            zone_type = zone_type_for_sector(
+                region_plan.region_type, midpoint, total_sectors
+            )
+            faction_influence = build_cluster_faction_influence(zone_type, fi_overrides)
             cluster = Cluster(
                 region_id=region_id,
                 name=cs.name,
@@ -1880,6 +2322,8 @@ class BangImportService:
                 nebula_type=cs.nebula_type,
                 quantum_field_strength=cs.quantum_field_strength,
                 color_hex=cs.color_hex,
+                # LEG-136: §15 zone-profile seed (not the Cluster model default).
+                faction_influence=faction_influence,
                 stats={
                     "sector_range_start": cs.sector_range_start,
                     "sector_range_end": cs.sector_range_end,
@@ -1890,6 +2334,10 @@ class BangImportService:
             session.add(cluster)
             await session.flush()
             cluster_uuid_by_int[cs.cluster_int_id] = cluster.id  # type: ignore[assignment]
+            if influence_samples is not None:
+                influence_samples.append(
+                    (int(cs.sector_count or 0), dict(faction_influence))
+                )
         _record_phase_checksum(region_row, "clusters", len(region_plan.clusters), _sk17_t0)
 
         sector_uuid_by_int: Dict[int, uuid.UUID] = {}
@@ -1922,6 +2370,8 @@ class BangImportService:
                 is_discovered=ss.is_discovered,
                 description=ss.description,
             )
+            zone_spec = _step4_spec_for_sector(zone_specs, ss.sector_number)
+            sector_kwargs["zone_id"] = zone_uuid_by_start[zone_spec.start_sector]
             # WO-GX1 Lane 2 (Gap B): wire the seeding-bias fields ONLY when set.
             # Omitting a key lets the Sector model's python-side column default
             # fire (resources/defenses are NOT NULL with dict defaults), so a
@@ -1961,6 +2411,56 @@ class BangImportService:
                 )
             )
         _record_phase_checksum(region_row, "warps", len(region_plan.warps), _sk17_t0)
+
+        # bang-import-pipeline.md step 10: NATURAL WarpTunnel for long warps.
+        sector_spec_by_int = {ss.sector_id: ss for ss in region_plan.sectors}
+        _sk17_t0 = time.monotonic()
+        long_tunnel_count = 0
+        for w in region_plan.warps:
+            if not _step10_is_long_warp(w, region_plan.total_sectors):
+                continue
+            src = sector_spec_by_int[w.from_sector_int]
+            dst = sector_spec_by_int[w.to_sector_int]
+            session.add(
+                WarpTunnel(
+                    name=(
+                        f"Natural long warp "
+                        f"{w.from_sector_int}→{w.to_sector_int}"
+                    ),
+                    origin_sector_id=sector_uuid_by_int[w.from_sector_int],
+                    destination_sector_id=sector_uuid_by_int[w.to_sector_int],
+                    type=WarpTunnelType.NATURAL,
+                    status=WarpTunnelStatus.ACTIVE,
+                    is_bidirectional=w.is_bidirectional,
+                    is_latent=w.is_latent,
+                    stability=1.0,
+                    stability_enum=WarpTunnelStability.STABLE,
+                    properties=_step10_warp_tunnel_properties(),
+                    source_endpoint=_step10_endpoint_json(
+                        sector_uuid=sector_uuid_by_int[w.from_sector_int],
+                        cluster_uuid=cluster_uuid_by_int[src.cluster_int_id],
+                        region_id=region_id,
+                        x_coord=src.x_coord,
+                        y_coord=src.y_coord,
+                        z_coord=src.z_coord,
+                        controlling_faction=src.controlling_faction,
+                    ),
+                    destination_endpoint=_step10_endpoint_json(
+                        sector_uuid=sector_uuid_by_int[w.to_sector_int],
+                        cluster_uuid=cluster_uuid_by_int[dst.cluster_int_id],
+                        region_id=region_id,
+                        x_coord=dst.x_coord,
+                        y_coord=dst.y_coord,
+                        z_coord=dst.z_coord,
+                        controlling_faction=dst.controlling_faction,
+                    ),
+                    turn_cost=w.turn_cost,
+                )
+            )
+            long_tunnel_count += 1
+        _record_phase_checksum(
+            region_row, "long_warp_tunnels", long_tunnel_count, _sk17_t0
+        )
 
         # WO-STN-SEC-1: sector→cluster-type lookup so the security-tier
         # derivation below can see "is this station in a frontier/lawless
@@ -2693,6 +3193,26 @@ class BangImportService:
                 if anomaly_rng.random() < 0.015:
                     sector_type = SectorType.ANOMALY
 
+            # LEG-470 / bang-import-pipeline.md §8: copy bang resources when
+            # present (GX1 bias_resources remains the fallback). Bang
+            # `has_asteroids` is payload truth → ASTEROID_FIELD on remaining
+            # STANDARD only (never overrides NEBULA / ANOMALY).
+            bang_resources = sector_payload.get("resources")
+            if isinstance(bang_resources, dict):
+                resources_out: Optional[Dict[str, Any]] = dict(bang_resources)
+                if (
+                    bang_resources.get("has_asteroids")
+                    and sector_type == SectorType.STANDARD
+                ):
+                    sector_type = SectorType.ASTEROID_FIELD
+            else:
+                resources_out = bias_resources
+
+            if sector_type == SectorType.STANDARD:
+                sector_type = _step8_special_type(
+                    cluster_spec.type, universe.seed, sid, sector_type
+                )
+
             special_features: List[str] = []
             if sid in special_location_by_sector:
                 special_features.append(
@@ -2761,7 +3281,8 @@ class BangImportService:
                     special_features=special_features,
                     is_discovered=bool(sector_payload.get("explored", False)),
                     # WO-GX1 Lane 2 (Gap B): seeding biases (None → column default)
-                    resources=bias_resources,
+                    # LEG-470: bang Sector.resources wins when the payload has it
+                    resources=resources_out,
                     defenses=bias_defenses,
                     controlling_faction=bias_faction,
                 )
@@ -2812,6 +3333,11 @@ class BangImportService:
                     is_latent=bool(w.get("is_latent", w.get("isLatent", False))),
                 )
             )
+
+        # Step 9 (bang-import-pipeline.md:198-204): stamp isolated clusters
+        # from the bang warp graph before formations / persist. Persist copies
+        # ClusterSpec.special_features onto Cluster at insert.
+        _step9_stamp_isolated_clusters(cluster_specs, sector_specs, warp_specs)
 
         # Formations
         formation_specs: List[FormationSpec] = []
@@ -2893,6 +3419,12 @@ class BangImportService:
             random.Random(f"{universe_seed}:{sector_id}:{name}"),
         )
         services = _build_default_services(is_spacedock)
+        docking_slips = _docking_slips_from_port(port)
+        if docking_slips is not None:
+            # LEG-467: persist bang Port.dockingSlips on existing services
+            # JSONB (no second inventory table). docking_service prefers this
+            # when present so pirate/frontier counts are not class-band.
+            services = {**services, "docking_slips": docking_slips}
         # WO-BO / ADR-0079: derive the archetype-driven trader personality from
         # the station class at creation (human #7: personality generated at creation
         # + persistent). Single source of truth: core/trader_personalities.py.
@@ -3135,8 +3667,9 @@ class BangImportService:
         "Federation zone, sector range 1-99" placement for Terran Space
         (tradedock-shipyard #galaxy-generation-seeding) reads directly.
         Nexus docks prefer the upper (EXPANSE-ward) half of the region —
-        a documented simplification of "EXPANSE zones near population
-        centres" pending zone metadata in the import plan.
+        a documented numeric shortcut. Step-4 Zone rows now persist in
+        `_apply_region`; this seeder still uses the range heuristic (not a
+        live Zone lookup) so TradeDock placement stays LEG-38-stable.
         """
         tiers = self._TRADEDOCK_QUOTAS.get(region_type, [])
         if not tiers:
@@ -3303,6 +3836,44 @@ def _build_full_commodities(
             "sells": sells,
         }
     return out
+
+
+def _docking_slips_from_port(port: Dict[str, Any]) -> Optional[Dict[str, int]]:
+    """Normalize bang ``Port.dockingSlips`` onto Station.services (LEG-467).
+
+    Bang SCHEMA 1.3.11 emits ``{transient, longTerm, construction,
+    specializedConstruction}``. Missing/malformed payload → None (class-band
+    fallback in docking_service). Construction stays 0 for pirate/frontier
+    until the black-market shipwright ships — copy the payload, do not invent.
+    """
+    raw = port.get("dockingSlips")
+    if raw is None:
+        raw = port.get("docking_slips")
+    if not isinstance(raw, dict):
+        return None
+
+    def _int_field(*keys: str) -> Optional[int]:
+        for key in keys:
+            if key not in raw or raw[key] is None:
+                continue
+            try:
+                return int(raw[key])
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    transient = _int_field("transient")
+    long_term = _int_field("long_term", "longTerm")
+    construction = _int_field("construction")
+    specialized = _int_field("specialized_construction", "specializedConstruction")
+    if transient is None or long_term is None:
+        return None
+    return {
+        "transient": transient,
+        "long_term": long_term,
+        "construction": construction if construction is not None else 0,
+        "specialized_construction": specialized if specialized is not None else 0,
+    }
 
 
 def _build_default_services(is_spacedock: bool) -> Dict[str, Any]:
