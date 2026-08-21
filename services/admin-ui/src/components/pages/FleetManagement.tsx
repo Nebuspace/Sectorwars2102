@@ -42,14 +42,18 @@ interface FleetStats {
   total_cargo_capacity: number;
 }
 
+// Tip ShipType enum (models/ship.py) — player-facing only; exclude NPC_* hulls.
 const SHIP_TYPES = [
+  'ESCAPE_POD',
   'LIGHT_FREIGHTER',
-  'MEDIUM_FREIGHTER', 
-  'HEAVY_FREIGHTER',
-  'BATTLESHIP',
-  'CRUISER',
-  'DESTROYER',
-  'FIGHTER'
+  'CARGO_HAULER',
+  'FAST_COURIER',
+  'CITIZEN_CLIPPER',
+  'SCOUT_SHIP',
+  'COLONY_SHIP',
+  'DEFENDER',
+  'CARRIER',
+  'WARP_JUMPER',
 ];
 
 const FleetManagement: React.FC = () => {
@@ -241,9 +245,12 @@ const FleetManagement: React.FC = () => {
     if (!selectedShip) return;
     
     try {
-      await api.post(`/api/v1/admin/ships/${selectedShip.id}/teleport`, {
-        target_sector_id: teleportSector
-      });
+      // tip teleport_ship takes target_sector_id as a FastAPI query param (not JSON body)
+      await api.post(
+        `/api/v1/admin/ships/${selectedShip.id}/teleport`,
+        null,
+        { params: { target_sector_id: teleportSector } },
+      );
       setShowTeleportForm(false);
       setSelectedShip(null);
       setTeleportSector(1);
@@ -269,6 +276,38 @@ const FleetManagement: React.FC = () => {
     setSelectedShip(ship);
     setTeleportSector(ship.current_sector_id);
     setShowTeleportForm(true);
+  };
+
+  /** Tip GS: POST /api/v1/admin/ships/{id}/emergency {action: repair|refuel} (LEG-1651). */
+  const handleEmergencyAction = async (ship: Ship, action: 'repair' | 'refuel') => {
+    const label = action === 'repair' ? 'Repair' : 'Refuel';
+    if (!(await confirm({
+      title: `${label} Ship`,
+      message: `Emergency ${action} for ${ship.name}? This posts the tip admin ships emergency route.`,
+      confirmLabel: label,
+    }))) {
+      return;
+    }
+
+    try {
+      const response = await api.post(
+        `/api/v1/admin/ships/${ship.id}/emergency`,
+        { action },
+      );
+      const message =
+        (response.data as { message?: string } | undefined)?.message ||
+        `Ship ${ship.name} ${action === 'repair' ? 'repaired' : 'refueled'}`;
+      toast.success(message);
+      fetchShips();
+    } catch (error) {
+      console.error(`Error emergency ${action}:`, error);
+      toast.error(
+        formatAdminApiError(error, {
+          fallback: `Failed to ${action} ship`,
+          scopeHint: 'SHIPS_MANAGE scope required for ship emergency actions',
+        })
+      );
+    }
   };
 
   const filteredShips = ships.filter(ship => {
@@ -445,6 +484,22 @@ const FleetManagement: React.FC = () => {
                               aria-label="Teleport Ship"
                             >
                               🌀
+                            </button>
+                            <button
+                              onClick={() => handleEmergencyAction(ship, 'repair')}
+                              className="btn btn-xs btn-outline"
+                              title="Emergency repair ship"
+                              aria-label={`Emergency repair ${ship.name}`}
+                            >
+                              🔧
+                            </button>
+                            <button
+                              onClick={() => handleEmergencyAction(ship, 'refuel')}
+                              className="btn btn-xs btn-outline"
+                              title="Emergency refuel ship"
+                              aria-label={`Emergency refuel ${ship.name}`}
+                            >
+                              ⛽
                             </button>
                             <button 
                               onClick={() => handleDeleteShip(ship.id)}
