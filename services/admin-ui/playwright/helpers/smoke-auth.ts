@@ -43,6 +43,26 @@ export async function installSmokeAuth(page: Page): Promise<void> {
       });
       return;
     }
+    // Soft-ORDER #1768 — TranslationManagement GET /i18n/admin/languages/all then
+    // languages.filter before PageHeader. The generic /i18n/ bang stub below also
+    // matches this path; a 200 object is not an array → throw, no h1.
+    if (url.includes('/i18n/admin/languages/all')) {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([
+          {
+            code: 'en',
+            name: 'English',
+            nativeName: 'English',
+            direction: 'ltr',
+            isActive: true,
+            completionPercentage: 100,
+          },
+        ]),
+      });
+      return;
+    }
     // Soft-ORDER #1772 — BangGalaxyPage title is i18n `bang.page.title` (HTTP backend).
     // Stub admin ns so `/universe/bang` smoke can assert "Bang Galaxy" without a live GS.
     if (url.includes('/i18n/')) {
@@ -61,6 +81,42 @@ export async function installSmokeAuth(page: Page): Promise<void> {
         }),
       });
       return;
+    }
+    // Soft-ORDER #1770 — RegionalGovernorDashboard h1 is behind `if (!region)`.
+    // Generic 503 on my-region leaves region=null ("No region found", no h1).
+    // Exact path only — do not swallow /my-region/stats|policies|… (those 503-catch).
+    // Do not touch RegionalGovernorDashboard.tsx (file-serial Soft-HOLD #764).
+    try {
+      const pathname = new URL(url).pathname.replace(/\/+$/, '');
+      if (pathname.endsWith('/regions/my-region')) {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            id: 'reg-1',
+            name: 'sol',
+            display_name: 'Sol Reach',
+            owner_id: 'p1',
+            subscription_tier: 'free',
+            status: 'active',
+            governance_type: 'autocracy',
+            tax_rate: 0.1,
+            voting_threshold: 0.51,
+            economic_specialization: '',
+            total_sectors: 12,
+            active_players_30d: 4,
+            total_trade_volume: 0,
+            starting_credits: 1000,
+            starting_ship: 'basic',
+            language_pack: {},
+            aesthetic_theme: {},
+            trade_bonuses: {},
+          }),
+        });
+        return;
+      }
+    } catch {
+      // fall through to 503 stub
     }
     await route.fulfill({
       status: 503,
