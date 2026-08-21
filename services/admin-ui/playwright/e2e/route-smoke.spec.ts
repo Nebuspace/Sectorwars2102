@@ -25,6 +25,7 @@ test.describe('Admin UI route smoke (WO-ADM-ROUTE-SMOKE-E2E)', () => {
       { path: '/combat', title: 'Combat Overview' },
       { path: '/teams', title: 'Team Management' },
       { path: '/contract-disputes', title: 'Contract Dispute Arbitration' },
+      { path: '/first-login-conversations', title: 'First Login Conversations' },
       { path: '/universe/planets', title: 'Planets Manager' },
       { path: '/tradedocks', title: 'TradeDock management' },
       { path: '/medals', title: 'Medal Admin' },
