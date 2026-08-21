@@ -26,6 +26,7 @@ test.describe('Admin UI route smoke (WO-ADM-ROUTE-SMOKE-E2E)', () => {
       { path: '/teams', title: 'Team Management' },
       { path: '/contract-disputes', title: 'Contract Dispute Arbitration' },
       { path: '/universe/planets', title: 'Planets Manager' },
+      { path: '/tradedocks', title: 'TradeDock management' },
     ];
 
     for (const { path, title } of routes) {
@@ -39,5 +40,19 @@ test.describe('Admin UI route smoke (WO-ADM-ROUTE-SMOKE-E2E)', () => {
         await expect(page.locator('h1.page-title')).toHaveText(title);
       });
     }
+
+    test('/review-queue aliases to Admin Action Log review tab (LEG-1640 / LEG-77 residual)', async ({
+      page,
+    }) => {
+      await page.goto('/review-queue', { waitUntil: 'domcontentloaded' });
+      await expect(page).toHaveURL((url) => {
+        return url.pathname === '/audit' && url.searchParams.get('tab') === 'review';
+      });
+      await expect(page.locator('h1.page-title')).toHaveText('Admin Action Log');
+      await expect(page.getByRole('tab', { name: 'Review queue' })).toHaveAttribute(
+        'aria-selected',
+        'true'
+      );
+    });
   });
 });

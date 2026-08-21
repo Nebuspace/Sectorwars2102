@@ -21,9 +21,9 @@ const sampleDispute = {
   recommended_action: 'investigate',
 };
 
-const axiosError = (status: number, detail = 'raw_scope_detail_should_not_surface') =>
+const axiosError = (status: number, detail?: string) =>
   Object.assign(new Error(`HTTP ${status}`), {
-    response: { status, data: { detail } },
+    response: { status, data: detail !== undefined ? { detail } : {} },
   });
 
 describe('DisputePanel (LEG-1099 scope errors)', () => {
@@ -40,7 +40,7 @@ describe('DisputePanel (LEG-1099 scope errors)', () => {
     fireEvent.change(notes, { target: { value: 'Investigated — clean fight.' } });
   }
 
-  it('shows scope-aware copy on 403 resolve, never raw axios detail', async () => {
+  it('shows scope-aware copy on 403 resolve when GS sends no detail', async () => {
     vi.mocked(api.post).mockRejectedValue(axiosError(403));
     await openResolveForm();
 
@@ -52,7 +52,19 @@ describe('DisputePanel (LEG-1099 scope errors)', () => {
 
     const alert = screen.getByRole('alert').textContent ?? '';
     expect(alert).toMatch(/COMBAT_INTERVENE|combat intervene|Access denied/i);
-    expect(alert).not.toContain('raw_scope_detail_should_not_surface');
+  });
+
+  it('surfaces GS string detail on 403 when present (formatAdminApiError contract)', async () => {
+    vi.mocked(api.post).mockRejectedValue(
+      axiosError(403, 'Missing combat.intervene scope')
+    );
+    await openResolveForm();
+
+    fireEvent.click(screen.getByRole('button', { name: /Resolve Dispute/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent('Missing combat.intervene scope');
+    });
   });
 
   it('shows admin rate-limit copy on 429 resolve', async () => {
@@ -67,6 +79,5 @@ describe('DisputePanel (LEG-1099 scope errors)', () => {
 
     const alert = screen.getByRole('alert').textContent ?? '';
     expect(alert).toMatch(/rate limit/i);
-    expect(alert).not.toContain('raw_scope_detail_should_not_surface');
   });
 });
