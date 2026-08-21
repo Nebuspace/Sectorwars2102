@@ -69,6 +69,11 @@ TRADE_MODIFIER_PUBLIC_ENEMY = 1.50  # Fallback for -700 and below
 #   (1) get_trade_modifier — team aggregate when player has team_id (LEG-800)
 #   (2) docking_service.check_reputation_gate / _player_faction_rep_for_station
 #       — dock slip + defense_policy port access (LEG-814)
+#   (7) trading_service.compute_player_price_multiplier — live buy/sell unit price
+#       (Soft-ORDER #1991; reuses trade_modifier_from_standing_value)
+#   (8) construction_service._faction_rep_tier — shipyard queue sort (#1988)
+#   (9) haggle_service._faction_band_factor — haggling band (#1989)
+#  (10) economy_faucet_service.daily_stipend_amount — guild stipend (#1990)
 # Follow-up backlog (same resolver, not forked formulas):
 #   (3) construction_service.tradedock_access — TradeDock construction gate
 #   (4) get_faction_pricing_modifier — GET /factions/{id}/pricing-modifier
