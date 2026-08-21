@@ -26,7 +26,13 @@ test.describe('Admin UI route smoke (WO-ADM-ROUTE-SMOKE-E2E)', () => {
       { path: '/teams', title: 'Team Management' },
       { path: '/contract-disputes', title: 'Contract Dispute Arbitration' },
       { path: '/first-login-conversations', title: 'First Login Conversations' },
+      { path: '/fleets', title: 'Fleet Management' },
+      { path: '/economy', title: 'Economy Dashboard' },
+      { path: '/multi-account', title: 'Multi-Account Review' },
+      { path: '/scopes', title: 'Admin Scopes' },
+      { path: '/ai-trading', title: 'AI Trading Intelligence' },
       { path: '/universe/planets', title: 'Planets Manager' },
+      { path: '/universe/stations', title: 'Stations Manager' },
       { path: '/tradedocks', title: 'TradeDock management' },
       { path: '/medals', title: 'Medal Admin' },
     ];
