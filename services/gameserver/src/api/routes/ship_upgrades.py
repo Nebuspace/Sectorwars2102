@@ -118,7 +118,11 @@ class UpgradeRequest(BaseModel):
 class EquipmentRequest(BaseModel):
     # ship_id is the URL path param (see UpgradeRequest) — optional in the body.
     ship_id: Optional[str] = None
-    equipment_key: str = Field(..., description="One of: quantum_harvester, mining_laser, planetary_lander")
+    # LEG-131: derive from EQUIPMENT_DEFINITIONS — prior hardcode listed only 3 keys.
+    equipment_key: str = Field(
+        ...,
+        description=ShipUpgradeService.equipment_key_openapi_description(),
+    )
 
 
 class ModuleInstallRequest(BaseModel):
