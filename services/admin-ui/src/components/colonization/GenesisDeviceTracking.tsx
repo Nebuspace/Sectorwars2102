@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { useAuth } from '../../contexts/AuthContext';
+import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import './genesis-device-tracking.css';
 
 interface GenesisDevice {
@@ -55,8 +56,9 @@ interface GenesisAlert {
   severity: 'low' | 'medium' | 'high' | 'critical';
 }
 
+
+
 export const GenesisDeviceTracking: React.FC = () => {
-  useAuth();
   const [devices, setDevices] = useState<GenesisDevice[]>([]);
   const [stats, setStats] = useState<GenesisStats | null>(null);
   const [alerts, setAlerts] = useState<GenesisAlert[]>([]);
@@ -75,33 +77,29 @@ export const GenesisDeviceTracking: React.FC = () => {
 
   const loadGenesisData = async () => {
     try {
-      const token = localStorage.getItem('accessToken');
-      const response = await fetch('/api/v1/admin/colonization/genesis-devices', {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
-      });
+      // Shipped route (admin_colonization.py) — shared authenticated client (LEG-144 sibling).
+      const response = await api.get<{
+        devices?: GenesisDevice[];
+        stats?: GenesisStats | null;
+        alerts?: GenesisAlert[];
+      }>('/api/v1/admin/colonization/genesis-devices');
 
-      if (!response.ok) {
-        setError(
-          response.status === 404
-            ? 'Genesis devices endpoint not implemented — /api/v1/admin/colonization/genesis-devices returned 404'
-            : `Failed to load Genesis device data (HTTP ${response.status})`
-        );
-        setDevices([]);
-        setStats(null);
-        setAlerts([]);
-        return;
-      }
-
-      const data = await response.json();
-      setDevices(data.devices ?? []);
-      setStats(data.stats ?? null);
-      setAlerts(data.alerts ?? []);
+      setDevices(response.data.devices ?? []);
+      setStats(response.data.stats ?? null);
+      setAlerts(response.data.alerts ?? []);
       setError(null);
     } catch (err) {
       console.error('Error loading Genesis data:', err);
-      setError('Gameserver unreachable — network error fetching Genesis device data');
+      setError(
+        formatAdminApiError(err, {
+          fallback: 'Gameserver unreachable — network error fetching Genesis device data',
+          scopeHint:
+            'Genesis device tracking requires the admin regions view scope (REGIONS_VIEW).',
+          notFoundMessage:
+            'Genesis devices route not found (404). The gameserver ships /api/v1/admin/colonization/genesis-devices — ' +
+            'check that the gameserver is running and the /api proxy is reaching it.',
+        })
+      );
       setDevices([]);
       setStats(null);
       setAlerts([]);

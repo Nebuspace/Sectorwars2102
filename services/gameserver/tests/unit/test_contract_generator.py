@@ -199,6 +199,43 @@ class TestGenerateNpcContracts:
         contract_generator.generate_npc_contracts(db, now=_NOW, stations=[origin, destination])
 
         assert db.added[0].faction_id == federation_id
+        # LEG-125: resolved issuing faction freezes reputation_reward at posting
+        assert db.added[0].reputation_reward == contract_generator.NPC_CONTRACT_FACTION_REP_REWARD
+
+    def test_no_faction_affiliation_leaves_reputation_reward_null(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """LEG-125: without an issuing faction, reward stays null (no invent)."""
+        monkeypatch.setattr(contract_generator, "pick_deadline_hours", lambda: 3.0)
+        db, origin, destination = _one_hop_pair()
+        contract_generator.generate_npc_contracts(db, now=_NOW, stations=[origin, destination])
+        assert db.added[0].faction_id is None
+        assert db.added[0].reputation_reward is None
+
+    def test_hazardous_with_faction_writes_reward_and_penalty(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """LEG-125: hazardous keeps Federation penalty and also freezes
+        issuing-faction reputation_reward when affiliation resolves."""
+        sec_a, sec_b = _sector(1), _sector(2)
+        origin = _station(sector=sec_a, commodities={"ore": _sells(100)})
+        destination = _station(
+            sector=sec_b, commodities={"ore": _buys()}, type=StationType.BLACK_MARKET,
+            faction_affiliation="Fringe Alliance",
+        )
+        fringe_id = uuid.uuid4()
+        db = _FakeSession(
+            sectors=[sec_a, sec_b], edges=[_edge(sec_a, sec_b)],
+            factions=[SimpleNamespace(id=fringe_id, name="Fringe Alliance")],
+        )
+        monkeypatch.setattr(contract_generator, "pick_deadline_hours", lambda: 5.0)
+        contract_generator.generate_npc_contracts(db, now=_NOW, stations=[origin, destination])
+        c = db.added[0]
+        assert c.contract_type == ContractType.HAZARDOUS_TRANSPORT
+        assert c.faction_id == fringe_id
+        assert c.reputation_penalty == contract_generator.HAZARDOUS_TRANSPORT_FEDERATION_REP_PENALTY
+        assert c.reputation_reward == contract_generator.NPC_CONTRACT_FACTION_REP_REWARD
+        assert c.reputation_reward == abs(c.reputation_penalty)
 
     def test_single_station_is_a_no_op(self) -> None:
         db, origin, _destination = _one_hop_pair()

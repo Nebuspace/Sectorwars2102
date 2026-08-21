@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../../utils/auth';
 import { useConfirm } from '../../contexts/ToastContext';
+import { formatUniverseAdminError } from '../../utils/universeAdminError';
 import './sector-edit-modal.css';
 
 interface Sector {
@@ -89,7 +90,7 @@ const SectorEditModal: React.FC<SectorEditModalProps> = ({
   });
   const [portFormData, setPortFormData] = useState({
     name: '',
-    port_class: 6,
+    station_class: 6,
     type: 'TRADING',
     size: 5,
     faction_affiliation: '',
@@ -220,9 +221,9 @@ const SectorEditModal: React.FC<SectorEditModalProps> = ({
         onClose();
       }
       
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error updating sector:', err);
-      setError(err.response?.data?.detail || 'Failed to update sector');
+      setError(formatUniverseAdminError(err, 'Failed to update sector'));
     } finally {
       setIsSaving(false);
     }
@@ -280,9 +281,9 @@ const SectorEditModal: React.FC<SectorEditModalProps> = ({
           resource_richness: 1.0
         });
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error creating planet:', err);
-      setError(err.response?.data?.detail || 'Failed to create planet');
+      setError(formatUniverseAdminError(err, 'Failed to create planet'));
     } finally {
       setIsSaving(false);
     }
@@ -306,7 +307,7 @@ const SectorEditModal: React.FC<SectorEditModalProps> = ({
         // Reset form
         setPortFormData({
           name: '',
-          port_class: 6,
+          station_class: 6,
           type: 'TRADING',
           size: 5,
           faction_affiliation: '',
@@ -314,9 +315,9 @@ const SectorEditModal: React.FC<SectorEditModalProps> = ({
           market_volatility: 50
         });
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error creating port:', err);
-      setError(err.response?.data?.detail || 'Failed to create port');
+      setError(formatUniverseAdminError(err, 'Failed to create port'));
     } finally {
       setIsSaving(false);
     }
@@ -372,9 +373,9 @@ const SectorEditModal: React.FC<SectorEditModalProps> = ({
           });
         }
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error saving warp tunnel:', err);
-      setError(err.response?.data?.detail || 'Failed to save warp tunnel');
+      setError(formatUniverseAdminError(err, 'Failed to save warp tunnel'));
     } finally {
       setIsSaving(false);
     }
@@ -417,9 +418,9 @@ const SectorEditModal: React.FC<SectorEditModalProps> = ({
         await fetchWarpTunnels(); // Refresh the list
         setError(null);
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error deleting warp tunnel:', err);
-      setError(err.response?.data?.detail || 'Failed to delete warp tunnel');
+      setError(formatUniverseAdminError(err, 'Failed to delete warp tunnel'));
     } finally {
       setIsSaving(false);
     }
@@ -678,8 +679,8 @@ const SectorEditModal: React.FC<SectorEditModalProps> = ({
             <div className="form-group">
               <label>Port Class</label>
               <select
-                value={portFormData.port_class}
-                onChange={(e) => setPortFormData({...portFormData, port_class: parseInt(e.target.value)})}
+                value={portFormData.station_class}
+                onChange={(e) => setPortFormData({...portFormData, station_class: parseInt(e.target.value)})}
               >
                 <option value={0}>Class 0 - Sol System</option>
                 <option value={1}>Class 1 - Mining Operation</option>
