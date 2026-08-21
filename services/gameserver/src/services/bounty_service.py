@@ -193,21 +193,27 @@ def place_faction_bounty(
 
 
 def _collector_passes_faction_gate(db: Session, collector: Player, faction_type: FactionType) -> bool:
-    """True iff the collector's reputation with the issuing faction is at
-    least FACTION_BOUNTY_GATE_LEVEL. Mirrors contraband_service._passes_rep_gate:
-    a missing Faction row or missing Reputation row both read as below-gate."""
+    """True iff effective standing with the issuing faction is at least
+    FACTION_BOUNTY_GATE_LEVEL (RECOGNIZED). Soft-ORDER #1964: teamed collectors
+    use ``resolve_effective_faction_standing_value`` (team aggregate); solo
+    still personal. Missing faction fails closed. Missing standing reads as
+    value 0 (NEUTRAL) via the resolver — below gate. Tier compare maps the
+    continuous value through ``FactionService._calculate_reputation_level``
+    then ordinal-rank (same pattern as Fringe Soft-ORDER #1971)."""
+    from src.services.faction_service import (
+        FactionService,
+        resolve_effective_faction_standing_value,
+    )
+
     faction = db.query(Faction).filter(Faction.faction_type == faction_type).first()
     if faction is None:
         return False
-    reputation = (
-        db.query(Reputation)
-        .filter(Reputation.player_id == collector.id, Reputation.faction_id == faction.id)
-        .first()
+    value, _source = resolve_effective_faction_standing_value(
+        db, collector.id, faction.id, team_id=collector.team_id
     )
-    if reputation is None:
-        return False
+    level = FactionService(db)._calculate_reputation_level(value)
     return (
-        _REPUTATION_LEVEL_RANK.get(reputation.current_level, -99)
+        _REPUTATION_LEVEL_RANK.get(level, -99)
         >= _REPUTATION_LEVEL_RANK[FACTION_BOUNTY_GATE_LEVEL]
     )
 

@@ -69,11 +69,12 @@ TRADE_MODIFIER_PUBLIC_ENEMY = 1.50  # Fallback for -700 and below
 #   (1) get_trade_modifier — team aggregate when player has team_id (LEG-800)
 #   (2) docking_service.check_reputation_gate / _player_faction_rep_for_station
 #       — dock slip + defense_policy port access (LEG-814)
-# Follow-up backlog (same resolver, not forked formulas):
-#   (3) construction_service.tradedock_access — TradeDock construction gate
-#   (4) get_faction_pricing_modifier — GET /factions/{id}/pricing-modifier
-#   (5) check_territory_access — faction territory gate
+# Soft-ORDER follow-ups (same resolver, not forked formulas):
+#   (3) construction_service.tradedock_access — TradeDock construction gate (#1961)
+#   (4) get_faction_pricing_modifier — GET /factions/{id}/pricing-modifier (#1962)
+#   (5) check_territory_access — faction territory gate (#1963)
 #   (6) mission-gate consumers — none located on tip; separate WO if found
+# Also: bounty_service._collector_passes_faction_gate (#1964)
 # Not interaction consumers (personal-row maintenance / display only):
 #   update_reputation / apply_faction_rep_delta / apply_reputation_decay derived
 #   field writes; factions.py reputation API response fields.
@@ -1068,6 +1069,11 @@ class FactionService:
     ) -> float:
         """
         Get the pricing modifier for a player at faction-controlled ports.
+
+        Soft-ORDER #1962: standing value comes from
+        ``resolve_effective_faction_standing_value`` (team aggregate when
+        teamed); magnitude ladder stays ``Faction.get_pricing_modifier``
+        (base_pricing_modifier × reputation bands — invent=0).
         
         Returns:
             Float multiplier for prices (e.g., 0.8 = 20% discount)
@@ -1075,12 +1081,11 @@ class FactionService:
         faction = await self.get_faction_by_id(faction_id)
         if not faction:
             return 1.0
-        
-        reputation = await self.get_player_reputation(player_id, faction_id)
-        if not reputation:
-            return faction.base_pricing_modifier
-        
-        return faction.get_pricing_modifier(reputation.current_value)
+
+        value, _source = resolve_effective_faction_standing_value(
+            self.db, player_id, faction_id
+        )
+        return faction.get_pricing_modifier(value)
     
     async def check_territory_access(
         self, 
@@ -1089,6 +1094,10 @@ class FactionService:
     ) -> Dict[str, Any]:
         """
         Check if a player can access a faction-controlled sector.
+
+        Soft-ORDER #1963: uses ``resolve_effective_faction_standing_value`` so
+        teamed players consume team aggregate; ``can_access_territory``
+        thresholds unchanged.
         
         Returns:
             Dict with 'allowed' boolean and 'reason' string
@@ -1105,17 +1114,12 @@ class FactionService:
         if not controlling_faction:
             # Sector is not faction-controlled
             return {"allowed": True, "reason": "Neutral territory"}
+
+        value, _source = resolve_effective_faction_standing_value(
+            self.db, player_id, controlling_faction.id
+        )
         
-        # Check player reputation
-        reputation = await self.get_player_reputation(player_id, controlling_faction.id)
-        if not reputation:
-            # No reputation record, treat as hostile
-            return {
-                "allowed": False, 
-                "reason": f"No standing with {controlling_faction.name}"
-            }
-        
-        if controlling_faction.can_access_territory(reputation.current_value):
+        if controlling_faction.can_access_territory(value):
             return {"allowed": True, "reason": "Good standing"}
         else:
             return {
