@@ -116,6 +116,13 @@
   text-transform: uppercase;
 }
 
+.turn-cost-preview {
+  color: var(--cockpit-text-secondary);
+  font-size: 14px;
+  margin: 0 0 12px 0;
+  letter-spacing: 0.04em;
+}
+
 /* Health Bars */
 .health-bar {
   background: rgba(0, 0, 0, 0.5);

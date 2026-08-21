@@ -7,11 +7,17 @@
  * the resolved outcome with a full round-by-round combat log replay.
  */
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import { useGame } from '../../contexts/GameContext';
 import { gameAPI } from '../../services/api';
 import { InputValidator, SecurityAudit } from '../../utils/security/inputValidation';
 import CockpitInstrument from '../cockpit/CockpitInstrument';
+import {
+  cargoUsedAndCapacity,
+  defaultWeaponForShipType,
+  formatCombatGauge,
+  previewTurnCost,
+} from './combatHudHelpers';
 import './combat-interface.css';
 
 /* WEAPONS CONSOLE shell (Law 3) — module-level so the frame keeps its
@@ -46,6 +52,10 @@ interface CombatTarget {
   name: string;
   type: 'ship' | 'planet' | 'port';
   isNpc?: boolean;
+  /** Defender hull type — used for turn-cost / weapon preview (LEG-305). */
+  shipType?: string | null;
+  /** When tip/presence exposes it, preferred over the tip-mirrored table. */
+  attackTurnCost?: number | null;
 }
 
 interface CombatInterfaceProps {
@@ -87,6 +97,22 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
 
   // UI state
   const [showCombatLog, setShowCombatLog] = useState(true);
+
+  const combat = currentShip?.combat as Record<string, unknown> | null | undefined;
+  const hullGauge = formatCombatGauge(combat?.hull, combat?.max_hull);
+  const shieldGauge = formatCombatGauge(combat?.shields, combat?.max_shields);
+  const cargoStats = cargoUsedAndCapacity(currentShip);
+  const cargoGauge = formatCombatGauge(cargoStats.used, cargoStats.capacity);
+  const weaponLabel = defaultWeaponForShipType(currentShip?.type);
+
+  const turnCostPreview = useMemo(() => {
+    if (!combatTarget) return null;
+    return previewTurnCost({
+      targetType: combatTarget.type,
+      shipType: combatTarget.shipType,
+      attackTurnCost: combatTarget.attackTurnCost,
+    });
+  }, [combatTarget]);
 
   // Handle combat end
   const handleCombatEnd = useCallback((status: CombatStatus) => {
@@ -233,6 +259,7 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
       const hull = p.ship_type && p.ship_type !== 'None'
         ? String(p.ship_type).replace(/_/g, ' ').toLowerCase()
         : 'ship';
+      const rawCost = p.attack_turn_cost;
       return {
         id: p.ship_id as string,
         name: p.ship_name && p.ship_name !== 'None'
@@ -240,6 +267,9 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
           : p.username || 'Unknown pilot',
         type: 'ship' as const,
         isNpc: !!p.is_npc,
+        shipType: p.ship_type && p.ship_type !== 'None' ? String(p.ship_type) : null,
+        attackTurnCost:
+          typeof rawCost === 'number' && Number.isFinite(rawCost) ? rawCost : null,
         subtype: standing ? `${hull} · ${standing.label}` : hull,
         lawful: standing?.lawful
       };
@@ -406,9 +436,13 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
           <div className="ship-type">{currentShip?.type || 'Unknown'}</div>
 
           {currentShip && (
-            <div className="combat-stats">
+            <div className="combat-stats" data-testid="combat-hud-player-stats">
               <div>Attack: {currentShip.combat?.attack_rating || 0}</div>
               <div>Defense: {currentShip.combat?.defense_rating || 0}</div>
+              <div>Hull: {hullGauge}</div>
+              <div>Shields: {shieldGauge}</div>
+              <div>Cargo: {cargoGauge}</div>
+              <div>Weapon: {weaponLabel}</div>
               <div>Drones: {playerState?.defense_drones ?? 0}</div>
             </div>
           )}
@@ -421,6 +455,11 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
               <p>
                 Prepare for combat against {combatTarget.name}
                 {combatTarget.isNpc && <span className="npc-badge"> NPC</span>}
+              </p>
+              <p className="turn-cost-preview" data-testid="combat-turn-cost-preview">
+                {turnCostPreview !== null
+                  ? `Turn cost: ${turnCostPreview}`
+                  : 'Turn cost: — (server-resolved)'}
               </p>
               <button
                 className="cockpit-btn danger engage-btn"
