@@ -124,7 +124,8 @@ def resolve_effective_faction_standing_value(
             snapshot = team_reputation_service.get_team_reputation(db, team)
             entry = (snapshot.get("standings") or {}).get(str(faction_id))
             if entry is not None:
-                return int(entry.get("value", 0)), "team"
+                # None-safe: JSONB may carry explicit null value.
+                return int(entry.get("value") or 0), "team"
 
     reputation = (
         db.query(Reputation)
@@ -138,7 +139,8 @@ def resolve_effective_faction_standing_value(
     )
     if reputation is None:
         return 0, "personal"
-    return int(reputation.current_value), "personal"
+    # None-safe: some fixtures/rows only set current_level historically.
+    return int(reputation.current_value or 0), "personal"
 
 
 def build_effective_faction_standing(

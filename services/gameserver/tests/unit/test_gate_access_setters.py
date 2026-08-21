@@ -18,6 +18,7 @@ from typing import Any, Dict, Optional
 import pytest
 
 from src.models.faction import Faction, FactionType
+from src.models.player import Player
 from src.models.reputation import Reputation
 from src.models.warp_gate import WarpGate, WarpGateStatus
 from src.models.warp_tunnel import WarpTunnel, WarpTunnelStatus, WarpTunnelType
@@ -430,6 +431,8 @@ class TestSetterEnablesReadSideEnforcement:
         faction = SimpleNamespace(id=uuid.uuid4(), faction_type=FactionType.FEDERATION)
         low_reputation = SimpleNamespace(current_value=10)
         access_db = _FakeSession({
+            # resolve_effective queries Player for team_id (solo → None).
+            Player: _FakeQuery(first=low_rep_player),
             Faction: _FakeQuery(first=faction),
             Reputation: _FakeQuery(first=low_reputation),
         })
@@ -441,6 +444,7 @@ class TestSetterEnablesReadSideEnforcement:
         high_rep_player = _fake_player()
         high_reputation = SimpleNamespace(current_value=100)
         access_db_pass = _FakeSession({
+            Player: _FakeQuery(first=high_rep_player),
             Faction: _FakeQuery(first=faction),
             Reputation: _FakeQuery(first=high_reputation),
         })
