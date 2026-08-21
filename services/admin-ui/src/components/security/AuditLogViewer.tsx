@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import './audit-log-viewer.css';
 
 interface AuditLog {
@@ -28,11 +29,6 @@ interface AuditLogViewerProps {
   };
   onExport?: (logs: AuditLog[]) => void;
 }
-
-const responseStatus = (err: unknown): number | undefined =>
-  typeof err === 'object' && err !== null && 'response' in err
-    ? (err as { response?: { status?: number } }).response?.status
-    : undefined;
 
 export const AuditLogViewer: React.FC<AuditLogViewerProps> = ({ filters = {}, onExport }) => {
   const [logs, setLogs] = useState<AuditLog[]>([]);
@@ -73,23 +69,16 @@ export const AuditLogViewer: React.FC<AuditLogViewerProps> = ({ filters = {}, on
       setTotalPages(response.data.pages ?? response.data.totalPages ?? 1);
     } catch (err) {
       console.error('Error loading audit logs:', err);
-      const status = responseStatus(err);
-      if (status === 401 || status === 403) {
-        setError(
-          'Access denied — audit log viewer requires the admin.audit.view scope (AUDIT_VIEW).'
-        );
-      } else if (status === 429) {
-        setError('Admin rate limit exceeded — wait a moment and try again.');
-      } else if (status === 404) {
-        setError(
-          'Audit logs route not found (404). The gameserver ships /api/v1/admin/audit/logs — ' +
-            'check that the gameserver is running and the /api proxy is reaching it.'
-        );
-      } else if (status !== undefined) {
-        setError(`Failed to load audit logs (HTTP ${status})`);
-      } else {
-        setError('Gameserver unreachable — network error fetching audit logs');
-      }
+      setError(
+        formatAdminApiError(err, {
+          fallback: 'Gameserver unreachable — network error fetching audit logs',
+          scopeHint:
+            'audit log viewer requires the admin.audit.view scope (AUDIT_VIEW).',
+          notFoundMessage:
+            'Audit logs route not found (404). The gameserver ships /api/v1/admin/audit/logs — ' +
+            'check that the gameserver is running and the /api proxy is reaching it.',
+        })
+      );
       setLogs([]);
       setTotalPages(1);
     } finally {
