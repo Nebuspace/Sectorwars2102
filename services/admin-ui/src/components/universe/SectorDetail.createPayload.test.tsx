@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import SectorDetail from './SectorDetail';
 import { api } from '../../utils/auth';
@@ -180,5 +180,101 @@ describe('SectorDetail Soft-ORDER SectorType + controlling_faction honesty', () 
     const [url, body] = vi.mocked(api.put).mock.calls[0];
     expect(url).toBe('/api/v1/admin/sectors/sec-uuid-1');
     expect(body).toEqual({ controlling_faction: null });
+  });
+});
+
+describe('SectorDetail Soft-ORDER residual SectorUpdateRequest fields (LEG-1488)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.put).mockReset();
+    vi.mocked(api.post).mockReset();
+    vi.mocked(api.get).mockRejectedValue(new Error('404'));
+    vi.mocked(api.put).mockResolvedValue({ data: {}, status: 200 });
+  });
+
+  it('saving description PUTs description key', async () => {
+    const user = userEvent.setup();
+    render(
+      <SectorDetail
+        sector={{ ...sector, description: 'Old blurb' }}
+        onBack={() => undefined}
+        onPortClick={() => undefined}
+        onPlanetClick={() => undefined}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Old blurb')).toBeTruthy();
+    });
+
+    await user.click(screen.getByText('Old blurb'));
+    const input = await screen.findByRole('textbox');
+    await user.clear(input);
+    await user.type(input, 'Nebula corridor');
+    await user.click(screen.getByRole('button', { name: '✓' }));
+
+    await waitFor(() => {
+      expect(api.put).toHaveBeenCalled();
+    });
+
+    const [url, body] = vi.mocked(api.put).mock.calls[0];
+    expect(url).toBe('/api/v1/admin/sectors/sec-uuid-1');
+    expect(body).toEqual({ description: 'Nebula corridor' });
+  });
+
+  it('saving radiation_level PUTs radiation_level ≥0', async () => {
+    const user = userEvent.setup();
+    render(
+      <SectorDetail
+        sector={{ ...sector, radiation_level: 1.5 }}
+        onBack={() => undefined}
+        onPortClick={() => undefined}
+        onPlanetClick={() => undefined}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('1.5')).toBeTruthy();
+    });
+
+    await user.click(screen.getByText('1.5'));
+    const input = await screen.findByRole('spinbutton');
+    fireEvent.change(input, { target: { value: '2.25' } });
+    await user.click(screen.getByRole('button', { name: '✓' }));
+
+    await waitFor(() => {
+      expect(api.put).toHaveBeenCalled();
+    });
+
+    const [, body] = vi.mocked(api.put).mock.calls[0];
+    expect(body).toEqual({ radiation_level: 2.25 });
+  });
+
+  it('saving resource_regeneration PUTs resource_regeneration ≥0', async () => {
+    const user = userEvent.setup();
+    render(
+      <SectorDetail
+        sector={{ ...sector, resource_regeneration: 0.5 }}
+        onBack={() => undefined}
+        onPortClick={() => undefined}
+        onPlanetClick={() => undefined}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('0.5')).toBeTruthy();
+    });
+
+    await user.click(screen.getByText('0.5'));
+    const input = await screen.findByRole('spinbutton');
+    fireEvent.change(input, { target: { value: '1.1' } });
+    await user.click(screen.getByRole('button', { name: '✓' }));
+
+    await waitFor(() => {
+      expect(api.put).toHaveBeenCalled();
+    });
+
+    const [, body] = vi.mocked(api.put).mock.calls[0];
+    expect(body).toEqual({ resource_regeneration: 1.1 });
   });
 });
