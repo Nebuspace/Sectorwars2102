@@ -864,17 +864,49 @@ def _seed_station_market_book(db: Session, station: Station) -> int:
 
 def _faction_rep_tier(db: Session, player_id, station: Station) -> int:
     """Numeric reputation tier (-8..+8) toward the station's faction; 0 when
-    the station is unaffiliated or the player has no reputation record."""
+    the station is unaffiliated or standing resolves to NEUTRAL/absent.
+
+    Routes through ``resolve_effective_faction_standing_value`` so teamed
+    players use team AVERAGE standing for queue preferential ordering
+    (factions-and-teams.md / Soft-ORDER #1988). Value→level→ordinal matches
+    ``Reputation.numeric_level`` / FactionService thresholds (no forked ladder).
+    """
     if not station.faction_affiliation:
         return 0
     faction = db.query(Faction).filter(Faction.name == station.faction_affiliation).first()
     if faction is None:
         return 0
-    rep = db.query(Reputation).filter(
-        Reputation.player_id == player_id,
-        Reputation.faction_id == faction.id,
-    ).first()
-    return rep.numeric_level if rep is not None else 0
+    from src.models.reputation import ReputationLevel
+    from src.services.faction_service import (
+        FactionService,
+        resolve_effective_faction_standing_value,
+    )
+
+    value, _source = resolve_effective_faction_standing_value(
+        db, player_id, faction.id
+    )
+    level = FactionService(db)._calculate_reputation_level(value)
+    # Same ordinal map as Reputation.numeric_level (-8..+8).
+    level_map = {
+        ReputationLevel.PUBLIC_ENEMY: -8,
+        ReputationLevel.CRIMINAL: -7,
+        ReputationLevel.OUTLAW: -6,
+        ReputationLevel.PIRATE: -5,
+        ReputationLevel.SMUGGLER: -4,
+        ReputationLevel.UNTRUSTWORTHY: -3,
+        ReputationLevel.SUSPICIOUS: -2,
+        ReputationLevel.QUESTIONABLE: -1,
+        ReputationLevel.NEUTRAL: 0,
+        ReputationLevel.RECOGNIZED: 1,
+        ReputationLevel.ACKNOWLEDGED: 2,
+        ReputationLevel.TRUSTED: 3,
+        ReputationLevel.RESPECTED: 4,
+        ReputationLevel.VALUED: 5,
+        ReputationLevel.HONORED: 6,
+        ReputationLevel.REVERED: 7,
+        ReputationLevel.EXALTED: 8,
+    }
+    return level_map.get(level, 0)
 
 
 def _sorted_queue(
