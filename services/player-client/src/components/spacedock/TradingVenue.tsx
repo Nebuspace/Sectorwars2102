@@ -1,5 +1,6 @@
 import React from 'react';
 import TradingInterface from '../trading/TradingInterface';
+import LongTermMooringPanel from './LongTermMooringPanel';
 import './spacedock.css';
 
 // =====================================================================
@@ -7,6 +8,7 @@ import './spacedock.css';
 // `renderTrading()` closure (WO-UI3-VENUES sub-part #1, pure refactor —
 // zero behavior change). All state/handlers remain owned by
 // SpaceDockInterface and are threaded through as props here.
+// LEG-438: long-term mooring panel (tip GS contract) sits above the desk.
 // =====================================================================
 
 interface TradingVenueProps {
@@ -23,6 +25,7 @@ const TradingVenue: React.FC<TradingVenueProps> = ({ onBack, blackMarketButton }
       <h2>🏪 Trading Hub</h2>
     </div>
     <div className="venue-content-area trading-venue">
+      <LongTermMooringPanel />
       <TradingInterface onClose={() => {}} />
     </div>
     {blackMarketButton}

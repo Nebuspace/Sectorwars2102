@@ -24,7 +24,11 @@ from src.api.routes.market_prediction import router as market_prediction_router 
 from src.api.routes.audit import router as audit_router
 from src.api.routes.messages import router as messages_router
 from src.api.routes.admin_messages import router as admin_messages_router
+from src.api.routes.admin_moderation_messages import (
+    router as admin_moderation_messages_router,
+)
 from src.api.routes.admin_beacons import router as admin_beacons_router
+from src.api.routes.admin_construction import router as admin_construction_router  # LEG-40
 from src.api.routes.factions import router as factions_router
 from src.api.routes.admin_factions import router as admin_factions_router
 from src.api.routes.drones import router as drones_router
@@ -60,6 +64,7 @@ from src.api.routes.ship_registry_behaviors import (
 from src.api.routes.bang_galaxy import router as bang_galaxy_router
 from src.api.routes.construction import router as construction_router
 from src.api.routes.port_ownership import router as port_ownership_router
+from src.api.routes.station_governance import router as station_governance_router
 from src.api.routes.station_security import router as station_security_router
 from src.api.routes.ranking import router as ranking_router
 from src.api.routes.quantum import router as quantum_router
@@ -84,6 +89,7 @@ from src.api.routes.beacons import router as beacons_router  # WO-P4-play-beacon
 from src.api.routes.storage import router as storage_router  # WO-STORE-DEPOSIT-FLOW
 from src.api.routes.intrasystem import router as intrasystem_router  # WO-ISP
 from src.api.routes.admin_reports import router as admin_reports_router  # WO-PADMIN-analytics
+from src.api.routes.admin_re_engagement import router as admin_re_engagement_router  # LEG-332 / retention.md
 from src.core.config import settings
 
 # Main API router - note that the version is now in the main API_V1_STR prefix
@@ -122,7 +128,11 @@ api_router.include_router(market_prediction_router, tags=["market"])  # WO-MP1 (
 api_router.include_router(audit_router, tags=["audit"])
 api_router.include_router(messages_router, tags=["messages"])
 api_router.include_router(admin_messages_router, tags=["admin-messages"])
+api_router.include_router(
+    admin_moderation_messages_router, tags=["admin-moderation-messages"]
+)
 api_router.include_router(admin_beacons_router, tags=["admin-beacons"])
+api_router.include_router(admin_construction_router, tags=["admin-construction"])  # LEG-40
 api_router.include_router(factions_router, tags=["factions"])
 api_router.include_router(admin_factions_router, tags=["admin-factions"])
 api_router.include_router(drones_router, tags=["drones"])
@@ -165,6 +175,7 @@ api_router.include_router(construction_router, tags=["construction"])
 # Port ownership: listings/auctions, owner powers, economic takeover
 # (router carries its own /port-ownership prefix)
 api_router.include_router(port_ownership_router, tags=["port-ownership"])
+api_router.include_router(station_governance_router, tags=["port-ownership"])
 # Station-protection security-tier ladder: upgrade/downgrade/status
 # (WO-STN-SEC-1; router carries its own /station-security prefix)
 api_router.include_router(station_security_router, tags=["station-security"])
@@ -237,6 +248,7 @@ api_router.include_router(storage_router, tags=["storage"])
 # /helm/intrasystem prefix).
 api_router.include_router(intrasystem_router, tags=["intrasystem"])
 api_router.include_router(admin_reports_router, tags=["admin-reports"])  # WO-PADMIN-analytics
+api_router.include_router(admin_re_engagement_router, tags=["admin-re-engagement"])  # LEG-332
 
 # Only include test + debug routes in development/test environments.
 # debug_router is admin-scoped (AUDIT_VIEW) but still dumps full player/ship/

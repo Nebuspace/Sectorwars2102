@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAIUpdates } from '../../contexts/WebSocketContext';
 import { api } from '../../utils/auth';
+import { axiosResponseStatus, formatAdminApiError } from '../../utils/adminApiError';
 import './player-behavior-analytics.css';
 
 interface BehaviorTrend {
@@ -58,12 +59,18 @@ export const PlayerBehaviorAnalytics: React.FC = () => {
         trend: 'stable' as const,
         insight: insight
       })) : []);
-    } catch (err: any) {
-      const errorMessage = err.response?.data?.detail || err.message || 'Failed to load behavior analytics';
-      if (err.response?.status === 401) {
+    } catch (err: unknown) {
+      const status = axiosResponseStatus(err);
+      if (status === 401) {
         setError('Authentication required. Please log in as an admin user.');
       } else {
-        setError(errorMessage);
+        setError(
+          formatAdminApiError(err, {
+            fallback: 'Failed to load behavior analytics',
+            scopeHint:
+              'behavior analytics require the admin players view scope (PLAYERS_VIEW).',
+          })
+        );
       }
     } finally {
       setLoading(false);
@@ -71,7 +78,7 @@ export const PlayerBehaviorAnalytics: React.FC = () => {
   };
 
   if (loading) return <div className="loading">Loading behavior analytics...</div>;
-  if (error) return <div className="error">Error: {error}</div>;
+  if (error) return <div className="error" role="alert">Error: {error}</div>;
 
   return (
     <div className="player-behavior-analytics">

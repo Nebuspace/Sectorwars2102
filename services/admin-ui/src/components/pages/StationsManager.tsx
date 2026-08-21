@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import PageHeader from '../ui/PageHeader';
 import { useToast, useConfirm } from '../../contexts/ToastContext';
 import './pages.css';
@@ -23,14 +24,11 @@ interface Station {
   commodities: string[];
 }
 
-// Extracts a human-readable message from an Axios-style error without using `any`.
-const getErrorMessage = (err: unknown): string => {
-  if (typeof err === 'object' && err !== null) {
-    const maybeAxios = err as { response?: { data?: { detail?: string } }; message?: string };
-    return maybeAxios.response?.data?.detail || maybeAxios.message || 'An unexpected error occurred';
-  }
-  return 'An unexpected error occurred';
-};
+const getErrorMessage = (err: unknown, fallback = 'An unexpected error occurred'): string =>
+  formatAdminApiError(err, {
+    fallback,
+    scopeHint: 'admin universe station management scopes required',
+  });
 
 const StationsManager: React.FC = () => {
   const toast = useToast();
@@ -570,14 +568,13 @@ interface Player {
 
 const AddPortModal: React.FC<AddPortModalProps> = ({ onClose, onSave }) => {
   const toast = useToast();
+  // create_port reads station_class (defaults CLASS_1 if omitted). Demoted from
+  // POST: max_capacity / security_level / docking_fee (no create_port columns).
   const [formData, setFormData] = useState({
     name: '',
     sector_id: '',
-    station_type: 'CLASS_1',
+    station_class: 'CLASS_1',
     trade_volume: 1000,
-    max_capacity: 5000,
-    security_level: 50,
-    docking_fee: 100,
     owner_name: ''
   });
   const [saving, setSaving] = useState(false);
@@ -635,7 +632,16 @@ const AddPortModal: React.FC<AddPortModalProps> = ({ onClose, onSave }) => {
 
     try {
       setSaving(true);
-      const response = await api.post('/api/v1/admin/ports', formData);
+      const payload: Record<string, unknown> = {
+        name: formData.name,
+        sector_id: formData.sector_id,
+        station_class: formData.station_class,
+        trade_volume: formData.trade_volume,
+      };
+      if (formData.owner_name) {
+        payload.owner_name = formData.owner_name;
+      }
+      const response = await api.post('/api/v1/admin/ports', payload);
       onSave(response.data);
     } catch (err: unknown) {
       toast.error(`Failed to create port: ${getErrorMessage(err)}`);
@@ -706,8 +712,8 @@ const AddPortModal: React.FC<AddPortModalProps> = ({ onClose, onSave }) => {
             <div className="form-group">
               <label>Port Class *</label>
               <select
-                value={formData.station_type}
-                onChange={(e) => setFormData({ ...formData, station_type: e.target.value })}
+                value={formData.station_class}
+                onChange={(e) => setFormData({ ...formData, station_class: e.target.value })}
                 required
               >
                 <option value="CLASS_0">CLASS_0 - Sol System</option>
@@ -734,37 +740,8 @@ const AddPortModal: React.FC<AddPortModalProps> = ({ onClose, onSave }) => {
                 min="0"
               />
             </div>
-            
-            <div className="form-group">
-              <label>Max Capacity</label>
-              <input
-                type="number"
-                value={formData.max_capacity}
-                onChange={(e) => setFormData({ ...formData, max_capacity: parseInt(e.target.value) })}
-                min="0"
-              />
-            </div>
-            
-            <div className="form-group">
-              <label>Security Level</label>
-              <input
-                type="number"
-                value={formData.security_level}
-                onChange={(e) => setFormData({ ...formData, security_level: parseInt(e.target.value) })}
-                min="0"
-                max="100"
-              />
-            </div>
-            
-            <div className="form-group">
-              <label>Docking Fee</label>
-              <input
-                type="number"
-                value={formData.docking_fee}
-                onChange={(e) => setFormData({ ...formData, docking_fee: parseInt(e.target.value) })}
-                min="0"
-              />
-            </div>
+
+            {/* Demoted — create_port ignores max_capacity / security_level / docking_fee */}
             
             <div className="form-group">
               <label>Port Owner</label>

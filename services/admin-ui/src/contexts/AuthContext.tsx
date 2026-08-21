@@ -1,5 +1,5 @@
 import React, { createContext, useState, useContext, useEffect, ReactNode } from 'react';
-import axios from 'axios';
+import { api } from '../utils/auth';
 
 export interface User {
   id: string;
@@ -56,7 +56,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const clearAuthData = () => {
     localStorage.removeItem('accessToken');
     localStorage.removeItem('refreshToken');
-    axios.defaults.headers.common['Authorization'] = '';
+    // Shared `api` request interceptor reads accessToken from localStorage —
+    // no axios.defaults Bearer plumbing (LEG-965).
     setUser(null);
     setToken(null);
   };
@@ -123,9 +124,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       localStorage.setItem('accessToken', access_token);
       localStorage.setItem('refreshToken', refresh_token);
       setToken(access_token);
-      
-      // Update auth header for axios requests
-      axios.defaults.headers.common['Authorization'] = `Bearer ${access_token}`;
     } catch (error) {
       console.error('Token refresh failed:', error);
       // Clear tokens and user on refresh failure
@@ -143,8 +141,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       setIsLoading(false);
     }, 5000);
     
-    // Set up axios interceptor for authentication
-    const interceptor = axios.interceptors.response.use(
+    // 401 refresh interceptor on shared `api` (covers admin pages using utils/auth)
+    const interceptor = api.interceptors.response.use(
       (response) => response,
       async (error) => {
         const originalRequest = error.config;
@@ -159,7 +157,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
             // Re-attempt the original request with new token
             const accessToken = localStorage.getItem('accessToken');
             originalRequest.headers['Authorization'] = `Bearer ${accessToken}`;
-            return axios(originalRequest);
+            return api(originalRequest);
           } catch (refreshError) {
             // If refresh token fails, logout
             clearAuthData();
@@ -182,12 +180,10 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       }
       
       try {
-        // Add token to default headers
-        axios.defaults.headers.common['Authorization'] = `Bearer ${accessToken}`;
         setToken(accessToken);
         
-        // Try to get user profile
-        const response = await axios.get<User>('/api/v1/auth/me');
+        // Shared api attaches Bearer from localStorage
+        const response = await api.get<User>('/api/v1/auth/me');
         setUser(response.data);
       } catch (error: any) {
         // Check if it's a rate limit error (429)
@@ -204,7 +200,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         if (error?.response?.status !== 429) {
           try {
             await refreshToken();
-            const userResponse = await axios.get<User>('/api/v1/auth/me');
+            const userResponse = await api.get<User>('/api/v1/auth/me');
             setUser(userResponse.data);
           } catch (refreshError: any) {
             if (refreshError?.response?.status === 429) {
@@ -227,7 +223,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     // Clean up
     return () => {
       clearTimeout(authTimeout);
-      axios.interceptors.response.eject(interceptor);
+      api.interceptors.response.eject(interceptor);
     };
   }, []);
   
@@ -303,9 +299,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         localStorage.setItem('accessToken', access_token);
         localStorage.setItem('refreshToken', refresh_token);
         setToken(access_token);
-
-        // Set authorization header for future axios requests
-        axios.defaults.headers.common['Authorization'] = `Bearer ${access_token}`;
 
         // Get user data
         try {
@@ -386,7 +379,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       localStorage.setItem('accessToken', data.access_token);
       localStorage.setItem('refreshToken', data.refresh_token);
       setToken(data.access_token);
-      axios.defaults.headers.common['Authorization'] = `Bearer ${data.access_token}`;
       
       // Get user data
       const userResponse = await fetch(`${apiPath}/auth/me`, {
@@ -471,7 +463,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     // Call logout endpoint to invalidate refresh token, but don't wait for it
     if (refreshTokenStr) {
       // Set a short timeout to avoid CORS issues during page navigation
-      axios.post('/api/v1/auth/logout', { refresh_token: refreshTokenStr }, {
+      api.post('/api/v1/auth/logout', { refresh_token: refreshTokenStr }, {
         timeout: 1000 // 1 second timeout
       }).catch(() => {
         // Just log the error, don't block logout

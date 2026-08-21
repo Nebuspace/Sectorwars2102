@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import PageHeader from '../ui/PageHeader';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import { useToast, useConfirm } from '../../contexts/ToastContext';
 import './event-management.css';
 
@@ -112,9 +113,14 @@ const EventManagement: React.FC = () => {
       const statsResponse = await api.get('/api/v1/admin/events/stats');
       setEventStats(statsResponse.data as EventStats);
 
-    } catch (error) {
+    } catch (error: unknown) {
       console.error('Error fetching event data:', error);
-      setError(error instanceof Error ? error.message : 'Failed to fetch event data');
+      setError(
+        formatAdminApiError(error, {
+          fallback: 'Failed to fetch event data',
+          scopeHint: 'admin event management scopes required',
+        })
+      );
       setEvents([]);
       setEventStats(null);
     } finally {
@@ -127,10 +133,15 @@ const EventManagement: React.FC = () => {
       setTemplatesError(null);
       const response = await api.get('/api/v1/admin/events/templates');
       setTemplates(response.data as EventTemplate[]);
-    } catch (error) {
+    } catch (error: unknown) {
       console.error('Error fetching event templates:', error);
       setTemplates([]);
-      setTemplatesError(error instanceof Error ? error.message : 'Failed to load event templates');
+      setTemplatesError(
+        formatAdminApiError(error, {
+          fallback: 'Failed to load event templates',
+          scopeHint: 'admin event management scopes required',
+        })
+      );
     }
   };
 
@@ -154,9 +165,14 @@ const EventManagement: React.FC = () => {
       } else {
         toast.error('Failed to create event');
       }
-    } catch (error) {
+    } catch (error: unknown) {
       console.error('Error creating event:', error);
-      toast.error('Error creating event');
+      toast.error(
+        formatAdminApiError(error, {
+          fallback: 'Error creating event',
+          scopeHint: 'admin event management scopes required',
+        })
+      );
     }
   };
 
@@ -179,9 +195,14 @@ const EventManagement: React.FC = () => {
       } else {
         toast.error('Failed to cancel event');
       }
-    } catch (error) {
+    } catch (error: unknown) {
       console.error('Error cancelling event:', error);
-      toast.error('Error cancelling event');
+      toast.error(
+        formatAdminApiError(error, {
+          fallback: 'Error cancelling event',
+          scopeHint: 'admin event management scopes required',
+        })
+      );
     }
   };
 
@@ -195,9 +216,14 @@ const EventManagement: React.FC = () => {
       } else {
         toast.error('Failed to activate event');
       }
-    } catch (error) {
+    } catch (error: unknown) {
       console.error('Error activating event:', error);
-      toast.error('Error activating event');
+      toast.error(
+        formatAdminApiError(error, {
+          fallback: 'Error activating event',
+          scopeHint: 'admin event management scopes required',
+        })
+      );
     }
   };
 
