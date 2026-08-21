@@ -158,7 +158,13 @@ MONTH_HOURS = 30 * 24.0             # 1 scaled month = 30 canonical days
 TAKEOVER_SHARE_THRESHOLD = 0.5      # challenger needs >50% of monthly volume
 TAKEOVER_MONTHS_REQUIRED = 3        # consecutive satisfied months
 BOT_FARM_FRACTION = 0.8             # >80% self-cancelling volume = bot farming
-CONDITION_MULTIPLIER = 1.0          # v1: station condition not modeled
+# Soft-ORDER LEG-2060 / LEG-2055: durable stamp on Station.ownership for the
+# condition_multiplier haircut (port-ownership.md:60-66). Absent stamp ⇒
+# days_since treated as ≥7 (no recent-incident haircut).
+LAST_DEFENSE_INCIDENT_AT_KEY = "last_defense_incident_at"
+# Legacy alias kept for tests that assert the pre-Soft-ORDER stub; live
+# pricing uses condition_multiplier(station, now) instead.
+CONDITION_MULTIPLIER = 1.0
 HOSTILE_UNDERCUT_FACTOR = 0.97      # selling >=3% under the station-pays price
 CATCHUP_EVAL_LIMIT = 3              # lazy month catch-up: evaluate at most the
                                     # trailing N months individually; older
@@ -586,10 +592,147 @@ def depreciated_value(acquisition_cost: int) -> int:
     return int(max(0, acquisition_cost) * DEPRECIATION_FACTOR)
 
 
-def forced_sale_value(avg_monthly_revenue: float, acquisition_cost: int) -> int:
+def demand_factor(tax_rate: Optional[float]) -> float:
+    """Canon tariff elasticity (port-ownership.md:174):
+    demand_factor = max(min(1.0 − 0.05 × tariff_pct, 1.0), 0.10)
+    where tariff_pct is the percent form of Station.tax_rate (0.05 → 5)."""
+    try:
+        rate = float(tax_rate) if tax_rate is not None else 0.0
+    except (TypeError, ValueError):
+        rate = 0.0
+    tariff_pct = max(0.0, rate * 100.0)
+    return max(min(1.0 - 0.05 * tariff_pct, 1.0), 0.10)
+
+
+def traffic_with_rep(
+    base_traffic: float, demand: float, reputation_score: float
+) -> float:
+    """Canon composition (port-ownership.md:182):
+    traffic_with_rep = base × demand_factor × (1 + 0.10 × reputation_score)
+    reputation_score clamped to [-1, +1]."""
+    try:
+        score = max(-1.0, min(1.0, float(reputation_score)))
+    except (TypeError, ValueError):
+        score = 0.0
+    return float(base_traffic) * float(demand) * (1.0 + 0.10 * score)
+
+
+def traffic_final(traffic_with_reputation: float, region_tax_rate: Optional[float]) -> float:
+    """Canon composition (port-ownership.md:190):
+    traffic_final = traffic_with_rep × (1 − region.tax_rate);
+    region.tax_rate ∈ [0.0, 0.25]."""
+    try:
+        rtax = float(region_tax_rate) if region_tax_rate is not None else 0.0
+    except (TypeError, ValueError):
+        rtax = 0.0
+    rtax = max(0.0, min(0.25, rtax))
+    return float(traffic_with_reputation) * (1.0 - rtax)
+
+
+def expected_revenue_per_day(
+    traffic_final_value: float,
+    per_trade_revenue_avg: float,
+    region_tax_rate: Optional[float],
+    owner_pct: float,
+) -> float:
+    """Canon owner-dashboard planning view (port-ownership.md:198-205):
+
+    expected_revenue_per_day =
+      traffic_final
+      × per_trade_revenue_avg
+      × (1 − region.tax_rate)
+      × (owner_pct / 100)
+
+    ``owner_pct`` is the percent form (30 → 30% cut). ``region.tax_rate`` is
+    fractional ∈ [0.0, 0.25] and composes again here even when already folded
+    into ``traffic_final`` (canon double-apply; worked example :205).
+    Pure helper — does not invent NPC traffic simulation.
+    """
+    try:
+        rtax = float(region_tax_rate) if region_tax_rate is not None else 0.0
+    except (TypeError, ValueError):
+        rtax = 0.0
+    rtax = max(0.0, min(0.25, rtax))
+    try:
+        pct = float(owner_pct)
+    except (TypeError, ValueError):
+        pct = 0.0
+    return (
+        float(traffic_final_value)
+        * float(per_trade_revenue_avg)
+        * (1.0 - rtax)
+        * (pct / 100.0)
+    )
+
+
+def _parse_defense_incident_at(raw: Any) -> Optional[datetime]:
+    """Parse ownership[last_defense_incident_at] ISO / datetime → aware UTC."""
+    if raw is None:
+        return None
+    if isinstance(raw, datetime):
+        return raw if raw.tzinfo is not None else raw.replace(tzinfo=UTC)
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+    return None
+
+
+def condition_multiplier(
+    station: Any, now: Optional[datetime] = None
+) -> float:
+    """Canon condition haircut (port-ownership.md:61-66):
+    1.0 − 0.10 × max(0, 7 − days_since_last_defense_incident) / 7
+        − 0.15 × (1 if security_level == 'none' else 0).
+    Missing stamp ⇒ treat as days_since ≥ 7 (no recent-incident haircut)."""
+    now = now or datetime.now(UTC)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+
+    ownership = getattr(station, "ownership", None)
+    ownership = ownership if isinstance(ownership, dict) else {}
+    stamped = _parse_defense_incident_at(ownership.get(LAST_DEFENSE_INCIDENT_AT_KEY))
+    if stamped is None:
+        days_since = 7.0
+    else:
+        days_since = max(0.0, (now - stamped).total_seconds() / 86400.0)
+
+    incident_haircut = 0.10 * max(0.0, 7.0 - days_since) / 7.0
+    tier = getattr(station, "security_level", None)
+    if callable(tier):
+        try:
+            tier = tier()
+        except TypeError:
+            pass
+    tier_s = (str(tier) if tier is not None else "none").lower()
+    undefended_haircut = 0.15 if tier_s == "none" else 0.0
+    return max(0.0, 1.0 - incident_haircut - undefended_haircut)
+
+
+def stamp_last_defense_incident(
+    station: Station, now: Optional[datetime] = None
+) -> None:
+    """Soft-ORDER LEG-2060: durable ownership stamp after station-defense
+    combat resolves. Caller must hold the station row; flag_modified."""
+    now = now or datetime.now(UTC)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    ownership = _ownership(station)
+    ownership[LAST_DEFENSE_INCIDENT_AT_KEY] = now.isoformat()
+    flag_modified(station, "ownership")
+
+
+def forced_sale_value(
+    avg_monthly_revenue: float,
+    acquisition_cost: int,
+    condition_mult: Optional[float] = None,
+) -> int:
     """Canon forced-sale price: clamp(avg-monthly-revenue x 12 x
     condition_multiplier, acquisition_cost, 2 x acquisition_cost)."""
-    raw = avg_monthly_revenue * 12 * CONDITION_MULTIPLIER
+    mult = CONDITION_MULTIPLIER if condition_mult is None else float(condition_mult)
+    raw = avg_monthly_revenue * 12 * mult
     return int(max(acquisition_cost, min(2 * acquisition_cost, raw)))
 
 
@@ -3024,12 +3167,17 @@ def _owner_at_eligibility(campaign: TakeoverCampaign) -> Optional[str]:
 
 def forced_sale_price(db: Session, station: Station, now: Optional[datetime] = None) -> int:
     """Canon forced-sale price: clamp(90-day-average monthly revenue x 12 x
-    condition_multiplier, acquisition_cost, 2 x acquisition_cost).
-    condition_multiplier is 1.0 in v1 (station condition not modeled)."""
+    condition_multiplier(station), acquisition_cost, 2 x acquisition_cost).
+    Soft-ORDER LEG-2055: live condition_multiplier (defense incident +
+    security_level=='none' haircuts) — not the v1 stub 1.0."""
     now = now or datetime.now(UTC)
     revenue_90 = _station_revenue(db, station.id, _wall_cutoff(REVENUE_WINDOW_DAYS, now))
     avg_monthly = revenue_90 / 3.0  # 90 canonical days = 3 scaled months
-    return forced_sale_value(avg_monthly, _acquisition_cost(station))
+    return forced_sale_value(
+        avg_monthly,
+        _acquisition_cost(station),
+        condition_mult=condition_multiplier(station, now),
+    )
 
 
 def _settle_forced_sale(
@@ -3889,6 +4037,10 @@ def get_station_listing_status(
         "tax_rate": station.tax_rate,
         "treasury_balance": station.treasury_balance or 0,
         "status": status,
+        # Soft-ORDER LEG-2068 invent=0: owner-dashboard planning slot. Live
+        # traffic_final composition lands with elasticity Soft-ORDERs; callers
+        # compose via expected_revenue_per_day(...) once factors are known.
+        "expected_revenue_per_day": None,
     }
     payload.update(public_defense_policy_fields(station))
     return payload
