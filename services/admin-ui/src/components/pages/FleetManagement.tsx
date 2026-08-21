@@ -42,14 +42,18 @@ interface FleetStats {
   total_cargo_capacity: number;
 }
 
+// Tip ShipType enum (models/ship.py) — player-facing only; exclude NPC_* hulls.
 const SHIP_TYPES = [
+  'ESCAPE_POD',
   'LIGHT_FREIGHTER',
-  'MEDIUM_FREIGHTER', 
-  'HEAVY_FREIGHTER',
-  'BATTLESHIP',
-  'CRUISER',
-  'DESTROYER',
-  'FIGHTER'
+  'CARGO_HAULER',
+  'FAST_COURIER',
+  'CITIZEN_CLIPPER',
+  'SCOUT_SHIP',
+  'COLONY_SHIP',
+  'DEFENDER',
+  'CARRIER',
+  'WARP_JUMPER',
 ];
 
 const FleetManagement: React.FC = () => {
@@ -241,9 +245,12 @@ const FleetManagement: React.FC = () => {
     if (!selectedShip) return;
     
     try {
-      await api.post(`/api/v1/admin/ships/${selectedShip.id}/teleport`, {
-        target_sector_id: teleportSector
-      });
+      // tip teleport_ship takes target_sector_id as a FastAPI query param (not JSON body)
+      await api.post(
+        `/api/v1/admin/ships/${selectedShip.id}/teleport`,
+        null,
+        { params: { target_sector_id: teleportSector } },
+      );
       setShowTeleportForm(false);
       setSelectedShip(null);
       setTeleportSector(1);

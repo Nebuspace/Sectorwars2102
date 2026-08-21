@@ -64,6 +64,7 @@ const PlanetDetailModal: React.FC<PlanetDetailModalProps> = ({
         habitability_score: editedPlanet.habitability_score,
         resource_richness: editedPlanet.resource_richness,
         gravity: editedPlanet.gravity,
+        defense_level: editedPlanet.defense_level,
       });
       setIsEditing(false);
       if (onSave) onSave(editedPlanet);
@@ -176,28 +177,17 @@ const PlanetDetailModal: React.FC<PlanetDetailModalProps> = ({
             <div className="field-grid">
               <div className="field">
                 <label>Current Population</label>
-                {isEditing ? (
-                  <input
-                    type="number"
-                    value={editedPlanet.population}
-                    onChange={(e) => handleInputChange('population', parseInt(e.target.value) || 0)}
-                  />
-                ) : (
-                  <span>{editedPlanet.population.toLocaleString()}</span>
-                )}
+                {/* PlanetUpdateRequest has no population — display-only */}
+                <span title="Not editable — not on PlanetUpdateRequest">
+                  {editedPlanet.population.toLocaleString()}
+                </span>
               </div>
 
               <div className="field">
                 <label>Max Population</label>
-                {isEditing ? (
-                  <input
-                    type="number"
-                    value={editedPlanet.max_population}
-                    onChange={(e) => handleInputChange('max_population', parseInt(e.target.value) || 0)}
-                  />
-                ) : (
-                  <span>{editedPlanet.max_population.toLocaleString()}</span>
-                )}
+                <span title="Not editable — not on PlanetUpdateRequest">
+                  {editedPlanet.max_population.toLocaleString()}
+                </span>
               </div>
 
               <div className="field">
@@ -292,15 +282,10 @@ const PlanetDetailModal: React.FC<PlanetDetailModalProps> = ({
             <div className="field-grid">
               <div className="field full-width">
                 <label>Atmosphere</label>
-                {isEditing ? (
-                  <textarea
-                    value={editedPlanet.atmosphere || ''}
-                    onChange={(e) => handleInputChange('atmosphere', e.target.value)}
-                    placeholder="Describe the planetary atmosphere..."
-                  />
-                ) : (
-                  <span>{editedPlanet.atmosphere || 'No atmosphere data'}</span>
-                )}
+                {/* PlanetUpdateRequest has no atmosphere — display-only */}
+                <span title="Not editable — not on PlanetUpdateRequest">
+                  {editedPlanet.atmosphere || 'No atmosphere data'}
+                </span>
               </div>
             </div>
           </div>
