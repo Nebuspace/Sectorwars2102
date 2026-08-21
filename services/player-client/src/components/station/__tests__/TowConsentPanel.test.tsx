@@ -27,6 +27,18 @@ vi.mock('../../tactical/contactClassification', () => ({
   useSectorContacts: () => [],
 }));
 
+vi.mock('../../../contexts/GameContext', () => ({
+  useGame: () => ({
+    currentShip: { id: 'ship-hauler', type: 'CARGO_HAULER' },
+    refreshPlayerState: vi.fn(),
+    updatePlayerCredits: vi.fn(),
+  }),
+}));
+
+vi.mock('../TractorBeamInstallCta', () => ({
+  default: () => <div data-testid="tractor-beam-cta-stub" />,
+}));
+
 import TowConsentPanel from '../TowConsentPanel';
 
 const flush = async () => {
