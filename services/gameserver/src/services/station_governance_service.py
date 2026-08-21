@@ -20,6 +20,8 @@ from src.models.player import Player
 from src.models.port_ownership import StationGovernanceVote, TakeoverCampaign
 from src.models.station import Station, player_stations
 from src.services.port_ownership_service import (
+    MAX_TAX_RATE,
+    MIN_TAX_RATE,
     PortOwnershipError,
     SYNDICATE_INVITES_KEY,
     SYNDICATE_MODE_KEY,
@@ -88,8 +90,8 @@ _VOTE_ALIASES = {
     "withdrawal-schedule": "withdrawal",
 }
 
-# Sale / disbandment execute listing or transfer once the ballot passes.
-_EXECUTABLE_VOTE_TYPES = frozenset({"sale", "disbandment"})
+# Sale / disbandment / tariff execute once the ballot passes (LEG-2007/2008/2013).
+_EXECUTABLE_VOTE_TYPES = frozenset({"sale", "disbandment", "tariff"})
 
 POSITIONS = frozenset({"for", "against", "absent", "veto", "against_veto"})
 INACTIVE_DAYS = 30
@@ -327,13 +329,31 @@ def _clear_ownership_for_resale(db: Session, station: Station) -> None:
     flag_modified(station, "ownership")
 
 
+def _proposed_tariff_rate(proposed: Dict[str, Any]) -> float:
+    """Parse proposed tax rate from vote payload (invent=0 MIN/MAX clamp)."""
+    raw = proposed.get("tax_rate", proposed.get("rate", proposed.get("value")))
+    if raw is None and len(proposed) == 1:
+        only = next(iter(proposed.values()))
+        if isinstance(only, (int, float)) and not isinstance(only, bool):
+            raw = only
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        rate = float(raw)
+    else:
+        raise PortOwnershipError(400, "proposed_value must include tax_rate/rate")
+    if not (MIN_TAX_RATE <= rate <= MAX_TAX_RATE):
+        raise PortOwnershipError(
+            400, f"Tax rate must be between {MIN_TAX_RATE:.2f} and {MAX_TAX_RATE:.2f}"
+        )
+    return rate
+
+
 def _execute_passed_vote(
     db: Session,
     station: Station,
     row: StationGovernanceVote,
     now: datetime,
 ) -> None:
-    """On passed sale/disbandment: list or transfer via existing helpers (LEG-2007/2008)."""
+    """On passed sale/disbandment/tariff: mutate via existing helpers (LEG-2007/2008/2013)."""
     if row.vote_type not in _EXECUTABLE_VOTE_TYPES:
         return
     outcome = dict(row.outcome or {})
@@ -346,7 +366,19 @@ def _execute_passed_vote(
     acq = _acquisition_cost(station)
     execution: Dict[str, Any]
 
-    if row.vote_type == "sale":
+    if row.vote_type == "tariff":
+        # Apply clamped tax directly — set_tax_rate requires a solo owner Player.
+        rate = _proposed_tariff_rate(proposed)
+        station = _lock_station(db, station.id)
+        prior = float(station.tax_rate or 0.0)
+        station.tax_rate = rate
+        db.flush()
+        execution = {
+            "action": "set_tax",
+            "prior_tax_rate": prior,
+            "tax_rate": rate,
+        }
+    elif row.vote_type == "sale":
         buyer_raw = _proposed_buyer_id(proposed)
         if buyer_raw:
             try:

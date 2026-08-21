@@ -404,3 +404,64 @@ def test_execute_skips_non_passed_sale(monkeypatch):
     )
     assert called["n"] == 0
     assert "execution" not in (row.outcome or {})
+
+
+# --- LEG-2013 Soft-ORDER: tariff vote executes set_tax ---
+
+
+def test_execute_tariff_sets_tax_rate(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+    from uuid import uuid4
+    from datetime import datetime, timezone
+
+    from src.services import station_governance_service as gov
+
+    station_id = uuid4()
+    station = SimpleNamespace(id=station_id, tax_rate=0.10, ownership={})
+    row = SimpleNamespace(
+        vote_type="tariff",
+        proposed_value={"tax_rate": 0.15},
+        outcome={"status": "passed", "passed": True},
+    )
+    db = MagicMock()
+    monkeypatch.setattr(gov, "_lock_station", lambda db, sid: station)
+    monkeypatch.setattr(gov, "flag_modified", lambda *a, **k: None)
+    monkeypatch.setattr(gov, "_acquisition_cost", lambda s: 0)
+
+    gov._execute_passed_vote(db, station, row, datetime.now(timezone.utc))
+    assert station.tax_rate == 0.15
+    assert row.outcome["execution"]["action"] == "set_tax"
+    assert row.outcome["execution"]["prior_tax_rate"] == 0.10
+    assert row.outcome["execution"]["tax_rate"] == 0.15
+
+    # idempotent
+    gov._execute_passed_vote(db, station, row, datetime.now(timezone.utc))
+    assert station.tax_rate == 0.15
+
+
+def test_execute_tariff_rejects_out_of_bounds(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+    from uuid import uuid4
+    from datetime import datetime, timezone
+    import pytest
+
+    from src.services import station_governance_service as gov
+    from src.services.port_ownership_service import PortOwnershipError
+
+    station = SimpleNamespace(id=uuid4(), tax_rate=0.10, ownership={})
+    row = SimpleNamespace(
+        vote_type="tariff",
+        proposed_value={"rate": 0.50},
+        outcome={"status": "passed", "passed": True},
+    )
+    monkeypatch.setattr(gov, "_lock_station", lambda db, sid: station)
+    monkeypatch.setattr(gov, "_acquisition_cost", lambda s: 0)
+
+    with pytest.raises(PortOwnershipError):
+        gov._execute_passed_vote(
+            MagicMock(), station, row, datetime.now(timezone.utc)
+        )
+    assert station.tax_rate == 0.10
+    assert "execution" not in (row.outcome or {})
