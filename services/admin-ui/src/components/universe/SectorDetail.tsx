@@ -134,6 +134,11 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
       if (field === 'controlling_faction') {
         value = normalizeControllingFaction(value);
       }
+      // SectorUpdateRequest: radiation_level / resource_regeneration are ge=0.0
+      if (field === 'radiation_level' || field === 'resource_regeneration') {
+        const n = Number(value);
+        value = Number.isFinite(n) ? Math.max(0, n) : 0;
+      }
 
       // Update sector via API (PUT — matches SectorEditModal; backend only has PUT)
       await api.put(`/api/v1/admin/sectors/${sector.id}`, {
@@ -377,6 +382,36 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
                       <span className="font-medium text-muted">Controlling Faction:</span>
                       <span>
                         <EditableField field="controlling_faction" value={sector.controlling_faction || 'None'} type="text" />
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center col-span-2">
+                      <span className="font-medium text-muted">Description:</span>
+                      <span className="text-primary flex-1 text-right ml-4">
+                        <EditableField
+                          field="description"
+                          value={sector.description ?? ''}
+                          type="text"
+                        />
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="font-medium text-muted">Radiation Level:</span>
+                      <span className="font-mono">
+                        <EditableField
+                          field="radiation_level"
+                          value={sector.radiation_level ?? 0}
+                          type="number"
+                        />
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="font-medium text-muted">Resource Regeneration:</span>
+                      <span className="font-mono">
+                        <EditableField
+                          field="resource_regeneration"
+                          value={sector.resource_regeneration ?? 0}
+                          type="number"
+                        />
                       </span>
                     </div>
                     <div className="flex justify-between items-center">
