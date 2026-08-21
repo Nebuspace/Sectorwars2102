@@ -398,4 +398,131 @@ describe('MedalAdmin', () => {
     });
     expect(mockToastError.mock.calls[0][0]).toMatch(/rate limit/i);
   });
+
+  it('loads player collection and surfaces awards + view_hidden audits', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/medals/admin/catalog')) {
+        return { data: { total: 0, items: [] } };
+      }
+      if (url.includes('/medals/admin/players/p1/collection')) {
+        return {
+          data: {
+            player_id: 'p1',
+            total: 1,
+            view_hidden_medal_audits_written: 1,
+            items: [
+              {
+                medal_id: 'special.orange_cat_society',
+                name: 'Orange Cat Society',
+                category: 'special',
+                tier: null,
+                awarded_at: '2026-08-21T00:00:00Z',
+                awarded_via: 'admin',
+                is_hidden_catalog: true,
+                privacy_overridden: true,
+                reason: 'verify',
+              },
+            ],
+          },
+        };
+      }
+      return { data: { players: [{ id: 'p1', username: 'Ace' }] } };
+    });
+
+    render(<MedalAdmin />);
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Player collection' }));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Select collection player')).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByLabelText('Select collection player'), {
+      target: { value: 'p1' },
+    });
+    fireEvent.click(screen.getByTestId('medal-collection-load'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('medal-collection-table')).toBeTruthy();
+    });
+    expect(api.get).toHaveBeenCalledWith(
+      '/api/v1/medals/admin/players/p1/collection',
+    );
+    expect(screen.getByText('Orange Cat Society')).toBeTruthy();
+    expect(screen.getByTestId('medal-collection-audits').textContent).toBe('1');
+  });
+
+  it('surfaces PLAYERS_VIEW scope denial on collection 403', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/medals/admin/catalog')) {
+        return { data: { total: 0, items: [] } };
+      }
+      if (url.includes('/collection')) {
+        return Promise.reject(
+          Object.assign(new Error('HTTP 403'), {
+            response: {
+              status: 403,
+              data: { detail: 'Missing scope admin.players.view (PLAYERS_VIEW)' },
+            },
+          }),
+        );
+      }
+      return { data: { players: [{ id: 'p1', username: 'Ace' }] } };
+    });
+
+    render(<MedalAdmin />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Player collection' }));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Select collection player')).toBeTruthy();
+    });
+    fireEvent.change(screen.getByLabelText('Select collection player'), {
+      target: { value: 'p1' },
+    });
+    fireEvent.click(screen.getByTestId('medal-collection-load'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('medal-collection-error')).toBeTruthy();
+    });
+    expect(screen.getByTestId('medal-collection-error').textContent).toMatch(
+      /PLAYERS_VIEW|players\.view/i,
+    );
+    expect(screen.getByTestId('medal-collection-error').textContent).not.toMatch(
+      /^Failed to load player medal collection$/,
+    );
+  });
+
+  it('surfaces admin rate-limit copy on collection 429', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/medals/admin/catalog')) {
+        return { data: { total: 0, items: [] } };
+      }
+      if (url.includes('/collection')) {
+        return Promise.reject(
+          Object.assign(new Error('HTTP 429'), {
+            response: { status: 429, data: { detail: 'Too Many Requests' } },
+          }),
+        );
+      }
+      return { data: { players: [{ id: 'p1', username: 'Ace' }] } };
+    });
+
+    render(<MedalAdmin />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Player collection' }));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Select collection player')).toBeTruthy();
+    });
+    fireEvent.change(screen.getByLabelText('Select collection player'), {
+      target: { value: 'p1' },
+    });
+    fireEvent.click(screen.getByTestId('medal-collection-load'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('medal-collection-error')).toBeTruthy();
+    });
+    expect(screen.getByTestId('medal-collection-error').textContent).toMatch(/rate limit/i);
+  });
 });
