@@ -448,24 +448,38 @@ const EconomyDashboard: React.FC = () => {
       );
     }
 
-    // Process price alerts
+    // Process price alerts — empty array only on honest empty payload, not on auth/rate-limit
     if (alertsRes.status === 'fulfilled') {
       setPriceAlerts(Array.isArray(alertsRes.value.data) ? alertsRes.value.data : []);
     } else {
       setPriceAlerts([]);
+      errors.push(
+        formatAdminApiError(alertsRes.reason, {
+          fallback: 'Price alerts unavailable',
+          scopeHint: 'admin economy alerts scope required',
+        })
+      );
     }
 
-    // Process economic health summary (non-blocking - its own honest empty state)
+    // Process economic health summary — null only on honest empty, not on auth/rate-limit
     if (summaryRes.status === 'fulfilled') {
       setSummary(summaryRes.value.data as DashboardSummary);
     } else {
       setSummary(null);
+      errors.push(
+        formatAdminApiError(summaryRes.reason, {
+          fallback: 'Dashboard summary unavailable',
+          scopeHint: 'admin economy summary scope required',
+        })
+      );
     }
 
-    // Show combined error if all endpoints failed
-    if (errors.length === 2) {
+    // Combined strip includes market/metrics/alerts/summary — never silent on 403/429
+    const primaryBothFailed =
+      marketRes.status === 'rejected' && metricsRes.status === 'rejected';
+    if (primaryBothFailed && errors.length === 2) {
       setError(
-        formatAdminApiError(marketRes.status === 'rejected' ? marketRes.reason : new Error('failed'), {
+        formatAdminApiError(marketRes.reason, {
           fallback: 'Failed to load economic data. Please check if the gameserver is running.',
           scopeHint: 'admin economy scopes required',
         })
@@ -664,7 +678,7 @@ const EconomyDashboard: React.FC = () => {
         <>
           {/* Error Notice */}
           {error && (
-            <div className="alert error" style={{ marginBottom: '20px' }}>
+            <div className="alert error" role="alert" style={{ marginBottom: '20px' }}>
               <span className="alert-icon">❌</span>
               <span className="alert-message">
                 {error}
