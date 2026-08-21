@@ -39,7 +39,7 @@ Sections:
   TestUpdateFactionTerritory — territory reassignment + broadcast.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -54,8 +54,6 @@ from src.models.team import Team
 from src.services import faction_service
 from src.services.faction_service import (
     PIRATE_SPAWN_FLOOR,
-    TERRITORY_CONTESTED_MAX,
-    TERRITORY_CONTESTED_MIN,
     TERRITORY_CONTROLLED_MIN,
     TERRITORY_CORE_MIN,
     TERRITORY_SECONDARY_PRESENCE_MIN,
@@ -66,9 +64,12 @@ from src.services.faction_service import (
     _dispatch_faction_medals,
     adjust_sector_influence,
     apply_faction_rep_delta,
-    build_effective_faction_standing,
+    apply_sector_influence_daily_decay,
+    compute_patrol_spawn_weight,
     dominant_reputation_faction_id,
     get_sector_influence,
+    sector_influence_is_idle,
+    build_effective_faction_standing,
     resolve_effective_faction_standing_value,
     sector_spawn_bias,
     sector_territory_tier,
@@ -326,6 +327,7 @@ class TestAdjustSectorInfluence:
         result = adjust_sector_influence(db, row.sector_id, row.faction_id, 15.0)
         assert result is row
         assert result.influence_percentage == 55.0
+        assert result.patrol_spawn_weight == pytest.approx(0.55)
         assert db.flush_calls == 1
 
     def test_clamps_to_100_ceiling(self):
@@ -394,7 +396,7 @@ class TestSectorTerritoryTier:
     def test_zero_top_influence_is_uncontrolled(self):
         assert sector_territory_tier([_influence(influence_percentage=0.0)]) == "uncontrolled"
 
-    def test_100_percent_is_core(self):
+    def test_95_percent_is_core(self):
         assert sector_territory_tier([_influence(influence_percentage=TERRITORY_CORE_MIN)]) == "core"
 
     def test_at_controlled_threshold_is_controlled(self):
@@ -403,21 +405,77 @@ class TestSectorTerritoryTier:
 
     def test_contested_band_with_a_material_secondary_is_contested(self):
         rows = [
-            _influence(influence_percentage=(TERRITORY_CONTESTED_MIN + TERRITORY_CONTESTED_MAX) / 2),
+            _influence(influence_percentage=50.0),
             _influence(influence_percentage=TERRITORY_SECONDARY_PRESENCE_MIN),
         ]
         assert sector_territory_tier(rows) == "contested"
 
-    def test_contested_band_without_a_material_secondary_is_uncontrolled(self):
+    def test_mid_band_without_secondary_is_controlled(self):
+        # LEG-34: >=40 without rival>=25 → controlled (not uncontrolled)
         rows = [
-            _influence(influence_percentage=(TERRITORY_CONTESTED_MIN + TERRITORY_CONTESTED_MAX) / 2),
+            _influence(influence_percentage=50.0),
             _influence(influence_percentage=TERRITORY_SECONDARY_PRESENCE_MIN - 1),
         ]
+        assert sector_territory_tier(rows) == "controlled"
+
+    def test_single_holder_in_contested_band_is_controlled(self):
+        rows = [_influence(influence_percentage=50.0)]
+        assert sector_territory_tier(rows) == "controlled"
+
+    def test_below_contested_band_is_uncontrolled(self):
+        rows = [_influence(influence_percentage=39.0)]
         assert sector_territory_tier(rows) == "uncontrolled"
 
-    def test_single_weak_holder_below_controlled_is_uncontrolled(self):
-        rows = [_influence(influence_percentage=TERRITORY_CONTROLLED_MIN - 1)]
-        assert sector_territory_tier(rows) == "uncontrolled"
+
+# ---------------------------------------------------------------------------
+# compute_patrol_spawn_weight (LEG-INI-05)
+# ---------------------------------------------------------------------------
+
+
+class TestComputePatrolSpawnWeight:
+    def test_zero_influence_is_zero(self):
+        assert compute_patrol_spawn_weight(0.0) == 0.0
+
+    def test_full_influence_identity_defaults_is_one(self):
+        assert compute_patrol_spawn_weight(100.0) == 1.0
+
+    def test_clamps_to_two(self):
+        assert compute_patrol_spawn_weight(100.0, base_patrol_intensity=3.0) == 2.0
+
+    def test_midpoint(self):
+        assert compute_patrol_spawn_weight(50.0) == pytest.approx(0.5)
+
+
+# ---------------------------------------------------------------------------
+# apply_sector_influence_daily_decay (LEG-INI-05 / LEG-65)
+# ---------------------------------------------------------------------------
+
+
+class TestSectorInfluenceDailyDecay:
+    def test_fresh_row_is_not_idle(self):
+        now = datetime(2026, 8, 16, 12, 0, tzinfo=timezone.utc)
+        row = _influence(influence_percentage=50.0)
+        row.last_action_at = now
+        assert sector_influence_is_idle(row, now=now) is False
+        assert apply_sector_influence_daily_decay(row, now=now) is False
+        assert row.influence_percentage == 50.0
+
+    def test_idle_three_utc_days_decays_half_point(self):
+        now = datetime(2026, 8, 16, 12, 0, tzinfo=timezone.utc)
+        row = _influence(influence_percentage=50.0)
+        row.last_action_at = datetime(2026, 8, 13, 12, 0, tzinfo=timezone.utc)
+        assert sector_influence_is_idle(row, now=now) is True
+        assert apply_sector_influence_daily_decay(row, now=now) is True
+        assert row.influence_percentage == pytest.approx(49.5)
+        assert row.patrol_spawn_weight == pytest.approx(0.495)
+        # Decay must not rewrite the activity clock.
+        assert row.last_action_at == datetime(2026, 8, 13, 12, 0, tzinfo=timezone.utc)
+
+    def test_zero_influence_idle_is_noop(self):
+        now = datetime(2026, 8, 16, 12, 0, tzinfo=timezone.utc)
+        row = _influence(influence_percentage=0.0)
+        row.last_action_at = datetime(2026, 8, 1, tzinfo=timezone.utc)
+        assert apply_sector_influence_daily_decay(row, now=now) is False
 
 
 # ---------------------------------------------------------------------------
