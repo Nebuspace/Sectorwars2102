@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAIUpdates } from '../../contexts/WebSocketContext';
 import { api } from '../../utils/auth';
+import { axiosResponseStatus, formatAdminApiError } from '../../utils/adminApiError';
 import './market-prediction-interface.css';
 
 interface PricePrediction {
@@ -69,18 +70,18 @@ export const MarketPredictionInterface: React.FC = () => {
       
       const response = await api.get(`/api/v1/admin/ai/predictions?${params}`);
       setPredictions(response.data);
-    } catch (err: any) {
-      const status = err.response?.status as number | undefined;
+    } catch (err: unknown) {
+      const status = axiosResponseStatus(err);
       if (status === 401) {
         setError('Authentication required. Please log in as an admin user.');
-      } else if (status === 403) {
-        setError(
-          'Access denied — market predictions require the admin players view scope (PLAYERS_VIEW).'
-        );
-      } else if (status === 429) {
-        setError('Admin rate limit exceeded — wait a moment and try again.');
       } else {
-        setError(err.response?.data?.detail || err.message || 'Failed to load predictions');
+        setError(
+          formatAdminApiError(err, {
+            fallback: 'Failed to load predictions',
+            scopeHint:
+              'market predictions require the admin players view scope (PLAYERS_VIEW).',
+          })
+        );
       }
     } finally {
       setLoading(false);
