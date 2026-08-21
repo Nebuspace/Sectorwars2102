@@ -9,7 +9,7 @@ Additive-only on ``outlaw_bases``:
 - raid_audit_log (material outcome trail)
 
 Revision ID: e8c4a1f29b70
-Revises: a9c2e4f71b08
+Revises: a8c3e1f4b902
 Create Date: 2026-08-16 16:24:00.000000
 """
 from alembic import op
@@ -18,7 +18,7 @@ from sqlalchemy.dialects import postgresql
 
 
 revision = "e8c4a1f29b70"
-down_revision = "a9c2e4f71b08"
+down_revision = "a8c3e1f4b902"
 branch_labels = None
 depends_on = None
 
