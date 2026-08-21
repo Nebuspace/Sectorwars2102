@@ -1,6 +1,7 @@
 """Soft-ORDER invent=0 floor — LEG-2055/#2135 · LEG-2056/#2136 · LEG-2059/#2139 ·
-LEG-2060/#2140 · LEG-2063/#2143 (condition_multiplier / demand_factor /
-citadel missing error_code / defense-incident stamp / tariff no-owner-exempt).
+LEG-2060/#2140 · LEG-2063/#2143 · LEG-2068/#2148 (condition_multiplier /
+demand_factor / citadel missing error_code / defense-incident stamp /
+tariff no-owner-exempt / expected_revenue_per_day).
 
 Run: pytest tests/unit/test_softorder_floor_leg2055.py --noconftest -q
 """
@@ -35,6 +36,30 @@ class TestDemandFactor:
         assert with_rep == pytest.approx(100.0 * 0.75 * 1.10)
         final = po.traffic_final(with_rep, region_tax_rate=0.10)
         assert final == pytest.approx(with_rep * 0.90)
+
+    def test_region_tax_zero_vs_quarter_on_traffic_final(self):
+        # Soft-ORDER LEG-2061: region.tax_rate=0.25 → ×0.75 vs 0
+        base = 100.0
+        assert po.traffic_final(base, 0.0) == pytest.approx(100.0)
+        assert po.traffic_final(base, 0.25) == pytest.approx(75.0)
+
+    def test_reputation_score_plus_minus_ten_pct(self):
+        # Soft-ORDER LEG-2057: +1 → +10%; −1 → −10%; after demand_factor
+        d = po.demand_factor(0.05)  # 0.75
+        assert po.traffic_with_rep(100.0, d, 1.0) == pytest.approx(100.0 * 0.75 * 1.10)
+        assert po.traffic_with_rep(100.0, d, -1.0) == pytest.approx(100.0 * 0.75 * 0.90)
+        assert po.traffic_with_rep(100.0, d, 0.0) == pytest.approx(100.0 * 0.75)
+
+
+class TestExpectedRevenuePerDay:
+    def test_canon_worked_example(self):
+        # port-ownership.md:205 — 60 × 1000 × 0.95 × 0.30 = 17100
+        assert po.expected_revenue_per_day(
+            traffic_final_value=60.0,
+            per_trade_revenue_avg=1000.0,
+            region_tax_rate=0.05,
+            owner_pct=30.0,
+        ) == pytest.approx(17100.0)
 
 
 class TestConditionMultiplier:

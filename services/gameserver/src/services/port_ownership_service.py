@@ -629,6 +629,42 @@ def traffic_final(traffic_with_reputation: float, region_tax_rate: Optional[floa
     return float(traffic_with_reputation) * (1.0 - rtax)
 
 
+def expected_revenue_per_day(
+    traffic_final_value: float,
+    per_trade_revenue_avg: float,
+    region_tax_rate: Optional[float],
+    owner_pct: float,
+) -> float:
+    """Canon owner-dashboard planning view (port-ownership.md:198-205):
+
+    expected_revenue_per_day =
+      traffic_final
+      × per_trade_revenue_avg
+      × (1 − region.tax_rate)
+      × (owner_pct / 100)
+
+    ``owner_pct`` is the percent form (30 → 30% cut). ``region.tax_rate`` is
+    fractional ∈ [0.0, 0.25] and composes again here even when already folded
+    into ``traffic_final`` (canon double-apply; worked example :205).
+    Pure helper — does not invent NPC traffic simulation.
+    """
+    try:
+        rtax = float(region_tax_rate) if region_tax_rate is not None else 0.0
+    except (TypeError, ValueError):
+        rtax = 0.0
+    rtax = max(0.0, min(0.25, rtax))
+    try:
+        pct = float(owner_pct)
+    except (TypeError, ValueError):
+        pct = 0.0
+    return (
+        float(traffic_final_value)
+        * float(per_trade_revenue_avg)
+        * (1.0 - rtax)
+        * (pct / 100.0)
+    )
+
+
 def _parse_defense_incident_at(raw: Any) -> Optional[datetime]:
     """Parse ownership[last_defense_incident_at] ISO / datetime → aware UTC."""
     if raw is None:
@@ -4001,6 +4037,10 @@ def get_station_listing_status(
         "tax_rate": station.tax_rate,
         "treasury_balance": station.treasury_balance or 0,
         "status": status,
+        # Soft-ORDER LEG-2068 invent=0: owner-dashboard planning slot. Live
+        # traffic_final composition lands with elasticity Soft-ORDERs; callers
+        # compose via expected_revenue_per_day(...) once factors are known.
+        "expected_revenue_per_day": None,
     }
     payload.update(public_defense_policy_fields(station))
     return payload
