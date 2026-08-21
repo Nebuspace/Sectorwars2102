@@ -1,7 +1,9 @@
 """OutlawBase — hostile-faction lodging (DATA_MODELS/npc-lodging.md).
 
-Foundation only — discovery/raid surfaces stay deferred
-(P10-greenfield-pirate-raid-capture).
+Discovery eligibility + raid lifecycle live in
+``services/outlaw_base_raid_service.py`` (LEG-INI-19). Unspecified loot
+share fraction and relocation placement remain DECISION-NEEDED — this
+model only persists the fields those rules will consume.
 """
 from __future__ import annotations
 
@@ -29,6 +31,7 @@ class OutlawBase(Base):
     __table_args__ = (
         Index("ix_outlaw_bases_region_faction", "home_region_id", "faction_code"),
         Index("ix_outlaw_bases_sector_id", "sector_id"),
+        Index("ix_outlaw_bases_raid_cooldown_until", "raid_cooldown_until"),
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -50,6 +53,20 @@ class OutlawBase(Base):
     discovery_requirements = Column(JSONB, nullable=True)
     defenses = Column(JSONB, nullable=False, default=dict)
     amenities = Column(JSONB, nullable=False, default=dict)
+
+    # --- LEG-INI-19 raid lifecycle ---
+    raid_cooldown_until = Column(DateTime(timezone=True), nullable=True)
+    last_raided_at = Column(DateTime(timezone=True), nullable=True)
+    last_raid_completion_id = Column(UUID(as_uuid=True), nullable=True)
+    combat_lock_held_by = Column(
+        UUID(as_uuid=True),
+        ForeignKey("players.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    loot_inventory = Column(JSONB, nullable=False, default=dict)
+    relocation_pending = Column(Boolean, nullable=False, default=False)
+    raid_audit_log = Column(JSONB, nullable=False, default=list)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(
         DateTime(timezone=True),
