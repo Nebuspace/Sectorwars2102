@@ -1,5 +1,10 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../../utils/auth';
+import {
+  axiosResponseStatus,
+  detailFromResponse,
+  formatAdminApiError,
+} from '../../utils/adminApiError';
 import { useToast, useConfirm } from '../../contexts/ToastContext';
 
 interface PlayerBountyEntry {
@@ -22,9 +27,21 @@ interface BountyListResponse {
   message?: string;
 }
 
-function detailFromErr(err: unknown, fallback: string): string {
-  const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-  return typeof detail === 'string' ? detail : fallback;
+function bountyPanelError(
+  err: unknown,
+  fallback: string,
+  scopeHint: 'PLAYERS_VIEW' | 'ECONOMY_INTERVENE'
+): string {
+  const scope =
+    scopeHint === 'PLAYERS_VIEW'
+      ? 'listing bounties requires the admin players view scope (PLAYERS_VIEW).'
+      : 'bounty force-cancel / collapse requires ECONOMY_INTERVENE.';
+  const status = axiosResponseStatus(err);
+  if (status === 401 || status === 403 || status === 429) {
+    return formatAdminApiError(err, { fallback, scopeHint: scope });
+  }
+  // Preserve GS string detail for 404 / status-less errors (helper 404 path ignores detail).
+  return detailFromResponse(err) ?? formatAdminApiError(err, { fallback, scopeHint: scope });
 }
 
 export interface PlayerBountyPanelProps {
@@ -53,7 +70,7 @@ const PlayerBountyPanel: React.FC<PlayerBountyPanelProps> = ({ targetId, targetN
       setList(data);
     } catch (err: unknown) {
       setList(null);
-      setListError(detailFromErr(err, 'Failed to load bounties'));
+      setListError(bountyPanelError(err, 'Failed to load bounties', 'PLAYERS_VIEW'));
     } finally {
       setLoading(false);
     }
@@ -81,7 +98,7 @@ const PlayerBountyPanel: React.FC<PlayerBountyPanelProps> = ({ targetId, targetN
       toast.success('Bounty force-cancelled');
       await loadBounties();
     } catch (err: unknown) {
-      toast.error(detailFromErr(err, 'Force-cancel failed'));
+      toast.error(bountyPanelError(err, 'Force-cancel failed', 'ECONOMY_INTERVENE'));
     } finally {
       setMutating(null);
     }
@@ -109,7 +126,7 @@ const PlayerBountyPanel: React.FC<PlayerBountyPanelProps> = ({ targetId, targetN
       );
       await loadBounties();
     } catch (err: unknown) {
-      toast.error(detailFromErr(err, 'Collapse failed'));
+      toast.error(bountyPanelError(err, 'Collapse failed', 'ECONOMY_INTERVENE'));
     } finally {
       setMutating(null);
     }

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import './central-nexus-manager.css';
 
 interface NexusStatus {
@@ -56,6 +57,12 @@ const CentralNexusManager: React.FC = () => {
       setNexusStatus(response.data);
     } catch (err) {
       console.error('Failed to load nexus status:', err);
+      setError(
+        formatAdminApiError(err, {
+          fallback: 'Failed to load nexus status',
+          scopeHint: 'admin nexus scopes required',
+        }),
+      );
     }
   };
 
@@ -72,12 +79,14 @@ const CentralNexusManager: React.FC = () => {
       if (status === 404) {
         // Nexus not generated yet — not an error for the UI.
       } else {
-        const detail =
-          typeof err === 'object' && err !== null && 'response' in err
-            ? (err as { response?: { data?: { detail?: string } } }).response?.data?.detail
-            : undefined;
         console.error('Failed to load clusters:', err);
-        setError(detail || 'Failed to load clusters');
+        setError(
+          formatAdminApiError(err, {
+            fallback: 'Failed to load clusters',
+            scopeHint: 'admin nexus cluster scopes required',
+            notFoundMessage: 'Nexus clusters not available — generate the nexus first.',
+          })
+        );
       }
     } finally {
       setLoading(false);
@@ -90,6 +99,12 @@ const CentralNexusManager: React.FC = () => {
       setStats(response.data);
     } catch (err) {
       console.error('Failed to load stats:', err);
+      setError(
+        formatAdminApiError(err, {
+          fallback: 'Failed to load nexus stats',
+          scopeHint: 'admin nexus scopes required',
+        }),
+      );
     }
   };
 

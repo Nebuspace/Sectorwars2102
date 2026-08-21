@@ -1,11 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import './custom-report-builder.css';
 
-const responseStatus = (err: unknown): number | undefined =>
-  typeof err === 'object' && err !== null && 'response' in err
-    ? (err as { response?: { status?: number } }).response?.status
-    : undefined;
 
 interface ReportMetric {
   id: string;
@@ -76,22 +73,16 @@ export const CustomReportBuilder: React.FC<CustomReportBuilderProps> = ({ onGene
       setError(null);
     } catch (err) {
       console.error('Error fetching report data:', err);
-      const status = responseStatus(err);
-
-      if (status === 401 || status === 403) {
-        setError(
-          'Access denied — reading report metrics/templates requires the admin.audit.view scope.'
-        );
-      } else if (status === 404) {
-        setError(
-          'Report builder route not found (404). Metrics and templates ship in the gameserver — ' +
-            'check that the gameserver is running and the /api proxy is reaching it.'
-        );
-      } else if (status !== undefined) {
-        setError(`Report builder request failed (HTTP ${status})`);
-      } else {
-        setError('Gameserver unreachable — network error fetching report builder data');
-      }
+      setError(
+        formatAdminApiError(err, {
+          fallback: 'Gameserver unreachable — network error fetching report builder data',
+          scopeHint:
+            'reading report metrics/templates requires the admin.audit.view scope.',
+          notFoundMessage:
+            'Report builder route not found (404). Metrics and templates ship in the gameserver — ' +
+            'check that the gameserver is running and the /api proxy is reaching it.',
+        }),
+      );
     } finally {
       setLoading(false);
     }
