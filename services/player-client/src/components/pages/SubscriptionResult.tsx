@@ -69,7 +69,9 @@ const SubscriptionResult: React.FC = () => {
   };
 
   const handleContinue = () => {
-    navigate('/dashboard');
+    // Cockpit home is /game — /dashboard is not a Route and previously
+    // fell through to MainApp catch-all (LEG-24 residual).
+    navigate('/game');
   };
 
   const formatDate = (dateString: string) => {
@@ -101,7 +103,7 @@ const SubscriptionResult: React.FC = () => {
             You can try again anytime or explore our platform with the free tier.
           </p>
           <button onClick={handleContinue} className="continue-button">
-            Return to Dashboard
+            Return to cockpit
           </button>
         </div>
       </div>
@@ -131,7 +133,7 @@ const SubscriptionResult: React.FC = () => {
             If this problem persists, please contact our support team with your transaction details.
           </p>
           <button onClick={handleContinue} className="continue-button">
-            Return to Dashboard
+            Return to cockpit
           </button>
         </div>
       </div>
@@ -198,11 +200,11 @@ const SubscriptionResult: React.FC = () => {
             <button onClick={handleContinue} className="continue-button primary">
               Explore Your New Privileges
             </button>
-            <button 
-              onClick={() => navigate('/subscription')} 
+            <button
+              onClick={() => navigate('/game')}
               className="continue-button secondary"
             >
-              Manage Subscriptions
+              Back to cockpit
             </button>
           </div>
 
