@@ -7,13 +7,15 @@ import './medal-admin.css';
 
 /**
  * LEG-11 + LEG-82 — MedalAdmin grant / revoke / catalog / bulk grant.
- * Canon: sw2102-docs/FEATURES/gameplay/medals.md § Admin actions.
- * Auth: PLAYERS_ADJUST_REP (grant/revoke/bulk) and PLAYERS_VIEW (catalog).
+ * LEG-1643 — Admin player collection GET (tip GS #710).
+ * Canon: sw2102-docs/FEATURES/gameplay/medals.md § Admin actions / Admin player view.
+ * Auth: PLAYERS_ADJUST_REP (grant/revoke/bulk) and PLAYERS_VIEW (catalog + collection).
  * Bulk contract: LEG-81 POST /api/v1/medals/admin/bulk-grant (dry_run then commit).
+ * Collection: GET /api/v1/medals/admin/players/{player_id}/collection (AdminPlayerMedalCollectionResponse).
  * Admin bulk rate-limit (10/min) is Design-only in OPERATIONS/admin-ui.md — not enforced server-side yet.
  */
 
-type TabId = 'grant' | 'revoke' | 'catalog' | 'bulk';
+type TabId = 'grant' | 'revoke' | 'catalog' | 'bulk' | 'collection';
 
 interface MedalCatalogItem {
   id: string;
@@ -61,6 +63,30 @@ interface AdminBulkGrantResponse {
   toast_suppressed: boolean;
 }
 
+/** Tip GS AdminCollectionMedal — do not invent fields (medals.py). */
+interface AdminCollectionMedal {
+  medal_id: string;
+  name: string;
+  category: string;
+  tier?: string | null;
+  description?: string | null;
+  awarded_at?: string | null;
+  awarded_via?: string | null;
+  awarded_by_user_id?: string | null;
+  reason?: string | null;
+  source_event_key?: string | null;
+  source_combat_log_id?: string | null;
+  is_hidden_catalog?: boolean;
+  privacy_overridden?: boolean;
+}
+
+interface AdminPlayerMedalCollectionResponse {
+  player_id: string;
+  items: AdminCollectionMedal[];
+  total: number;
+  view_hidden_medal_audits_written: number;
+}
+
 const REASON_MAX = 500;
 const BULK_MAX_RECIPIENTS = 1000;
 
@@ -78,6 +104,14 @@ function medalCatalogError(err: unknown): string {
     scopeHint: 'admin.players.view scope (PLAYERS_VIEW) required to view the medal catalog',
     notFoundMessage:
       'Medal catalog route not found (404). The gameserver admin catalog endpoint is not on this deployment tip — see FEATURES/gameplay/medals.md.',
+  });
+}
+
+function medalCollectionError(err: unknown): string {
+  return formatAdminApiError(err, {
+    fallback: 'Failed to load player medal collection',
+    scopeHint: 'admin.players.view scope (PLAYERS_VIEW) required to view a player medal collection',
+    notFoundMessage: 'Player not found (404) for medal collection.',
   });
 }
 
@@ -114,6 +148,12 @@ const MedalAdmin: React.FC = () => {
   const [dryRunResult, setDryRunResult] = useState<AdminBulkGrantResponse | null>(null);
   const [dryRunFingerprint, setDryRunFingerprint] = useState<string | null>(null);
   const [commitResult, setCommitResult] = useState<AdminBulkGrantResponse | null>(null);
+
+  const [collectionPlayerId, setCollectionPlayerId] = useState('');
+  const [collectionPlayerQuery, setCollectionPlayerQuery] = useState('');
+  const [collection, setCollection] = useState<AdminPlayerMedalCollectionResponse | null>(null);
+  const [loadingCollection, setLoadingCollection] = useState(false);
+  const [collectionError, setCollectionError] = useState<string | null>(null);
 
   const loadCatalog = useCallback(async () => {
     setLoadingCatalog(true);
@@ -184,6 +224,18 @@ const MedalAdmin: React.FC = () => {
       return hay.includes(q);
     });
   }, [catalog, catalogFilter]);
+
+  const collectionFilteredPlayers = useMemo(() => {
+    const q = collectionPlayerQuery.trim().toLowerCase();
+    if (!q) return players.slice(0, 50);
+    return players
+      .filter(
+        (p) =>
+          p.username.toLowerCase().includes(q) ||
+          p.id.toLowerCase().includes(q)
+      )
+      .slice(0, 50);
+  }, [players, collectionPlayerQuery]);
 
   const selectedPlayer = players.find((p) => p.id === selectedPlayerId) ?? null;
   const selectedMedal = catalog.find((m) => m.id === medalId) ?? null;
@@ -308,11 +360,36 @@ const MedalAdmin: React.FC = () => {
     }
   };
 
+  const loadCollection = async () => {
+    if (!collectionPlayerId) return;
+    setLoadingCollection(true);
+    setCollectionError(null);
+    try {
+      const { data } = await api.get<AdminPlayerMedalCollectionResponse>(
+        `/api/v1/medals/admin/players/${encodeURIComponent(collectionPlayerId)}/collection`
+      );
+      setCollection({
+        player_id: String(data?.player_id ?? collectionPlayerId),
+        items: Array.isArray(data?.items) ? data.items : [],
+        total: typeof data?.total === 'number' ? data.total : 0,
+        view_hidden_medal_audits_written:
+          typeof data?.view_hidden_medal_audits_written === 'number'
+            ? data.view_hidden_medal_audits_written
+            : 0,
+      });
+    } catch (err: unknown) {
+      setCollection(null);
+      setCollectionError(medalCollectionError(err));
+    } finally {
+      setLoadingCollection(false);
+    }
+  };
+
   return (
     <div className="page-container medal-admin" data-testid="medal-admin">
       <PageHeader
         title="Medal Admin"
-        subtitle="Grant, revoke, or bulk-grant medals; browse the catalog (PLAYERS_ADJUST_REP / PLAYERS_VIEW)"
+        subtitle="Grant, revoke, bulk-grant, browse catalog, or view a player's full collection (PLAYERS_ADJUST_REP / PLAYERS_VIEW)"
       />
 
       <div className="page-content">
@@ -322,6 +399,7 @@ const MedalAdmin: React.FC = () => {
             ['revoke', 'Revoke'],
             ['bulk', 'Bulk grant'],
             ['catalog', 'Catalog'],
+            ['collection', 'Player collection'],
           ] as const).map(([id, label]) => (
             <button
               key={id}
@@ -645,6 +723,129 @@ const MedalAdmin: React.FC = () => {
                     ))}
                   </tbody>
                 </table>
+              </div>
+            )}
+          </section>
+        )}
+
+        {tab === 'collection' && (
+          <section
+            className="section medal-admin-form"
+            aria-label="Player medal collection"
+            data-testid="medal-collection-panel"
+          >
+            {playerError && (
+              <div className="alert alert-error mb-3" role="alert">
+                {playerError}
+              </div>
+            )}
+            {collectionError && (
+              <div className="alert alert-error mb-3" role="alert" data-testid="medal-collection-error">
+                {collectionError}
+              </div>
+            )}
+
+            <p className="medal-admin-muted">
+              Loads the tip admin GET collection for one player (includes hidden-catalog medals).
+              Privacy-overridden hidden views write <code>view_hidden_medal</code> audit rows on the
+              gameserver — the response reports how many were written this load.
+            </p>
+
+            <div className="medal-admin-field">
+              <label htmlFor="medal-collection-player-search">Player search</label>
+              <input
+                id="medal-collection-player-search"
+                type="search"
+                value={collectionPlayerQuery}
+                onChange={(e) => setCollectionPlayerQuery(e.target.value)}
+                placeholder="Username or player id"
+                autoComplete="off"
+              />
+              {loadingPlayers ? (
+                <p className="medal-admin-muted">Loading players…</p>
+              ) : (
+                <select
+                  aria-label="Select collection player"
+                  value={collectionPlayerId}
+                  onChange={(e) => {
+                    setCollectionPlayerId(e.target.value);
+                    setCollection(null);
+                    setCollectionError(null);
+                  }}
+                  size={Math.min(8, Math.max(3, collectionFilteredPlayers.length || 3))}
+                  className="medal-admin-select-list"
+                >
+                  <option value="">— select player —</option>
+                  {collectionFilteredPlayers.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.username} ({p.id})
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={!collectionPlayerId || loadingCollection}
+              onClick={() => void loadCollection()}
+              data-testid="medal-collection-load"
+            >
+              {loadingCollection ? 'Loading…' : 'Load collection'}
+            </button>
+
+            {collection && (
+              <div className="medal-admin-bulk-summary" data-testid="medal-collection-result">
+                <h3>Collection</h3>
+                <p className="medal-admin-muted">
+                  Player <code>{collection.player_id}</code> — {collection.total} medal
+                  {collection.total === 1 ? '' : 's'}; view_hidden_medal audits written this load:{' '}
+                  <strong data-testid="medal-collection-audits">
+                    {collection.view_hidden_medal_audits_written}
+                  </strong>
+                </p>
+                {collection.items.length === 0 ? (
+                  <p className="medal-admin-muted" role="status">
+                    No medals in this player&apos;s collection.
+                  </p>
+                ) : (
+                  <div className="levers-table-wrap">
+                    <table className="levers-table" data-testid="medal-collection-table">
+                      <thead>
+                        <tr>
+                          <th>Medal</th>
+                          <th>Category</th>
+                          <th>Awarded</th>
+                          <th>Via</th>
+                          <th>Flags</th>
+                          <th>Reason</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {collection.items.map((m) => (
+                          <tr key={`${m.medal_id}:${m.awarded_at ?? ''}:${m.source_event_key ?? ''}`}>
+                            <td>
+                              <div>{m.name || m.medal_id}</div>
+                              <div className="font-mono text-xs">{m.medal_id}</div>
+                            </td>
+                            <td>
+                              {m.category || '—'}
+                              {m.tier ? ` · ${m.tier}` : ''}
+                            </td>
+                            <td className="text-sm">{m.awarded_at || '—'}</td>
+                            <td className="text-sm">{m.awarded_via || '—'}</td>
+                            <td className="text-sm">
+                              {m.is_hidden_catalog ? 'hidden-catalog' : '—'}
+                              {m.privacy_overridden ? ' · privacy-overridden' : ''}
+                            </td>
+                            <td className="text-sm">{m.reason || '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
             )}
           </section>
