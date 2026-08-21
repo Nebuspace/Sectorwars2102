@@ -362,6 +362,17 @@ def upgrade_security_tier(
     station = _lock_station(db, station.id)
     _require_owner(station, owner)
 
+    # Soft-ORDER invent=0 (#2111): insolvency stops all upgrades.
+    from src.services.port_ownership_service import (
+        PortOwnershipError,
+        assert_upgrades_allowed_during_solvency,
+    )
+
+    try:
+        assert_upgrades_allowed_during_solvency(station)
+    except PortOwnershipError as exc:
+        raise StationSecurityError(exc.status_code, exc.detail) from exc
+
     # Settle a completed pending op FIRST, as its own atomic step (mirrors
     # resolve_listing's lazy-settle-on-read). Flushed immediately so the
     # flip is durable independent of whatever this NEW upgrade request goes
