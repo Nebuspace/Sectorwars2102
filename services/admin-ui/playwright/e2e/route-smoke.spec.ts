@@ -41,6 +41,14 @@ test.describe('Admin UI route smoke (WO-ADM-ROUTE-SMOKE-E2E)', () => {
       { path: '/analytics', title: 'Advanced Analytics' },
       { path: '/players', title: 'Players' },
       { path: '/translations', title: 'Translation Management' },
+      // Soft-ORDER #1769–#1772 — tip-PRESENT App routes missing from smoke
+      { path: '/colonies', title: 'Colonization Management' },
+      { path: '/messages', title: 'Message Moderation' },
+      { path: '/nexus', title: 'Central Nexus Management' },
+      { path: '/regional-governor', title: 'Regional Governor Dashboard' },
+      { path: '/audit', title: 'Admin Action Log' },
+      { path: '/universe/sectors', title: 'Sectors Management' },
+      { path: '/universe/bang', title: 'Bang Galaxy' },
     ];
 
     for (const { path, title } of routes) {
@@ -51,7 +59,8 @@ test.describe('Admin UI route smoke (WO-ADM-ROUTE-SMOKE-E2E)', () => {
           const pathname = url.pathname;
           return pathname === path || pathname === `${path}/`;
         });
-        await expect(page.locator('h1.page-title')).toHaveText(title);
+        // level-1 heading: PageHeader (h1.page-title) and bare <h1> landmarks both qualify
+        await expect(page.getByRole('heading', { name: title, level: 1 })).toBeVisible();
       });
     }
 
@@ -62,7 +71,7 @@ test.describe('Admin UI route smoke (WO-ADM-ROUTE-SMOKE-E2E)', () => {
       await expect(page).toHaveURL((url) => {
         return url.pathname === '/audit' && url.searchParams.get('tab') === 'review';
       });
-      await expect(page.locator('h1.page-title')).toHaveText('Admin Action Log');
+      await expect(page.getByRole('heading', { name: 'Admin Action Log', level: 1 })).toBeVisible();
       await expect(page.getByRole('tab', { name: 'Review queue' })).toHaveAttribute(
         'aria-selected',
         'true'

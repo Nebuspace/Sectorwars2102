@@ -43,6 +43,25 @@ export async function installSmokeAuth(page: Page): Promise<void> {
       });
       return;
     }
+    // Soft-ORDER #1772 — BangGalaxyPage title is i18n `bang.page.title` (HTTP backend).
+    // Stub admin ns so `/universe/bang` smoke can assert "Bang Galaxy" without a live GS.
+    if (url.includes('/i18n/')) {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          bang: {
+            page: {
+              title: 'Bang Galaxy',
+              subtitle: 'Generate, preview, and manage galaxies via the sw2102-bang engine.',
+              tabForm: 'Generate',
+              tabHistory: 'History',
+            },
+          },
+        }),
+      });
+      return;
+    }
     await route.fulfill({
       status: 503,
       contentType: 'application/json',
