@@ -316,6 +316,19 @@ class ShipUpgradeService:
         },
     }
 
+    @classmethod
+    def equipment_key_openapi_description(cls) -> str:
+        """OpenAPI Field text for installable equipment keys (LEG-131).
+
+        Derived from EQUIPMENT_DEFINITIONS so the schema cannot list a stale
+        subset when new keys ship.
+        """
+        keys = ", ".join(sorted(cls.EQUIPMENT_DEFINITIONS.keys()))
+        return (
+            "Installable equipment key from ShipUpgradeService.EQUIPMENT_DEFINITIONS. "
+            f"One of: {keys}"
+        )
+
     # ========================================================================
     # WO-MINING — Mining Laser upgrade ladder (the "mining_laser_level" entry).
     # ------------------------------------------------------------------------
