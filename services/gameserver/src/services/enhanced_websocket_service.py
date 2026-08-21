@@ -16,7 +16,7 @@ import hashlib
 import hmac
 import os
 import time
-from typing import Dict, List, Set, Any
+from typing import Dict, List, Set, Any, Optional
 from datetime import datetime, UTC
 from dataclasses import dataclass
 from collections import defaultdict
@@ -1029,27 +1029,22 @@ class EnhancedWebSocketService:
             "message": error_message
         })
 
-    async def send_medal_awarded(self, user_id: str, medal_data: Dict[str, Any]):
-        """Push a player-scoped ``medal_awarded`` frame to a freshly-decorated pilot.
+    async def send_medal_awarded(
+        self,
+        user_id: str,
+        medal_data: Dict[str, Any],
+        *,
+        team_id: Optional[str] = None,
+        sector_id: Optional[int] = None,
+        broadcast_team: bool = False,
+        broadcast_sector: bool = False,
+    ):
+        """Push a ``medal_awarded`` frame to the earner and optional team/sector rooms.
 
-        The single realtime helper for WO-B7: when ``medal_service.award_medal``
-        records a GENUINE new ``player_medals`` row, the player who earned the
-        medal should learn of it live (a toast + the MedalShowcase refresh). This
-        mirrors the existing player-scoped event helpers on the base
-        ``ConnectionManager`` (``send_turn_pool_update`` / ``send_hostile_detected``
-        / ``send_new_message_notification``): a typed message stamped with a
-        top-level ``timestamp``, flat-spread payload, delivered via
-        ``send_personal_message``.
-
-        ``user_id`` is the owning ``User.id`` string (the key
-        ``send_personal_message`` routes on — NOT the ``Player.id``); the caller
-        resolves ``player.user_id`` before invoking. ``medal_data`` carries the
-        catalog metadata (``medal_id``, ``medal_name``, ``medal_category``,
-        ``medal_tier``, ``medal_description``, ``medal_icon``, ``awarded_via``).
-
-        Routed through the base ``connection_manager`` rather than ``send_message``
-        because this is a server-originated push: it carries no inbound
-        session_id/signature handshake, exactly like the sibling event helpers.
+        Personal delivery is always attempted. Team and sector fan-out follow
+        sw2102-docs/SYSTEMS/medal-service.md:278 (team when opted-in; sector for
+        GOLD+ tier or UNIQUE category). The earner is excluded from team/sector
+        broadcasts because they already received the personal frame.
         """
         message = {
             "type": "medal_awarded",
@@ -1057,6 +1052,14 @@ class EnhancedWebSocketService:
             **medal_data,
         }
         await self.connection_manager.send_personal_message(user_id, message)
+        if broadcast_team and team_id:
+            await self.connection_manager.broadcast_to_team(
+                team_id, dict(message), exclude_user=user_id
+            )
+        if broadcast_sector and sector_id is not None:
+            await self.connection_manager.broadcast_to_sector(
+                int(sector_id), dict(message), exclude_user=user_id
+            )
     
     async def _handle_heartbeat(self, player_id: str):
         """Handle heartbeat message"""
