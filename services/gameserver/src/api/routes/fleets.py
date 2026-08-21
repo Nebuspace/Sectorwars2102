@@ -38,6 +38,11 @@ class AddShipRequest(BaseModel):
     role: str = Field(default=FleetRole.ATTACKER.value)
 
 
+class MoveFleetRequest(BaseModel):
+    """Request to relocate a fleet (and all member ships) as a unit."""
+    sector_id: UUID
+
+
 class FleetResponse(BaseModel):
     """Fleet response model."""
     id: UUID
@@ -503,6 +508,63 @@ async def remove_ship_from_fleet(
         raise HTTPException(status_code=400, detail="Ship not in fleet")
 
     return {"message": "Ship removed from fleet"}
+
+
+@router.post("/{fleet_id}/move")
+async def move_fleet(
+    fleet_id: UUID,
+    request: MoveFleetRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Relocate a fleet and all member ships to ``request.sector_id``.
+
+    Canon: fleet-coordination.md Inputs/Outputs — commander-gated;
+    emits ``fleet_moved`` (origin + destination) on the realtime bus.
+    """
+    fleet = db.query(Fleet).filter(Fleet.id == fleet_id).first()
+    if not fleet:
+        raise HTTPException(status_code=404, detail="Fleet not found")
+
+    # WO LEG-49: requesting player must command the fleet
+    if fleet.commander_id != player.id:
+        raise HTTPException(status_code=403, detail="Only fleet commander can move the fleet")
+
+    service = FleetService(db)
+    try:
+        result = service.move_fleet(fleet_id, request.sector_id)
+    except ValueError as e:
+        detail = str(e)
+        status = 404 if "not found" in detail.lower() else 400
+        raise HTTPException(status_code=status, detail=detail) from e
+
+    event = result["event"]
+    # Best-effort realtime publish (mirrors other sync-service → bus hops).
+    try:
+        from src.services.websocket_service import connection_manager
+        import asyncio
+
+        message = dict(event)
+        dest_num = event.get("destination_sector_number")
+        origin_num = event.get("origin_sector_number")
+        tasks = []
+        if dest_num is not None:
+            tasks.append(connection_manager.broadcast_to_sector(int(dest_num), message))
+        if origin_num is not None and origin_num != dest_num:
+            tasks.append(connection_manager.broadcast_to_sector(int(origin_num), message))
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+    except Exception:
+        # Move already committed; bus failure must not fail the HTTP response.
+        pass
+
+    moved = result["fleet"]
+    return {
+        "message": "Fleet moved",
+        "fleet_id": str(moved.id),
+        "sector_id": str(moved.sector_id) if moved.sector_id else None,
+        "event": event,
+    }
 
 
 @router.patch("/{fleet_id}/formation")
