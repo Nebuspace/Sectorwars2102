@@ -199,4 +199,26 @@ describe('TradeDockAdmin', () => {
       );
     });
   });
+
+  it('list load 403 surfaces formatAdminApiError scope helper (not generic Failed to load)', async () => {
+    vi.mocked(api.get).mockRejectedValue({
+      response: { status: 403, data: {} },
+    });
+    render(<TradeDockAdmin />);
+
+    expect(
+      await screen.findByText(/Access denied|PLAYERS_VIEW/i)
+    ).toBeTruthy();
+    expect(screen.queryByText('Failed to load TradeDocks')).toBeNull();
+  });
+
+  it('list load 429 surfaces admin rate-limit helper (not generic Failed to load)', async () => {
+    vi.mocked(api.get).mockRejectedValue({
+      response: { status: 429, data: {} },
+    });
+    render(<TradeDockAdmin />);
+
+    expect(await screen.findByText(/rate limit/i)).toBeTruthy();
+    expect(screen.queryByText('Failed to load TradeDocks')).toBeNull();
+  });
 });

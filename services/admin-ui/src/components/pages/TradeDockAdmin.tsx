@@ -92,9 +92,11 @@ interface TradeDockOverview {
   reservation_count_total?: number;
 }
 
-function detailFromErr(err: unknown, fallback: string): string {
-  const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-  return typeof detail === 'string' ? detail : fallback;
+function constructionAdminError(err: unknown, fallback: string): string {
+  return formatAdminApiError(err, {
+    fallback,
+    scopeHint: 'PLAYERS_VIEW scope required for construction admin reads',
+  });
 }
 
 function poolLabel(pool: SlipPool | undefined): string {
@@ -131,7 +133,7 @@ const TradeDockAdmin: React.FC = () => {
       });
     } catch (err: unknown) {
       setDocks([]);
-      setListError(detailFromErr(err, 'Failed to load TradeDocks'));
+      setListError(constructionAdminError(err, 'Failed to load TradeDocks'));
     } finally {
       setLoadingList(false);
     }
@@ -165,7 +167,7 @@ const TradeDockAdmin: React.FC = () => {
       });
     } catch (err: unknown) {
       setOverview(null);
-      setDetailError(detailFromErr(err, 'Failed to load TradeDock overview'));
+      setDetailError(constructionAdminError(err, 'Failed to load TradeDock overview'));
     } finally {
       setLoadingDetail(false);
     }
@@ -190,7 +192,7 @@ const TradeDockAdmin: React.FC = () => {
       setReservation(data);
     } catch (err: unknown) {
       setReservation(null);
-      toast.error(detailFromErr(err, 'Failed to load reservation detail'));
+      toast.error(constructionAdminError(err, 'Failed to load reservation detail'));
     } finally {
       setLoadingReservation(false);
     }
