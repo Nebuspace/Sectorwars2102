@@ -35,6 +35,7 @@ from src.models.sector import Sector, SectorType
 from src.models.faction import FactionType
 from src.models.claim_license import ClaimLicense
 from src.models.mining_harvest import MiningHarvest, MiningHarvestStatus
+from src.models.zone import Zone, ZoneType
 from src.services.faction_service import apply_faction_rep_delta
 from src.services.turn_service import regenerate_turns, spend_turns
 
@@ -86,6 +87,9 @@ _LICENSE_FEE_BY_TIER: Dict[int, int] = {
 LICENSE_COST_PER_TIER = 500  # § License cost: "500 cr × richness_tier"
 LICENSE_DURATION_HOURS = 24  # § License model: "24 real-time hours per purchase"
 LICENSE_RENEWAL_FACTOR = 0.8  # § License cost: renewal at 80% of base (400 × tier)
+# License panel "recently expired" window (LEG-435 / coord pin): one ClaimLicense
+# duration — expired_at within the last LICENSE_DURATION_HOURS. Not multi-week.
+RECENTLY_EXPIRED_LICENSE_HOURS = LICENSE_DURATION_HOURS
 
 # § Output — precious_metals rare-drop: 5% base + 2% per laser level, frozen
 # at the Laser L2 value (9%) per ADR-0062 E-F3 vs Laser L3 ruling, 2026-08-04
@@ -102,15 +106,16 @@ PRECIOUS_METALS_YIELD = (1, 3)  # § Output: "Yield 1–3 units per drop."
 QUANTUM_SHARDS_RATE = 0.01
 QUANTUM_SHARDS_MIN_LASER_LEVEL = 2
 
-# § Faction reputation hooks (canon table). AM deltas only — the Frontier
-# Coalition +5 hook (canon line "Mine in Frontier-zone unclaimed asteroid") is
-# NOT buildable in the kernel: there is no FactionType.FRONTIER / Frontier
-# Coalition faction row to apply it to (only FEDERATION/MINING/etc. exist). It is
-# deferred to the faction-roster expansion and flagged in the WO report.
+# § Faction reputation hooks (canon table). AM deltas below; Frontier Coalition
+# +5 on FRONTIER-zone unclaimed harvests is live (seeded as Independents under
+# name "Frontier Coalition" — resolve by name so a sibling Independents row
+# cannot be credited).
 AM_REP_BASE = 1            # "+1 / harvest" base tick (all asteroid sectors)
 AM_REP_LICENSED_BONUS = 1  # "+1 / harvest" licensed bonus (stacks → +2 total)
 AM_REP_UNLICENSED = -10    # "−10 / extraction" unlicensed penalty in AM space
 AM_REP_LICENSE_PURCHASE = 15  # "+15 / purchase" single-shot on license buy
+FC_REP_UNCLAIMED_FRONTIER = 5  # "+5 / harvest" Frontier-zone unclaimed only
+FC_FACTION_NAME = "Frontier Coalition"
 
 # § Repeated unlicensed AM enforcement (mining.md — "trips the AM faction
 # enforcement path (NPC patrol response in MILITARY_ZONE overlap clusters)").
@@ -469,6 +474,25 @@ class MiningService:
         (canon: ``Sector.controlling_faction == "astral_mining_consortium"``)."""
         return sector.controlling_faction == AM_FACTION_CODE
 
+    @staticmethod
+    def frontier_coalition_rep_for_harvest(
+        *, am_claimed: bool, is_frontier: bool
+    ) -> int:
+        """Canon FC +5 only on FRONTIER-zone **unclaimed** asteroid harvests."""
+        if am_claimed or not is_frontier:
+            return 0
+        return FC_REP_UNCLAIMED_FRONTIER
+
+    def _sector_is_frontier(self, sector: Sector) -> bool:
+        """True when the sector's zone is ``ZoneType.FRONTIER`` (null zone → False)."""
+        zone = sector.zone
+        if zone is None and sector.zone_id is not None:
+            zone = (
+                self.db.query(Zone)
+                .filter(Zone.id == sector.zone_id)
+                .first()
+            )
+        return zone is not None and zone.zone_type == ZoneType.FRONTIER
     def count_recent_unlicensed_am_harvests(
         self,
         player_id: uuid.UUID,
@@ -575,6 +599,85 @@ class MiningService:
         if candidate is None:
             return False
         return bool(_relocate_npc(self.db, candidate, sector.sector_id))
+
+    # ------------------------------------------------------------------
+    # Yield-band preview (read-only — LEG-424 / mining.md:252)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def matrix_yield_band(richness_tier: int, laser_level: int) -> Tuple[int, int]:
+        """Canon ``_YIELD_MATRIX`` band for (tier, laser). No invent."""
+        tier = max(1, min(5, int(richness_tier)))
+        laser_col = max(0, min(3, int(laser_level)))
+        return _YIELD_MATRIX[tier][laser_col]
+
+    def preview_yield(
+        self, ship_id: uuid.UUID, player_id: uuid.UUID
+    ) -> Dict[str, Any]:
+        """Server-authoritative yield band before committing harvest turns.
+
+        Returns matrix ``ore_lo``/``ore_hi`` for current sector richness ×
+        Mining Laser level, plus the live ``depletion_modifier`` already used
+        at resolve. Does **not** spend turns or mutate depletion. Gates:
+        ``not_an_asteroid_field``, ``no_mining_laser``, ownership failures.
+        """
+        empty = {
+            "ore_lo": 0,
+            "ore_hi": 0,
+            "richness_tier": None,
+            "laser_level": None,
+            "depletion_modifier": None,
+            "turns_cost": HARVEST_TURN_COST,
+        }
+
+        player, ship, reason = self._lock_player_and_ship(ship_id, player_id)
+        if reason:
+            return {"success": False, "reason": reason, **empty}
+
+        sector = self._resolve_current_sector(player)
+        if sector is None or sector.type != SectorType.ASTEROID_FIELD:
+            return {
+                "success": False,
+                "reason": "not_an_asteroid_field",
+                **empty,
+            }
+
+        laser_level = self._laser_level(ship)
+        if laser_level is None:
+            return {
+                "success": False,
+                "reason": "no_mining_laser",
+                **empty,
+            }
+        laser_col = max(0, min(3, laser_level))
+
+        # Read-only richness / depletion — do not persist backfill on preview.
+        resources = sector.resources if isinstance(sector.resources, dict) else {}
+        richness = resources.get("asteroid_richness")
+        if isinstance(richness, dict) and "richness_tier" in richness:
+            tier = max(1, min(5, int(richness.get("richness_tier", 3))))
+        else:
+            tier = _derive_richness_tier(sector.resource_regeneration)
+
+        pool_size = tier * DEPLETION_POOL_PER_TIER
+        depletion_pool = resources.get("depletion_pool", pool_size)
+        if not isinstance(depletion_pool, int):
+            depletion_pool = pool_size
+        consumed = max(0, pool_size - depletion_pool)
+        consumed_fraction = (consumed / pool_size) if pool_size > 0 else 0.0
+        depletion_mod = _depletion_yield_modifier(consumed_fraction)
+
+        ore_lo, ore_hi = self.matrix_yield_band(tier, laser_col)
+
+        return {
+            "success": True,
+            "reason": None,
+            "ore_lo": ore_lo,
+            "ore_hi": ore_hi,
+            "richness_tier": tier,
+            "laser_level": laser_col,
+            "depletion_modifier": depletion_mod,
+            "turns_cost": HARVEST_TURN_COST,
+        }
 
     # ------------------------------------------------------------------
     # Harvest — start (async) / resolve / interrupt
@@ -893,6 +996,20 @@ class MiningService:
                 reason="mining_harvest",
             )
 
+        fc_rep_delta = self.frontier_coalition_rep_for_harvest(
+            am_claimed=bool(row.am_claimed),
+            is_frontier=self._sector_is_frontier(sector),
+        )
+        if fc_rep_delta != 0:
+            apply_faction_rep_delta(
+                self.db,
+                row.player_id,
+                FactionType.INDEPENDENTS,
+                fc_rep_delta,
+                reason="mining_harvest_frontier_unclaimed",
+                faction_name=FC_FACTION_NAME,
+            )
+
         now = datetime.now(timezone.utc)
         row.status = MiningHarvestStatus.COMPLETED
         row.resolved_at = now
@@ -1104,6 +1221,52 @@ class MiningService:
         row.terminal_reason = reason_code
         self.db.flush()
         return {"success": False, "reason": reason_code, **empty}
+
+    # ------------------------------------------------------------------
+    # License list (active + recently expired)
+    # ------------------------------------------------------------------
+    def list_player_licenses(self, player_id: uuid.UUID) -> Dict[str, Any]:
+        """Owner-scoped ClaimLicense rows for the license panel.
+
+        Returns active licenses plus those whose ``expires_at`` falls within
+        the last ``RECENTLY_EXPIRED_LICENSE_HOURS`` (24h — one ClaimLicense
+        duration; FEATURES/economy/mining.md license panel / LEG-435).
+        Rows expired older than that window are omitted. Never returns another
+        player's rows.
+        """
+        now = datetime.utcnow()
+        cutoff = now - timedelta(hours=RECENTLY_EXPIRED_LICENSE_HOURS)
+        rows = (
+            self.db.query(ClaimLicense)
+            .filter(
+                ClaimLicense.player_id == player_id,
+                ClaimLicense.expires_at > cutoff,
+            )
+            .order_by(ClaimLicense.expires_at.desc())
+            .all()
+        )
+        items = []
+        for row in rows:
+            expires_at = row.expires_at
+            purchased_at = row.purchased_at
+            items.append(
+                {
+                    "id": str(row.id),
+                    "region_id": str(row.region_id) if row.region_id else None,
+                    "sector_number": int(row.sector_number),
+                    "expires_at": expires_at.isoformat() if expires_at else None,
+                    "purchased_at": (
+                        purchased_at.isoformat() if purchased_at else None
+                    ),
+                    "cost_paid_cr": int(row.cost_paid_cr or 0),
+                    "is_active": bool(expires_at and expires_at > now),
+                }
+            )
+        return {
+            "items": items,
+            "total": len(items),
+            "recently_expired_window_hours": RECENTLY_EXPIRED_LICENSE_HOURS,
+        }
 
     # ------------------------------------------------------------------
     # License purchase / renewal
