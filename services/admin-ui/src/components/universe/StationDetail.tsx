@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { api } from '../../utils/auth';
-import { formatUniverseAdminError } from '../../utils/universeAdminError';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import './universe-detail.css';
 
 interface PortDetailProps {
@@ -9,12 +9,60 @@ interface PortDetailProps {
   onUpdate?: (updatedPort: any) => void;
 }
 
+/** StationClass enum ints 0–11 (models/station.py). */
+const STATION_CLASS_OPTIONS = Array.from({ length: 12 }, (_, i) => String(i));
+
+const COMMODITY_PRICE_FIELDS: Record<string, string> = {
+  ore_price: 'ore',
+  organics_price: 'organics',
+  equipment_price: 'equipment',
+};
+
+/** Build PATCH body keys GS update_port actually applies (hasattr / commodities / _quantity). */
+export function buildPortPatchPayload(field: string, value: any, port: any): Record<string, unknown> {
+  if (field === 'tax_rate') {
+    const percent = typeof value === 'number' ? value : parseFloat(String(value));
+    return { tax_rate: (Number.isFinite(percent) ? percent : 0) / 100 };
+  }
+  if (field === 'owner_id') {
+    const raw = String(value ?? '').trim();
+    return { owner_id: raw === '' ? null : raw };
+  }
+  if (field === 'station_class') {
+    return { station_class: parseInt(String(value), 10) };
+  }
+  if (field === 'defense_fighters' || field === 'defense_drones') {
+    const drones = typeof value === 'number' ? value : parseInt(String(value), 10) || 0;
+    return {
+      defenses: {
+        defense_drones: drones,
+        max_defense_drones: port.max_defense_drones ?? 50,
+        shield_strength: port.shields ?? port.port_shields ?? 50,
+        patrol_ships: port.patrol_ships ?? 0,
+      },
+    };
+  }
+  const commodity = COMMODITY_PRICE_FIELDS[field];
+  if (commodity) {
+    const price = typeof value === 'number' ? value : parseFloat(String(value)) || 0;
+    return { commodities: { [commodity]: { current_price: price } } };
+  }
+  return { [field]: value };
+}
+
 const PortDetail: React.FC<PortDetailProps> = ({ port, onBack, onUpdate }) => {
   const [editingField, setEditingField] = useState<string | null>(null);
   const [editValues, setEditValues] = useState<any>({});
   const [isLoading, setIsLoading] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  const stationClass =
+    port.station_class ?? port.port_class ?? 1;
+  const defenseDrones =
+    port.defense_drones ?? port.defense_fighters ?? 0;
 
   const handleEdit = (field: string, currentValue: any) => {
+    setSaveError(null);
     setEditingField(field);
     setEditValues({ ...editValues, [field]: currentValue });
   };
@@ -22,26 +70,49 @@ const PortDetail: React.FC<PortDetailProps> = ({ port, onBack, onUpdate }) => {
   const handleSave = async (field: string) => {
     try {
       setIsLoading(true);
+      setSaveError(null);
       const value = editValues[field];
-      
-      // Update port via API
-      await api.patch(`/api/v1/admin/ports/${port.id}`, {
-        [field]: value
-      });
-      
-      // Update local state
-      const updatedPort = { ...port, [field]: value };
+      const payload = buildPortPatchPayload(field, value, port);
+
+      await api.patch(`/api/v1/admin/ports/${port.id}`, payload);
+
+      const updatedPort = { ...port, ...localPortUpdate(field, value, payload) };
       if (onUpdate) {
         onUpdate(updatedPort);
       }
-      
+
       setEditingField(null);
     } catch (error) {
-      console.error(`Failed to update ${field}:`, error);
-      alert(formatUniverseAdminError(error, `Failed to update ${field}`));
+      setSaveError(
+        formatAdminApiError(error, {
+          fallback: `Failed to update ${field}`,
+          scopeHint: 'admin.universe.manage',
+        })
+      );
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const localPortUpdate = (field: string, value: any, payload: Record<string, unknown>) => {
+    if (field === 'tax_rate') {
+      return { tax_rate: (payload as { tax_rate: number }).tax_rate };
+    }
+    if (field === 'owner_id') {
+      return { owner_id: (payload as { owner_id: string | null }).owner_id };
+    }
+    if (field === 'station_class') {
+      return { station_class: (payload as { station_class: number }).station_class };
+    }
+    if (field === 'defense_fighters' || field === 'defense_drones') {
+      const drones = (payload as { defenses: { defense_drones: number } }).defenses.defense_drones;
+      return { defense_drones: drones, defense_fighters: drones };
+    }
+    const commodity = COMMODITY_PRICE_FIELDS[field];
+    if (commodity) {
+      return { [field]: value };
+    }
+    return { [field]: value };
   };
 
   const handleCancel = () => {
@@ -128,7 +199,7 @@ const PortDetail: React.FC<PortDetailProps> = ({ port, onBack, onUpdate }) => {
     return classInfo[portClass] || classInfo[1];
   };
 
-  const classInfo = getPortClassInfo(port.port_class);
+  const classInfo = getPortClassInfo(Number(stationClass));
 
   return (
     <div className="port-detail">
@@ -138,11 +209,16 @@ const PortDetail: React.FC<PortDetailProps> = ({ port, onBack, onUpdate }) => {
         </button>
         <h2>🏪 {port.name}</h2>
         <div className="port-class" style={{ backgroundColor: classInfo.color }}>
-          Class {port.port_class}: {classInfo.name}
+          Class {stationClass}: {classInfo.name}
         </div>
       </div>
 
       <div className="detail-content">
+        {saveError ? (
+          <div className="admin-save-error" role="alert">
+            {saveError}
+          </div>
+        ) : null}
         <div className="port-overview">
           <h3>Station Overview</h3>
           <div className="info-grid">
@@ -155,18 +231,22 @@ const PortDetail: React.FC<PortDetailProps> = ({ port, onBack, onUpdate }) => {
             <div className="info-item">
               <span className="label">Station Class:</span>
               <span className="value">
-                <EditableField 
-                  field="port_class" 
-                  value={port.port_class} 
+                <EditableField
+                  field="station_class"
+                  value={stationClass}
                   type="select"
-                  options={['1', '2', '3', '4', '5']}
+                  options={STATION_CLASS_OPTIONS}
                 />
               </span>
             </div>
             <div className="info-item">
-              <span className="label">Owner:</span>
+              <span className="label">Owner ID:</span>
               <span className="value">
-                <EditableField field="owner_name" value={port.owner_name || 'Federation'} type="text" />
+                <EditableField
+                  field="owner_id"
+                  value={port.owner_id || ''}
+                  type="text"
+                />
               </span>
             </div>
             <div className="info-item">
@@ -178,12 +258,12 @@ const PortDetail: React.FC<PortDetailProps> = ({ port, onBack, onUpdate }) => {
             <div className="info-item">
               <span className="label">Defense Drones:</span>
               <span className="value">
-                <EditableField field="defense_fighters" value={port.defense_fighters} type="number" />
+                <EditableField field="defense_drones" value={defenseDrones} type="number" />
               </span>
             </div>
             <div className="info-item">
               <span className="label">Purchase Price:</span>
-              <span className="value">{(port.port_class * 250000).toLocaleString()} credits</span>
+              <span className="value">{(Number(stationClass) * 250000).toLocaleString()} credits</span>
             </div>
           </div>
           <p className="port-description">{classInfo.description}</p>
@@ -258,56 +338,52 @@ const PortDetail: React.FC<PortDetailProps> = ({ port, onBack, onUpdate }) => {
             <div className="service-item">
               <span className="service-icon">🛡️</span>
               <span className="service-name">Station Shields</span>
-              <span className="service-status">
-                <EditableField 
-                  field="port_shields" 
-                  value={port.port_shields || 0} 
-                  type="number" 
-                /> / 1000
+              <span
+                className="service-status"
+                title="Not editable — update_port has no port_shields column"
+              >
+                {port.port_shields || 0} / 1000
               </span>
             </div>
             <div className="service-item">
               <span className="service-icon">🤖</span>
               <span className="service-name">Defense Drones</span>
               <span className="service-status">
-                <EditableField 
-                  field="defense_fighters" 
-                  value={port.defense_fighters || 0} 
-                  type="number" 
+                <EditableField
+                  field="defense_drones"
+                  value={defenseDrones}
+                  type="number"
                 />
               </span>
             </div>
             <div className="service-item">
               <span className="service-icon">🔧</span>
               <span className="service-name">Max Maintenance</span>
-              <span className="service-status">
-                <EditableField 
-                  field="max_maintenance" 
-                  value={port.max_maintenance || 100} 
-                  type="number" 
-                />%
+              <span
+                className="service-status"
+                title="Not editable — update_port has no max_maintenance column"
+              >
+                {port.max_maintenance || 100}%
               </span>
             </div>
             <div className="service-item">
               <span className="service-icon">💰</span>
               <span className="service-name">Buy Rate</span>
-              <span className="service-status">
-                <EditableField 
-                  field="buy_rate" 
-                  value={port.buy_rate || 95} 
-                  type="number" 
-                />%
+              <span
+                className="service-status"
+                title="Not editable — update_port has no buy_rate column"
+              >
+                {port.buy_rate || 95}%
               </span>
             </div>
             <div className="service-item">
               <span className="service-icon">💸</span>
               <span className="service-name">Sell Rate</span>
-              <span className="service-status">
-                <EditableField 
-                  field="sell_rate" 
-                  value={port.sell_rate || 105} 
-                  type="number" 
-                />%
+              <span
+                className="service-status"
+                title="Not editable — update_port has no sell_rate column"
+              >
+                {port.sell_rate || 105}%
               </span>
             </div>
           </div>
@@ -351,20 +427,14 @@ const PortDetail: React.FC<PortDetailProps> = ({ port, onBack, onUpdate }) => {
               <button 
                 className="admin-action-btn"
                 onClick={() => {
-                  const newFighters = prompt('Enter new defense drone count:', port.defense_fighters?.toString() || '100');
-                  if (newFighters) handleEdit('defense_fighters', parseInt(newFighters));
+                  const newFighters = prompt(
+                    'Enter new defense drone count:',
+                    String(defenseDrones || 100)
+                  );
+                  if (newFighters) handleEdit('defense_drones', parseInt(newFighters, 10));
                 }}
               >
                 🤖 Deploy Defense Drones
-              </button>
-              <button 
-                className="admin-action-btn"
-                onClick={() => {
-                  const newShields = prompt('Enter new shield strength:', port.port_shields?.toString() || '500');
-                  if (newShields) handleEdit('port_shields', parseInt(newShields));
-                }}
-              >
-                🛡️ Adjust Station Shields
               </button>
             </div>
           </div>
@@ -373,9 +443,9 @@ const PortDetail: React.FC<PortDetailProps> = ({ port, onBack, onUpdate }) => {
         <div className="trading-tips">
           <h3>Station Information</h3>
           <ul>
-            <li>Class {port.port_class} ports typically trade in {getPortTradingPattern(port.port_class)}</li>
+            <li>Class {stationClass} ports typically trade in {getPortTradingPattern(Number(stationClass))}</li>
             <li>Tax rate affects all transactions: {((port.tax_rate ?? 0) * 100).toFixed(1)}% current rate</li>
-            <li>Defense drones: {port.defense_fighters} protecting the port</li>
+            <li>Defense drones: {defenseDrones} protecting the port</li>
             <li>Station shields: {port.port_shields || 0} / 1000 strength</li>
             <li>Click any value above to edit it directly</li>
           </ul>
