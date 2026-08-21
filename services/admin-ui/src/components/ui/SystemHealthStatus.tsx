@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { api } from '../../utils/auth';
 import './system-health-status.css';
 
 interface ServerStatus {
@@ -83,39 +84,42 @@ const SystemHealthStatus: React.FC = () => {
   // REMOVED: Container health monitoring no longer available (Docker socket removed for security)
   const [isLoading, setIsLoading] = useState(true);
   const [isExpanded, setIsExpanded] = useState(false);
+  /** Operator-visible RBAC / rate-limit honesty (LEG-1233) — not console-only. */
+  const [authProbeError, setAuthProbeError] = useState<string | null>(null);
+
+  const classifyProbeError = (error: unknown): string | null => {
+    const status = (error as { response?: { status?: number } })?.response?.status;
+    if (status === 401 || status === 403) {
+      return 'Access denied — system health probes require an admin view scope.';
+    }
+    if (status === 429) {
+      return 'Admin rate limit exceeded — wait a moment and try again.';
+    }
+    return null;
+  };
 
   const checkServerStatus = async () => {
     try {
       const startTime = Date.now();
-      const response = await fetch('/api/v1/status/', {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('accessToken')}`,
-        },
+      // Shared api client attaches Bearer via interceptor — no raw fetch.
+      const { data } = await api.get<{
+        active_connections?: number;
+        admin_connections?: number;
+        connection_stats?: ServerStatus['connectionStats'];
+      }>('/api/v1/status/');
+      const responseTime = Date.now() - startTime;
+      setServerStatus({
+        status: 'online',
+        responseTime,
+        activeConnections: data.active_connections || 0,
+        adminConnections: data.admin_connections || 0,
+        connectionStats: data.connection_stats,
+        lastChecked: new Date().toLocaleTimeString()
       });
-      
-      const endTime = Date.now();
-      const responseTime = endTime - startTime;
-
-      if (response.ok) {
-        const data = await response.json();
-        setServerStatus({
-          status: 'online',
-          responseTime,
-          activeConnections: data.active_connections || 0,
-          adminConnections: data.admin_connections || 0,
-          connectionStats: data.connection_stats,
-          lastChecked: new Date().toLocaleTimeString()
-        });
-      } else {
-        setServerStatus(prev => ({
-          ...prev,
-          status: 'offline',
-          lastChecked: new Date().toLocaleTimeString()
-        }));
-      }
     } catch (error) {
       console.error('Failed to check server status:', error);
+      const authMsg = classifyProbeError(error);
+      if (authMsg) setAuthProbeError(authMsg);
       setServerStatus(prev => ({
         ...prev,
         status: 'offline',
@@ -126,44 +130,24 @@ const SystemHealthStatus: React.FC = () => {
 
   const checkAIHealth = async () => {
     try {
-      const response = await fetch('/api/v1/status/ai/providers', {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('accessToken')}`,
-        },
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        setAiHealth(data);
-      } else {
-        console.error('Failed to fetch AI health status');
-        setAiHealth(null);
-      }
+      const { data } = await api.get<AllProvidersHealth>('/api/v1/status/ai/providers');
+      setAiHealth(data);
     } catch (error) {
       console.error('Failed to check AI health:', error);
+      const authMsg = classifyProbeError(error);
+      if (authMsg) setAuthProbeError(authMsg);
       setAiHealth(null);
     }
   };
 
   const checkDatabaseHealth = async () => {
     try {
-      const response = await fetch('/api/v1/status/database/detailed', {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('accessToken')}`,
-        },
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        setDbHealth(data);
-      } else {
-        console.error('Failed to fetch database health status');
-        setDbHealth(null);
-      }
+      const { data } = await api.get<DatabaseHealth>('/api/v1/status/database/detailed');
+      setDbHealth(data);
     } catch (error) {
       console.error('Failed to check database health:', error);
+      const authMsg = classifyProbeError(error);
+      if (authMsg) setAuthProbeError(authMsg);
       setDbHealth(null);
     }
   };
@@ -172,6 +156,7 @@ const SystemHealthStatus: React.FC = () => {
 
   const checkAllStatus = async () => {
     setIsLoading(true);
+    setAuthProbeError(null);
     await Promise.all([
       checkServerStatus(),
       checkAIHealth(),
@@ -297,6 +282,11 @@ const SystemHealthStatus: React.FC = () => {
       </div>
       
       <div className="system-health-content">
+        {authProbeError && (
+          <div className="alert error" role="alert" style={{ marginBottom: '8px' }}>
+            <span className="alert-message">{authProbeError}</span>
+          </div>
+        )}
         <div className="status-summary">
           <div className="service-status">
             <span 
