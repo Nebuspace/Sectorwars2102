@@ -65,3 +65,21 @@ def _run_mining_harvest_resolve_sync() -> Tuple[int, List[Dict[str, Any]]]:
         raise
     finally:
         db.close()
+
+
+def _run_claim_license_expiry_warn_sync() -> int:
+    """LEG-431 — warn ClaimLicense owners within 1h of expiry (once per license)."""
+    from src.core.database import SessionLocal
+    from src.services.mining_service import MiningService
+
+    db = SessionLocal()
+    try:
+        warned = MiningService(db).warn_expiring_claim_licenses()
+        db.commit()
+        return warned
+    except Exception:
+        logger.exception("Claim-license expiry warn sweep failed")
+        db.rollback()
+        return 0
+    finally:
+        db.close()
