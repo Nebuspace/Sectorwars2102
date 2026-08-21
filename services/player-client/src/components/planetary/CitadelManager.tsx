@@ -66,11 +66,16 @@ const CITADEL_FLAVOR: Record<number, string> = {
   5: 'Twin rings, layered towers, a beacon burning: the capital of a world.',
 };
 
-/** Defense-level prerequisites enforced by the gameserver before each upgrade. */
+/**
+ * Preflight copy for citadel upgrades — building names match
+ * CITADEL_UPGRADE_PREREQS / citadels.md (docs win). The gameserver
+ * re-validates on POST; 400 detail is the source of truth for which
+ * building is missing/offline (do not invent a client-side formula).
+ */
 const CITADEL_PREREQS: Record<number, string> = {
-  3: 'Requires planetary defense level 2+',
-  4: 'Requires planetary defense level 5+',
-  5: 'Requires planetary defense level 8+',
+  3: 'Requires Defense Grid L1 or Automated Turret Network',
+  4: 'Requires Defense Grid L2, Automated Turret Network, and Shield Generator L4',
+  5: 'Requires Defense Grid L2, Orbital Defense Platform, Rail Gun Battery, and Shield Generator L8',
 };
 
 const compact = (n: number): string => {
