@@ -69,3 +69,69 @@ describe('PlanetDetailModal scope errors (LEG-1214)', () => {
     });
   });
 });
+
+describe('PlanetDetailModal Soft-ORDER defense_level (LEG-1462)', () => {
+  beforeEach(() => {
+    vi.mocked(api.patch).mockReset();
+    vi.mocked(api.patch).mockResolvedValue({ data: {} });
+  });
+
+  it('includes defense_level in PATCH payload', async () => {
+    render(
+      <PlanetDetailModal
+        isOpen
+        planet={{ ...planet, defense_level: 42 } as any}
+        onClose={() => {}}
+        mode="edit"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+
+    await waitFor(() => {
+      expect(api.patch).toHaveBeenCalledWith(
+        '/api/v1/admin/planets/p1',
+        expect.objectContaining({ defense_level: 42 }),
+      );
+    });
+  });
+});
+
+describe('PlanetDetailModal Soft-ORDER demote non-PATCHABLE (LEG-1471)', () => {
+  beforeEach(() => {
+    vi.mocked(api.patch).mockReset();
+    vi.mocked(api.patch).mockResolvedValue({ data: {} });
+  });
+
+  it('keeps population/max_population/atmosphere display-only and omits them from PATCH', async () => {
+    render(
+      <PlanetDetailModal
+        isOpen
+        planet={{ ...planet, population: 777, max_population: 888, atmosphere: 'thin' } as any}
+        onClose={() => {}}
+        mode="edit"
+      />,
+    );
+
+    expect(screen.getByText('777')).toBeTruthy();
+    expect(screen.getByText('888')).toBeTruthy();
+    expect(screen.getByText('thin')).toBeTruthy();
+    expect(screen.queryByPlaceholderText(/planetary atmosphere/i)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+
+    await waitFor(() => {
+      expect(api.patch).toHaveBeenCalled();
+    });
+    const payload = vi.mocked(api.patch).mock.calls[0][1] as Record<string, unknown>;
+    expect(payload).not.toHaveProperty('population');
+    expect(payload).not.toHaveProperty('max_population');
+    expect(payload).not.toHaveProperty('atmosphere');
+    expect(payload).toEqual(
+      expect.objectContaining({
+        name: 'Terra',
+        defense_level: 1,
+      }),
+    );
+  });
+});
