@@ -171,6 +171,8 @@ def apply_faction_rep_delta(
     faction_type: FactionType,
     delta: int,
     reason: str,
+    *,
+    faction_name: Optional[str] = None,
 ) -> Optional[Reputation]:
     """Apply a faction reputation delta from a SYNC, caller-owned transaction.
 
@@ -185,26 +187,35 @@ def apply_faction_rep_delta(
 
     The faction is resolved by FactionType (the Faction model has no
     ``code`` column, so roster faction codes like "terran_federation" need
-    an explicit mapping by the caller). Returns None — with an error log,
-    never an exception — when no faction row of that type exists, so a
-    missing seed degrades to a lost rep delta rather than a failed combat.
+    an explicit mapping by the caller). Pass ``faction_name`` when more than
+    one row can share a FactionType (e.g. Frontier Coalition under
+    Independents) so the delta never credits a sibling roster row. Returns
+    None — with an error log, never an exception — when no matching faction
+    row exists, so a missing seed degrades to a lost rep delta rather than
+    a failed combat.
 
     No rivalry cap is applied: the cap only constrains positive gains and
     this helper exists for penalty hooks; route positive gains through
     ``FactionService.update_reputation``.
     """
-    faction = (
-        db.query(Faction)
-        .filter(Faction.faction_type == faction_type)
-        .first()
-    )
+    q = db.query(Faction).filter(Faction.faction_type == faction_type)
+    if faction_name is not None:
+        q = q.filter(Faction.name == faction_name)
+    faction = q.first()
     if faction is None:
-        logger.error(
-            "apply_faction_rep_delta: no %s faction row exists — delta %+d "
-            "for player %s dropped (reason: %s). Seed the faction "
-            "(npc_spawn_service._ensure_federation_faction).",
-            faction_type.name, delta, player_id, reason,
-        )
+        if faction_name is not None:
+            logger.error(
+                "apply_faction_rep_delta: no %s faction row named %r "
+                "exists — delta %+d for player %s dropped (reason: %s).",
+                faction_type.name, faction_name, delta, player_id, reason,
+            )
+        else:
+            logger.error(
+                "apply_faction_rep_delta: no %s faction row exists — delta %+d "
+                "for player %s dropped (reason: %s). Seed the faction "
+                "(npc_spawn_service._ensure_federation_faction).",
+                faction_type.name, delta, player_id, reason,
+            )
         return None
 
     reputation = (
