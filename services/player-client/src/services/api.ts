@@ -896,6 +896,13 @@ export const bountyAPI = {
 
   getAvailable: (limit: number = 20) =>
     apiRequest(`/api/v1/ranking/bounties/available?limit=${limit}`),
+
+  /** Cancel own uncollected bounty (POST …/bounties/{id}/cancel). Fee non-refundable. */
+  cancel: (bountyId: string, targetId: string) =>
+    apiRequest(`/api/v1/ranking/bounties/${bountyId}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({ target_id: targetId }),
+    }),
 };
 
 // ADR-0094 point-2: defense construct is POST /grid/place, not the retired
