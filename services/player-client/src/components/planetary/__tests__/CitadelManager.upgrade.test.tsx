@@ -99,4 +99,80 @@ describe('CitadelManager — upgrade money path', () => {
       expect(upgrade).toHaveBeenCalledWith('planet-1');
     });
   });
+
+  it('L4 preflight names Shield Generator L4, not a defense-level line', async () => {
+    getInfo.mockResolvedValue({
+      ...CITADEL_INFO,
+      citadel_level: 3,
+      citadel_name: 'Colony',
+      next_level: {
+        ...CITADEL_INFO.next_level,
+        level: 4,
+        name: 'Major Colony',
+        upgrade_cost: 50_000,
+      },
+    });
+
+    await act(async () => {
+      root.render(<CitadelManager planetId="planet-1" playerCredits={100_000} />);
+    });
+    await act(async () => {
+      await flush();
+      await flush();
+    });
+
+    await vi.waitFor(() => {
+      expect(container.querySelector('.upgrade-prereq')).toBeTruthy();
+    });
+
+    const prereq = container.querySelector('.upgrade-prereq') as HTMLElement;
+    expect(prereq.textContent).toContain('Shield Generator L4');
+    expect(prereq.textContent).not.toMatch(/planetary defense level/i);
+  });
+
+  it('failed L4 upgrade surfaces GS 400 detail naming Shield Generator L4', async () => {
+    getInfo.mockResolvedValue({
+      ...CITADEL_INFO,
+      citadel_level: 3,
+      citadel_name: 'Colony',
+      next_level: {
+        ...CITADEL_INFO.next_level,
+        level: 4,
+        name: 'Major Colony',
+        upgrade_cost: 50_000,
+      },
+    });
+    upgrade.mockRejectedValue(
+      new Error('Upgrade to Major Colony requires Shield Generator L4 (current shield generator: L0).'),
+    );
+
+    await act(async () => {
+      root.render(<CitadelManager planetId="planet-1" playerCredits={100_000} />);
+    });
+    await act(async () => {
+      await flush();
+      await flush();
+    });
+
+    await vi.waitFor(() => {
+      expect(container.querySelector('.citadel-btn.upgrade-btn')).toBeTruthy();
+    });
+
+    const btn = container.querySelector('.citadel-btn.upgrade-btn') as HTMLButtonElement;
+    await act(async () => {
+      btn.click();
+      await flush();
+      await flush();
+    });
+
+    await vi.waitFor(() => {
+      const msg = container.querySelector('.citadel-message');
+      // GS 400 sentence, not the preflight CITADEL_PREREQS line (which also
+      // names Shield Generator L4 after this WO).
+      expect(msg?.textContent).toContain(
+        'Upgrade to Major Colony requires Shield Generator L4 (current shield generator: L0).',
+      );
+      expect(msg?.textContent).not.toMatch(/planetary defense level/i);
+    });
+  });
 });
