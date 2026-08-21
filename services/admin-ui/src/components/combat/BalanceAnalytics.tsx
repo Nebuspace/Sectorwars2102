@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../../utils/auth';
+import { axiosResponseStatus, formatAdminApiError } from '../../utils/adminApiError';
 import './balance-analytics.css';
 
 // =============================================================================
@@ -125,8 +126,27 @@ const BalanceAnalytics: React.FC = () => {
       setStats(null);
     }
 
-    const failed = [balanceRes, statsRes].filter((r) => r.status === 'rejected');
-    if (failed.length === 2) {
+    const failedReasons = [balanceRes, statsRes]
+      .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+      .map((r) => r.reason);
+    const statuses = failedReasons
+      .map((r) => axiosResponseStatus(r))
+      .filter((s): s is number => s !== undefined);
+
+    if (statuses.some((s) => s === 401 || s === 403 || s === 429)) {
+      const prioritized =
+        failedReasons.find((r) => {
+          const s = axiosResponseStatus(r);
+          return s === 401 || s === 403 || s === 429;
+        }) ?? failedReasons[0];
+      setError(
+        formatAdminApiError(prioritized, {
+          fallback: 'Failed to load balance analytics. Please check if the gameserver is running.',
+          scopeHint:
+            'combat balance analytics requires the admin players view scope (PLAYERS_VIEW).',
+        })
+      );
+    } else if (failedReasons.length === 2) {
       setError('Failed to load balance analytics. Please check if the gameserver is running.');
     } else if (balanceRes.status === 'rejected') {
       setError('Balance analytics unavailable.');
@@ -176,7 +196,7 @@ const BalanceAnalytics: React.FC = () => {
       </div>
 
       {error && (
-        <div className="balance-analytics-alert error">
+        <div className="balance-analytics-alert error" role="alert">
           <span className="balance-analytics-alert-icon">⚠</span>
           <span>{error}</span>
         </div>

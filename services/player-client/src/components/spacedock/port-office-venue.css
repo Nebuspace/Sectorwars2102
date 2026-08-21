@@ -454,6 +454,47 @@
   color: rgba(255, 255, 255, 0.55);
 }
 
+.po-defense-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.po-defense-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.8em;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.po-defense-field-wide {
+  grid-column: 1 / -1;
+}
+
+.po-defense-field select,
+.po-defense-field input,
+.po-defense-field textarea {
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 4px;
+  color: #e2e8f0;
+  padding: 0.4rem 0.5rem;
+  font: inherit;
+}
+
+.po-defense-field textarea {
+  resize: vertical;
+  min-height: 4.5rem;
+}
+
+@media (max-width: 640px) {
+  .po-defense-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* Vault gauge — segmented gold shimmer, citadel visual language */
 .po-vault-gauge {
   position: relative;

@@ -49,6 +49,8 @@ const RegionalGovernorDashboard = lazy(() => import('./components/pages/Regional
 const FirstLoginConversations = lazy(() => import('./components/pages/FirstLoginConversations'));
 const BangGalaxyPage = lazy(() => import('./components/pages/BangGalaxyPage'));
 const FactionManagement = lazy(() => import('./components/pages/FactionManagement'));
+const MedalAdmin = lazy(() => import('./components/pages/MedalAdmin'));
+const TradeDockAdmin = lazy(() => import('./components/pages/TradeDockAdmin'));
 const MessageModeration = lazy(() => import('./components/pages/MessageModeration'));
 const MultiAccountReview = lazy(() => import('./components/pages/MultiAccountReview').then(module => ({
   default: module.MultiAccountReview
@@ -107,6 +109,8 @@ function App() {
                 <Route path="analytics" element={<ProtectedLazyRoute element={<AdvancedAnalytics />} />} />
                 <Route path="security" element={<ProtectedLazyRoute element={<SecurityDashboard />} />} />
                 <Route path="permissions" element={<Navigate to="/scopes" replace />} />
+                {/* Canon residual: older prose named /admin/review-queue; live UI is /audit?tab=review (LEG-103). */}
+                <Route path="review-queue" element={<Navigate to="/audit?tab=review" replace />} />
                 <Route path="ai-trading" element={<ProtectedLazyRoute element={<AITradingDashboard />} />} />
                 <Route path="sectors" element={<ProtectedLazyRoute element={<SectorsManager />} />} />
 
@@ -126,6 +130,8 @@ function App() {
 
                 {/* Surfaced admin subsystems (run 5) */}
                 <Route path="factions" element={<ProtectedLazyRoute element={<FactionManagement />} />} />
+                <Route path="medals" element={<ProtectedLazyRoute element={<MedalAdmin />} />} />
+                <Route path="tradedocks" element={<ProtectedLazyRoute element={<TradeDockAdmin />} />} />
                 <Route path="messages" element={<ProtectedLazyRoute element={<MessageModeration />} />} />
                 <Route path="multi-account" element={<ProtectedLazyRoute element={<MultiAccountReview />} />} />
                 <Route path="scopes" element={<ProtectedLazyRoute element={<ScopesManager />} />} />
