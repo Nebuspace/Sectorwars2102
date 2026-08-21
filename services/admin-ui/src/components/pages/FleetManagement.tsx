@@ -278,6 +278,38 @@ const FleetManagement: React.FC = () => {
     setShowTeleportForm(true);
   };
 
+  /** Tip GS: POST /api/v1/admin/ships/{id}/emergency {action: repair|refuel} (LEG-1651). */
+  const handleEmergencyAction = async (ship: Ship, action: 'repair' | 'refuel') => {
+    const label = action === 'repair' ? 'Repair' : 'Refuel';
+    if (!(await confirm({
+      title: `${label} Ship`,
+      message: `Emergency ${action} for ${ship.name}? This posts the tip admin ships emergency route.`,
+      confirmLabel: label,
+    }))) {
+      return;
+    }
+
+    try {
+      const response = await api.post(
+        `/api/v1/admin/ships/${ship.id}/emergency`,
+        { action },
+      );
+      const message =
+        (response.data as { message?: string } | undefined)?.message ||
+        `Ship ${ship.name} ${action === 'repair' ? 'repaired' : 'refueled'}`;
+      toast.success(message);
+      fetchShips();
+    } catch (error) {
+      console.error(`Error emergency ${action}:`, error);
+      toast.error(
+        formatAdminApiError(error, {
+          fallback: `Failed to ${action} ship`,
+          scopeHint: 'SHIPS_MANAGE scope required for ship emergency actions',
+        })
+      );
+    }
+  };
+
   const filteredShips = ships.filter(ship => {
     const matchesSearch = ship.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
                          ship.owner_name.toLowerCase().includes(searchTerm.toLowerCase());
@@ -452,6 +484,22 @@ const FleetManagement: React.FC = () => {
                               aria-label="Teleport Ship"
                             >
                               🌀
+                            </button>
+                            <button
+                              onClick={() => handleEmergencyAction(ship, 'repair')}
+                              className="btn btn-xs btn-outline"
+                              title="Emergency repair ship"
+                              aria-label={`Emergency repair ${ship.name}`}
+                            >
+                              🔧
+                            </button>
+                            <button
+                              onClick={() => handleEmergencyAction(ship, 'refuel')}
+                              className="btn btn-xs btn-outline"
+                              title="Emergency refuel ship"
+                              aria-label={`Emergency refuel ${ship.name}`}
+                            >
+                              ⛽
                             </button>
                             <button 
                               onClick={() => handleDeleteShip(ship.id)}
