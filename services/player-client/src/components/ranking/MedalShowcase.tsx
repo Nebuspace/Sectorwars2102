@@ -18,6 +18,8 @@ interface Medal {
 interface MedalData {
   earned: Medal[];
   available: Medal[];
+  /** LEG-90 / LEG-91 — server pin from GET /medals/me (settings.medal_privacy). */
+  pinned_medal_id?: string | null;
 }
 
 const CATEGORY_ICONS: Record<string, string> = {
@@ -53,6 +55,11 @@ const MedalShowcase: React.FC = () => {
   const [activeCategory, setActiveCategory] = useState('All');
   const [hoveredMedal, setHoveredMedal] = useState<Medal | null>(null);
   const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
+  // Pin SSOT: seed from GET /medals/me.pinned_medal_id (LEG-90/91); PUT
+  // /me/pin responses update the same state for in-session pin/clear.
+  const [pinnedMedalId, setPinnedMedalId] = useState<string | null>(null);
+  const [pinError, setPinError] = useState<string | null>(null);
+  const [pinBusy, setPinBusy] = useState(false);
 
   // Realtime: the WS context bumps medalAwardedSignal whenever a medal_awarded
   // frame arrives (medal_service.award_medal → send_medal_awarded). MedalShowcase
@@ -66,6 +73,9 @@ const MedalShowcase: React.FC = () => {
       if (showInitialSpinner) setLoading(true);
       const data = await medalsAPI.getMe();
       setMedalData(data);
+      setPinnedMedalId(
+        (data as MedalData | null | undefined)?.pinned_medal_id ?? null,
+      );
       setError(null);
     } catch (err: any) {
       // Only surface the error overlay on the initial load; a failed live
@@ -105,6 +115,20 @@ const MedalShowcase: React.FC = () => {
     setTooltipPos({ x: e.clientX + 12, y: e.clientY - 10 });
   };
 
+  const handlePin = useCallback(async (medalId: string | null) => {
+    if (pinBusy) return;
+    setPinBusy(true);
+    setPinError(null);
+    try {
+      const result = await medalsAPI.pin(medalId);
+      setPinnedMedalId(result.pinned_medal_id ?? null);
+    } catch (err: any) {
+      setPinError(err?.message || 'Failed to update pinned medal');
+    } finally {
+      setPinBusy(false);
+    }
+  }, [pinBusy]);
+
   if (loading) {
     return (
       <div className="medal-showcase medal-loading">
@@ -129,7 +153,24 @@ const MedalShowcase: React.FC = () => {
         <span className="medal-count">
           {(medalData.earned ?? []).length} / {(medalData.earned ?? []).length + (medalData.available ?? []).length}
         </span>
+        {pinnedMedalId && (
+          <button
+            type="button"
+            className="medal-clear-pin"
+            data-testid="medal-clear-pin"
+            disabled={pinBusy}
+            onClick={() => handlePin(null)}
+          >
+            Clear pin
+          </button>
+        )}
       </div>
+
+      {pinError && (
+        <div className="medal-pin-error" data-testid="medal-pin-error" role="alert">
+          {pinError}
+        </div>
+      )}
 
       <div className="medal-categories">
         {CATEGORIES.map((cat) => (
@@ -144,24 +185,47 @@ const MedalShowcase: React.FC = () => {
       </div>
 
       <div className="medal-grid">
-        {filteredMedals.earned.map((medal) => (
-          <div
-            key={medal.key}
-            className="medal-card earned"
-            onMouseEnter={(e) => handleMouseEnter(medal, e)}
-            onMouseLeave={() => setHoveredMedal(null)}
-          >
-            <span className="medal-icon">
-              {MEDAL_ICONS[medal.icon] || '🏅'}
-            </span>
-            <span className="medal-name">{medal.name}</span>
-            {medal.awarded_at && (
-              <span className="medal-date">
-                {new Date(medal.awarded_at).toLocaleDateString()}
+        {filteredMedals.earned.map((medal) => {
+          const isPinned = pinnedMedalId === medal.key;
+          return (
+            <div
+              key={medal.key}
+              className={`medal-card earned${isPinned ? ' pinned' : ''}`}
+              data-testid={`medal-card-${medal.key}`}
+              data-pinned={isPinned ? 'true' : undefined}
+              onMouseEnter={(e) => handleMouseEnter(medal, e)}
+              onMouseLeave={() => setHoveredMedal(null)}
+            >
+              {isPinned && (
+                <span className="medal-pinned-badge" data-testid="medal-pinned-badge">
+                  Pinned
+                </span>
+              )}
+              <span className="medal-icon">
+                {MEDAL_ICONS[medal.icon] || '🏅'}
               </span>
-            )}
-          </div>
-        ))}
+              <span className="medal-name">{medal.name}</span>
+              {medal.awarded_at && (
+                <span className="medal-date">
+                  {new Date(medal.awarded_at).toLocaleDateString()}
+                </span>
+              )}
+              <button
+                type="button"
+                className="medal-pin-btn"
+                data-testid={`medal-pin-btn-${medal.key}`}
+                disabled={pinBusy}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setHoveredMedal(null);
+                  void handlePin(isPinned ? null : medal.key);
+                }}
+              >
+                {isPinned ? 'Unpin' : 'Pin'}
+              </button>
+            </div>
+          );
+        })}
         {filteredMedals.available.map((medal) => (
           <div
             key={medal.key}
