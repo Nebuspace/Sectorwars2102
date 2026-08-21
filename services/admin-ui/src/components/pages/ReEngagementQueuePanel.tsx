@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../../utils/auth';
 import { useToast } from '../../contexts/ToastContext';
+import { formatAdminApiError } from '../../utils/adminApiError';
 
 interface ReEngagementRow {
   id: string;
@@ -62,14 +63,16 @@ const ReEngagementQueuePanel: React.FC<ReEngagementQueuePanelProps> = ({
       setSummary(summaryRes.data);
       onSummaryChange?.(summaryRes.data);
     } catch (err: unknown) {
-      const detail =
-        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
-        'Failed to load re-engagement queue';
       setItems([]);
       setTotal(0);
       setSummary(null);
       onSummaryChange?.(null);
-      setError(typeof detail === 'string' ? detail : 'Failed to load re-engagement queue');
+      setError(
+        formatAdminApiError(err, {
+          fallback: 'Failed to load re-engagement queue',
+          scopeHint: 'PLAYERS_VIEW required to list re-engagement queue',
+        })
+      );
     } finally {
       setLoading(false);
     }
@@ -86,10 +89,12 @@ const ReEngagementQueuePanel: React.FC<ReEngagementQueuePanelProps> = ({
       toast.success(`Marked ${next}`);
       await load();
     } catch (err: unknown) {
-      const detail =
-        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
-        'Failed to update status';
-      toast.error(typeof detail === 'string' ? detail : 'Failed to update status');
+      toast.error(
+        formatAdminApiError(err, {
+          fallback: 'Failed to update status',
+          scopeHint: 'PLAYERS_ADJUST_REP required to update re-engagement status',
+        })
+      );
     } finally {
       setMutating(null);
     }
@@ -122,7 +127,11 @@ const ReEngagementQueuePanel: React.FC<ReEngagementQueuePanelProps> = ({
         </button>
       </div>
 
-      {error && <div className="alert alert-error mb-3">{error}</div>}
+      {error && (
+        <div className="alert alert-error mb-3" role="alert">
+          {error}
+        </div>
+      )}
       {loading ? (
         <p className="text-muted">Loading queue…</p>
       ) : items.length === 0 ? (
