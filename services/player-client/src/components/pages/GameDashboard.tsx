@@ -15,6 +15,7 @@ import { LandingRightsControl } from '../planetary/LandingRightsControl';
 import SolarSystemViewscreen from '../tactical/SolarSystemViewscreen';
 import WindshieldTableau from '../tactical/WindshieldTableau';
 import PlanetPortPair from '../tactical/PlanetPortPair';
+import PlanetaryLanderInstallCta from '../planetary/PlanetaryLanderInstallCta';
 import NavigationMap from '../tactical/NavigationMap';
 import { chartToNavSectors } from '../tactical/navChartTransform';
 import Galaxy3DRenderer from '../galaxy/Galaxy3DRenderer';
@@ -629,11 +630,26 @@ const GameDashboardInner: React.FC = () => {
     exploreCurrentLocation,
     getAvailableMoves,
     refreshPlayerState,
+    updatePlayerCredits,
     quantumStatus,
     refineQuantumCharge,
     error
   } = useGame();
   const { getIcon: getResourceIcon, getLabel: getResourceLabel } = useResourceCatalog();
+
+  const handlePlanetaryLanderInstalled = useCallback(
+    async (result: { remainingCredits?: number }) => {
+      if (typeof result.remainingCredits === 'number') {
+        updatePlayerCredits(result.remainingCredits);
+      }
+      try {
+        await refreshPlayerState();
+      } catch {
+        /* non-fatal */
+      }
+    },
+    [refreshPlayerState, updatePlayerCredits],
+  );
 
   const autopilot = useAutopilot();
   const flight = useWindshieldFlight();
@@ -3824,6 +3840,9 @@ const GameDashboardInner: React.FC = () => {
                             flying={flying}
                             onHalt={handleHalt}
                             onApproach={flight.approach}
+                            shipId={currentShip?.id ?? null}
+                            shipType={currentShip?.type ?? null}
+                            onLanderInstalled={handlePlanetaryLanderInstalled}
                           />
                         );
                       })}
@@ -4078,6 +4097,15 @@ const GameDashboardInner: React.FC = () => {
                   ? <>🚀 {currentShip?.name || 'Your ship'} → 🪐 {landedPlanet.name}</>
                   : <>🪐 {landedPlanet.name} → 🚀 {currentShip?.name || 'Your ship'}</>}
               </div>
+
+              {transferModal === 'disembark' && (
+                <PlanetaryLanderInstallCta
+                  shipId={currentShip?.id ?? null}
+                  shipType={currentShip?.type ?? null}
+                  compact
+                  onInstalled={handlePlanetaryLanderInstalled}
+                />
+              )}
 
               <div className="colonist-qty-section">
                 <label className="colonist-qty-label" htmlFor="colonist-qty-input">Colonists</label>
