@@ -1205,6 +1205,9 @@ class FleetService:
             "total_damage_dealt": battle.total_damage_dealt or 0,
             "credits_looted": battle.credits_looted or 0,
             "rounds_completed": len(battle.battle_log) if isinstance(battle.battle_log, list) else 0,
+            # LEG-400 / fleet-tactics.md: player GET exposes the same stored
+            # round-by-round log admin already returns — do not invent schema.
+            "battle_log": battle.battle_log if isinstance(battle.battle_log, list) else [],
             "casualties": {
                 "attacker": [
                     {
