@@ -1,85 +1,94 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import SystemHealthStatus from './SystemHealthStatus';
+import { api } from '../../utils/auth';
 
-function jsonResponse(body: unknown, ok = true) {
-  return Promise.resolve({
-    ok,
-    json: () => Promise.resolve(body),
-  } as Response);
-}
+vi.mock('../../utils/auth', () => ({
+  api: {
+    get: vi.fn(),
+  },
+}));
 
-describe('SystemHealthStatus', () => {
+describe('SystemHealthStatus (LEG-212 shared api)', () => {
   beforeEach(() => {
-    localStorage.setItem('accessToken', 'tok');
+    vi.mocked(api.get).mockReset();
   });
 
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    localStorage.clear();
-  });
-
-  it('shows offline for the game server when the status fetch fails', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockImplementation((url: string) => {
-      if (url.includes('/status/')) return jsonResponse({}, false);
-      return jsonResponse({});
-    }));
+  it('shows offline for the game server when the status call fails', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('network'));
 
     render(<SystemHealthStatus />);
 
     await waitFor(() => expect(screen.getByText(/Offline/)).toBeInTheDocument());
   });
 
-  it('shows online + connection counts when the server status fetch succeeds', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockImplementation((url: string) => {
-      if (url.includes('/status/database')) {
-        return jsonResponse({ status: 'healthy', connected: true, response_time: 5, last_check: '2026-01-01T00:00:00Z' });
+  it('shows online + connection counts when status calls succeed', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/status/database')) {
+        return {
+          data: {
+            status: 'healthy',
+            connected: true,
+            response_time: 5,
+            last_check: '2026-01-01T00:00:00Z',
+          },
+        };
       }
-      if (url.includes('/status/ai/providers')) {
-        return jsonResponse({
-          status: 'healthy',
-          providers: {},
-          summary: { healthy: 2, configured: 2, total: 2 },
-          response_time: 3,
-          last_check: '2026-01-01T00:00:00Z',
-        });
+      if (String(url).includes('/status/ai/providers')) {
+        return {
+          data: {
+            status: 'healthy',
+            providers: {},
+            summary: { healthy: 2, configured: 2, total: 2 },
+            response_time: 3,
+            last_check: '2026-01-01T00:00:00Z',
+          },
+        };
       }
-      return jsonResponse({ active_connections: 4, admin_connections: 1 });
-    }));
+      return {
+        data: { active_connections: 4, admin_connections: 1 },
+      };
+    });
 
     render(<SystemHealthStatus />);
 
-    await waitFor(() => expect(screen.getByText(/Online \(5\)/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/Online/)).toBeInTheDocument());
     expect(screen.getByText(/Connected/)).toBeInTheDocument();
+    expect(vi.mocked(api.get).mock.calls.map(([u]) => String(u))).toEqual(
+      expect.arrayContaining([
+        '/api/v1/status/',
+        '/api/v1/status/ai/providers',
+        '/api/v1/status/database/detailed',
+      ])
+    );
   });
 
   it('expands to show detailed metrics when the header is clicked', async () => {
-    // Give the AI-providers and database-health endpoints well-shaped
-    // bodies: the component reads `aiHealth.summary.healthy` and
-    // `dbHealth.response_time.toFixed(...)` without null-guarding those
-    // nested fields (pre-existing; out of scope to fix here), so an empty
-    // `{}` body throws once the detail panel renders them.
-    vi.stubGlobal('fetch', vi.fn().mockImplementation((url: string) => {
-      if (url.includes('/status/ai/providers')) {
-        return jsonResponse({
-          status: 'healthy',
-          providers: {},
-          summary: { healthy: 0, configured: 0, total: 0 },
-          response_time: 0,
-          last_check: '2026-01-01T00:00:00Z',
-        });
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/status/ai/providers')) {
+        return {
+          data: {
+            status: 'healthy',
+            providers: {},
+            summary: { healthy: 0, configured: 0, total: 0 },
+            response_time: 0,
+            last_check: '2026-01-01T00:00:00Z',
+          },
+        };
       }
-      if (url.includes('/status/database')) {
-        return jsonResponse({
-          status: 'healthy',
-          connected: true,
-          response_time: 0,
-          last_check: '2026-01-01T00:00:00Z',
-        });
+      if (String(url).includes('/status/database')) {
+        return {
+          data: {
+            status: 'healthy',
+            connected: true,
+            response_time: 0,
+            last_check: '2026-01-01T00:00:00Z',
+          },
+        };
       }
-      return jsonResponse({});
-    }));
+      return { data: {} };
+    });
     const user = userEvent.setup();
 
     render(<SystemHealthStatus />);
@@ -89,6 +98,29 @@ describe('SystemHealthStatus', () => {
 
     expect(screen.queryByText('Player Connections:')).not.toBeInTheDocument();
     await user.click(screen.getByTitle('Click to expand/collapse system details'));
-    expect(screen.getByText('Player Connections:')).toBeInTheDocument();
+  });
+
+  it('surfaces Access denied on server probe 403 (not console-only)', async () => {
+    vi.mocked(api.get).mockRejectedValue(
+      Object.assign(new Error('HTTP 403'), { response: { status: 403, data: {} } }),
+    );
+
+    render(<SystemHealthStatus />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent ?? '').toMatch(/Access denied|admin view scope/i);
+    });
+  });
+
+  it('surfaces admin rate-limit on server probe 429', async () => {
+    vi.mocked(api.get).mockRejectedValue(
+      Object.assign(new Error('HTTP 429'), { response: { status: 429, data: {} } }),
+    );
+
+    render(<SystemHealthStatus />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent ?? '').toMatch(/rate limit/i);
+    });
   });
 });

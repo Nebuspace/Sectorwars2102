@@ -138,3 +138,38 @@ class TakeoverCampaign(Base):
             f"challenger={self.challenger_id} status={self.status} "
             f"months={self.months_satisfied}>"
         )
+
+
+class StationGovernanceVote(Base):
+    """Syndicate policy vote (port-ownership.md vote-threshold table).
+
+    LEG-301: weighted tariff/upgrade/sale/withdrawal motions. Stake snapshot
+    is frozen at open so mid-window share transfers cannot retcon weight.
+    """
+
+    __tablename__ = "station_governance_votes"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    station_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("stations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # tariff | upgrade | sale | withdrawal
+    vote_type = Column(String(32), nullable=False, index=True)
+    proposed_value = Column(JSONB, nullable=False, default=dict)
+    # open | passed | failed | vetoed | tiebreak
+    status = Column(String(20), nullable=False, default="open", index=True)
+    opened_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    window_ends_at = Column(DateTime(timezone=True), nullable=False)
+    share_snapshot = Column(JSONB, nullable=False, default=list)
+    ballots = Column(JSONB, nullable=False, default=list)
+    rng_seed = Column(Integer, nullable=False, default=0)
+    outcome = Column(JSONB, nullable=True)
+
+    def __repr__(self) -> str:
+        return (
+            f"<StationGovernanceVote station={self.station_id} "
+            f"type={self.vote_type} status={self.status}>"
+        )

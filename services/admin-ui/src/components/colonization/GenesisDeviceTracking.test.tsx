@@ -108,4 +108,18 @@ describe('GenesisDeviceTracking (LEG-150)', () => {
     expect(alert).toMatch(/route not found|proxy/i);
     expect(alert).not.toContain('not implemented');
   });
+
+  it('reports a 429 as an admin rate-limit, not bare HTTP 429 load failure', async () => {
+    vi.mocked(api.get).mockRejectedValue(axiosError(429));
+
+    render(<GenesisDeviceTracking />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/rate limit/i);
+    expect(alert).not.toMatch(/Failed to load Genesis device data \(HTTP 429\)/);
+  });
 });

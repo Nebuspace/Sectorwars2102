@@ -47,6 +47,12 @@
   display: flex;
   align-items: center;
   gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.msgmod-live-demotion {
+  font-size: 0.8rem;
+  color: #a0aec0;
 }
 
 .msgmod-count {
