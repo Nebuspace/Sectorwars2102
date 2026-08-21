@@ -1531,6 +1531,93 @@ class MedalService:
             logger.error(f"Error retrieving medals for player {player_id}: {e}")
             return {"success": False, "error": str(e)}
 
+    def admin_get_player_collection(
+        self,
+        player_id: uuid.UUID,
+        *,
+        viewing_admin_id: uuid.UUID,
+    ) -> Dict[str, Any]:
+        """Admin full collection with audit fields (medals.md:194 / LEG-264).
+
+        Always returns every earned medal including catalog-hidden (Special)
+        awards. When the player's ``medal_privacy.show_hidden`` is not opted-in
+        and a returned medal is catalog-hidden, write one ``view_hidden_medal``
+        audit per such medal (medals.md:263).
+        """
+        from src.services.medal_catalog import CAT_SPECIAL
+
+        player = self.db.query(Player).filter(Player.id == player_id).first()
+        if not player:
+            return {"success": False, "error": "Player not found"}
+
+        privacy = _medal_privacy_block(player)
+        show_hidden = bool(privacy.get("show_hidden"))
+
+        rows = (
+            self.db.query(PlayerMedal, Medal)
+            .join(Medal, PlayerMedal.medal_id == Medal.id)
+            .filter(PlayerMedal.player_id == player_id)
+            .order_by(PlayerMedal.awarded_at.desc())
+            .all()
+        )
+
+        items: List[Dict[str, Any]] = []
+        audits_written = 0
+        for pm, medal in rows:
+            is_hidden_catalog = medal.category == CAT_SPECIAL
+            privacy_overridden = is_hidden_catalog and not show_hidden
+            ctx = pm.context_payload if isinstance(pm.context_payload, dict) else {}
+            items.append(
+                {
+                    "medal_id": medal.id,
+                    "name": medal.name,
+                    "category": medal.category,
+                    "tier": medal.tier,
+                    "description": medal.description,
+                    "awarded_at": pm.awarded_at.isoformat() if pm.awarded_at else None,
+                    "awarded_via": pm.awarded_via,
+                    "awarded_by_user_id": (
+                        str(pm.awarded_by_user_id) if pm.awarded_by_user_id else None
+                    ),
+                    "reason": ctx.get("reason"),
+                    "source_event_key": pm.source_event_key,
+                    "source_combat_log_id": (
+                        str(pm.source_combat_log_id)
+                        if pm.source_combat_log_id
+                        else None
+                    ),
+                    "is_hidden_catalog": is_hidden_catalog,
+                    "privacy_overridden": privacy_overridden,
+                }
+            )
+            if privacy_overridden:
+                from src.models.audit_log import AuditLog
+
+                self.db.add(
+                    AuditLog(
+                        method="API",
+                        path=f"/admin/medals/players/{player_id}/collection",
+                        client_ip="127.0.0.1",
+                        user_id=viewing_admin_id,
+                        user_type="admin",
+                        action="view_hidden_medal",
+                        resource_type="medal",
+                        resource_id=pm.id,
+                        request_body={
+                            "player_id": str(player_id),
+                            "medal_id": medal.id,
+                        },
+                    )
+                )
+                audits_written += 1
+
+        self.db.flush()
+        return {
+            "success": True,
+            "items": items,
+            "total": len(items),
+            "view_hidden_medal_audits_written": audits_written,
+        }
 
     # ── Admin ────────────────────────────────────────────────────────
     def admin_grant(

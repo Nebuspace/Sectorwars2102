@@ -134,6 +134,30 @@ class AdminBulkGrantResponse(BaseModel):
     toast_suppressed: bool = False
 
 
+class AdminCollectionMedal(BaseModel):
+    """Full award row for Admin player view (medals.md:194) — existing columns only."""
+    medal_id: str
+    name: str
+    category: str
+    tier: Optional[str] = None
+    description: Optional[str] = None
+    awarded_at: Optional[str] = None
+    awarded_via: Optional[str] = None
+    awarded_by_user_id: Optional[str] = None
+    reason: Optional[str] = None
+    source_event_key: Optional[str] = None
+    source_combat_log_id: Optional[str] = None
+    is_hidden_catalog: bool = False
+    privacy_overridden: bool = False
+
+
+class AdminPlayerMedalCollectionResponse(BaseModel):
+    player_id: str
+    items: List[AdminCollectionMedal]
+    total: int
+    view_hidden_medal_audits_written: int = 0
+
+
 # ------------------------------------------------------------------
 # Player endpoint
 # ------------------------------------------------------------------
@@ -232,6 +256,44 @@ async def pin_my_medal(
 # ------------------------------------------------------------------
 # Admin endpoints
 # ------------------------------------------------------------------
+
+@router.get(
+    "/admin/players/{player_id}/collection",
+    response_model=AdminPlayerMedalCollectionResponse,
+)
+async def admin_get_player_medal_collection(
+    player_id: uuid.UUID,
+    admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    db: Session = Depends(get_db),
+):
+    """Admin player view: full medal collection + audit fields (medals.md:194).
+
+    Always includes hidden-catalog medals regardless of player privacy.
+    Each privacy-overridden hidden medal view writes ``audit_logs`` action
+    ``view_hidden_medal`` (medals.md:263).
+    """
+    medal_service = MedalService(db)
+    result = medal_service.admin_get_player_collection(
+        player_id, viewing_admin_id=admin.id
+    )
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=result.get("error") or "Player not found",
+        )
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return AdminPlayerMedalCollectionResponse(
+        player_id=str(player_id),
+        items=[AdminCollectionMedal(**m) for m in result["items"]],
+        total=result["total"],
+        view_hidden_medal_audits_written=result.get(
+            "view_hidden_medal_audits_written", 0
+        ),
+    )
 
 @router.get("/admin/catalog")
 async def admin_list_medal_catalog(

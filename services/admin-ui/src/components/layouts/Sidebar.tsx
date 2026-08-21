@@ -74,7 +74,8 @@ const Sidebar: React.FC = () => {
         { to: '/combat', label: 'Combat', icon: '⚔️' },
         { to: '/contract-disputes', label: 'Contract Disputes', icon: '⚖️' },
         { to: '/events', label: 'Events', icon: '🎯' },
-        { to: '/factions', label: 'Factions', icon: '🏴' }
+        { to: '/factions', label: 'Factions', icon: '🏴' },
+        { to: '/tradedocks', label: 'TradeDocks', icon: '🏗️' }
       ]
     },
     {
