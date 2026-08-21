@@ -26,16 +26,19 @@ from src.services.port_ownership_service import (
     SYNDICATE_INVITES_KEY,
     SYNDICATE_MODE_KEY,
     SYNDICATE_SHARES_KEY,
+    WITHDRAWAL_SCHEDULES,
     _ACTIVE_CAMPAIGN_STATUSES,
     _acquisition_cost,
     _ensure_primary_share,
     _lock_players_ascending,
     _lock_station,
     _transfer_station,
+    apply_inactive_stake_forfeits,
     clamp_price,
     depreciated_value,
     is_listable,
     list_station,
+    set_withdrawal_schedule,
 )
 
 logger = logging.getLogger(__name__)
@@ -91,10 +94,11 @@ _VOTE_ALIASES = {
 }
 
 # Sale / disbandment / tariff execute once the ballot passes (LEG-2007/2008/2013).
-_EXECUTABLE_VOTE_TYPES = frozenset({"sale", "disbandment", "tariff"})
+_EXECUTABLE_VOTE_TYPES = frozenset({"sale", "disbandment", "tariff", "withdrawal"})
 
 POSITIONS = frozenset({"for", "against", "absent", "veto", "against_veto"})
 INACTIVE_DAYS = 30
+FORFEIT_INACTIVE_DAYS = 90  # canon port-ownership.md:455
 QUORUM_FRAC = 0.50
 VETO_HOLDER_FRAC = 0.25
 VETO_OVERRIDE_FRAC = 0.75
@@ -347,13 +351,30 @@ def _proposed_tariff_rate(proposed: Dict[str, Any]) -> float:
     return rate
 
 
+
+def _proposed_withdrawal_schedule(proposed: Dict[str, Any]) -> str:
+    """Parse daily|weekly|monthly from vote proposed_value (invent=0)."""
+    raw = proposed.get("schedule", proposed.get("value", proposed.get("withdrawal_schedule")))
+    if raw is None and len(proposed) == 1:
+        only = next(iter(proposed.values()))
+        if isinstance(only, str):
+            raw = only
+    if isinstance(raw, str):
+        key = raw.strip().lower()
+        if key in WITHDRAWAL_SCHEDULES:
+            return key
+    raise PortOwnershipError(
+        400, "proposed_value must include schedule daily|weekly|monthly"
+    )
+
+
 def _execute_passed_vote(
     db: Session,
     station: Station,
     row: StationGovernanceVote,
     now: datetime,
 ) -> None:
-    """On passed sale/disbandment/tariff: mutate via existing helpers (LEG-2007/2008/2013)."""
+    """On passed sale/disbandment/tariff/withdrawal: mutate via existing helpers."""
     if row.vote_type not in _EXECUTABLE_VOTE_TYPES:
         return
     outcome = dict(row.outcome or {})
@@ -427,7 +448,7 @@ def _execute_passed_vote(
                 "listing_id": listing_id,
                 "price": price,
             }
-    else:
+    elif row.vote_type == "disbandment":
         # disbandment — depreciated auto-sell via open-market listing path
         depreciated = depreciated_value(acq)
         _cancel_open_campaigns(
@@ -451,6 +472,17 @@ def _execute_passed_vote(
             "listing_id": listing_id,
             "depreciated_value": depreciated,
         }
+    else:
+        # withdrawal — persist schedule enum for lazy sweep (LEG-2014)
+        schedule = _proposed_withdrawal_schedule(proposed)
+        station = _lock_station(db, station.id)
+        set_withdrawal_schedule(station, schedule, now)
+        db.flush()
+        execution = {
+            "action": "set_withdrawal_schedule",
+            "schedule": schedule,
+        }
+
 
     outcome["execution"] = execution
     row.outcome = outcome
@@ -522,6 +554,7 @@ def cast_governance_vote(
             )
 
     station = _lock_station(db, station.id)
+    apply_inactive_stake_forfeits(db, station, now)
     pid, shares = _require_syndicate_share(station, player)
 
     open_rows = (

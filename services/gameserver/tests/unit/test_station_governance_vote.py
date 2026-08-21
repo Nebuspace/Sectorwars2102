@@ -465,3 +465,191 @@ def test_execute_tariff_rejects_out_of_bounds(monkeypatch):
         )
     assert station.tax_rate == 0.10
     assert "execution" not in (row.outcome or {})
+
+
+
+# --- LEG-2014 Soft-ORDER: withdrawal vote persists schedule ---
+
+
+def test_execute_withdrawal_sets_schedule(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+    from uuid import uuid4
+    from datetime import datetime, timezone
+
+    from src.services import station_governance_service as gov
+    from src.services import port_ownership_service as pos
+
+    station_id = uuid4()
+    station = SimpleNamespace(
+        id=station_id,
+        ownership={},
+        treasury_balance=0,
+    )
+    row = SimpleNamespace(
+        vote_type="withdrawal",
+        proposed_value={"schedule": "weekly"},
+        outcome={"status": "passed", "passed": True},
+    )
+    db = MagicMock()
+    monkeypatch.setattr(gov, "_lock_station", lambda db, sid: station)
+    monkeypatch.setattr(gov, "_acquisition_cost", lambda s: 0)
+    monkeypatch.setattr(gov, "flag_modified", lambda *a, **k: None)
+    monkeypatch.setattr(pos, "flag_modified", lambda *a, **k: None)
+
+    gov._execute_passed_vote(db, station, row, datetime.now(timezone.utc))
+    assert station.ownership.get("withdrawal_schedule") == "weekly"
+    assert row.outcome["execution"]["action"] == "set_withdrawal_schedule"
+    assert row.outcome["execution"]["schedule"] == "weekly"
+
+    # idempotent
+    gov._execute_passed_vote(db, station, row, datetime.now(timezone.utc))
+    assert station.ownership.get("withdrawal_schedule") == "weekly"
+
+
+def test_execute_withdrawal_rejects_bad_schedule(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+    from uuid import uuid4
+    from datetime import datetime, timezone
+    import pytest
+
+    from src.services import station_governance_service as gov
+    from src.services.port_ownership_service import PortOwnershipError
+
+    station = SimpleNamespace(id=uuid4(), ownership={})
+    row = SimpleNamespace(
+        vote_type="withdrawal",
+        proposed_value={"schedule": "hourly"},
+        outcome={"status": "passed", "passed": True},
+    )
+    monkeypatch.setattr(gov, "_lock_station", lambda db, sid: station)
+    monkeypatch.setattr(gov, "_acquisition_cost", lambda s: 0)
+
+    with pytest.raises(PortOwnershipError):
+        gov._execute_passed_vote(
+            MagicMock(), station, row, datetime.now(timezone.utc)
+        )
+    assert "execution" not in (row.outcome or {})
+
+
+# --- LEG-2015 Soft-ORDER: 90-day inactive stake forfeit ---
+
+
+def test_inactive_stake_forfeit_rebalances_active(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+    from uuid import uuid4
+    from datetime import datetime, timedelta, timezone
+
+    from src.services import port_ownership_service as pos
+
+    primary = uuid4()
+    inactive = uuid4()
+    active = uuid4()
+    now = datetime.now(timezone.utc)
+    station = SimpleNamespace(
+        id=uuid4(),
+        owner_id=primary,
+        ownership={
+            "co_ownership_mode": "syndicate",
+            "co_ownership_shares": [
+                {"player_id": str(primary), "pct": 40, "primary": True},
+                {"player_id": str(inactive), "pct": 30},
+                {"player_id": str(active), "pct": 30},
+            ],
+            "co_ownership_invites": [],
+        },
+    )
+
+    class _Q:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def filter(self, *a, **k):
+            return self
+
+        def all(self):
+            return self._rows
+
+    players = [
+        SimpleNamespace(id=primary, last_game_login=now),
+        SimpleNamespace(
+            id=inactive, last_game_login=now - timedelta(days=100)
+        ),
+        SimpleNamespace(id=active, last_game_login=now),
+    ]
+    db = MagicMock()
+    db.query.return_value = _Q(players)
+
+    monkeypatch.setattr(
+        pos.game_time,
+        "scaled_elapsed",
+        lambda start, end: end - start,
+    )
+    monkeypatch.setattr(pos, "flag_modified", lambda *a, **k: None)
+
+    result = pos.apply_inactive_stake_forfeits(db, station, now)
+    assert len(result["forfeited"]) == 1
+    assert result["forfeited"][0]["player_id"] == str(inactive)
+    assert result["mode"] == "syndicate"
+    share_map = {s["player_id"]: s["pct"] for s in result["shares"]}
+    assert str(inactive) not in share_map
+    assert share_map[str(primary)] + share_map[str(active)] == 100
+
+
+# --- LEG-2012 Soft-ORDER: buyout → solo at fair value ---
+
+
+def test_buyout_syndicate_to_solo_pays_others(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+    from uuid import uuid4
+    from datetime import datetime, timezone
+
+    from src.services import port_ownership_service as pos
+
+    buyer_id = uuid4()
+    other_id = uuid4()
+    station_id = uuid4()
+    now = datetime.now(timezone.utc)
+    station = SimpleNamespace(
+        id=station_id,
+        owner_id=other_id,
+        ownership={
+            "co_ownership_mode": "syndicate",
+            "acquisition_cost": 1_000_000,
+            "co_ownership_shares": [
+                {"player_id": str(other_id), "pct": 60, "primary": True},
+                {"player_id": str(buyer_id), "pct": 40},
+            ],
+            "co_ownership_invites": [],
+        },
+        treasury_balance=0,
+    )
+    buyer = SimpleNamespace(id=buyer_id, credits=800_000)
+    other = SimpleNamespace(id=other_id, credits=0)
+
+    db = MagicMock()
+    monkeypatch.setattr(pos, "_lock_station", lambda db, sid: station)
+    monkeypatch.setattr(pos, "apply_inactive_stake_forfeits", lambda *a, **k: {"forfeited": []})
+    monkeypatch.setattr(pos, "forced_sale_price", lambda *a, **k: 500_000)
+    monkeypatch.setattr(
+        pos,
+        "_lock_players_ascending",
+        lambda db, ids: {buyer_id: buyer, other_id: other},
+    )
+    monkeypatch.setattr(pos, "flag_modified", lambda *a, **k: None)
+    # association table helpers
+    monkeypatch.setattr(pos, "player_stations", MagicMock())
+    db.execute = MagicMock()
+
+    result = pos.buyout_syndicate_to_solo(db, station, buyer, now)
+    assert result["mode"] == "solo"
+    assert result["fair_value"] == 500_000
+    # other owns 60% → due 300_000
+    assert result["paid_total"] == 300_000
+    assert buyer.credits == 800_000 - 300_000
+    assert other.credits == 300_000
+    assert station.owner_id == buyer_id
+    assert station.ownership.get("co_ownership_mode") == "solo"
