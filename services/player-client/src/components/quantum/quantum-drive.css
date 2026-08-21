@@ -603,6 +603,18 @@
   background: rgba(255, 176, 0, 0.06);
 }
 
+.qd-inline-success {
+  margin-top: 0.3rem;
+  padding: 0.25rem 0.4rem;
+  font-size: 0.52rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: #7dffb0;
+  text-shadow: 0 0 6px rgba(125, 255, 176, 0.35);
+  border-left: 2px solid rgba(125, 255, 176, 0.55);
+  background: rgba(125, 255, 176, 0.06);
+}
+
 /* --- Echo telemetry block (CRT readout with scanline) --- */
 .qd-telemetry {
   position: relative;

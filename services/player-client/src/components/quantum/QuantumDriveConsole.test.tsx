@@ -1,27 +1,23 @@
 // @vitest-environment jsdom
 /**
- * QuantumDriveConsole — WO-API-PHASE2 Lane B5: server-surfaced turn costs.
+ * QuantumDriveConsole — WO-API-PHASE2 Lane B5 + LEG-115 harvester install.
  *
- * Two things under test:
- *  1. Graceful degrade — an older server response (no scan_turn_cost /
- *     jump_turn_cost / jump_tow_surcharge) must render the same hardcoded
- *     fallbacks (5 / 50) it always has, never NaN/undefined text.
- *  2. BUG-1 fix, client side — once the server surfaces jump_tow_surcharge,
- *     the JUMP COMMIT button's own "INSUFFICIENT TURNS" turn-check (and its
- *     cost tag) must account for base + surcharge, not the flat base, so a
- *     towing pilot with turns in [base, base+surcharge) sees the accurate
- *     reason instead of the generic can_jump-derived "DRIVE NOT READY".
+ * Covered:
+ *  1. Graceful degrade — older server response omits turn-cost fields → 5/50.
+ *  2. BUG-1 — jump_tow_surcharge folds into INSUFFICIENT TURNS check.
+ *  3. LEG-115 — Install Quantum Field Harvester posts /equipment/install with
+ *     quantum_harvester; harvest CTA stays gated until upgrades report fitted.
  *
  * Mirrors ShipSelector.test.tsx's seam: jsdom + react-dom/client createRoot
- * + act(), no RTL in this project. QuantumBearingViewport is stubbed to a
- * no-op (its own canvas/ResizeObserver/rAF machinery is irrelevant here —
- * the cost-tag and block-reason text under test live in this component,
- * not its child), and quantumAPI.getMinimap is stubbed since is_warp_jumper=true fires
- * the minimap fetch on mount.
+ * + act(), no RTL. QuantumBearingViewport stubbed; quantumAPI.getMinimap stubbed.
  */
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+
+const getUpgradesMock = vi.fn();
+const installEquipmentMock = vi.fn();
+const harvestNebulaMock = vi.fn();
 
 vi.mock('../../services/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/api')>();
@@ -35,6 +31,11 @@ vi.mock('../../services/api', async (importOriginal) => {
         complete_radius_spacings: 25,
         sectors: [],
       }),
+    },
+    shipUpgradeAPI: {
+      ...actual.shipUpgradeAPI,
+      getUpgrades: (...args: unknown[]) => getUpgradesMock(...args),
+      installEquipment: (...args: unknown[]) => installEquipmentMock(...args),
     },
   };
 });
@@ -62,24 +63,33 @@ const baseQuantumStatus = {
   sensor_level: 0,
 };
 
+const baseShip = { id: 'ship-1', type: 'WARP_JUMPER', name: 'Jumper' };
+
 let mockPlayerState: any = basePlayerState;
 let mockQuantumStatus: any = baseQuantumStatus;
+let mockCurrentShip: any = baseShip;
+let mockCurrentSector: any = { type: 'STANDARD' };
 
 vi.mock('../../contexts/GameContext', () => ({
   useGame: () => ({
     playerState: mockPlayerState,
-    currentSector: { type: 'STANDARD' },
+    currentShip: mockCurrentShip,
+    currentSector: mockCurrentSector,
     quantumStatus: mockQuantumStatus,
     quantumScan: vi.fn(),
     quantumJump: vi.fn(),
     refineQuantumCharge: vi.fn(),
-    harvestNebula: vi.fn(),
+    harvestNebula: harvestNebulaMock,
     quantumScanResult: null,
     setQuantumScanResult: vi.fn(),
+    refreshPlayerState: vi.fn().mockResolvedValue(undefined),
+    updatePlayerCredits: vi.fn(),
   }),
 }));
 
 import QuantumDriveConsole from './QuantumDriveConsole';
+
+(globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 describe('QuantumDriveConsole — server-surfaced turn costs (WO-API-PHASE2)', () => {
   let container: HTMLElement;
@@ -88,6 +98,21 @@ describe('QuantumDriveConsole — server-surfaced turn costs (WO-API-PHASE2)', (
   beforeEach(() => {
     mockPlayerState = { ...basePlayerState };
     mockQuantumStatus = { ...baseQuantumStatus };
+    mockCurrentShip = { ...baseShip };
+    mockCurrentSector = { type: 'STANDARD' };
+    getUpgradesMock.mockReset();
+    installEquipmentMock.mockReset();
+    harvestNebulaMock.mockReset();
+    // Default: harvester already fitted so legacy cost tests keep the harvest button.
+    getUpgradesMock.mockResolvedValue({
+      success: true,
+      equipment: {
+        quantum_harvester: { installed: true, cost: 50_000, name: 'Quantum Harvester' },
+      },
+      equipped: {
+        quantum_harvester: { installed_at: '2026-01-01T00:00:00Z', effects: {} },
+      },
+    });
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -105,15 +130,14 @@ describe('QuantumDriveConsole — server-surfaced turn costs (WO-API-PHASE2)', (
     await act(async () => {
       root.render(<QuantumDriveConsole />);
     });
-    // Let the minimap fetch's resolved promise settle without an act() warning.
+    // Let minimap + getUpgrades settle.
     await act(async () => {
+      await Promise.resolve();
       await Promise.resolve();
     });
   };
 
   it('falls back to the hardcoded 5/50 costs when the server omits the new fields', async () => {
-    // baseQuantumStatus deliberately has no scan_turn_cost/jump_turn_cost/
-    // jump_tow_surcharge — simulates an older server build.
     await mount();
 
     const scanBtn = container.querySelector('.qd-scan-btn') as HTMLButtonElement;
@@ -138,9 +162,6 @@ describe('QuantumDriveConsole — server-surfaced turn costs (WO-API-PHASE2)', (
   });
 
   it('BUG-1: a towing pilot short of base+surcharge sees INSUFFICIENT TURNS, not a generic DRIVE NOT READY', async () => {
-    // Server already fixed BUG-1 server-side: can_jump=false because
-    // 50 turns < base(50)+surcharge(5)=55. The client's OWN turn-check must
-    // reach the same conclusion via the same total, not the flat 50.
     mockPlayerState = { ...basePlayerState, turns: 50 };
     mockQuantumStatus = {
       ...baseQuantumStatus,
@@ -168,5 +189,129 @@ describe('QuantumDriveConsole — server-surfaced turn costs (WO-API-PHASE2)', (
     const jumpBtn = container.querySelector('.qd-jump-btn') as HTMLButtonElement;
     expect(jumpBtn.textContent).not.toContain('INSUFFICIENT TURNS');
     expect(jumpBtn.disabled).toBe(false);
+  });
+});
+
+describe('QuantumDriveConsole — Quantum Field Harvester install (LEG-115)', () => {
+  let container: HTMLElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    mockPlayerState = { ...basePlayerState, is_docked: true };
+    mockQuantumStatus = { ...baseQuantumStatus };
+    mockCurrentShip = { ...baseShip };
+    mockCurrentSector = { type: 'NEBULA' };
+    getUpgradesMock.mockReset();
+    installEquipmentMock.mockReset();
+    harvestNebulaMock.mockReset();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+    vi.clearAllMocks();
+  });
+
+  const mount = async () => {
+    await act(async () => {
+      root.render(<QuantumDriveConsole />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  };
+
+  it('shows Install CTA and posts /equipment/install with quantum_harvester when none fitted', async () => {
+    getUpgradesMock.mockResolvedValue({
+      success: true,
+      equipment: {
+        quantum_harvester: {
+          installed: false,
+          cost: 50_000,
+          name: 'Quantum Harvester',
+          compatible: true,
+        },
+      },
+      equipped: {},
+    });
+    installEquipmentMock.mockResolvedValue({
+      success: true,
+      message: 'Quantum Harvester install started — ready in 24h',
+      equipment: 'quantum_harvester',
+      cost_paid: 50_000,
+      remaining_credits: 100_000,
+      pending: true,
+      ready_at: '2099-01-01T00:00:00Z',
+    });
+
+    await mount();
+
+    expect(getUpgradesMock).toHaveBeenCalledWith('ship-1');
+
+    const installBtn = container.querySelector(
+      '[data-testid="qd-install-harvester"]',
+    ) as HTMLButtonElement;
+    expect(installBtn).toBeTruthy();
+    expect(installBtn.textContent).toMatch(/INSTALL QUANTUM FIELD HARVESTER/);
+    expect(installBtn.textContent).toContain('50,000');
+    expect(container.querySelector('[data-testid="qd-harvest-nebula"]')).toBeNull();
+
+    await act(async () => {
+      installBtn.click();
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(installEquipmentMock).toHaveBeenCalledWith('ship-1', 'quantum_harvester');
+    expect(harvestNebulaMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps harvest CTA gated until harvester is installed', async () => {
+    getUpgradesMock.mockResolvedValue({
+      success: true,
+      equipment: {
+        quantum_harvester: { installed: false, cost: 50_000, compatible: true },
+      },
+      equipped: {},
+    });
+
+    await mount();
+
+    expect(container.querySelector('[data-testid="qd-harvest-nebula"]')).toBeNull();
+    const installBtn = container.querySelector(
+      '[data-testid="qd-install-harvester"]',
+    ) as HTMLButtonElement;
+    expect(installBtn).toBeTruthy();
+    expect(installBtn.disabled).toBe(false);
+  });
+
+  it('shows harvest (not install) when upgrades report a ready harvester', async () => {
+    getUpgradesMock.mockResolvedValue({
+      success: true,
+      equipment: {
+        quantum_harvester: { installed: true, cost: 50_000 },
+      },
+      equipped: {
+        quantum_harvester: { installed_at: '2026-01-01T00:00:00Z', effects: {} },
+      },
+    });
+
+    await mount();
+
+    expect(container.querySelector('[data-testid="qd-install-harvester"]')).toBeNull();
+    const harvestBtn = container.querySelector(
+      '[data-testid="qd-harvest-nebula"]',
+    ) as HTMLButtonElement;
+    expect(harvestBtn).toBeTruthy();
+    expect(harvestBtn.disabled).toBe(false);
+    expect(harvestBtn.textContent).toContain('HARVEST NEBULA');
   });
 });
