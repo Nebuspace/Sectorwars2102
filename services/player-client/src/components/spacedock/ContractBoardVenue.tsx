@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useMemo } from 'react';
-import { contractsAPI, shipAPI, storageAPI } from '../../services/api';
+import { contractsAPI, shipAPI, storageAPI, type StorageLockerTier } from '../../services/api';
 import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import { formatCredits } from '../../utils/formatters';
 import type {
@@ -186,6 +186,14 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
   const [mineActionSuccess, setMineActionSuccess] = useState<string | null>(null);
   // Optional deposit qty override per contract (empty → deposit all held of that commodity).
   const [depositQtyByContract, setDepositQtyByContract] = useState<Record<string, string>>({});
+  // LEG-276: locker tier at rent time (basic / reinforced / vault). GS defaults basic.
+  const [lockerTierByContract, setLockerTierByContract] = useState<
+    Record<string, StorageLockerTier>
+  >({});
+  // Last rent_rate reported by the rent response (do not invent multipliers client-side).
+  const [lockerRentRateByContract, setLockerRentRateByContract] = useState<
+    Record<string, number>
+  >({});
   // WO-CONTRACT-1-INSURANCE: selected tier per contract, defaults to 'basic'.
   const [insuranceTierByContract, setInsuranceTierByContract] = useState<
     Record<string, ContractInsuranceCoverageTier>
@@ -419,9 +427,15 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
       const result = await runAction(
         `deposit-${contract.id}`,
         async () => {
-          const locker = asRecord(await storageAPI.rentLocker(contract.id));
+          const tier = lockerTierByContract[contract.id] ?? 'basic';
+          const locker = asRecord(await storageAPI.rentLocker(contract.id, tier));
           const lockerId = typeof locker?.id === 'string' ? locker.id : null;
           if (!lockerId) throw new Error('Locker rent returned no id.');
+
+          const rentRateRaw = locker?.rentRate ?? locker?.rent_rate;
+          if (typeof rentRateRaw === 'number' && Number.isFinite(rentRateRaw)) {
+            setLockerRentRateByContract((prev) => ({ ...prev, [contract.id]: rentRateRaw }));
+          }
 
           const typed = parseInt(depositQtyByContract[contract.id] ?? '', 10);
           let quantity =
@@ -477,6 +491,7 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
       stationId,
       runAction,
       depositQtyByContract,
+      lockerTierByContract,
       getLabel,
       onCreditsSet,
       fetchMine,
@@ -878,6 +893,24 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
           <>
             {contract.destination_station_id === stationId && (
               <div className="cb-deposit-group">
+                <select
+                  className="cb-locker-tier"
+                  data-testid={`locker-tier-${contract.id}`}
+                  aria-label={`Storage locker tier for ${getLabel(contract.commodity_type)}`}
+                  value={lockerTierByContract[contract.id] ?? 'basic'}
+                  onChange={(e) =>
+                    setLockerTierByContract((prev) => ({
+                      ...prev,
+                      [contract.id]: e.target.value as StorageLockerTier,
+                    }))
+                  }
+                  disabled={Boolean(busyAction)}
+                  title="Locker tier is fixed at first rent for this contract (server stores rent_rate)."
+                >
+                  <option value="basic">Basic locker</option>
+                  <option value="reinforced">Reinforced locker</option>
+                  <option value="vault">Vault locker</option>
+                </select>
                 <input
                   className="cb-deposit-qty"
                   type="number"
@@ -900,6 +933,15 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
                   {busyAction === `deposit-${contract.id}` ? 'Depositing...' : '🗄️ Deposit'}
                 </button>
               </div>
+            )}
+            {lockerRentRateByContract[contract.id] != null && (
+              <span
+                className="cb-locker-rent-rate"
+                data-testid={`locker-rent-rate-${contract.id}`}
+                title="Rent rate from the server rent response (cr per unit per day)"
+              >
+                Rent rate {lockerRentRateByContract[contract.id]} cr/unit/day
+              </span>
             )}
             {lockerProgress[contract.id] && (
               <span
