@@ -85,7 +85,13 @@ from src.core.market_bootstrap import build_market_prices
 from src.models.market_transaction import MarketPrice, MarketTransaction, TransactionType
 from src.models.player import Player
 from src.models.port_ownership import PurchaseOffer, StationListing, TakeoverCampaign
+from src.models.sector import Sector
 from src.models.station import Station, player_stations
+from src.services.faction_service import (
+    FAIR_OPS_SECTOR_INFLUENCE_DELTA,
+    adjust_sector_influence,
+    sector_spawn_bias,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -2620,12 +2626,39 @@ def _accrue_fair_operation_bonus(
         if owner_id is not None:
             _apply_reputation(db, owner_id, FAIR_OPS_REPUTATION, "port_fair_operation")
             granted = FAIR_OPS_REPUTATION
+            _apply_fair_ops_sector_influence(db, station)
             logger.info(
                 "Fair-operation bonus: station %s owner %s granted +%d reputation "
                 "after %d consecutive low-tariff months",
                 station.id, owner_id, FAIR_OPS_REPUTATION, streak,
             )
     return granted
+
+
+def _apply_fair_ops_sector_influence(db: Session, station: Station) -> None:
+    """Grant +2% sector influence to the host sector's dominant faction (canon table).
+
+    Called once alongside the personal-reputation fair-operation bonus; idempotency
+    is enforced by the caller's ``fair_ops_bonus_granted`` ledger flag."""
+    if station.sector_id is None:
+        return
+    sector_row = (
+        db.query(Sector)
+        .filter(Sector.sector_id == station.sector_id)
+        .first()
+    )
+    if sector_row is None:
+        return
+    bias = sector_spawn_bias(db, sector_row.id)
+    dominant_faction_id = bias.get("dominant_faction_id")
+    if dominant_faction_id is None:
+        return
+    adjust_sector_influence(
+        db,
+        sector_row.id,
+        dominant_faction_id,
+        FAIR_OPS_SECTOR_INFLUENCE_DELTA,
+    )
 
 
 def auto_sell_insolvent(
