@@ -27,7 +27,16 @@ const path = require('path');
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 // admin-ui i18n config (src/i18n.ts): defaultNS 'common', ns ['common','admin','auth']
-const KNOWN_NAMESPACES = new Set(['common', 'admin', 'auth']);
+// Keep in sync with i18n.ts default ns array.
+const KNOWN_NAMESPACES = new Set([
+  'common',
+  'admin',
+  'auth',
+  'ai',
+  'marketing',
+  'errors',
+  'validation',
+]);
 // admin-ui supported languages (src/i18n.ts SUPPORTED_LANGUAGES)
 const SUPPORTED_LANGUAGES = ['en', 'es', 'zh', 'fr', 'pt', 'de'];
 const REFERENCE_LANG = 'en';

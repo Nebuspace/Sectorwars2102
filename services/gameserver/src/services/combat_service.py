@@ -52,13 +52,13 @@ NPC_KILL_LOOT_MINT_CAP = 5000      # ratified — per-encounter ceiling
 #
 # CANON (ratified 2026-08-10, DECISIONS.md npc-quantum-drop-kind-mapping) —
 # TRADER/RESEARCHER bridge: canon names "Quantum Smuggler" / "Rogue Scientist"
-# kinds that are not spawn kinds. Existing substrate: NPCArchetype.TRADER
+# kinds that are not distinct spawn kinds. Existing substrate: NPCArchetype.TRADER
 # personas draw a TITLE from TRADER_TITLES_BY_TIER["NOTORIOUS"] (includes
-# "Smuggler" and "Black Marketeer"); NPCArchetype.RESEARCHER is declared but
-# not spawned today. A Smuggler/Black-Marketeer-titled TRADER kill rolls the
-# 5%/1-2 row; a RESEARCHER-archetype kill rolls the 15%/1-3 row; every other
-# NPC never drops. Dedicated QUANTUM_SMUGGLER / ROGUE_SCIENTIST spawn kinds
-# would be a follow-up npc_spawn_service WO, not a rename here.
+# "Smuggler" and "Black Marketeer"); NPCArchetype.RESEARCHER is spawned via
+# gameserver-seeded nebula_surveyor rosters (LEG-108 / seed_researcher_rosters).
+# A Smuggler/Black-Marketeer-titled TRADER kill rolls the 5%/1-2 row; a
+# RESEARCHER-archetype kill rolls the 15%/1-3 row; every other NPC never drops.
+# Dedicated QUANTUM_SMUGGLER spawn kind remains out of scope (title bridge stands).
 # Destroyed-gate drops stay 0% — no gate-destruction combat path exists yet.
 NPC_QUANTUM_DROP_SMUGGLER_TITLES = frozenset({"Smuggler", "Black Marketeer"})
 NPC_QUANTUM_DROP_SMUGGLER_CHANCE = 0.05
@@ -1391,6 +1391,23 @@ class CombatService:
         except Exception as e:
             logger.error("Failed police engagement routing after combat: %s", e)
 
+        # Dynamic sector influence: rival kill −2% (factions-and-teams.md).
+        # Best-effort / flush-only — rides this combat's single commit.
+        try:
+            from src.services.faction_service import apply_rival_kill_sector_influence
+
+            sector_uuid = sector.id if sector else None
+            if combat_result["defender_ship_destroyed"]:
+                apply_rival_kill_sector_influence(
+                    self.db, sector_uuid, attacker.id, defender.id
+                )
+            if combat_result["attacker_ship_destroyed"]:
+                apply_rival_kill_sector_influence(
+                    self.db, sector_uuid, defender.id, attacker.id
+                )
+        except Exception as e:
+            logger.error("Failed rival-kill sector influence hook: %s", e)
+
         # Commit changes
         self.db.commit()
         outbox.flush()
@@ -2437,6 +2454,33 @@ class CombatService:
 
         # Update last_combat timestamp for sector
         sector.last_combat = datetime.now()
+
+        # Dynamic sector influence: drone defense survives → +1% for the
+        # defending drones' owner's dominant faction (factions-and-teams.md).
+        if drones_remaining > 0:
+            try:
+                from src.services.faction_service import (
+                    apply_defense_survived_sector_influence,
+                    dominant_reputation_faction_id,
+                )
+
+                defended_faction_id = None
+                for d in target_drones:
+                    owner_id = getattr(d, "player_id", None)
+                    if owner_id is None:
+                        continue
+                    if getattr(d, "health", 0) <= 0:
+                        continue
+                    defended_faction_id = dominant_reputation_faction_id(
+                        self.db, owner_id
+                    )
+                    if defended_faction_id is not None:
+                        break
+                apply_defense_survived_sector_influence(
+                    self.db, sector.id, defended_faction_id
+                )
+            except Exception as e:
+                logger.error("Failed sector-drone defense influence hook: %s", e)
 
         # Commit changes
         self.db.commit()
@@ -5264,9 +5308,13 @@ class CombatService:
         generator level), the citadel-built defense_buildings stored in the
         active_events JSONB (turret_network + orbital_platform counts), AND
         (WO-FIX-DEFENSE-TURRETS-FIGHTERS-NO-COMBAT-EFFECT) the purchasable
-        defense_turrets/defense_fighters garrison columns, to produce a
-        damage-reduction factor, a shield HP pool that must be depleted before
-        hull damage is dealt, and a per-round anti-drone kill contribution.
+        defense_turrets/defense_fighters garrison columns, AND (LEG-164 / WO-G6)
+        the citadel passive-defense rating from
+        ``citadel_service.citadel_passive_defense_rating`` (current-level
+        drone_capacity, plus mid-upgrade +50% of the next level's delta), to
+        produce a damage-reduction factor, a shield HP pool that must be
+        depleted before hull damage is dealt, and a per-round anti-drone kill
+        contribution.
 
         WO-CT1: until this, defense_buildings were dead wiring — players could
         build turret networks and orbital platforms and they had ZERO combat
@@ -5289,6 +5337,12 @@ class CombatService:
         shields = getattr(planet, "shields", 0) or 0
         defense_turrets = getattr(planet, "defense_turrets", 0) or 0
         defense_fighters = getattr(planet, "defense_fighters", 0) or 0
+        # LEG-164 / WO-G6: same mid-upgrade rating defensePower already uses.
+        # drone_capacity IS the citadel's passive defense garrison — fold into
+        # the fighter terms below (do not duplicate the 0.5×delta formula).
+        from src.services.citadel_service import citadel_passive_defense_rating
+        citadel_garrison = citadel_passive_defense_rating(planet)
+        effective_fighters = defense_fighters + citadel_garrison
 
         # Citadel-built defense buildings (JSONB, defensive read — never crashes).
         buildings = self._read_defense_buildings(planet)
@@ -5380,10 +5434,10 @@ class CombatService:
         # the building terms' caps. FLAGGED for DECISIONS pending a
         # balance-tuning pass.
         turret_unit_kills = min(defense_turrets // 10, 20)
-        fighter_unit_kills = min(defense_fighters // 5, 30)
+        fighter_unit_kills = min(effective_fighters // 5, 30)
         unit_anti_drone_kills = turret_unit_kills + fighter_unit_kills
         turret_unit_reduction = min(defense_turrets * 0.0005, 0.08)
-        fighter_unit_reduction = min(defense_fighters * 0.0003, 0.08)
+        fighter_unit_reduction = min(effective_fighters * 0.0003, 0.08)
         unit_reduction = turret_unit_reduction + fighter_unit_reduction
 
         anti_drone_kills_per_round += unit_anti_drone_kills
@@ -5406,9 +5460,9 @@ class CombatService:
             parts.append(f"{turret_networks} turret network(s) ({turret_reduction:.0%} reduction, {min(turret_networks * 3, 18)} drone-kills/round)")
         if orbital_platforms > 0:
             parts.append(f"{orbital_platforms} orbital platform(s) ({orbital_reduction:.0%} reduction, {orbital_shield_hp} armour HP)")
-        if defense_turrets > 0 or defense_fighters > 0:
+        if defense_turrets > 0 or effective_fighters > 0:
             parts.append(
-                f"{defense_turrets} garrison turret(s) + {defense_fighters} garrison fighter(s) "
+                f"{defense_turrets} garrison turret(s) + {effective_fighters} garrison fighter(s) "
                 f"({unit_reduction:.0%} reduction, {unit_anti_drone_kills} drone-kills/round)"
             )
         if drone_damage_bonus > 0:
@@ -5880,6 +5934,13 @@ class CombatService:
 
     def _transfer_planet_ownership(self, planet: Planet, new_owner: Player) -> None:
         """Transfer ownership of a planet to a new player via many-to-many."""
+        # LEG-159 / LEG-DEC-15: capture cancels any pending voluntary transfer (no fee).
+        try:
+            from src.services.planet_ownership_transfer_service import clear_pending_transfer
+            clear_pending_transfer(planet)
+        except Exception:
+            logger.debug("clear_pending_transfer skipped", exc_info=True)
+
         # Clear existing owners from the join table
         self.db.execute(
             self.db.query(Planet).filter(Planet.id == planet.id).statement

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Bar, Radar } from 'react-chartjs-2';
-import { useAuth } from '../../contexts/AuthContext';
+import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import './planetary-management.css';
 
 interface Planet {
@@ -8,9 +9,9 @@ interface Planet {
   name: string;
   sectorId: string;
   sectorName: string;
-  type: 'Terran' | 'Desert' | 'Ice' | 'Gas Giant' | 'Volcanic' | 'Ocean';
-  size: 'Small' | 'Medium' | 'Large' | 'Massive';
-  atmosphere: 'None' | 'Toxic' | 'Thin' | 'Breathable' | 'Dense';
+  type: string;
+  size: string;
+  atmosphere: string;
   temperature: number; // in Celsius
   gravity: number; // relative to Earth (1.0)
   resources: {
@@ -66,25 +67,25 @@ interface PlanetTickResult {
   lastProductionAt: string | null;
 }
 
+/** Matches gameserver TerraformingProject (admin_colonization.py). */
 interface TerraformingProject {
   id: string;
   planetId: string;
   planetName: string;
-  type: 'atmosphere' | 'temperature' | 'water' | 'soil';
+  type: string;
   progress: number;
   duration: number; // in hours
-  cost: {
-    energy: number;
-    minerals: number;
-  };
+  cost: Record<string, number>;
   impact: {
-    habitability: number;
-    resourceBonus: string;
+    habitability?: number;
+    targetHabitability?: number | null;
+    [key: string]: unknown;
   };
 }
 
+
+
 export const PlanetaryManagement: React.FC = () => {
-  useAuth();
   const [planets, setPlanets] = useState<Planet[]>([]);
   const [stats, setStats] = useState<PlanetStats | null>(null);
   const [terraformingProjects, setTerraformingProjects] = useState<TerraformingProject[]>([]);
@@ -107,33 +108,29 @@ export const PlanetaryManagement: React.FC = () => {
 
   const loadPlanetaryData = async () => {
     try {
-      const token = localStorage.getItem('accessToken');
-      const response = await fetch('/api/v1/admin/colonization/planets', {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
-      });
+      // Shipped route (admin_colonization.py) — shared authenticated client (LEG-144 sibling).
+      const response = await api.get<{
+        planets?: Planet[];
+        stats?: PlanetStats | null;
+        terraformingProjects?: TerraformingProject[];
+      }>('/api/v1/admin/colonization/planets');
 
-      if (!response.ok) {
-        setError(
-          response.status === 404
-            ? 'Planetary management endpoint not implemented — /api/v1/admin/colonization/planets returned 404'
-            : `Failed to load planetary data (HTTP ${response.status})`
-        );
-        setPlanets([]);
-        setStats(null);
-        setTerraformingProjects([]);
-        return;
-      }
-
-      const data = await response.json();
-      setPlanets(data.planets ?? []);
-      setStats(data.stats ?? null);
-      setTerraformingProjects(data.terraformingProjects ?? []);
+      setPlanets(response.data.planets ?? []);
+      setStats(response.data.stats ?? null);
+      setTerraformingProjects(response.data.terraformingProjects ?? []);
       setError(null);
     } catch (err) {
       console.error('Error loading planetary data:', err);
-      setError('Gameserver unreachable — network error fetching planetary data');
+      setError(
+        formatAdminApiError(err, {
+          fallback: 'Gameserver unreachable — network error fetching planetary data',
+          scopeHint:
+            'planetary management requires the admin regions view scope (REGIONS_VIEW).',
+          notFoundMessage:
+            'Planetary management route not found (404). The gameserver ships /api/v1/admin/colonization/planets — ' +
+            'check that the gameserver is running and the /api proxy is reaching it.',
+        })
+      );
       setPlanets([]);
       setStats(null);
       setTerraformingProjects([]);
@@ -146,29 +143,19 @@ export const PlanetaryManagement: React.FC = () => {
     setTicking(true);
     setTickError(null);
     try {
-      const token = localStorage.getItem('accessToken');
-      const response = await fetch(
-        `/api/v1/admin/planets/${planet.id}/tick`,
-        {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${token}`,
-          },
-        },
+      const response = await api.post<PlanetTickResult>(
+        `/api/v1/admin/planets/${planet.id}/tick`
       );
-
-      if (!response.ok) {
-        setTickError(`Failed to advance production (HTTP ${response.status})`);
-        setTickResult(null);
-        return;
-      }
-
-      const data: PlanetTickResult = await response.json();
-      setTickResult(data);
+      setTickResult(response.data);
       await loadPlanetaryData();
     } catch (err) {
       console.error('Error forcing production tick:', err);
-      setTickError('Gameserver unreachable — network error advancing production');
+      setTickError(
+        formatAdminApiError(err, {
+          fallback: 'Gameserver unreachable — network error advancing production',
+          scopeHint: 'forcing a production tick requires GALAXY_MANAGE.',
+        })
+      );
       setTickResult(null);
     } finally {
       setTicking(false);

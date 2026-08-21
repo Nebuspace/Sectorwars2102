@@ -36,6 +36,7 @@ from typing import Dict, Any, Optional, List
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import func
 
 from src.models.player import Player
 from src.models.medal import Medal, PlayerMedal
@@ -81,6 +82,8 @@ def award_medal(
     awarded_via: str = "system",
     context_payload: Optional[Dict[str, Any]] = None,
     awarded_by_user_id: Optional[uuid.UUID] = None,
+    grant_batch_id: Optional[uuid.UUID] = None,
+    suppress_toast: bool = False,
 ) -> bool:
     """Award ``medal_id`` to ``player_id``, idempotently.
 
@@ -123,6 +126,7 @@ def award_medal(
         source_event_key=source_event_key,
         source_combat_log_id=source_combat_log_id,
         awarded_by_user_id=awarded_by_user_id,
+        grant_batch_id=grant_batch_id,
         context_payload=context_payload,
     )
     try:
@@ -158,7 +162,10 @@ def award_medal(
     # award a later rollback would void; and it is fully defensive — a broadcast
     # hiccup is swallowed and can never roll back the recorded award or break the
     # caller's unit of work (combat/trade/first-login).
-    _dispatch_medal_awarded_event(db, player_id, resolved_id, awarded_via)
+    # LEG-81 / medals.md: bulk grants >50 suppress personal toasts (login splash
+    # via unviewed_awards still runs below).
+    if not suppress_toast:
+        _dispatch_medal_awarded_event(db, player_id, resolved_id, awarded_via)
 
     # WO-F9 — offline notification durability (medals.md:201). The realtime toast
     # above only lands if the player is connected; the canon's "Cross-session
@@ -182,6 +189,82 @@ def award_medal(
 # flag_modified, no migration).
 _MEDAL_PRIVACY_SETTINGS_KEY = "medal_privacy"
 _UNVIEWED_AWARDS_KEY = "unviewed_awards"
+_PINNED_MEDAL_ID_KEY = "pinned_medal_id"
+
+
+def _medal_privacy_block(player: Player) -> Dict[str, Any]:
+    # getattr: movement unit fakes / presence _Row stand-ins may omit settings.
+    settings = getattr(player, "settings", None)
+    settings = settings if isinstance(settings, dict) else {}
+    privacy = settings.get(_MEDAL_PRIVACY_SETTINGS_KEY)
+    return dict(privacy) if isinstance(privacy, dict) else {}
+
+
+def public_medal_identity(
+    player: Player,
+    *,
+    medal_count: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Pinned public face + count for roster/discovery (medals.md pinning model).
+
+    ``medal_count`` may be precomputed (batch enrich); when omitted, callers that
+    need a live count should pass ``count_earned_medals``. Respects
+    ``medal_privacy.show_count_publicly`` (default True) — when False, count is
+    ``None`` so clients that check ``typeof medal_count === 'number'`` hide it.
+    """
+    privacy = _medal_privacy_block(player)
+    pinned = privacy.get(_PINNED_MEDAL_ID_KEY)
+    show_count = privacy.get("show_count_publicly", True)
+    return {
+        "pinned_medal_id": str(pinned) if pinned else None,
+        "medal_count": (int(medal_count) if medal_count is not None else None)
+        if show_count is not False
+        else None,
+    }
+
+
+def count_earned_medals(db: Session, player_id: uuid.UUID) -> int:
+    return (
+        db.query(PlayerMedal)
+        .filter(PlayerMedal.player_id == player_id)
+        .count()
+    )
+
+
+def set_pinned_medal_id(
+    db: Session,
+    player: Player,
+    medal_id: Optional[str],
+) -> str:
+    """Write ``Player.settings.medal_privacy.pinned_medal_id`` (LEG-59).
+
+    ``medal_id=None`` clears the pin. A non-null id must be a medal the player
+    currently holds (catalog unknown / unearned → ValueError). Hidden medals
+    may be pinned (medals.md). Flush left to caller; returns the stored value
+    (resolved catalog id or empty-clear as None → returns \"\").
+    """
+    resolved: Optional[str] = None
+    if medal_id is not None and str(medal_id).strip():
+        raw = str(medal_id).strip()
+        resolved = raw if raw in MEDAL_CATALOG else LEGACY_KEY_TO_ID.get(raw, raw)
+        if not get_catalog_entry(resolved):
+            raise ValueError(f"Unknown medal_id: {raw}")
+        held = (
+            db.query(PlayerMedal)
+            .filter(PlayerMedal.player_id == player.id, PlayerMedal.medal_id == resolved)
+            .first()
+        )
+        if held is None:
+            raise ValueError("Cannot pin a medal you have not earned")
+
+    settings = dict(player.settings) if isinstance(player.settings, dict) else {}
+    privacy = _medal_privacy_block(player)
+    privacy[_PINNED_MEDAL_ID_KEY] = resolved
+    settings[_MEDAL_PRIVACY_SETTINGS_KEY] = privacy
+    player.settings = settings
+    flag_modified(player, "settings")
+    db.flush()
+    return resolved or ""
 
 
 def _persist_offline_award_notification(
@@ -1393,6 +1476,93 @@ class MedalService:
             logger.error(f"Error retrieving medals for player {player_id}: {e}")
             return {"success": False, "error": str(e)}
 
+    def admin_get_player_collection(
+        self,
+        player_id: uuid.UUID,
+        *,
+        viewing_admin_id: uuid.UUID,
+    ) -> Dict[str, Any]:
+        """Admin full collection with audit fields (medals.md:194 / LEG-264).
+
+        Always returns every earned medal including catalog-hidden (Special)
+        awards. When the player's ``medal_privacy.show_hidden`` is not opted-in
+        and a returned medal is catalog-hidden, write one ``view_hidden_medal``
+        audit per such medal (medals.md:263).
+        """
+        from src.services.medal_catalog import CAT_SPECIAL
+
+        player = self.db.query(Player).filter(Player.id == player_id).first()
+        if not player:
+            return {"success": False, "error": "Player not found"}
+
+        privacy = _medal_privacy_block(player)
+        show_hidden = bool(privacy.get("show_hidden"))
+
+        rows = (
+            self.db.query(PlayerMedal, Medal)
+            .join(Medal, PlayerMedal.medal_id == Medal.id)
+            .filter(PlayerMedal.player_id == player_id)
+            .order_by(PlayerMedal.awarded_at.desc())
+            .all()
+        )
+
+        items: List[Dict[str, Any]] = []
+        audits_written = 0
+        for pm, medal in rows:
+            is_hidden_catalog = medal.category == CAT_SPECIAL
+            privacy_overridden = is_hidden_catalog and not show_hidden
+            ctx = pm.context_payload if isinstance(pm.context_payload, dict) else {}
+            items.append(
+                {
+                    "medal_id": medal.id,
+                    "name": medal.name,
+                    "category": medal.category,
+                    "tier": medal.tier,
+                    "description": medal.description,
+                    "awarded_at": pm.awarded_at.isoformat() if pm.awarded_at else None,
+                    "awarded_via": pm.awarded_via,
+                    "awarded_by_user_id": (
+                        str(pm.awarded_by_user_id) if pm.awarded_by_user_id else None
+                    ),
+                    "reason": ctx.get("reason"),
+                    "source_event_key": pm.source_event_key,
+                    "source_combat_log_id": (
+                        str(pm.source_combat_log_id)
+                        if pm.source_combat_log_id
+                        else None
+                    ),
+                    "is_hidden_catalog": is_hidden_catalog,
+                    "privacy_overridden": privacy_overridden,
+                }
+            )
+            if privacy_overridden:
+                from src.models.audit_log import AuditLog
+
+                self.db.add(
+                    AuditLog(
+                        method="API",
+                        path=f"/admin/medals/players/{player_id}/collection",
+                        client_ip="127.0.0.1",
+                        user_id=viewing_admin_id,
+                        user_type="admin",
+                        action="view_hidden_medal",
+                        resource_type="medal",
+                        resource_id=pm.id,
+                        request_body={
+                            "player_id": str(player_id),
+                            "medal_id": medal.id,
+                        },
+                    )
+                )
+                audits_written += 1
+
+        self.db.flush()
+        return {
+            "success": True,
+            "items": items,
+            "total": len(items),
+            "view_hidden_medal_audits_written": audits_written,
+        }
 
     # ── Admin ────────────────────────────────────────────────────────
     def admin_grant(
@@ -1401,14 +1571,20 @@ class MedalService:
         medal_id: str,
         granting_user_id: uuid.UUID,
         reason: Optional[str] = None,
+        *,
+        grant_batch_id: Optional[uuid.UUID] = None,
+        suppress_toast: bool = False,
+        awarded_via: str = "admin_grant",
     ) -> bool:
         """Admin grant. Returns True if newly awarded, False if already held/unknown."""
         return award_medal(
             self.db, player_id, medal_id,
-            awarded_via="admin_grant",
+            awarded_via=awarded_via,
             awarded_by_user_id=granting_user_id,
-            source_event_key="admin.grant",
+            source_event_key="admin.grant" if awarded_via == "admin_grant" else "admin.bulk_grant",
             context_payload={"reason": reason} if reason else None,
+            grant_batch_id=grant_batch_id,
+            suppress_toast=suppress_toast,
         )
 
     def admin_revoke(
@@ -1445,11 +1621,159 @@ class MedalService:
         return True
 
 
+BULK_GRANT_MAX_RECIPIENTS = 1000
+BULK_GRANT_TOAST_SUPPRESS_THRESHOLD = 50
+_INVALID_SAMPLE_CAP = 20
+
+
+def resolve_bulk_recipient_token(db: Session, token: str) -> tuple[Optional[uuid.UUID], Optional[str]]:
+    """Resolve a pasted player id or username/nickname to ``player_id``.
+
+    Returns ``(player_id, None)`` on success, or ``(None, reason)`` on failure.
+    """
+    raw = (token or "").strip()
+    if not raw:
+        return None, "empty"
+
+    try:
+        pid = uuid.UUID(raw)
+    except (ValueError, AttributeError, TypeError):
+        pid = None
+
+    if pid is not None:
+        row = db.query(Player).filter(Player.id == pid).first()
+        if row is None:
+            return None, "unknown_player_id"
+        return row.id, None
+
+    from src.models.user import User
+
+    row = (
+        db.query(Player)
+        .outerjoin(User, Player.user_id == User.id)
+        .filter(
+            (func.lower(Player.nickname) == raw.lower())
+            | (func.lower(User.username) == raw.lower())
+        )
+        .first()
+    )
+    if row is None:
+        return None, "unknown_username"
+    return row.id, None
+
+
+def plan_bulk_grant(
+    db: Session,
+    medal_id: str,
+    recipients: List[str],
+) -> Dict[str, Any]:
+    """Dry-run / preflight for LEG-81 bulk grant. Never mutates."""
+    if not get_catalog_entry(medal_id):
+        raise ValueError(f"Unknown medal_id: {medal_id}")
+    if len(recipients) > BULK_GRANT_MAX_RECIPIENTS:
+        raise ValueError(
+            f"Too many recipients ({len(recipients)}); max {BULK_GRANT_MAX_RECIPIENTS}"
+        )
+
+    resolved_id = medal_id if medal_id in MEDAL_CATALOG else LEGACY_KEY_TO_ID.get(medal_id, medal_id)
+    valid_ids: List[uuid.UUID] = []
+    seen: set[uuid.UUID] = set()
+    invalid: List[Dict[str, str]] = []
+    invalid_total = 0
+
+    for token in recipients:
+        pid, err = resolve_bulk_recipient_token(db, token)
+        if err:
+            invalid_total += 1
+            if len(invalid) < _INVALID_SAMPLE_CAP:
+                invalid.append({"input": str(token), "reason": err})
+            continue
+        assert pid is not None
+        if pid in seen:
+            continue
+        seen.add(pid)
+        valid_ids.append(pid)
+
+    already_held = 0
+    grantable: List[uuid.UUID] = []
+    if valid_ids:
+        held = {
+            row[0]
+            for row in (
+                db.query(PlayerMedal.player_id)
+                .filter(
+                    PlayerMedal.player_id.in_(valid_ids),
+                    PlayerMedal.medal_id == resolved_id,
+                )
+                .all()
+            )
+        }
+        for pid in valid_ids:
+            if pid in held:
+                already_held += 1
+            else:
+                grantable.append(pid)
+
+    return {
+        "medal_id": resolved_id,
+        "valid_count": len(valid_ids),
+        "invalid_count": invalid_total,
+        "already_held_count": already_held,
+        "grantable_count": len(grantable),
+        "invalid_samples": invalid,
+        "grantable_player_ids": grantable,
+    }
+
+
+def execute_bulk_grant(
+    db: Session,
+    medal_id: str,
+    recipients: List[str],
+    granting_user_id: uuid.UUID,
+    reason: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Commit a bulk grant with a shared ``grant_batch_id`` (LEG-81)."""
+    plan = plan_bulk_grant(db, medal_id, recipients)
+
+    batch_id = uuid.uuid4()
+    suppress = plan["grantable_count"] > BULK_GRANT_TOAST_SUPPRESS_THRESHOLD
+    granted = 0
+    svc = MedalService(db)
+    for pid in plan["grantable_player_ids"]:
+        changed = svc.admin_grant(
+            pid,
+            plan["medal_id"],
+            granting_user_id,
+            reason=reason,
+            grant_batch_id=batch_id,
+            suppress_toast=suppress,
+            awarded_via="bulk",
+        )
+        if changed:
+            granted += 1
+
+    return {
+        "dry_run": False,
+        "medal_id": plan["medal_id"],
+        "valid_count": plan["valid_count"],
+        "invalid_count": plan["invalid_count"],
+        "already_held_count": plan["already_held_count"],
+        "grantable_count": plan["grantable_count"],
+        "granted_count": granted,
+        "invalid_samples": plan["invalid_samples"],
+        "grant_batch_id": str(batch_id),
+        "toast_suppressed": suppress,
+    }
+
+
 __all__ = [
     "MEDAL_DEFINITIONS",
     "MedalService",
     "award_medal",
     "seed_medals",
+    "public_medal_identity",
+    "count_earned_medals",
+    "set_pinned_medal_id",
     "check_and_award_combat_medals",
     "check_and_award_trade_medals",
     "check_and_award_exploration_medals",
@@ -1468,4 +1792,9 @@ __all__ = [
     "get_active_medal_bonuses",
     "MEDAL_BONUS_CAPS",
     "MEDAL_PROGRESS_BANDS",
+    "plan_bulk_grant",
+    "execute_bulk_grant",
+    "resolve_bulk_recipient_token",
+    "BULK_GRANT_MAX_RECIPIENTS",
+    "BULK_GRANT_TOAST_SUPPRESS_THRESHOLD",
 ]
