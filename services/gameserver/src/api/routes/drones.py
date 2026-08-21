@@ -38,6 +38,13 @@ class DeployDronesRequest(BaseModel):
     droneCount: int
 
 
+class DeployDroneRequest(BaseModel):
+    """Request to deploy a single drone (LEG-364 — mirrors service kwargs)."""
+    sector_id: UUID
+    deployment_type: str = "defense"
+    target_id: Optional[UUID] = None
+
+
 class RepairDroneRequest(BaseModel):
     """Request to repair a drone."""
     repair_amount: int
@@ -244,6 +251,42 @@ async def recall_drone(
         )
         
     return {"message": "Drone recalled successfully"}
+
+
+@router.post("/{drone_id}/deploy", response_model=DroneDeploymentResponse)
+async def deploy_drone(
+    drone_id: UUID,
+    request: DeployDroneRequest,
+    current_player: Player = Depends(get_current_player),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Deploy a single owned drone to a sector.
+
+    Thin HTTP wrapper over ``DroneService.deploy_drone`` (same semantics as
+    batch ``POST /drones/deploy``). LEG-364 — route was missing on tip while
+    the service + batch path were already shipped.
+    """
+    drone = await db.get(Drone, drone_id)
+    if not drone or drone.player_id != current_player.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Drone not found or not owned by you",
+        )
+
+    service = DroneService(db)
+    try:
+        deployment = await service.deploy_drone(
+            drone_id=drone_id,
+            sector_id=request.sector_id,
+            deployment_type=request.deployment_type,
+            target_id=request.target_id,
+        )
+        return deployment
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
 
 
 @router.post("/{drone_id}/repair", response_model=DroneResponse)
