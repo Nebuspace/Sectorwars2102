@@ -172,6 +172,23 @@ describe('apiRequest via trade/combat/grey wrappers', () => {
     );
   });
 
+  it('shipRegistryAPI.salvageBreak POSTs with no body', async () => {
+    const body = {
+      ship_id: 'ship-3',
+      started_at: '2026-08-17T12:00:00Z',
+      duration_seconds: 300,
+      completes_at: '2026-08-17T12:05:00Z',
+    };
+    post.mockResolvedValue({ data: body });
+    const out = await shipRegistryAPI.salvageBreak('ship-3');
+    expect(out).toEqual(body);
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/ships/ship-3/salvage-break',
+      undefined,
+      jsonHeaders,
+    );
+  });
+
   it('shipRegistryAPI.setPin POSTs the new pin', async () => {
     post.mockResolvedValue({ data: { ship_id: 'ship-2', hatch_pin_code: 'NEWPIN1' } });
     await shipRegistryAPI.setPin('ship-2', 'NEWPIN1');

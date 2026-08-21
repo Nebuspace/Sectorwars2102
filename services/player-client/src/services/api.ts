@@ -839,6 +839,15 @@ export const shipRegistryAPI = {
       body: JSON.stringify(pin ? { pin } : {}),
     }),
 
+  /**
+   * Start a salvage break on a same-sector Drifting `shipId`
+   * (POST /ships/{id}/salvage-break — ship-registry.md).
+   * Success body: { ship_id, started_at, duration_seconds, completes_at }.
+   * Concurrent / already-in-progress → 409 ERR_SALVAGE_BREAK_IN_PROGRESS.
+   */
+  salvageBreak: (shipId: string) =>
+    apiRequest(`/api/v1/ships/${shipId}/salvage-break`, { method: 'POST' }),
+
   /** The current pilot (owner or borrower) changes the pin instantly --
    * caller must be aboard `shipId`. */
   setPin: (shipId: string, pin: string) =>
