@@ -2405,12 +2405,17 @@ def _parse_ownership_deadline(raw: Any) -> Optional[datetime]:
     return None
 
 
+def _ownership_dict(station: Station) -> dict:
+    """Safe ownership JSONB read for ORM rows and lightweight test stand-ins."""
+    return getattr(station, "ownership", None) or {}
+
+
 def assert_not_post_capture_protected(
     station: Station, now: Optional[datetime] = None
 ) -> None:
     """Canon port-ownership.md:100-104 — 7-day post-capture immunity."""
     now = now or datetime.now(UTC)
-    until = _parse_ownership_deadline((station.ownership or {}).get("protected_until"))
+    until = _parse_ownership_deadline(_ownership_dict(station).get("protected_until"))
     if until is not None and now < until:
         raise PortOwnershipError(
             403,
@@ -2425,7 +2430,7 @@ def station_productivity_multiplier(
     """Canon post-capture -50% productivity while productivity_until is future."""
     now = now or datetime.now(UTC)
     until = _parse_ownership_deadline(
-        (station.ownership or {}).get(PRODUCTIVITY_UNTIL_KEY)
+        _ownership_dict(station).get(PRODUCTIVITY_UNTIL_KEY)
     )
     if until is not None and now < until:
         return float(PRODUCTIVITY_MULT)
@@ -2434,7 +2439,7 @@ def station_productivity_multiplier(
 
 def assert_upgrades_allowed_during_solvency(station: Station) -> None:
     """Canon port-ownership.md:391-395 — insolvency stops all upgrades."""
-    months = int((station.ownership or {}).get("insolvency_months", 0) or 0)
+    months = int(_ownership_dict(station).get("insolvency_months", 0) or 0)
     if months >= 1:
         raise PortOwnershipError(
             400,
