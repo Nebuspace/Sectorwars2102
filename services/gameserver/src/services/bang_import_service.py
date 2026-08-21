@@ -1139,6 +1139,30 @@ class RegionInsertPlan:
     special_location_by_sector: Dict[int, str]  # sector_id → slug
     raw_npc_rosters: List[Dict[str, Any]]
     raw_universe: Dict[str, Any]  # verbatim, lands on Galaxy.bang_snapshot
+    # LEG-139 / bang-import §15: optional admin faction_influence weights from
+    # region_metadata / bang_snapshot (canon key ``faction_influence``). Merged
+    # into per-cluster zone profiles at _apply_region with renormalization.
+    faction_influence_overrides: Optional[Dict[str, Any]] = None
+
+
+def _extract_faction_influence_overrides(
+    region_meta: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Pull admin faction_influence weights from a per-region metadata dict.
+
+    Canon (bang-import-pipeline.md intro + §15) names the override key
+    ``faction_influence``. LEG-136's getattr path used
+    ``faction_influence_overrides`` — accept either; prefer the canon key
+    when both are present. Empty / non-mapping → None (pure zone profile).
+    """
+    if not region_meta:
+        return None
+    raw = region_meta.get("faction_influence")
+    if raw is None:
+        raw = region_meta.get("faction_influence_overrides")
+    if not isinstance(raw, dict) or not raw:
+        return None
+    return dict(raw)
 
 
 @dataclass
@@ -1443,6 +1467,13 @@ class BangImportService:
                     seen_capital_planet_names.add(capital_planet.name)
             # ADR-0041 Phase 10.5: seed TradeDocks per region quota
             plan = self._apply_tradedock_seeding(region_type, plan, warnings)
+            # LEG-139: plumb step-3 admin faction_influence overrides onto the
+            # plan so _apply_region's §15 merge path is reachable (region_meta
+            # is also spread into bang_snapshot["regions"][rt] below).
+            region_meta = (region_metadata.get("regions") or {}).get(region_type) or {}
+            plan.faction_influence_overrides = _extract_faction_influence_overrides(
+                region_meta if isinstance(region_meta, dict) else None
+            )
             if running_offset:
                 self._offset_region_sector_ids(plan, running_offset)
             per_region[region_type] = plan
@@ -1825,6 +1856,12 @@ class BangImportService:
 
                 # Translate ONE region.
                 region_plan = self._translate_region("player_owned", parsed)
+                po_meta = (region_metadata.get("regions") or {}).get("player_owned") or {}
+                region_plan.faction_influence_overrides = (
+                    _extract_faction_influence_overrides(
+                        po_meta if isinstance(po_meta, dict) else None
+                    )
+                )
                 if sector_id_offset > 0:
                     self._offset_region_sector_ids(region_plan, sector_id_offset)
 
@@ -2222,11 +2259,10 @@ class BangImportService:
         region_row = await session.get(Region, region_id)
 
         # Optional admin faction_influence overrides (canon step 3 → §15 merge).
-        # Plumbed when callers stash weights on region_plan via a future field
-        # or when bang_snapshot carries them; today usually None (merge helper
-        # still covered by unit tests).
-        fi_overrides: Optional[Dict[str, Any]] = getattr(
-            region_plan, "faction_influence_overrides", None
+        # LEG-139: RegionInsertPlan.faction_influence_overrides is populated
+        # from region_metadata / bang_snapshot in translate() / add-region.
+        fi_overrides: Optional[Dict[str, Any]] = (
+            region_plan.faction_influence_overrides
         )
         total_sectors = int(getattr(region_plan, "total_sectors", 0) or 0)
         if total_sectors <= 0:
