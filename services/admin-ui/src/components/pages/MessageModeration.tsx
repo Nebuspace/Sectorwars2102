@@ -1,7 +1,18 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import { useToast, useConfirm } from '../../contexts/ToastContext';
+import { useWebSocket } from '../../contexts/WebSocketContext';
 import './message-moderation.css';
+
+/** GS `flagged_message_alert` payload (websocket maps type → `flagged:message:alert`). */
+interface FlaggedMessageAlert {
+  type?: string;
+  message_id?: string;
+  flagged_by_name?: string;
+  reason?: string;
+  message_preview?: string;
+}
 
 /**
  * Message Moderation
@@ -114,9 +125,13 @@ const recipientLabel = (message: FlaggedMessage): string => {
 const senderLabel = (playerId: string, nickname?: string | null): string =>
   nickname ?? `${playerId.slice(0, 8)}…`;
 
+const LIVE_REFRESH_DEBOUNCE_MS = 400;
+
 const MessageModeration: React.FC = () => {
   const toast = useToast();
   const confirm = useConfirm();
+  const { isConnected, subscribe } = useWebSocket();
+  const liveRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [messages, setMessages] = useState<FlaggedMessage[]>([]);
   const [beacons, setBeacons] = useState<FlaggedBeacon[]>([]);
@@ -160,7 +175,12 @@ const MessageModeration: React.FC = () => {
       setMessages([]);
       setTotalFlagged(0);
       setTotalPages(1);
-      setError('Failed to load the flagged-message review queue.');
+      setError(
+        formatAdminApiError(flaggedResult.reason, {
+          fallback: 'Failed to load the flagged-message review queue.',
+          scopeHint: 'admin messaging moderation scopes required',
+        })
+      );
     }
 
     if (statsResult.status === 'fulfilled') {
@@ -168,7 +188,12 @@ const MessageModeration: React.FC = () => {
     } else {
       console.error('Failed to load message stats:', statsResult.reason);
       setStats(null);
-      setStatsError('Statistics are currently unavailable.');
+      setStatsError(
+        formatAdminApiError(statsResult.reason, {
+          fallback: 'Statistics are currently unavailable.',
+          scopeHint: 'admin messaging statistics scope required',
+        })
+      );
     }
 
     if (beaconResult.status === 'fulfilled') {
@@ -181,7 +206,12 @@ const MessageModeration: React.FC = () => {
       setBeacons([]);
       setTotalFlaggedBeacons(0);
       setBeaconTotalPages(1);
-      setBeaconError('Failed to load the flagged-beacon review queue.');
+      setBeaconError(
+        formatAdminApiError(beaconResult.reason, {
+          fallback: 'Failed to load the flagged-beacon review queue.',
+          scopeHint: 'admin beacon moderation scopes required',
+        })
+      );
     }
 
     setLoading(false);
@@ -190,6 +220,38 @@ const MessageModeration: React.FC = () => {
   useEffect(() => {
     void loadData();
   }, [loadData]);
+
+  // LEG-414: live-refresh review queue when GS broadcasts flagged_message_alert.
+  useEffect(() => {
+    const handleFlaggedAlert = (data: FlaggedMessageAlert) => {
+      const who = data.flagged_by_name?.trim() || 'a player';
+      const reason = data.reason?.trim();
+      const preview = data.message_preview?.trim();
+      const detail = reason
+        ? `${who}: ${truncate(reason, 120)}`
+        : preview
+          ? `${who}: ${truncate(preview, 120)}`
+          : `${who} flagged a message`;
+      toast.info(`New flag — ${detail}. Refreshing queue…`);
+
+      if (liveRefreshTimer.current) {
+        clearTimeout(liveRefreshTimer.current);
+      }
+      liveRefreshTimer.current = setTimeout(() => {
+        liveRefreshTimer.current = null;
+        void loadData();
+      }, LIVE_REFRESH_DEBOUNCE_MS);
+    };
+
+    const unsubscribe = subscribe('flagged:message:alert', handleFlaggedAlert);
+    return () => {
+      unsubscribe();
+      if (liveRefreshTimer.current) {
+        clearTimeout(liveRefreshTimer.current);
+        liveRefreshTimer.current = null;
+      }
+    };
+  }, [subscribe, loadData, toast]);
 
   const moderate = useCallback(
     async (message: FlaggedMessage, action: ModerationAction) => {
@@ -219,9 +281,12 @@ const MessageModeration: React.FC = () => {
       } catch (err) {
         console.error(`Failed to ${action} message:`, err);
         toast.error(
-          isDestructive
-            ? 'Failed to delete the message.'
-            : 'Failed to clear the flag.',
+          formatAdminApiError(err, {
+            fallback: isDestructive
+              ? 'Failed to delete the message'
+              : 'Failed to clear the flag',
+            scopeHint: 'admin.messages.moderate scope required for message moderation',
+          }),
         );
       } finally {
         setActingId(null);
@@ -251,7 +316,12 @@ const MessageModeration: React.FC = () => {
         await loadData();
       } catch (err) {
         console.error('Failed to clear beacon flag:', err);
-        toast.error('Failed to clear the beacon flag.');
+        toast.error(
+          formatAdminApiError(err, {
+            fallback: 'Failed to clear the beacon flag',
+            scopeHint: 'admin.beacons.moderate scope required for beacon moderation',
+          }),
+        );
       } finally {
         setActingId(null);
       }
@@ -285,7 +355,12 @@ const MessageModeration: React.FC = () => {
         await loadData();
       } catch (err) {
         console.error('Failed to confirm beacon abuse:', err);
-        toast.error('Failed to confirm abuse for this beacon.');
+        toast.error(
+          formatAdminApiError(err, {
+            fallback: 'Failed to confirm abuse for this beacon',
+            scopeHint: 'admin.beacons.moderate scope required for beacon abuse confirmation',
+          }),
+        );
       } finally {
         setActingId(null);
       }
@@ -310,6 +385,11 @@ const MessageModeration: React.FC = () => {
             <span className="msgmod-count">
               {totalFlagged.toLocaleString()} flagged
             </span>
+            {!isConnected ? (
+              <span className="msgmod-live-demotion" role="status">
+                Live updates unavailable — use Refresh
+              </span>
+            ) : null}
             <button
               type="button"
               className="msgmod-btn msgmod-btn-secondary"

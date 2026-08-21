@@ -112,6 +112,14 @@ AM_REP_LICENSED_BONUS = 1  # "+1 / harvest" licensed bonus (stacks → +2 total)
 AM_REP_UNLICENSED = -10    # "−10 / extraction" unlicensed penalty in AM space
 AM_REP_LICENSE_PURCHASE = 15  # "+15 / purchase" single-shot on license buy
 
+# § Repeated unlicensed AM enforcement (mining.md — "trips the AM faction
+# enforcement path (NPC patrol response in MILITARY_ZONE overlap clusters)").
+# Canon does NOT pin N or the rolling window — these are PROVISIONAL (LEG-119;
+# N≤5). Do not invent other game-economy numbers beyond this trigger.
+AM_UNLICENSED_ENFORCEMENT_THRESHOLD = 3  # provisional: harvests in window
+AM_UNLICENSED_ENFORCEMENT_WINDOW_HOURS = 24  # provisional rolling window
+AM_UNLICENSED_OFFENSE_TYPE = "unlicensed_am_mining"
+
 # § asteroid_richness derivation — resource_regeneration → tier mapping (canon
 # "asteroid_richness derivation" table). Used by the lazy backfill when a sector
 # predates the asteroid_richness JSONB key.
@@ -173,6 +181,85 @@ def _depletion_replenish_hours(pool_size: int, depletion_pool: int) -> int:
     if consumed_fraction > DEPLETION_HEAVY_CONSUMED_FRACTION:
         return DEPLETION_REPLENISH_HEAVY_HOURS
     return DEPLETION_REPLENISH_LIGHT_HOURS
+
+
+def depletion_band_for_consumed_fraction(pool_consumed_fraction: float) -> str:
+    """Canon band label for overlay (mining.md:199-207 + :253).
+
+    Cut-points match ``_depletion_yield_modifier``; Fresh is exactly 0%
+    consumed, Light is the remaining <5% window that still yields 1.0×.
+    """
+    if pool_consumed_fraction <= 0.0:
+        return "fresh"
+    if pool_consumed_fraction < 0.05:
+        return "light"
+    if pool_consumed_fraction <= 0.50:
+        return "moderate"
+    if pool_consumed_fraction <= 0.90:
+        return "heavy"
+    return "exhausted"
+
+
+def build_asteroid_depletion_readout(
+    sector: "Sector",
+    *,
+    now: Optional[datetime] = None,
+) -> Optional[Dict[str, Any]]:
+    """Server-authoritative depletion overlay payload (LEG-427).
+
+    Returns ``None`` when ``sector`` is not an ASTEROID_FIELD. Read-only —
+    does not persist richness/depletion backfill.
+    """
+    from src.models.sector import SectorType
+
+    sector_type = getattr(sector, "type", None)
+    type_val = (
+        sector_type.value if hasattr(sector_type, "value") else sector_type
+    )
+    if type_val != SectorType.ASTEROID_FIELD.value:
+        return None
+
+    resources = sector.resources if isinstance(sector.resources, dict) else {}
+    richness = resources.get("asteroid_richness")
+    if isinstance(richness, dict) and "richness_tier" in richness:
+        tier = max(1, min(5, int(richness.get("richness_tier", 3))))
+    else:
+        tier = _derive_richness_tier(getattr(sector, "resource_regeneration", None))
+
+    pool_size = tier * DEPLETION_POOL_PER_TIER
+    depletion_pool = resources.get("depletion_pool", pool_size)
+    if not isinstance(depletion_pool, int):
+        depletion_pool = pool_size
+    depletion_pool = max(0, min(depletion_pool, pool_size))
+
+    consumed = max(0, pool_size - depletion_pool)
+    consumed_fraction = (consumed / pool_size) if pool_size > 0 else 0.0
+    band = depletion_band_for_consumed_fraction(consumed_fraction)
+    yield_modifier = _depletion_yield_modifier(consumed_fraction)
+
+    last_at = _parse_depletion_last_harvest_at(
+        resources.get(DEPLETION_LAST_HARVEST_AT_KEY)
+    )
+    pool_full = depletion_pool >= pool_size
+    replenish_hours: Optional[int] = None
+    replenish_eta: Optional[str] = None
+    if not pool_full:
+        replenish_hours = _depletion_replenish_hours(pool_size, depletion_pool)
+        if last_at is not None:
+            eta = last_at + timedelta(hours=replenish_hours)
+            replenish_eta = eta.isoformat()
+
+    return {
+        "band": band,
+        "yield_modifier": yield_modifier,
+        "depletion_pool": depletion_pool,
+        "pool_size": pool_size,
+        "consumed_fraction": round(consumed_fraction, 4),
+        "richness_tier": tier,
+        "replenish_hours": replenish_hours,
+        "replenish_eta": replenish_eta,
+        "last_harvest_at": last_at.isoformat() if last_at else None,
+    }
 
 
 def _parse_depletion_last_harvest_at(raw: Any) -> Optional[datetime]:
@@ -381,6 +468,113 @@ class MiningService:
         """True when the sector is controlled by the Astral Mining Consortium
         (canon: ``Sector.controlling_faction == "astral_mining_consortium"``)."""
         return sector.controlling_faction == AM_FACTION_CODE
+
+    def count_recent_unlicensed_am_harvests(
+        self,
+        player_id: uuid.UUID,
+        *,
+        now: Optional[datetime] = None,
+        window_hours: int = AM_UNLICENSED_ENFORCEMENT_WINDOW_HOURS,
+    ) -> int:
+        """COMPLETED unlicensed AM harvests for ``player_id`` in the rolling
+        window (includes the just-flushed row when called from resolve)."""
+        when = now or datetime.now(timezone.utc)
+        cutoff = when - timedelta(hours=window_hours)
+        return (
+            self.db.query(MiningHarvest)
+            .filter(
+                MiningHarvest.player_id == player_id,
+                MiningHarvest.status == MiningHarvestStatus.COMPLETED,
+                MiningHarvest.am_claimed.is_(True),
+                MiningHarvest.has_license.is_(False),
+                MiningHarvest.resolved_at.isnot(None),
+                MiningHarvest.resolved_at >= cutoff,
+            )
+            .count()
+        )
+
+    def _maybe_trip_am_unlicensed_enforcement(
+        self, player: Player, sector: Sector
+    ) -> bool:
+        """Dispatch LAW_ENFORCEMENT when the provisional repeated-unlicensed
+        threshold is met. Returns True when a patrol path was invoked.
+
+        Primary path: ``npc_engagement_service.route_engagement`` (existing
+        PendingEngagement / Marshal-or-Sentinel machinery). Fallback when
+        out of jurisdiction or no officers: relocate one ON_DUTY
+        LAW_ENFORCEMENT from a same-region ``MILITARY_ZONE`` cluster into
+        the harvest sector (canon "MILITARY_ZONE overlap" phrasing).
+        Soft-fail: never raises into the harvest transaction.
+        """
+        try:
+            count = self.count_recent_unlicensed_am_harvests(player.id)
+            if count < AM_UNLICENSED_ENFORCEMENT_THRESHOLD:
+                return False
+
+            from src.services import npc_engagement_service
+
+            engagement = npc_engagement_service.route_engagement(
+                self.db,
+                player,
+                AM_UNLICENSED_OFFENSE_TYPE,
+                sector,
+            )
+            if engagement is not None:
+                logger.info(
+                    "AM unlicensed enforcement: route_engagement "
+                    "offense=%s player=%s sector=%s incidents=%d",
+                    AM_UNLICENSED_OFFENSE_TYPE,
+                    player.id,
+                    sector.sector_id,
+                    count,
+                )
+                return True
+
+            relocated = self._relocate_military_zone_patrol_into(sector)
+            if relocated:
+                logger.info(
+                    "AM unlicensed enforcement: MILITARY_ZONE LE relocated "
+                    "into sector %s (player=%s, incidents=%d)",
+                    sector.sector_id,
+                    player.id,
+                    count,
+                )
+            return relocated
+        except Exception:
+            logger.exception(
+                "AM unlicensed enforcement failed for player %s sector %s "
+                "(harvest still completed)",
+                getattr(player, "id", None),
+                getattr(sector, "sector_id", None),
+            )
+            return False
+
+    def _relocate_military_zone_patrol_into(self, sector: Sector) -> bool:
+        """Best-effort: pull one ON_DUTY LAW_ENFORCEMENT from a same-region
+        MILITARY_ZONE cluster into ``sector`` via existing relocate machinery."""
+        from src.models.cluster import Cluster, ClusterType
+        from src.models.npc_character import NPCArchetype, NPCCharacter, NPCStatus
+        from src.services.npc_movement_service import _relocate_npc
+
+        if sector.region_id is None:
+            return False
+
+        candidate = (
+            self.db.query(NPCCharacter)
+            .join(Sector, Sector.sector_id == NPCCharacter.current_sector_id)
+            .join(Cluster, Cluster.id == Sector.cluster_id)
+            .filter(
+                NPCCharacter.archetype == NPCArchetype.LAW_ENFORCEMENT,
+                NPCCharacter.status == NPCStatus.ON_DUTY,
+                Sector.region_id == sector.region_id,
+                Cluster.type == ClusterType.MILITARY_ZONE,
+                NPCCharacter.current_sector_id != sector.sector_id,
+            )
+            .first()
+        )
+        if candidate is None:
+            return False
+        return bool(_relocate_npc(self.db, candidate, sector.sector_id))
 
     # ------------------------------------------------------------------
     # Harvest — start (async) / resolve / interrupt
@@ -708,6 +902,12 @@ class MiningService:
         row.am_rep_delta = am_rep_delta
         self.db.flush()
 
+        # LEG-119: after the −10 is on the ledger, trip patrol when the
+        # provisional repeated-unlicensed threshold is crossed. Soft-fail —
+        # enforcement must never void a completed harvest.
+        if row.am_claimed and not row.has_license:
+            self._maybe_trip_am_unlicensed_enforcement(player, sector)
+
         depletion_state = {
             "depletion_pool": depletion_pool,
             "pool_size": pool_size,
@@ -715,7 +915,22 @@ class MiningService:
             "yield_modifier": depletion_mod,
             "richness_tier": tier,
             "floored": floor_fired,
+            "band": depletion_band_for_consumed_fraction(consumed_fraction),
         }
+        if depletion_pool < pool_size:
+            hours = _depletion_replenish_hours(pool_size, depletion_pool)
+            depletion_state["replenish_hours"] = hours
+            last_raw = resources.get(DEPLETION_LAST_HARVEST_AT_KEY)
+            last_at = _parse_depletion_last_harvest_at(last_raw)
+            if last_at is not None:
+                depletion_state["replenish_eta"] = (
+                    last_at + timedelta(hours=hours)
+                ).isoformat()
+            else:
+                depletion_state["replenish_eta"] = None
+        else:
+            depletion_state["replenish_hours"] = None
+            depletion_state["replenish_eta"] = None
 
         logger.info(
             "Harvest %s completed sector %s: ore=%d pm=%d qs=%d am_rep=%+d",
@@ -990,4 +1205,101 @@ class MiningService:
             "license_id": str(license_row.id),
             "expires_at": expires_at.isoformat(),
             "cost_paid_cr": cost,
+        }
+
+    def find_nearest_am_refinery(self, player_id: uuid.UUID) -> Dict[str, Any]:
+        """Nearest AM-flagged refining station + current ore buy_price (LEG-430).
+
+        Eligibility matches tip AM ore-sale gate (trading.py): faction_affiliation
+        ``Astral Mining Consortium`` AND ``services.refining_facility`` true.
+        Hop distance uses tip ``contract_generator`` sector graph BFS — no invent.
+        Ore buy_price echoes ``TradingService.calculate_dynamic_price(..., "buy")``.
+        """
+        from src.models.station import Station
+        from src.services.contract_generator import (
+            _all_hop_distances,
+            _load_directed_sector_graph,
+        )
+        from src.services.trading_service import TradingService
+
+        empty = {
+            "found": False,
+            "station": None,
+            "hop_distance": None,
+            "ore_buy_price": None,
+            "reason": "none_reachable",
+        }
+
+        player = self.db.query(Player).filter(Player.id == player_id).first()
+        if player is None:
+            return {**empty, "reason": "player_not_found"}
+        if player.current_sector_id is None:
+            return {**empty, "reason": "no_current_sector"}
+
+        sector_q = self.db.query(Sector).filter(
+            Sector.sector_id == player.current_sector_id
+        )
+        if player.current_region_id:
+            sector_q = sector_q.filter(Sector.region_id == player.current_region_id)
+        else:
+            sector_q = sector_q.filter(Sector.region_id.is_(None))
+        origin = sector_q.first()
+        if origin is None:
+            return {**empty, "reason": "sector_not_found"}
+
+        candidates = (
+            self.db.query(Station)
+            .filter(Station.faction_affiliation == "Astral Mining Consortium")
+            .all()
+        )
+        eligible: List[Station] = []
+        for st in candidates:
+            services = st.services if isinstance(st.services, dict) else {}
+            if services.get("refining_facility", False):
+                eligible.append(st)
+        if not eligible:
+            return empty
+
+        _, adjacency = _load_directed_sector_graph(self.db)
+        distances = _all_hop_distances(adjacency, origin.id)
+
+        best: Optional[Tuple[int, Station]] = None
+        for st in eligible:
+            dest_pk = st.sector_uuid
+            if dest_pk is None:
+                # Fall back to sector_id lookup when UUID FK absent.
+                dest = (
+                    self.db.query(Sector)
+                    .filter(Sector.sector_id == st.sector_id)
+                    .first()
+                )
+                dest_pk = dest.id if dest is not None else None
+            if dest_pk is None:
+                continue
+            hops = distances.get(dest_pk)
+            if hops is None:
+                continue
+            if best is None or hops < best[0]:
+                best = (hops, st)
+            elif hops == best[0] and str(st.id) < str(best[1].id):
+                # Deterministic tie-break: lower station UUID wins.
+                best = (hops, st)
+
+        if best is None:
+            return empty
+
+        hops, station = best
+        trading = TradingService(self.db)
+        ore_buy = trading.calculate_dynamic_price(station, "ore", "buy")
+
+        return {
+            "found": True,
+            "station": {
+                "id": str(station.id),
+                "name": station.name,
+                "sector_id": station.sector_id,
+            },
+            "hop_distance": hops,
+            "ore_buy_price": int(ore_buy) if ore_buy else 0,
+            "reason": None,
         }
