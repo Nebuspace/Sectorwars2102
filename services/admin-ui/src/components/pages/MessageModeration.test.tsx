@@ -208,6 +208,94 @@ describe('MessageModeration', () => {
     expect(toastSuccess).toHaveBeenCalledWith('Message deleted.');
   });
 
+  it('accept posts tip canon moderation path (LEG-1579)', async () => {
+    const user = userEvent.setup();
+    mockLoad({ messages: { ...emptyMessages, messages: [message], total: 1 } });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockResolvedValue({
+      data: {
+        success: true,
+        action: 'accept',
+        message_id: 'm1',
+        rep_delta: 0,
+        sender_notified: false,
+        block_count_30d: 0,
+        escalation_audit_logged: false,
+      },
+    });
+
+    render(<MessageModeration />);
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: 'Accept' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/moderation/messages/m1/accept',
+        {},
+      );
+    });
+    expect(toastSuccess).toHaveBeenCalledWith('Flag accepted.');
+  });
+
+  it('redact posts tip canon path and surfaces reputation delta (LEG-1579)', async () => {
+    const user = userEvent.setup();
+    mockLoad({ messages: { ...emptyMessages, messages: [message], total: 1 } });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockResolvedValue({
+      data: {
+        success: true,
+        action: 'redact',
+        message_id: 'm1',
+        rep_delta: -50,
+        sender_notified: true,
+        block_count_30d: 0,
+        escalation_audit_logged: false,
+      },
+    });
+
+    render(<MessageModeration />);
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: 'Redact' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/moderation/messages/m1/redact',
+        {},
+      );
+    });
+    expect(toastSuccess).toHaveBeenCalledWith(
+      expect.stringMatching(/Message redacted\..*Reputation Δ -50/),
+    );
+  });
+
+  it('block posts tip canon path and surfaces formatAdminApiError on 403 (LEG-1579)', async () => {
+    const user = userEvent.setup();
+    mockLoad({ messages: { ...emptyMessages, messages: [message], total: 1 } });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockRejectedValue(
+      Object.assign(new Error('HTTP 403'), {
+        response: { status: 403, data: { detail: 'Missing scope admin.security.act' } },
+      }),
+    );
+
+    render(<MessageModeration />);
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: 'Block' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/moderation/messages/m1/block',
+        {},
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(
+      expect.stringMatching(/admin\.security\.act|Missing scope|Access denied/i),
+    );
+  });
+
   it('does not call the API when the delete confirm is dismissed', async () => {
     const user = userEvent.setup();
     mockLoad({ messages: { ...emptyMessages, messages: [message], total: 1 } });

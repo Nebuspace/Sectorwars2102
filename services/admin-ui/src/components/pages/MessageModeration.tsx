@@ -117,6 +117,17 @@ interface BulkModerateResponse {
 }
 
 type ModerationAction = 'delete' | 'unflag';
+type CanonModerationAction = 'accept' | 'redact' | 'block';
+
+interface CanonModerationResponse {
+  success: boolean;
+  action: string;
+  message_id: string;
+  rep_delta: number;
+  sender_notified: boolean;
+  block_count_30d: number;
+  escalation_audit_logged: boolean;
+}
 
 const formatTimestamp = (value: string | null): string => {
   if (!value) return '—';
@@ -309,6 +320,73 @@ const MessageModeration: React.FC = () => {
               ? 'Failed to delete the message'
               : 'Failed to clear the flag',
             scopeHint: 'admin.messages.moderate scope required for message moderation',
+          }),
+        );
+      } finally {
+        setActingId(null);
+      }
+    },
+    [confirm, toast, loadData],
+  );
+
+  /** LEG-1579: tip GS canon paths accept/redact/block (distinct from delete/unflag). */
+  const canonModerate = useCallback(
+    async (message: FlaggedMessage, action: CanonModerationAction) => {
+      const titles: Record<CanonModerationAction, string> = {
+        accept: 'Accept Flag',
+        redact: 'Redact Message',
+        block: 'Block Message',
+      };
+      const bodies: Record<CanonModerationAction, string> = {
+        accept:
+          'Clear the flag and leave the message visible? No reputation penalty.',
+        redact:
+          'Replace the message body with [Moderated], notify the sender, and apply −50 personal reputation?',
+        block:
+          'Hide the message from player reads, notify the sender, and apply −100 personal reputation? (2+ blocks / 30d logs an audit escalation only — no account_review invent.)',
+      };
+      const confirmed = await confirm({
+        title: titles[action],
+        message: bodies[action],
+        confirmLabel:
+          action === 'accept' ? 'Accept' : action === 'redact' ? 'Redact' : 'Block',
+        danger: action !== 'accept',
+      });
+      if (!confirmed) return;
+
+      setActingId(message.id);
+      try {
+        const { data } = await api.post<CanonModerationResponse>(
+          `/api/v1/admin/moderation/messages/${message.id}/${action}`,
+          {},
+        );
+        const rep =
+          typeof data?.rep_delta === 'number' && data.rep_delta !== 0
+            ? ` Reputation Δ ${data.rep_delta}.`
+            : '';
+        const escalate =
+          data?.escalation_audit_logged
+            ? ' Escalation audit logged (2+ blocks/30d).'
+            : '';
+        toast.success(
+          action === 'accept'
+            ? `Flag accepted.${rep}`
+            : action === 'redact'
+              ? `Message redacted.${rep}${escalate}`
+              : `Message blocked.${rep}${escalate}`,
+        );
+        if (data?.block_count_30d && data.block_count_30d >= 2 && !data.escalation_audit_logged) {
+          toast.info(`Sender block count (30d): ${data.block_count_30d}.`);
+        }
+        setMessages((current) => current.filter((m) => m.id !== message.id));
+        setSelectedIds((current) => current.filter((id) => id !== message.id));
+        await loadData();
+      } catch (err) {
+        console.error(`Failed to ${action} message:`, err);
+        toast.error(
+          formatAdminApiError(err, {
+            fallback: `Failed to ${action} the message`,
+            scopeHint: 'admin.security.act scope required for canon moderation',
           }),
         );
       } finally {
@@ -644,6 +722,36 @@ const MessageModeration: React.FC = () => {
                     </td>
                     <td className="msgmod-actions-col">
                       <div className="msgmod-row-actions">
+                        <button
+                          type="button"
+                          className="msgmod-btn msgmod-btn-secondary"
+                          disabled={
+                            actingId === message.id || bulkActing
+                          }
+                          onClick={() => void canonModerate(message, 'accept')}
+                        >
+                          Accept
+                        </button>
+                        <button
+                          type="button"
+                          className="msgmod-btn msgmod-btn-secondary"
+                          disabled={
+                            actingId === message.id || bulkActing
+                          }
+                          onClick={() => void canonModerate(message, 'redact')}
+                        >
+                          Redact
+                        </button>
+                        <button
+                          type="button"
+                          className="msgmod-btn msgmod-btn-danger"
+                          disabled={
+                            actingId === message.id || bulkActing
+                          }
+                          onClick={() => void canonModerate(message, 'block')}
+                        >
+                          Block
+                        </button>
                         <button
                           type="button"
                           className="msgmod-btn msgmod-btn-secondary"
