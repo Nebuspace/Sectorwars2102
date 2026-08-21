@@ -29,6 +29,7 @@ vi.mock('../../contexts/ToastContext', () => ({
     warning: vi.fn(),
     info: vi.fn(),
   }),
+  useConfirm: () => vi.fn(async () => true),
 }));
 
 describe('TradeDockAdmin shell route path (LEG-71)', () => {
