@@ -3,6 +3,10 @@ import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import StationsManager from './StationsManager';
 import { api } from '../../utils/auth';
 
+const toastSuccess = vi.fn();
+const toastError = vi.fn();
+const confirmMock = vi.fn(async () => false);
+
 vi.mock('../../utils/auth', () => ({
   api: {
     get: vi.fn(),
@@ -12,12 +16,12 @@ vi.mock('../../utils/auth', () => ({
 
 vi.mock('../../contexts/ToastContext', () => ({
   useToast: () => ({
-    success: vi.fn(),
-    error: vi.fn(),
+    success: toastSuccess,
+    error: toastError,
     info: vi.fn(),
     warning: vi.fn(),
   }),
-  useConfirm: () => vi.fn().mockResolvedValue(false),
+  useConfirm: () => confirmMock,
 }));
 
 vi.mock('../ui/PageHeader', () => ({
@@ -32,6 +36,8 @@ const axiosError = (status: number, detail?: string) =>
 describe('StationsManager scope errors (LEG-966)', () => {
   beforeEach(() => {
     vi.mocked(api.get).mockReset();
+    confirmMock.mockReset();
+    confirmMock.mockResolvedValue(false);
     vi.spyOn(console, 'error').mockImplementation(() => {});
   });
 
@@ -62,6 +68,8 @@ describe('StationsManager Soft-ORDER Add Port station_class (LEG-1461)', () => {
   beforeEach(() => {
     vi.mocked(api.get).mockReset();
     vi.mocked(api.post).mockReset();
+    confirmMock.mockReset();
+    confirmMock.mockResolvedValue(false);
     vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.mocked(api.get).mockImplementation(async (url: string) => {
       if (String(url).includes('/ports')) {
@@ -128,5 +136,73 @@ describe('StationsManager Soft-ORDER Add Port station_class (LEG-1461)', () => {
     expect(payload).not.toHaveProperty('max_capacity');
     expect(payload).not.toHaveProperty('security_level');
     expect(payload).not.toHaveProperty('docking_fee');
+  });
+});
+
+describe('StationsManager update-stock-levels (LEG-1712)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    toastSuccess.mockReset();
+    toastError.mockReset();
+    confirmMock.mockReset();
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.get).mockResolvedValue({ data: { stations: [], total: 0 } });
+  });
+
+  it('exposes update stock levels control', async () => {
+    render(<StationsManager />);
+    expect(await screen.findByLabelText('Update port stock levels')).toBeTruthy();
+  });
+
+  it('posts tip update-stock-levels path and toasts ports_updated count', async () => {
+    vi.mocked(api.post).mockResolvedValue({ data: { ports_updated: 4 } });
+    render(<StationsManager />);
+
+    fireEvent.click(await screen.findByLabelText('Update port stock levels'));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith('/api/v1/admin/ports/update-stock-levels');
+    });
+    expect(toastSuccess).toHaveBeenCalledWith('Updated stock levels for 4 port(s)');
+  });
+
+  it('stock-levels 403 surfaces formatAdminApiError ECONOMY_INTERVENE scope copy', async () => {
+    vi.mocked(api.post).mockRejectedValue({
+      response: { status: 403, data: {} },
+    });
+    render(<StationsManager />);
+
+    fireEvent.click(await screen.findByLabelText('Update port stock levels'));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalled();
+    });
+    expect(String(toastError.mock.calls[0][0])).toMatch(/ECONOMY_INTERVENE|Access denied/i);
+  });
+
+  it('stock-levels 429 surfaces admin rate-limit helper copy', async () => {
+    vi.mocked(api.post).mockRejectedValue({
+      response: { status: 429, data: {} },
+    });
+    render(<StationsManager />);
+
+    fireEvent.click(await screen.findByLabelText('Update port stock levels'));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/rate limit/i));
+    });
+  });
+
+  it('skips stock-levels POST when operator cancels confirm', async () => {
+    confirmMock.mockResolvedValue(false);
+    render(<StationsManager />);
+
+    fireEvent.click(await screen.findByLabelText('Update port stock levels'));
+
+    await waitFor(() => {
+      expect(confirmMock).toHaveBeenCalled();
+    });
+    expect(api.post).not.toHaveBeenCalled();
   });
 });
