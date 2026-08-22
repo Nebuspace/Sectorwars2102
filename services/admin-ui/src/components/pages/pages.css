@@ -971,6 +971,7 @@
 .page-actions {
   display: flex;
   justify-content: flex-end;
+  gap: 0.75rem;
   margin-bottom: 1rem;
 }
 
@@ -988,6 +989,16 @@
 
 .add-btn:hover {
   background-color: var(--primary-hover, #3a5ce6);
+}
+
+.add-btn-secondary {
+  background-color: transparent;
+  color: var(--text-color, #e5e7eb);
+  border: 1px solid var(--border-color, #4b5563);
+}
+
+.add-btn-secondary:hover {
+  background-color: var(--secondary-bg, #374151);
 }
 
 .loading-placeholder {
