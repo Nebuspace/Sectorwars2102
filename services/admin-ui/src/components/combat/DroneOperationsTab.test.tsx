@@ -41,9 +41,9 @@ const sampleDrone = {
   damage_dealt: 0,
   damage_taken: 0,
   battles_fought: 0,
-  abilities: null,
+  abilities: null as string | null,
   created_at: '2026-01-01T00:00:00Z',
-  destroyed_at: null,
+  destroyed_at: null as string | null,
 };
 
 const sampleStats = {
