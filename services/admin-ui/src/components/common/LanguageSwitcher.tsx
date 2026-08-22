@@ -37,6 +37,7 @@ const LanguageSwitcher: React.FC = () => {
   const [isOpen, setIsOpen] = useState(false);
   const [languages, setLanguages] = useState<Language[]>([]);
   const [loading, setLoading] = useState(false);
+  const [progressError, setProgressError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -55,6 +56,7 @@ const LanguageSwitcher: React.FC = () => {
     setLanguages(staticLanguages);
 
     (async () => {
+      let httpHonesty: string | null = null;
       const withProgress = await Promise.all(
         staticLanguages.map(async (lang) => {
           try {
@@ -65,13 +67,26 @@ const LanguageSwitcher: React.FC = () => {
             if (pct !== null) {
               return { ...lang, completionPercentage: pct };
             }
-          } catch {
-            // Static fallback: launch-complete locales stay 100%, never a 0% bar.
+          } catch (err: unknown) {
+            const status =
+              typeof err === 'object' && err !== null && 'response' in err
+                ? (err as { response?: { status?: number } }).response?.status
+                : undefined;
+            if (status === 403 || status === 401) {
+              httpHonesty =
+                'Access denied — translation progress requires the admin i18n / players view scope.';
+            } else if (status === 429) {
+              httpHonesty = 'Admin rate limit exceeded — wait a moment and try again.';
+            }
+            // Transport/non-HTTP: static fallback — launch-complete stay 100%, never a 0% bar.
           }
           return lang;
         })
       );
-      if (!cancelled) setLanguages(withProgress);
+      if (!cancelled) {
+        setLanguages(withProgress);
+        setProgressError(httpHonesty);
+      }
     })();
 
     return () => {
@@ -99,6 +114,11 @@ const LanguageSwitcher: React.FC = () => {
 
   return (
     <div className="language-switcher">
+      {progressError && (
+        <div className="language-progress-error" role="alert">
+          {progressError}
+        </div>
+      )}
       <button
         className="language-button"
         onClick={() => setIsOpen(!isOpen)}

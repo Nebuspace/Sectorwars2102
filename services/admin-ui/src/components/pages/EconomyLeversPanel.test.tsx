@@ -10,10 +10,11 @@ vi.mock('../../utils/auth', () => ({
   },
 }));
 
+const toastError = vi.fn();
 vi.mock('../../contexts/ToastContext', () => ({
   useToast: () => ({
     success: vi.fn(),
-    error: vi.fn(),
+    error: toastError,
     warning: vi.fn(),
     info: vi.fn(),
   }),
@@ -41,6 +42,7 @@ describe('EconomyLeversPanel (LEG-30)', () => {
   beforeEach(() => {
     vi.mocked(api.get).mockReset();
     vi.mocked(api.patch).mockReset();
+    toastError.mockReset();
   });
 
   it('loads bounty / insurance / commodity levers and patches bounty ratio', async () => {
@@ -121,5 +123,28 @@ describe('EconomyLeversPanel (LEG-30)', () => {
         { base_price: 120, production_rate: 2 }
       );
     });
+  });
+  it('reports a 403 as ECONOMY_MANAGE on load via toast', async () => {
+    vi.mocked(api.get).mockRejectedValue({ response: { status: 403 } });
+
+    render(<EconomyLeversPanel />);
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalled();
+    });
+    const msg = String(toastError.mock.calls[0][0]);
+    expect(msg).toMatch(/ECONOMY_MANAGE/);
+    expect(msg).not.toBe('Failed to load economy levers');
+  });
+
+  it('reports a 429 as an admin rate-limit on load via toast', async () => {
+    vi.mocked(api.get).mockRejectedValue({ response: { status: 429 } });
+
+    render(<EconomyLeversPanel />);
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalled();
+    });
+    expect(String(toastError.mock.calls[0][0])).toMatch(/rate limit/i);
   });
 });
