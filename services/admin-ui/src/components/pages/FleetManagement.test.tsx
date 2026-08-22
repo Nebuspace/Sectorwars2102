@@ -175,3 +175,76 @@ describe('FleetManagement emergency repair/refuel (LEG-1651)', () => {
     expect(api.post).not.toHaveBeenCalled();
   });
 });
+
+describe('FleetManagement ship registry backfill (LEG-1682)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    toastSuccess.mockReset();
+    toastError.mockReset();
+    confirmMock.mockReset();
+    confirmMock.mockResolvedValue(true);
+  });
+
+  it('exposes backfill registry control', async () => {
+    mockFleetGets();
+    render(<FleetManagement />);
+
+    expect(await screen.findByLabelText('Backfill ship registry')).toBeTruthy();
+  });
+
+  it('posts tip registry/backfill path and toasts backfilled count', async () => {
+    mockFleetGets();
+    vi.mocked(api.post).mockResolvedValue({ data: { backfilled: 3 } });
+    render(<FleetManagement />);
+
+    fireEvent.click(await screen.findByLabelText('Backfill ship registry'));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith('/api/v1/admin/ships/registry/backfill');
+    });
+    expect(toastSuccess).toHaveBeenCalledWith('Backfilled 3 ship registry row(s)');
+  });
+
+  it('backfill 403 surfaces formatAdminApiError SHIPS_MANAGE scope copy', async () => {
+    mockFleetGets();
+    vi.mocked(api.post).mockRejectedValue({
+      response: { status: 403, data: {} },
+    });
+    render(<FleetManagement />);
+
+    fireEvent.click(await screen.findByLabelText('Backfill ship registry'));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalled();
+    });
+    expect(String(toastError.mock.calls[0][0])).toMatch(/SHIPS_MANAGE|Access denied/i);
+  });
+
+  it('backfill 429 surfaces admin rate-limit helper copy', async () => {
+    mockFleetGets();
+    vi.mocked(api.post).mockRejectedValue({
+      response: { status: 429, data: {} },
+    });
+    render(<FleetManagement />);
+
+    fireEvent.click(await screen.findByLabelText('Backfill ship registry'));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/rate limit/i));
+    });
+  });
+
+  it('skips backfill POST when operator cancels confirm', async () => {
+    mockFleetGets();
+    confirmMock.mockResolvedValue(false);
+    render(<FleetManagement />);
+
+    fireEvent.click(await screen.findByLabelText('Backfill ship registry'));
+
+    await waitFor(() => {
+      expect(confirmMock).toHaveBeenCalled();
+    });
+    expect(api.post).not.toHaveBeenCalled();
+  });
+});
