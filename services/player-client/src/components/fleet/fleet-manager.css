@@ -1,0 +1,158 @@
+/* FleetManagerPanel — dossier instrument styles (LEG-INI-01) */
+
+.fleet-manager {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  padding: 0.5rem 0.25rem 0.75rem;
+  color: var(--color-text, #E0F6FF);
+  font-size: 0.85rem;
+}
+
+.fleet-manager-heading {
+  margin: 0 0 0.35rem;
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-muted, #7A8B99);
+}
+
+.fleet-manager-subheading {
+  margin: 0.5rem 0 0.25rem;
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-muted, #7A8B99);
+}
+
+.fleet-manager-muted {
+  margin: 0;
+  opacity: 0.75;
+}
+
+.fleet-manager-error {
+  margin: 0;
+  padding: 0.4rem 0.55rem;
+  border: 1px solid #c44;
+  background: rgba(180, 40, 40, 0.15);
+  color: #f8c0c0;
+}
+
+.fleet-manager-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: flex-end;
+}
+
+.fleet-manager-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-muted, #7A8B99);
+}
+
+.fleet-manager-label input,
+.fleet-manager-label select,
+.fleet-manager button {
+  font: inherit;
+  font-size: 0.8rem;
+  text-transform: none;
+  letter-spacing: normal;
+  color: inherit;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(158, 197, 255, 0.35);
+  border-radius: 2px;
+  padding: 0.3rem 0.45rem;
+}
+
+.fleet-manager button {
+  cursor: pointer;
+}
+
+.fleet-manager button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.fleet-manager-danger {
+  border-color: rgba(200, 80, 80, 0.55) !important;
+  color: #f0b0b0 !important;
+}
+
+.fleet-manager-roster {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.fleet-manager-roster-item {
+  width: 100%;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid transparent;
+  border-radius: 2px;
+  padding: 0.4rem 0.5rem;
+  color: inherit;
+  cursor: pointer;
+}
+
+.fleet-manager-roster-item.is-selected {
+  border-color: #f5a623;
+  background: rgba(245, 166, 35, 0.12);
+}
+
+.fleet-manager-roster-name {
+  font-weight: 600;
+}
+
+.fleet-manager-roster-meta {
+  font-size: 0.75rem;
+  opacity: 0.8;
+}
+
+.fleet-manager-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(7.5rem, 1fr));
+  gap: 0.35rem 0.75rem;
+  margin: 0 0 0.5rem;
+}
+
+.fleet-manager-stats dt {
+  font-size: 0.65rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+
+.fleet-manager-stats dd {
+  margin: 0.05rem 0 0;
+}
+
+.fleet-manager-members {
+  list-style: none;
+  margin: 0 0 0.5rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.fleet-manager-member {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.4rem;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 2px;
+}

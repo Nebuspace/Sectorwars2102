@@ -565,19 +565,25 @@ export const teamAPI = {
     }),
 };
 
-// Fleet Management APIs
+// Fleet Management APIs — contract mirrors gameserver fleets.py
 export const fleetAPI = {
   createFleet: (name: string, formation?: string, commanderId?: string) =>
-    apiRequest('/api/v1/fleets', {
+    apiRequest('/api/v1/fleets/', {
       method: 'POST',
       body: JSON.stringify({ name, formation, commander_id: commanderId })
     }),
 
   getFleets: () =>
-    apiRequest('/api/v1/fleets'),
+    apiRequest('/api/v1/fleets/'),
+
+  getMyFleets: () =>
+    apiRequest('/api/v1/fleets/my-fleets'),
 
   getFleet: (fleetId: string) =>
     apiRequest(`/api/v1/fleets/${fleetId}`),
+
+  getFleetMembers: (fleetId: string) =>
+    apiRequest(`/api/v1/fleets/${fleetId}/members`),
 
   addShipToFleet: (fleetId: string, shipId: string, role?: string) =>
     apiRequest(`/api/v1/fleets/${fleetId}/add-ship`, {
@@ -591,13 +597,18 @@ export const fleetAPI = {
     }),
 
   updateFormation: (fleetId: string, formation: string) =>
-    apiRequest(`/api/v1/fleets/${fleetId}/formation?formation=${formation}`, {
+    apiRequest(`/api/v1/fleets/${fleetId}/formation?formation=${encodeURIComponent(formation)}`, {
       method: 'PATCH'
     }),
 
   disbandFleet: (fleetId: string) =>
     apiRequest(`/api/v1/fleets/${fleetId}`, {
       method: 'DELETE'
+    }),
+
+  resupplyFleet: (fleetId: string) =>
+    apiRequest(`/api/v1/fleets/${fleetId}/resupply`, {
+      method: 'POST'
     }),
 
   initiateBattle: (fleetId: string, defenderFleetId: string) =>
