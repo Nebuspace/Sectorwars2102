@@ -52,6 +52,7 @@ vi.mock('../../tactical/SolarSystemViewscreen', () => ({ default: () => <div /> 
 // inert stub, this file's row-state-machine assertions are all on
 // PlanetPortPair below, not the windshield scene itself.
 vi.mock('../../tactical/WindshieldTableau', () => ({ default: () => <div /> }));
+vi.mock('../../mining/NearestAmRefineryOverlay', () => ({ default: () => null }));
 
 // Prop-capturing stub — records every render's props keyed by planet/station
 // id so this file can assert the per-row flying/here wiring GameDashboard
