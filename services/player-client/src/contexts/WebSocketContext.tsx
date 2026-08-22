@@ -9,6 +9,7 @@ import websocketService, {
   ARIANarrationMessage,
   LinkStatus
 } from '../services/websocket';
+import { parsePendingEngagementSummary } from '../services/pendingEngagementApi';
 import { useAuth } from './AuthContext';
 
 interface WebSocketContextType {
@@ -181,6 +182,19 @@ interface WebSocketContextType {
     new_level: string;
     old_value: number;
     new_value: number;
+  } | null;
+
+  // Pending LAW en-route (police_en_route — LEG-902): bumps once per inbound
+  // frame. PoliceEnRouteBanner consumes alongside GET /pending-engagements.
+  policeEnRouteSignal: number;
+  lastPoliceEnRoute: {
+    id: string;
+    jurisdiction: string | null;
+    offense_type: string | null;
+    squad: string[];
+    officer_names: string[];
+    turns_to_arrival: number;
+    grace_window: string | null;
   } | null;
 
   // NPC-initiated combat (WO-CMB-NPC-INITIATED-1 lane D): bumps once per
@@ -360,6 +374,16 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
     new_level: string;
     old_value: number;
     new_value: number;
+  } | null>(null);
+  const [policeEnRouteSignal, setPoliceEnRouteSignal] = useState(0);
+  const [lastPoliceEnRoute, setLastPoliceEnRoute] = useState<{
+    id: string;
+    jurisdiction: string | null;
+    offense_type: string | null;
+    squad: string[];
+    officer_names: string[];
+    turns_to_arrival: number;
+    grace_window: string | null;
   } | null>(null);
   const [npcCombatSignal, setNpcCombatSignal] = useState(0);
   const [lastNpcCombatInitiated, setLastNpcCombatInitiated] = useState<{
@@ -948,6 +972,15 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           break;
         }
 
+        case 'police_en_route': {
+          // LEG-902: stash + bump — PoliceEnRouteBanner merges into its list.
+          setLastPoliceEnRoute(
+            parsePendingEngagementSummary(message as Record<string, unknown>)
+          );
+          setPoliceEnRouteSignal((prev) => prev + 1);
+          break;
+        }
+
         case 'npc_combat_initiated': {
           // WO-CMB-NPC-INITIATED-1 lane D: see the field doc-comment on
           // npcCombatSignal above for why this is plumbing-only (no toast/
@@ -1126,6 +1159,10 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
     reputationEventSignal,
     lastReputationChanged,
     lastTeamReputationChanged,
+
+    // Pending LAW en-route (police_en_route — LEG-902)
+    policeEnRouteSignal,
+    lastPoliceEnRoute,
 
     // NPC-initiated combat (npc_combat_initiated — WO-CMB-NPC-INITIATED-1 lane D)
     npcCombatSignal,

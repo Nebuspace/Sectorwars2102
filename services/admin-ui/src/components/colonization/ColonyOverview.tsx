@@ -274,6 +274,12 @@ export const ColonyOverview: React.FC = () => {
         <h2>Colony Overview</h2>
       </div>
 
+      {error && (
+        <div className="alert alert-error colony-overview-error" role="alert">
+          {error}
+        </div>
+      )}
+
       <div className="colony-controls">
         <input
           type="text"
