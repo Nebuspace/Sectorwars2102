@@ -54,6 +54,16 @@ interface GateProject {
   // actionable (Phase-3 once it exists, else Phase 1) — null once nothing
   // is left to stage (HARMONIZING/ACTIVE/EXPIRED/CANCELLED).
   construction_site?: ConstructionSiteEntry | null;
+  // Optional — sector scan / permissions may seed access_mode/toll/whitelist;
+  // listMine (LEG-94) returns toll_stats on ACTIVE projects when present.
+  access_mode?: string | null;
+  toll?: number | null;
+  whitelist?: string[] | null;
+  toll_stats?: {
+    usage_count?: number;
+    total_revenue?: number;
+    last_used?: string | null;
+  } | null;
 }
 
 interface SectorGateEntry {
@@ -62,7 +72,19 @@ interface SectorGateEntry {
   destination_name?: string | null;
   owner_name?: string | null;
   is_public?: boolean;
+  access_mode?: string;
   toll?: number;
+}
+
+type ActiveAccessMode = 'PUBLIC' | 'TEAM_ONLY' | 'PRIVATE' | 'WHITELIST' | 'ALLIANCE';
+
+interface ActiveGateDraft {
+  mode: ActiveAccessMode;
+  toll: string;
+  whitelist: string;
+  tollBypass: string;
+  transferTargetId: string;
+  salePrice: string;
 }
 
 interface SectorBeaconEntry {
@@ -229,6 +251,11 @@ const GatewrightPanel: React.FC<GatewrightPanelProps> = ({ onClose }) => {
   const [siteErrors, setSiteErrors] = useState<Record<string, string>>({});
   const [armedAdvanceSiteId, setArmedAdvanceSiteId] = useState<string | null>(null);
   const [advanceBusySiteId, setAdvanceBusySiteId] = useState<string | null>(null);
+
+  // ACTIVE-gate owner controls (LEG-55) — drafts keyed by gate_id
+  const [activeDrafts, setActiveDrafts] = useState<Record<string, ActiveGateDraft>>({});
+  const [activeBusyKey, setActiveBusyKey] = useState<string | null>(null);
+  const [activeNotices, setActiveNotices] = useState<Record<string, string>>({});
 
   // Ticking clock for countdowns
   const [nowMs, setNowMs] = useState<number>(Date.now());
@@ -504,6 +531,165 @@ const GatewrightPanel: React.FC<GatewrightPanelProps> = ({ onClose }) => {
       }));
     } finally {
       setAdvanceBusySiteId(null);
+    }
+  };
+
+  const parseUuidList = (raw: string): string[] =>
+    raw
+      .split(/[\s,]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+  const defaultActiveDraft = (project: GateProject): ActiveGateDraft => {
+    const sectorMatch = (sectorGates ?? []).find((g) => g.gate_id === project.gate_id);
+    const modeRaw = (project.access_mode || sectorMatch?.access_mode || 'PUBLIC').toUpperCase();
+    const mode = (
+      ['PUBLIC', 'TEAM_ONLY', 'PRIVATE', 'WHITELIST', 'ALLIANCE'].includes(modeRaw)
+        ? modeRaw
+        : 'PUBLIC'
+    ) as ActiveAccessMode;
+    const tollVal =
+      project.toll ?? sectorMatch?.toll ?? 0;
+    return {
+      mode,
+      toll: String(tollVal),
+      whitelist: (project.whitelist ?? []).join(', '),
+      tollBypass: '',
+      transferTargetId: '',
+      salePrice: '',
+    };
+  };
+
+  const getActiveDraft = (project: GateProject): ActiveGateDraft | null => {
+    if (!project.gate_id) return null;
+    return activeDrafts[project.gate_id] ?? defaultActiveDraft(project);
+  };
+
+  const patchActiveDraft = (gateId: string, patch: Partial<ActiveGateDraft>) => {
+    setActiveDrafts((prev) => {
+      const base =
+        prev[gateId] ??
+        defaultActiveDraft({
+          beacon_id: '',
+          gate_id: gateId,
+          phase: 'ACTIVE',
+          source_sector_id: 0,
+          destination_sector_id: 0,
+        });
+      return { ...prev, [gateId]: { ...base, ...patch } };
+    });
+  };
+
+  const handleSavePermissions = async (project: GateProject) => {
+    const gateId = project.gate_id;
+    if (!gateId || activeBusyKey) return;
+    const draft = getActiveDraft(project);
+    if (!draft) return;
+    const tollParsed = parseInt(draft.toll, 10);
+    const toll = Number.isNaN(tollParsed) ? 0 : Math.max(0, Math.min(10_000, tollParsed));
+    const busy = `${gateId}:perms`;
+    setActiveBusyKey(busy);
+    setProjectErrors((prev) => {
+      const next = { ...prev };
+      delete next[project.beacon_id];
+      return next;
+    });
+    try {
+      const result = (await warpGatesAPI.setPermissions(gateId, {
+        mode: draft.mode,
+        whitelist: parseUuidList(draft.whitelist),
+        toll,
+      })) as {
+        mode?: string;
+        whitelist?: string[];
+        toll_amount?: number;
+      };
+      patchActiveDraft(gateId, {
+        mode: (result.mode as ActiveAccessMode) || draft.mode,
+        toll: String(result.toll_amount ?? toll),
+        whitelist: (result.whitelist ?? parseUuidList(draft.whitelist)).join(', '),
+      });
+      setActiveNotices((prev) => ({
+        ...prev,
+        [gateId]: `Access saved — ${result.mode ?? draft.mode}, toll ${result.toll_amount ?? toll} cr`,
+      }));
+      await refreshAll();
+    } catch (e) {
+      setProjectErrors((prev) => ({
+        ...prev,
+        [project.beacon_id]: errDetail(e, 'Permissions update rejected.'),
+      }));
+    } finally {
+      setActiveBusyKey(null);
+    }
+  };
+
+  const handleSaveAccessLayers = async (project: GateProject) => {
+    const gateId = project.gate_id;
+    if (!gateId || activeBusyKey) return;
+    const draft = getActiveDraft(project);
+    if (!draft) return;
+    const busy = `${gateId}:layers`;
+    setActiveBusyKey(busy);
+    setProjectErrors((prev) => {
+      const next = { ...prev };
+      delete next[project.beacon_id];
+      return next;
+    });
+    try {
+      await warpGatesAPI.setAccessLayers(gateId, {
+        toll_bypass: parseUuidList(draft.tollBypass),
+      });
+      setActiveNotices((prev) => ({
+        ...prev,
+        [gateId]: 'Toll-bypass list saved.',
+      }));
+    } catch (e) {
+      setProjectErrors((prev) => ({
+        ...prev,
+        [project.beacon_id]: errDetail(e, 'Access layers update rejected.'),
+      }));
+    } finally {
+      setActiveBusyKey(null);
+    }
+  };
+
+  const handleTransferGate = async (project: GateProject) => {
+    const gateId = project.gate_id;
+    if (!gateId || activeBusyKey) return;
+    const draft = getActiveDraft(project);
+    if (!draft) return;
+    const target = draft.transferTargetId.trim();
+    if (!target) {
+      setProjectErrors((prev) => ({
+        ...prev,
+        [project.beacon_id]: 'Enter the buyer player id to transfer.',
+      }));
+      return;
+    }
+    const saleRaw = draft.salePrice.trim();
+    const salePrice = saleRaw === '' ? undefined : Math.max(0, parseInt(saleRaw, 10) || 0);
+    const busy = `${gateId}:xfer`;
+    setActiveBusyKey(busy);
+    setProjectErrors((prev) => {
+      const next = { ...prev };
+      delete next[project.beacon_id];
+      return next;
+    });
+    try {
+      await warpGatesAPI.transfer(gateId, target, salePrice);
+      setActiveNotices((prev) => ({
+        ...prev,
+        [gateId]: `Gate transferred to ${target}.`,
+      }));
+      await refreshAll();
+    } catch (e) {
+      setProjectErrors((prev) => ({
+        ...prev,
+        [project.beacon_id]: errDetail(e, 'Transfer rejected.'),
+      }));
+    } finally {
+      setActiveBusyKey(null);
     }
   };
 
@@ -936,13 +1122,162 @@ const GatewrightPanel: React.FC<GatewrightPanelProps> = ({ onClose }) => {
         )}
 
         {project.phase === 'ACTIVE' && (
-          <div className="gw-ceremony">
+          <div className="gw-ceremony" data-testid="gw-active-manage">
             <div className="gw-ceremony-title">GATE ACTIVE — 0-TURN CORRIDOR OPEN</div>
             <div className="gw-ceremony-route">
               {fmtSector(project.source_sector_id, project.source_name)}
               <span aria-hidden="true"> ⟶ </span>
               {fmtSector(project.destination_sector_id, project.destination_name)}
             </div>
+            {project.gate_id && (() => {
+              const draft = getActiveDraft(project)!;
+              const gateId = project.gate_id!;
+              const sectorMatch = (sectorGates ?? []).find((g) => g.gate_id === gateId);
+              const tollStats = project.toll_stats;
+              const showStats =
+                tollStats &&
+                (typeof tollStats.usage_count === 'number' ||
+                  typeof tollStats.total_revenue === 'number');
+              return (
+                <div className="gw-active-manage">
+                  {showStats ? (
+                    <div className="gw-active-stats" data-testid="gw-active-toll-stats">
+                      <span>Usage: {fmtNumber(tollStats!.usage_count ?? 0)}</span>
+                      <span>Revenue: {fmtNumber(tollStats!.total_revenue ?? 0)} cr</span>
+                      {typeof tollStats!.last_used === 'string' &&
+                        tollStats!.last_used.length > 0 && (
+                          <span>Last used: {tollStats!.last_used}</span>
+                        )}
+                    </div>
+                  ) : (
+                    <p className="gw-project-hint" data-testid="gw-active-toll-stats-absent">
+                      Toll usage/revenue not on this /mine project
+                      {sectorMatch ? ` · sector scan toll ${fmtNumber(sectorMatch.toll ?? 0)} cr` : ''}.
+                    </p>
+                  )}
+                  <label className="gw-access-mode" htmlFor={`gw-active-mode-${gateId}`}>
+                    Access mode
+                    <select
+                      id={`gw-active-mode-${gateId}`}
+                      data-testid="gw-active-access-mode"
+                      value={draft.mode}
+                      disabled={!!activeBusyKey}
+                      onChange={(e) =>
+                        patchActiveDraft(gateId, {
+                          mode: e.target.value as ActiveAccessMode,
+                        })
+                      }
+                    >
+                      <option value="PUBLIC">Public (tollable)</option>
+                      <option value="TEAM_ONLY">Team only</option>
+                      <option value="PRIVATE">Private (owner only)</option>
+                      <option value="WHITELIST">Whitelist</option>
+                      <option value="ALLIANCE">Alliance</option>
+                    </select>
+                  </label>
+                  <label className="gw-access-mode" htmlFor={`gw-active-toll-${gateId}`}>
+                    Toll fee (0–10,000 cr)
+                    <input
+                      id={`gw-active-toll-${gateId}`}
+                      data-testid="gw-active-toll"
+                      type="number"
+                      min={0}
+                      max={10000}
+                      value={draft.toll}
+                      disabled={!!activeBusyKey}
+                      onChange={(e) => patchActiveDraft(gateId, { toll: e.target.value })}
+                    />
+                  </label>
+                  <label className="gw-access-mode" htmlFor={`gw-active-wl-${gateId}`}>
+                    Whitelist player ids (comma-separated)
+                    <input
+                      id={`gw-active-wl-${gateId}`}
+                      data-testid="gw-active-whitelist"
+                      type="text"
+                      value={draft.whitelist}
+                      disabled={!!activeBusyKey}
+                      onChange={(e) => patchActiveDraft(gateId, { whitelist: e.target.value })}
+                      placeholder="uuid, uuid…"
+                    />
+                  </label>
+                  <div className="gw-confirm-row">
+                    <button
+                      type="button"
+                      className="gw-btn commit"
+                      data-testid="gw-active-save-perms"
+                      disabled={!!activeBusyKey}
+                      onClick={() => handleSavePermissions(project)}
+                    >
+                      {activeBusyKey === `${gateId}:perms` ? 'SAVING…' : 'SAVE ACCESS + TOLL'}
+                    </button>
+                  </div>
+                  <label className="gw-access-mode" htmlFor={`gw-active-bypass-${gateId}`}>
+                    Toll bypass player ids
+                    <input
+                      id={`gw-active-bypass-${gateId}`}
+                      data-testid="gw-active-toll-bypass"
+                      type="text"
+                      value={draft.tollBypass}
+                      disabled={!!activeBusyKey}
+                      onChange={(e) => patchActiveDraft(gateId, { tollBypass: e.target.value })}
+                      placeholder="uuid, uuid…"
+                    />
+                  </label>
+                  <div className="gw-confirm-row">
+                    <button
+                      type="button"
+                      className="gw-btn ghost"
+                      data-testid="gw-active-save-layers"
+                      disabled={!!activeBusyKey}
+                      onClick={() => handleSaveAccessLayers(project)}
+                    >
+                      {activeBusyKey === `${gateId}:layers` ? 'SAVING…' : 'SAVE TOLL BYPASS'}
+                    </button>
+                  </div>
+                  <label className="gw-access-mode" htmlFor={`gw-active-xfer-${gateId}`}>
+                    Transfer to player id
+                    <input
+                      id={`gw-active-xfer-${gateId}`}
+                      data-testid="gw-active-transfer-target"
+                      type="text"
+                      value={draft.transferTargetId}
+                      disabled={!!activeBusyKey}
+                      onChange={(e) =>
+                        patchActiveDraft(gateId, { transferTargetId: e.target.value })
+                      }
+                    />
+                  </label>
+                  <label className="gw-access-mode" htmlFor={`gw-active-price-${gateId}`}>
+                    Sale price (optional)
+                    <input
+                      id={`gw-active-price-${gateId}`}
+                      data-testid="gw-active-sale-price"
+                      type="number"
+                      min={0}
+                      value={draft.salePrice}
+                      disabled={!!activeBusyKey}
+                      onChange={(e) => patchActiveDraft(gateId, { salePrice: e.target.value })}
+                    />
+                  </label>
+                  <div className="gw-confirm-row">
+                    <button
+                      type="button"
+                      className="gw-btn danger"
+                      data-testid="gw-active-transfer"
+                      disabled={!!activeBusyKey}
+                      onClick={() => handleTransferGate(project)}
+                    >
+                      {activeBusyKey === `${gateId}:xfer` ? 'TRANSFERRING…' : 'TRANSFER / SELL GATE'}
+                    </button>
+                  </div>
+                  {activeNotices[gateId] && (
+                    <p className="gw-project-hint" data-testid="gw-active-notice">
+                      {activeNotices[gateId]}
+                    </p>
+                  )}
+                </div>
+              );
+            })()}
           </div>
         )}
 
