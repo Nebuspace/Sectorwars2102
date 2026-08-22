@@ -28,6 +28,11 @@ vi.mock('../ResourceSharing', () => ({
 vi.mock('../TeamChat', () => ({
   TeamChat: ({ teamId }: { teamId: string }) => <div data-testid="team-chat" data-team-id={teamId} />,
 }));
+vi.mock('../TeamWarPanel', () => ({
+  TeamWarPanel: ({ teamId, isLeader }: { teamId: string; isLeader: boolean }) => (
+    <div data-testid="team-war-panel" data-team-id={teamId} data-leader={String(isLeader)} />
+  ),
+}));
 
 const {
   mockGetTeam,
