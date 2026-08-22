@@ -109,6 +109,32 @@ const StationsManager: React.FC = () => {
     setShowAddModal(true);
   };
 
+  /** Tip GS: POST /api/v1/admin/ports/update-stock-levels — ECONOMY_INTERVENE (LEG-1712). */
+  const handleUpdateStockLevels = async () => {
+    if (!(await confirm({
+      title: 'Update Port Stock Levels',
+      message:
+        'Recalculate commodity stock levels for every port to match trading roles? This posts the tip admin ports/update-stock-levels route (ECONOMY_INTERVENE).',
+      confirmLabel: 'Update stock levels',
+    }))) {
+      return;
+    }
+
+    try {
+      const response = await api.post('/api/v1/admin/ports/update-stock-levels');
+      const portsUpdated =
+        (response.data as { ports_updated?: number } | undefined)?.ports_updated ?? 0;
+      toast.success(`Updated stock levels for ${portsUpdated} port(s)`);
+    } catch (err: unknown) {
+      toast.error(
+        formatAdminApiError(err, {
+          fallback: 'Failed to update port stock levels',
+          scopeHint: 'ECONOMY_INTERVENE scope required to update port stock levels',
+        })
+      );
+    }
+  };
+
   const closeModal = () => {
     setShowPortModal(false);
     setShowAddModal(false);
@@ -160,6 +186,14 @@ const StationsManager: React.FC = () => {
 
       {/* Add New Station Button */}
       <div className="page-actions">
+        <button
+          type="button"
+          className="add-btn add-btn-secondary"
+          onClick={handleUpdateStockLevels}
+          aria-label="Update port stock levels"
+        >
+          Update stock levels
+        </button>
         <button className="add-btn" onClick={handleAddPort}>
           + Add New Station
         </button>

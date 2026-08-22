@@ -310,6 +310,33 @@ const FleetManagement: React.FC = () => {
     }
   };
 
+  /** Tip GS: POST /api/v1/admin/ships/registry/backfill — idempotent INITIAL_REGISTRATION (LEG-1682). */
+  const handleRegistryBackfill = async () => {
+    if (!(await confirm({
+      title: 'Backfill Ship Registry',
+      message:
+        'Run the one-shot ship registry backfill? This posts the tip admin ships registry/backfill route (idempotent; SHIPS_MANAGE).',
+      confirmLabel: 'Backfill registry',
+    }))) {
+      return;
+    }
+
+    try {
+      const response = await api.post('/api/v1/admin/ships/registry/backfill');
+      const backfilled =
+        (response.data as { backfilled?: number } | undefined)?.backfilled ?? 0;
+      toast.success(`Backfilled ${backfilled} ship registry row(s)`);
+    } catch (error) {
+      console.error('Error ship registry backfill:', error);
+      toast.error(
+        formatAdminApiError(error, {
+          fallback: 'Failed to backfill ship registry',
+          scopeHint: 'SHIPS_MANAGE scope required for ship registry backfill',
+        })
+      );
+    }
+  };
+
   const filteredShips = ships.filter(ship => {
     const matchesSearch = ship.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
                          ship.owner_name.toLowerCase().includes(searchTerm.toLowerCase());
@@ -418,6 +445,15 @@ const FleetManagement: React.FC = () => {
                   className="btn btn-primary"
                 >
                   + Create Ship
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleRegistryBackfill}
+                  className="btn btn-outline"
+                  aria-label="Backfill ship registry"
+                >
+                  Backfill registry
                 </button>
                 
                 <button onClick={fetchShips} className="btn btn-outline">
