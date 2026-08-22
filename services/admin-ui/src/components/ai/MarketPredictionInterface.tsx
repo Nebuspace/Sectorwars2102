@@ -92,8 +92,19 @@ export const MarketPredictionInterface: React.FC = () => {
     try {
       const response = await api.get('/api/v1/admin/ai/predictions/accuracy');
       setAccuracyStats(response.data);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to load accuracy stats:', err);
+      const status = err.response?.status as number | undefined;
+      if (status === 401) {
+        setError('Authentication required. Please log in as an admin user.');
+      } else if (status === 403) {
+        setError(
+          'Access denied — prediction accuracy requires the admin players view scope (PLAYERS_VIEW).'
+        );
+      } else if (status === 429) {
+        setError('Admin rate limit exceeded — wait a moment and try again.');
+      }
+      // Transport/other: leave accuracy empty; primary predictions may still render.
     }
   };
 
