@@ -209,6 +209,19 @@ describe('apiRequest via trade/combat/grey wrappers', () => {
     );
   });
 
+  it('miningAPI.getNearestAmRefinery GETs the tip overlay path', async () => {
+    const payload = {
+      found: true,
+      station: { id: 'st-1', name: 'AM 7', sector_id: 9 },
+      hop_distance: 2,
+      ore_buy_price: 11,
+      reason: null,
+    };
+    get.mockResolvedValue({ data: payload });
+    await expect(miningAPI.getNearestAmRefinery()).resolves.toEqual(payload);
+    expect(get).toHaveBeenCalledWith('/api/v1/mining/nearest-am-refinery', jsonHeaders);
+  });
+
   it('miningAPI.harvest POSTs ship_id', async () => {
     post.mockResolvedValue({ data: { status: 'in_progress', harvest_id: 'h1' } });
     await expect(miningAPI.harvest('ship-9')).resolves.toEqual({
