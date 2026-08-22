@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useAdmin } from '../../../contexts/AdminContext';
+import { adminHttpErrorMessage, adminHttpStatus } from '../../../utils/adminHttpError';
 import type {
   BangConfig,
   BangJobListItem,
@@ -47,8 +48,13 @@ const GalaxyGenerationHistory: React.FC<GalaxyGenerationHistoryProps> = ({
         await loadBangHistory(page, DEFAULT_PAGE_SIZE);
       } catch (err) {
         if (!cancelled) {
-          const message = err instanceof Error ? err.message : String(err);
-          setError(message);
+          // LEG-1253: RBAC/rate-limit must not collapse to opaque loadFailed raw message
+          if (adminHttpStatus(err) === 401 || adminHttpStatus(err) === 403 || adminHttpStatus(err) === 429) {
+            setError(adminHttpErrorMessage(err, 'Failed to load history', 'BANG_REGENERATE'));
+          } else {
+            const message = err instanceof Error ? err.message : String(err);
+            setError(message);
+          }
         }
       }
     })();

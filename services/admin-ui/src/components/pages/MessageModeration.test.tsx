@@ -208,6 +208,94 @@ describe('MessageModeration', () => {
     expect(toastSuccess).toHaveBeenCalledWith('Message deleted.');
   });
 
+  it('accept posts tip canon moderation path (LEG-1579)', async () => {
+    const user = userEvent.setup();
+    mockLoad({ messages: { ...emptyMessages, messages: [message], total: 1 } });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockResolvedValue({
+      data: {
+        success: true,
+        action: 'accept',
+        message_id: 'm1',
+        rep_delta: 0,
+        sender_notified: false,
+        block_count_30d: 0,
+        escalation_audit_logged: false,
+      },
+    });
+
+    render(<MessageModeration />);
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: 'Accept' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/moderation/messages/m1/accept',
+        {},
+      );
+    });
+    expect(toastSuccess).toHaveBeenCalledWith('Flag accepted.');
+  });
+
+  it('redact posts tip canon path and surfaces reputation delta (LEG-1579)', async () => {
+    const user = userEvent.setup();
+    mockLoad({ messages: { ...emptyMessages, messages: [message], total: 1 } });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockResolvedValue({
+      data: {
+        success: true,
+        action: 'redact',
+        message_id: 'm1',
+        rep_delta: -50,
+        sender_notified: true,
+        block_count_30d: 0,
+        escalation_audit_logged: false,
+      },
+    });
+
+    render(<MessageModeration />);
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: 'Redact' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/moderation/messages/m1/redact',
+        {},
+      );
+    });
+    expect(toastSuccess).toHaveBeenCalledWith(
+      expect.stringMatching(/Message redacted\..*Reputation Δ -50/),
+    );
+  });
+
+  it('block posts tip canon path and surfaces formatAdminApiError on 403 (LEG-1579)', async () => {
+    const user = userEvent.setup();
+    mockLoad({ messages: { ...emptyMessages, messages: [message], total: 1 } });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockRejectedValue(
+      Object.assign(new Error('HTTP 403'), {
+        response: { status: 403, data: { detail: 'Missing scope admin.security.act' } },
+      }),
+    );
+
+    render(<MessageModeration />);
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: 'Block' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/moderation/messages/m1/block',
+        {},
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(
+      expect.stringMatching(/admin\.security\.act|Missing scope|Access denied/i),
+    );
+  });
+
   it('does not call the API when the delete confirm is dismissed', async () => {
     const user = userEvent.setup();
     mockLoad({ messages: { ...emptyMessages, messages: [message], total: 1 } });
@@ -407,5 +495,121 @@ describe('MessageModeration', () => {
     await waitFor(() => {
       expect(screen.getByText(/rate limit/i)).toBeTruthy();
     });
+  });
+
+  it('select-all toggles every message on the current page', async () => {
+    const user = userEvent.setup();
+    const message2 = { ...message, id: 'm2', sender_name: 'Dana' };
+    mockLoad({
+      messages: {
+        ...emptyMessages,
+        messages: [message, message2],
+        total: 2,
+      },
+    });
+
+    render(<MessageModeration />);
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+
+    await user.click(
+      screen.getByRole('checkbox', { name: 'Select all messages on this page' }),
+    );
+    expect(screen.getByTestId('bulk-action-bar')).toBeTruthy();
+    expect(screen.getByText('2 selected')).toBeTruthy();
+
+    await user.click(
+      screen.getByRole('checkbox', { name: 'Select all messages on this page' }),
+    );
+    expect(screen.queryByTestId('bulk-action-bar')).toBeNull();
+  });
+
+  it('bulk delete posts selected ids to bulk-moderate and reports partial failures', async () => {
+    const user = userEvent.setup();
+    const message2 = { ...message, id: 'm2', sender_name: 'Dana' };
+    mockLoad({
+      messages: {
+        ...emptyMessages,
+        messages: [message, message2],
+        total: 2,
+      },
+    });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockResolvedValue({
+      data: {
+        action: 'delete',
+        succeeded: 1,
+        failed: 1,
+        results: [
+          { message_id: 'm1', success: true, detail: null },
+          { message_id: 'm2', success: false, detail: 'not found' },
+        ],
+      },
+    });
+
+    render(<MessageModeration />);
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+
+    await user.click(screen.getByRole('checkbox', { name: 'Select message m1' }));
+    await user.click(screen.getByRole('checkbox', { name: 'Select message m2' }));
+    await user.click(screen.getByRole('button', { name: 'Bulk Delete' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/messages/bulk-moderate',
+        { message_ids: ['m1', 'm2'], action: 'delete' },
+      );
+    });
+    expect(confirmMock).toHaveBeenCalledWith(
+      expect.objectContaining({ danger: true, confirmLabel: 'Delete selected' }),
+    );
+    expect(toastSuccess).not.toHaveBeenCalled();
+    expect(toastWarning).toHaveBeenCalledWith(
+      'Bulk delete: 1 succeeded, 1 failed.',
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId('bulk-partial-failures')).toBeTruthy();
+    });
+    expect(screen.getByText(/m2: not found/)).toBeTruthy();
+  });
+
+  it('bulk clear-flag posts correct payload when all selections succeed', async () => {
+    const user = userEvent.setup();
+    const message2 = { ...message, id: 'm2', sender_name: 'Dana' };
+    mockLoad({
+      messages: {
+        ...emptyMessages,
+        messages: [message, message2],
+        total: 2,
+      },
+    });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockResolvedValue({
+      data: {
+        action: 'unflag',
+        succeeded: 2,
+        failed: 0,
+        results: [
+          { message_id: 'm1', success: true },
+          { message_id: 'm2', success: true },
+        ],
+      },
+    });
+
+    render(<MessageModeration />);
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+
+    await user.click(
+      screen.getByRole('checkbox', { name: 'Select all messages on this page' }),
+    );
+    await user.click(screen.getByRole('button', { name: 'Bulk Clear Flag' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/messages/bulk-moderate',
+        { message_ids: ['m1', 'm2'], action: 'unflag' },
+      );
+    });
+    expect(toastWarning).not.toHaveBeenCalled();
+    expect(toastSuccess).toHaveBeenCalledWith('Cleared flags on 2 messages.');
   });
 });
