@@ -7,6 +7,14 @@ import './admin-action-log.css';
 
 type AuditTab = 'ledger' | 'review';
 
+/**
+ * Provisional count threshold for the review-queue sweep-test alarm (LEG-110).
+ * Canon (OPERATIONS/admin-ui.md) requires an alarm when 30-day-old
+ * unacknowledged HIGH_IMPACT rows cross a threshold (target: acknowledge within
+ * 7 days) but does not specify exact N — keep N ≤ 5; not a game rule.
+ */
+export const REVIEW_QUEUE_STALE_ALARM_THRESHOLD = 3;
+
 interface AdminActionItem {
   id: string;
   admin_user_id?: string | null;
@@ -203,6 +211,12 @@ export const AdminActionLogPage: React.FC = () => {
 
   const isReview = tab === 'review';
   const colCount = isReview ? 9 : 7;
+  // Stale rows are listed first; page limit 50 covers the provisional alarm band.
+  const staleCount =
+    isReview && data ? data.items.filter((row) => row.stale).length : 0;
+  const showSweepAlarm =
+    isReview && !forbidden && !isLoading && data != null &&
+    staleCount >= REVIEW_QUEUE_STALE_ALARM_THRESHOLD;
 
   return (
     <div className="aal-page">
@@ -333,6 +347,19 @@ export const AdminActionLogPage: React.FC = () => {
           are flagged <strong>Stale</strong> and listed first. Marking reviewed requires{' '}
           <code>admin.audit.review</code> and is itself logged.
         </p>
+      )}
+
+      {showSweepAlarm && (
+        <div
+          className="aal-alert aal-alert-sweep"
+          role="alert"
+          data-testid="review-queue-sweep-alarm"
+        >
+          Sweep-test alarm: {staleCount} unacknowledged review-queue row
+          {staleCount === 1 ? '' : 's'} older than 30 days (provisional threshold{' '}
+          {REVIEW_QUEUE_STALE_ALARM_THRESHOLD}). Acknowledge stale HIGH_IMPACT actions
+          promptly — target is review within 7 days.
+        </div>
       )}
 
       {isLoading && <p className="aal-muted">Loading actions…</p>}
