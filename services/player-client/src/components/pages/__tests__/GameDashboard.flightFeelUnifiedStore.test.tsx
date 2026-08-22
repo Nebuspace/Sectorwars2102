@@ -39,7 +39,7 @@ vi.mock('../../../services/api', () => ({
     getContents: (...a: unknown[]) => mockGetContents(...a),
   },
   miningAPI: { harvest: vi.fn() },
-  playerAPI: { investigateFormation: vi.fn() },
+  playerAPI: { investigateFormation: vi.fn(), investigateAnomaly: vi.fn() },
   // WindshieldTableau (real, unstubbed) calls helmAPI.getPose on mount.
   helmAPI: {
     getPose: vi.fn().mockRejectedValue(new Error('no pose mock in this suite')),

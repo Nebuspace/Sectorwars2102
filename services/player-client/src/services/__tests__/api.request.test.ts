@@ -234,6 +234,18 @@ describe('apiRequest via trade/combat/grey wrappers', () => {
     );
   });
 
+  it('playerAPI.investigateAnomaly POSTs the sector ANOMALY route', async () => {
+    post.mockResolvedValue({ data: { reward: { credits: 250 } } });
+    await expect(playerAPI.investigateAnomaly(42)).resolves.toEqual({
+      reward: { credits: 250 },
+    });
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/player/sectors/42/investigate-anomaly',
+      undefined,
+      jsonHeaders,
+    );
+  });
+
   it('sectorAPI.getContents GETs the sector contents path', async () => {
     get.mockResolvedValue({ data: { star: { label: 'Sol' }, bodies: [] } });
     await expect(sectorAPI.getContents(100)).resolves.toEqual({
