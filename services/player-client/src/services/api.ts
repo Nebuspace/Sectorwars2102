@@ -1185,6 +1185,15 @@ export const shipUpgradeAPI = {
       body: JSON.stringify({ slot_index: slotIndex, module_class: moduleClass, tier }),
     }),
 
+  // previewModule → dry-run before/after effect rows (LEG-320 / LEG-1095). No DB
+  //   write / no credit charge. Payload: current / projected / delta maps from GS
+  //   — client must not re-implement MODULE_DEFINITIONS bake math.
+  previewModule: (shipId: string, slotIndex: number, moduleClass: string, tier: number) =>
+    apiRequest(`/api/v1/ships/${shipId}/modules/preview`, {
+      method: 'POST',
+      body: JSON.stringify({ slot_index: slotIndex, module_class: moduleClass, tier }),
+    }),
+
   // removeModule → { success, refund, remaining_credits, updated_stats }. The
   //   refund is SALVAGE_FRACTION (~25%) of the module's tier-scaled cost.
   removeModule: (shipId: string, slotIndex: number) =>
