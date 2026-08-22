@@ -17,6 +17,9 @@ vi.mock('../../ranking/RankProgress', () => ({
 vi.mock('../../ranking/MedalShowcase', () => ({
   default: () => <div data-testid="medal-showcase" />,
 }));
+vi.mock('../../combat/CombatHistoryPanel', () => ({
+  CombatHistoryPanel: () => <div data-testid="combat-history-panel" />,
+}));
 
 import ServiceRecordTab from '../ServiceRecordTab';
 
@@ -37,7 +40,7 @@ describe('ServiceRecordTab', () => {
     container.remove();
   });
 
-  it('mounts the three personal-standing views inside the dossier shell', async () => {
+  it('mounts personal-standing views + combat history inside the dossier shell', async () => {
     await act(async () => {
       root.render(<ServiceRecordTab />);
     });
@@ -46,5 +49,6 @@ describe('ServiceRecordTab', () => {
     expect(container.querySelector('[data-testid="rank-display"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="rank-progress"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="medal-showcase"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="combat-history-panel"]')).toBeTruthy();
   });
 });
