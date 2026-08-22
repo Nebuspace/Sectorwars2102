@@ -3,22 +3,16 @@ import { useGame } from '../../contexts/GameContext';
 import { teamAPI } from '../../services/api';
 import type { Team, TeamApiResponse, TeamPermissionsApiResponse } from '../../types/team';
 import EmptyState from '../common/EmptyState';
+import { TeamWarPanel } from '../teams/TeamWarPanel';
 
 /**
  * TeamSummaryTab — the StatusBar dossier dropdown's "Crew" tab
  * (WO-UI5-DOSSIER sub-part #1).
  *
  * TeamManager.tsx (components/teams/) is the full CREW MANIFEST console
- * (753 lines: overview/members/treasury/chat/settings tabs, invite/kick/
- * promote/leave actions, a create-team modal) — far too heavy to embed in
- * this fixed-size dropdown. Same "pull the personal-standing summary, not
- * the whole page" pattern ServiceRecordTab.tsx used for RankingPage and
- * ColoniesRosterTab.tsx used for PlanetManager: this shows only the
- * player's OWN team identity/rating/role, reusing the SAME wire mapper
- * shape TeamManager.tsx already established (teamAPI.getTeam /
- * getPermissions, snake_case -> camelCase at the boundary). Full-console
- * mutation links to /game/team were removed (route redirects to dashboard
- * post-UI5); TeamManager.tsx remains unmounted scaffolding until a re-route WO.
+ * — far too heavy to embed in this fixed-size dropdown. Live crew surface
+ * today: identity/rating/role plus LEG-73 TeamWarPanel (compact) so
+ * declare/list/ceasefire is reachable without remounting TeamManager.
  */
 
 const RECRUITMENT_TO_UI: Record<string, Team['recruitmentStatus']> = {
@@ -119,6 +113,8 @@ const TeamSummaryTab: React.FC = () => {
     );
   }
 
+  const isLeader = role === 'LEADER';
+
   return (
     <div className="sb-crew-summary">
       <h2 className="sb-crew-name">
@@ -150,6 +146,7 @@ const TeamSummaryTab: React.FC = () => {
           <span className="sb-identity-v">{team.tradeRating.toFixed(1)}</span>
         </div>
       </div>
+      <TeamWarPanel teamId={team.id} isLeader={isLeader} compact />
     </div>
   );
 };

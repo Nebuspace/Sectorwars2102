@@ -14,6 +14,7 @@ import EmptyState from '../common/EmptyState';
 import LoadingState from '../common/LoadingState';
 import { ResourceSharing } from './ResourceSharing';
 import { TeamChat } from './TeamChat';
+import { TeamWarPanel } from './TeamWarPanel';
 import './team-manager.css';
 
 /**
@@ -156,7 +157,7 @@ export const TeamManager: React.FC = () => {
   const [permissions, setPermissions] = useState<TeamPermissions | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'overview' | 'members' | 'treasury' | 'chat' | 'settings'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'members' | 'treasury' | 'chat' | 'wars' | 'settings'>('overview');
   const [editingInfo, setEditingInfo] = useState(false);
   const [teamInfo, setTeamInfo] = useState<{ description: string; recruitmentStatus: Team['recruitmentStatus'] }>({
     description: '',
@@ -538,6 +539,13 @@ export const TeamManager: React.FC = () => {
             Chat
           </button>
           <button
+            className={activeTab === 'wars' ? 'active' : ''}
+            onClick={() => setActiveTab('wars')}
+            data-testid="team-tab-wars"
+          >
+            Wars
+          </button>
+          <button
             className={activeTab === 'settings' ? 'active' : ''}
             onClick={() => setActiveTab('settings')}
           >
@@ -667,6 +675,13 @@ export const TeamManager: React.FC = () => {
             teamId={team.id}
             playerId={playerState.id}
             members={members}
+          />
+        )}
+
+        {activeTab === 'wars' && (
+          <TeamWarPanel
+            teamId={team.id}
+            isLeader={permissions?.canPromote === true}
           />
         )}
 

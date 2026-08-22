@@ -136,6 +136,59 @@ describe('StationDetail Soft-ORDER PATCH payloads', () => {
       });
     });
   });
+
+  it('saving fuel quantity posts fuel_quantity flat key (LEG-1490)', async () => {
+    const user = userEvent.setup();
+    render(
+      <PortDetail
+        port={{ ...basePort, fuel_quantity: 200, luxury_goods_quantity: 10 }}
+        onBack={() => undefined}
+      />,
+    );
+
+    const fuelHeading = screen.getByText('⛽ Fuel');
+    const card = fuelHeading.closest('.commodity-card');
+    const clickable = card!.querySelector('.editable-field.clickable') as HTMLElement;
+    await user.click(clickable);
+
+    const input = screen.getByRole('spinbutton');
+    fireEvent.change(input, { target: { value: '450' } });
+    await user.click(screen.getByRole('button', { name: '✓' }));
+
+    await waitFor(() => {
+      expect(api.patch).toHaveBeenCalledWith('/api/v1/admin/ports/port-1', {
+        fuel_quantity: 450,
+      });
+    });
+    expect(JSON.stringify(vi.mocked(api.patch).mock.calls[0][1])).not.toMatch(
+      /fuel_price|luxury_goods_price/,
+    );
+  });
+
+  it('saving luxury_goods quantity posts luxury_goods_quantity flat key (LEG-1490)', async () => {
+    const user = userEvent.setup();
+    render(
+      <PortDetail
+        port={{ ...basePort, fuel_quantity: 200, luxury_goods_quantity: 10 }}
+        onBack={() => undefined}
+      />,
+    );
+
+    const luxuryHeading = screen.getByText('💎 Luxury Goods');
+    const card = luxuryHeading.closest('.commodity-card');
+    const clickable = card!.querySelector('.editable-field.clickable') as HTMLElement;
+    await user.click(clickable);
+
+    const input = screen.getByRole('spinbutton');
+    fireEvent.change(input, { target: { value: '77' } });
+    await user.click(screen.getByRole('button', { name: '✓' }));
+
+    await waitFor(() => {
+      expect(api.patch).toHaveBeenCalledWith('/api/v1/admin/ports/port-1', {
+        luxury_goods_quantity: 77,
+      });
+    });
+  });
 });
 
 describe('StationDetail Soft-HOLD scope errors (LEG-1213 residual after Soft-ORDER)', () => {

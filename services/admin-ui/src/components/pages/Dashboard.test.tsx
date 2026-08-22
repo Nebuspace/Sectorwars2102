@@ -119,4 +119,50 @@ describe('Dashboard (LEG-233)', () => {
 
     expect(screen.getByText(/rate limit/i).textContent).not.toMatch(/Audit log request failed \(429\)/);
   });
+
+  it('surfaces stats 403 as PLAYERS_VIEW denial, not silent unavailable', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/admin/stats')) {
+        throw Object.assign(new Error('HTTP 403'), { response: { status: 403 } });
+      }
+      return byUrl(url);
+    });
+
+    render(
+      <MemoryRouter>
+        <Dashboard />
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const msg = screen.getByRole('alert').textContent ?? '';
+    expect(msg).toMatch(/PLAYERS_VIEW|players view/i);
+    expect(msg).not.toMatch(/Unable to load dashboard data/i);
+  });
+
+  it('surfaces stats 429 as admin rate-limit copy', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/admin/stats')) {
+        throw Object.assign(new Error('HTTP 429'), { response: { status: 429 } });
+      }
+      return byUrl(url);
+    });
+
+    render(
+      <MemoryRouter>
+        <Dashboard />
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const msg = screen.getByRole('alert').textContent ?? '';
+    expect(msg).toMatch(/rate limit/i);
+    expect(msg).not.toMatch(/Unable to load dashboard data/i);
+  });
 });
