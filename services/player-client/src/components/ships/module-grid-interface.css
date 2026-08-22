@@ -660,3 +660,52 @@
   color: #fff;
 }
 .module-grid-interface .mgi-cosmetic-opt.is-clear { color: #ff9a9a; border-color: rgba(255, 120, 120, 0.4); }
+
+/* LEG-1095 — GS dry-run before/after preview in install drawer */
+.module-grid-interface .mgi-preview {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(120, 140, 180, 0.35);
+}
+.module-grid-interface .mgi-preview-title {
+  margin: 0 0 6px;
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #9ab0d0;
+}
+.module-grid-interface .mgi-preview-status {
+  margin: 0;
+  font-size: 0.72rem;
+  color: #8a9bb8;
+}
+.module-grid-interface .mgi-preview-error {
+  color: #ff9a9a;
+}
+.module-grid-interface .mgi-preview-candidate {
+  margin: 0 0 6px;
+  font-size: 0.75rem;
+  color: #c8d6ef;
+}
+.module-grid-interface .mgi-preview-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.72rem;
+}
+.module-grid-interface .mgi-preview-table th,
+.module-grid-interface .mgi-preview-table td {
+  padding: 3px 6px;
+  text-align: left;
+  border-bottom: 1px solid rgba(80, 100, 140, 0.25);
+}
+.module-grid-interface .mgi-preview-table th {
+  color: #7a90b0;
+  font-weight: 600;
+}
+.module-grid-interface .mgi-preview-table .is-up { color: #6fdc8c; }
+.module-grid-interface .mgi-preview-table .is-down { color: #ff9a9a; }
+.module-grid-interface .mgi-preview-table .is-flat { color: #8a9bb8; }
+.module-grid-interface .mgi-tier-btn.is-previewing {
+  border-color: #6ec8ff;
+  box-shadow: 0 0 0 1px rgba(110, 200, 255, 0.35);
+}
