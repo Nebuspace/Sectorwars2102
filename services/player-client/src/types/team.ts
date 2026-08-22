@@ -302,3 +302,55 @@ export interface TeamPermissions {
   canManageAlliances: boolean;
   canDeclareWar: boolean;
 }
+
+// --- Team war (teams.py WarEntry + team_war_service victory fields) --------
+// List endpoint response_model=WarEntry may strip victory-only keys; keep them
+// optional so the UI renders what the server actually returns.
+
+export interface WarScore {
+  us: number;
+  them: number;
+}
+
+/** Wire shape from GET /teams/{id}/wars and declare_war.war */
+export interface WarEntryApiResponse {
+  target_team_id: string;
+  declared_by: string;
+  declared_at: string;
+  reason: string;
+  status: string; // 'active' | 'ceased'
+  score: WarScore;
+  ceased_at?: string;
+  ceased_by?: string;
+  cease_reason?: string; // e.g. 'victory' from team_war_service
+  winner_team_id?: string;
+  loser_team_id?: string;
+  victory_at?: string;
+}
+
+export interface TeamWar {
+  targetTeamId: string;
+  declaredBy: string;
+  declaredAt: string;
+  reason: string;
+  status: 'active' | 'ceased' | string;
+  score: WarScore;
+  ceasedAt?: string;
+  ceasedBy?: string;
+  ceaseReason?: string;
+  winnerTeamId?: string;
+  loserTeamId?: string;
+  victoryAt?: string;
+}
+
+export interface DeclareWarResponse {
+  success: boolean;
+  message: string;
+  war: WarEntryApiResponse;
+}
+
+export interface CeasefireResponse {
+  success: boolean;
+  message: string;
+  ceased_by: string;
+}

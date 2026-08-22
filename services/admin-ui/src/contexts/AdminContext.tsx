@@ -12,6 +12,7 @@ import {
   wipeBangGalaxy,
 } from '../services/bangGalaxyApi';
 import { formatAdminApiError } from '../utils/adminApiError';
+import { adminHttpErrorMessage } from '../utils/adminHttpError';
 
 // Types for admin context
 export interface AdminStats {
@@ -252,7 +253,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       setAdminStats(mappedStats);
     } catch (error) {
       console.error('Error loading admin stats:', error);
-      setError('Failed to load admin statistics');
+      setError(adminHttpErrorMessage(error, 'Failed to load admin statistics', 'PLAYERS_VIEW'));
       setAdminStats(null);
     } finally {
       setIsLoading(false);
@@ -285,7 +286,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       }
     } catch (error) {
       console.error('Error loading galaxy info:', error);
-      setError('Failed to load galaxy information');
+      setError(adminHttpErrorMessage(error, 'Failed to load galaxy information', 'admin.galaxy.manage'));
       setGalaxyState(null);
     } finally {
       setIsLoading(false);
@@ -304,7 +305,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       setRegions(response.data.regions || []);
     } catch (error) {
       console.error('Error loading regions:', error);
-      setError('Failed to load regions');
+      setError(adminHttpErrorMessage(error, 'Failed to load regions', 'admin.galaxy.manage'));
     } finally {
       setIsLoading(false);
     }
@@ -322,7 +323,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       setZones(response.data.zones || []);
     } catch (error) {
       console.error('Error loading region zones:', error);
-      setError('Failed to load region zones');
+      setError(adminHttpErrorMessage(error, 'Failed to load region zones', 'admin.galaxy.manage'));
     } finally {
       setIsLoading(false);
     }
@@ -377,7 +378,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       }
     } catch (error) {
       console.error('Error adding sectors:', error);
-      setError('Failed to add sectors to galaxy');
+      setError(adminHttpErrorMessage(error, 'Failed to add sectors to galaxy', 'admin.galaxy.manage'));
       throw error; // Re-throw to allow component to handle it
     } finally {
       setIsLoading(false);
@@ -403,7 +404,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
 
     } catch (error) {
       console.error('Error clearing galaxy data:', error);
-      setError('Failed to clear galaxy data');
+      setError(adminHttpErrorMessage(error, 'Failed to clear galaxy data', 'admin.galaxy.manage'));
       throw error;
     } finally {
       setIsLoading(false);
@@ -428,7 +429,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       await loadGalaxyInfo();
     } catch (error) {
       console.error('Error creating warp tunnel:', error);
-      setError('Failed to create warp tunnel');
+      setError(adminHttpErrorMessage(error, 'Failed to create warp tunnel', 'admin.galaxy.manage'));
       throw error; // Re-throw to allow component to handle it
     } finally {
       setIsLoading(false);
@@ -449,7 +450,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       setSectors(response.data.sectors || []);
     } catch (error) {
       console.error('Error loading sectors:', error);
-      setError('Failed to load sectors');
+      setError(adminHttpErrorMessage(error, 'Failed to load sectors', 'admin.galaxy.manage'));
     } finally {
       setIsLoading(false);
     }
@@ -467,7 +468,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       setUsers(response.data.users || []);
     } catch (error) {
       console.error('Error loading users:', error);
-      setError('Failed to load user accounts');
+      setError(adminHttpErrorMessage(error, 'Failed to load user accounts', 'PLAYERS_VIEW'));
     } finally {
       setIsLoading(false);
     }
@@ -485,7 +486,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       setPlayers(response.data.players || []);
     } catch (error) {
       console.error('Error loading players:', error);
-      setError('Failed to load player accounts');
+      setError(adminHttpErrorMessage(error, 'Failed to load player accounts', 'PLAYERS_VIEW'));
     } finally {
       setIsLoading(false);
     }
@@ -510,7 +511,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       ));
     } catch (error) {
       console.error('Error activating user:', error);
-      setError('Failed to activate user account');
+      setError(adminHttpErrorMessage(error, 'Failed to activate user account', 'PLAYERS_VIEW'));
     } finally {
       setIsLoading(false);
     }
@@ -532,7 +533,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       ));
     } catch (error) {
       console.error('Error deactivating user:', error);
-      setError('Failed to deactivate user account');
+      setError(adminHttpErrorMessage(error, 'Failed to deactivate user account', 'PLAYERS_VIEW'));
     } finally {
       setIsLoading(false);
     }
@@ -558,7 +559,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         return job;
       } catch (err) {
         console.error('Error starting bang generation job:', err);
-        setError('Failed to start bang generation job');
+        setError(adminHttpErrorMessage(err, 'Failed to start bang generation job', 'BANG_REGENERATE'));
         throw err;
       } finally {
         setIsLoading(false);
@@ -581,7 +582,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         console.error('Error loading bang history:', err);
         setBangHistory([]);
         setBangHistoryTotal(0);
-        setError('Failed to load bang generation history');
+        setError(adminHttpErrorMessage(err, 'Failed to load bang generation history', 'BANG_REGENERATE'));
         throw err;
       } finally {
         setIsLoading(false);

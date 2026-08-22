@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import RegionalGovernorDashboard from './RegionalGovernorDashboard';
 import { api } from '../../utils/auth';
+import { useAuth } from '../../contexts/AuthContext';
 
 vi.mock('../../utils/auth', () => ({
   api: {
@@ -13,7 +14,7 @@ vi.mock('../../utils/auth', () => ({
 }));
 
 vi.mock('../../contexts/AuthContext', () => ({
-  useAuth: () => ({ user: { is_admin: false } }),
+  useAuth: vi.fn(),
 }));
 
 const region = {
@@ -45,6 +46,7 @@ function httpErr(status: number, detail?: string) {
 
 describe('RegionalGovernorDashboard (LEG-213)', () => {
   beforeEach(() => {
+    vi.mocked(useAuth).mockReturnValue({ user: { is_admin: false } } as any);
     vi.mocked(api.get).mockReset();
     vi.mocked(api.put).mockReset();
     vi.mocked(api.get).mockImplementation(async (url: string) => {
@@ -115,6 +117,48 @@ describe('RegionalGovernorDashboard (LEG-213)', () => {
 
     await waitFor(() => {
       expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
+    });
+  });
+});
+
+describe('BeaconSectorCap (LEG-1014)', () => {
+  beforeEach(() => {
+    vi.mocked(useAuth).mockReturnValue({ user: { is_admin: true } } as any);
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.patch).mockReset();
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url === '/api/v1/regions/my-region') return { data: region };
+      if (url.endsWith('/stats')) return { data: {} };
+      if (url.endsWith('/policies')) return { data: [] };
+      if (url.endsWith('/elections')) return { data: [] };
+      if (url.endsWith('/treaties')) return { data: [] };
+      if (url.endsWith('/members')) return { data: [] };
+      if (url.endsWith('/beacon-sector-cap')) return { data: { region_id: 'reg-1', beacon_sector_cap: 15, default_cap: 10, max_cap: 50, configured_raw: 15 } };
+      return { data: {} };
+    });
+  });
+
+  it('fetches beacon-sector-cap for admin after region loads', async () => {
+    render(<RegionalGovernorDashboard />);
+    await waitFor(() => {
+      const calls = vi.mocked(api.get).mock.calls.map(([u]) => String(u));
+      expect(calls.some(u => u.endsWith('/beacon-sector-cap'))).toBe(true);
+    });
+  });
+
+  it('calls PATCH beacon-sector-cap on save', async () => {
+    vi.mocked(api.patch).mockResolvedValue({ data: { region_id: 'reg-1', beacon_sector_cap: 20, default_cap: 10, max_cap: 50, configured_raw: 20 } });
+    render(<RegionalGovernorDashboard />);
+    await waitFor(() => screen.getByText('Sol Reach'));
+    const econTab = screen.getAllByText('Economy').find(el => el.className.includes('tab-button'));
+    if (econTab) fireEvent.click(econTab);
+    const btn = await waitFor(() => screen.getByText('Save Cap'));
+    fireEvent.click(btn);
+    await waitFor(() => {
+      expect(vi.mocked(api.patch)).toHaveBeenCalledWith(
+        expect.stringContaining('/beacon-sector-cap'),
+        expect.objectContaining({ beacon_sector_cap: expect.any(Number) })
+      );
     });
   });
 });
