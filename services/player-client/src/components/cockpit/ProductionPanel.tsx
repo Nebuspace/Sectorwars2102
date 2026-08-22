@@ -23,7 +23,19 @@ export interface ProductionLine {
   storeBusy: boolean;
   /** Reason the Store button is disabled (for the title), when canStore < 1. */
   storeDisabledTitle: string;
+  /** Days until storage cap at current rate; null when uncapped / atCap / no rate. */
+  daysUntilFull?: number | null;
 }
+
+/** Existing GameDashboard helper — display only; do not invent a new formula. */
+export const fmtDaysUntilFull = (d: number | null | undefined): string => {
+  if (d == null) return '';
+  if (d < 1) {
+    const hrs = Math.max(1, Math.round(d * 24));
+    return `~${hrs}h to cap`;
+  }
+  return `~${Math.round(d)}d to cap`;
+};
 
 
 export interface ProductionPanelProps {
@@ -167,6 +179,14 @@ const ProductionPanel: React.FC<ProductionPanelProps> = ({
                     style={{ width: `${Math.round(l.ratio * 100)}%` }}
                   />
                 </div>
+              )}
+              {l.capped && fmtDaysUntilFull(l.daysUntilFull) !== '' && (
+                <span
+                  className="cp-prod-eta"
+                  data-testid={`days-until-full-${l.key}`}
+                >
+                  {fmtDaysUntilFull(l.daysUntilFull)}
+                </span>
               )}
             </div>
           ))}
