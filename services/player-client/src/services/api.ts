@@ -778,6 +778,10 @@ export const miningAPI = {
       method: 'POST',
       body: JSON.stringify({ ship_id: shipId }),
     }),
+
+  /** LEG-430 tip GET — nearest AM-flagged refinery + ore buy_price. */
+  getNearestAmRefinery: () =>
+    apiRequest('/api/v1/mining/nearest-am-refinery'),
 };
 
 /** First-login gate / onboarding session (GameContext + FirstLoginContext). */
