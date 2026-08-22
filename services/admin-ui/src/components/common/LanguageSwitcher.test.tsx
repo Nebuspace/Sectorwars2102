@@ -87,3 +87,40 @@ describe('LanguageSwitcher launch-complete honesty (LEG-488)', () => {
     expect(screen.queryByText('0%')).not.toBeInTheDocument();
   });
 });
+
+describe('LanguageSwitcher progress HTTP honesty (LEG-1265)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+  });
+
+  it('shows Access denied alert on progress 403 (not silent 100% success)', async () => {
+    vi.mocked(api.get).mockRejectedValue(
+      Object.assign(new Error('HTTP 403'), { response: { status: 403 } }),
+    );
+    const user = userEvent.setup();
+    render(<LanguageSwitcher />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Access denied|i18n|scope/i);
+
+    await user.click(screen.getByTitle('Change Language'));
+    expect(screen.queryByText('0%')).not.toBeInTheDocument();
+  });
+
+  it('shows admin rate-limit alert on progress 429', async () => {
+    vi.mocked(api.get).mockRejectedValue(
+      Object.assign(new Error('HTTP 429'), { response: { status: 429 } }),
+    );
+    render(<LanguageSwitcher />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    expect(screen.getByRole('alert').textContent ?? '').toMatch(/rate limit/i);
+  });
+});
