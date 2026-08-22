@@ -19,7 +19,7 @@ vi.mock('../apiClient', () => ({
 }));
 
 import apiClient from '../apiClient';
-import { centralBankAPI, citadelAPI, combatAPI, greyStatusAPI, miningAPI, navAPI, playerAPI, sectorAPI, shipRegistryAPI, tradeAPI } from '../api';
+import { centralBankAPI, citadelAPI, combatAPI, greyStatusAPI, miningAPI, navAPI, planetaryAPI, playerAPI, sectorAPI, shipRegistryAPI, tradeAPI } from '../api';
 
 const get = apiClient.get as ReturnType<typeof vi.fn>;
 const post = apiClient.post as ReturnType<typeof vi.fn>;
@@ -303,6 +303,45 @@ describe('apiRequest via trade/combat/grey wrappers', () => {
     expect(post).toHaveBeenCalledWith(
       '/api/v1/planets/p1/grid/place',
       JSON.stringify({ kind: 'PLANET_MINEFIELD', x: 0, y: 0, level: 1 }),
+      jsonHeaders,
+    );
+  });
+
+  it('planetaryAPI.offerOwnershipTransfer POSTs recipient_player_id', async () => {
+    post.mockResolvedValue({
+      data: { success: true, planet_id: 'planet-1', offer: { fee_credits: 12 } },
+    });
+    const out = await planetaryAPI.offerOwnershipTransfer('planet-1', 'player-9');
+    expect(out).toEqual({
+      success: true,
+      planet_id: 'planet-1',
+      offer: { fee_credits: 12 },
+    });
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/planets/planet-1/ownership-transfer',
+      JSON.stringify({ recipient_player_id: 'player-9' }),
+      jsonHeaders,
+    );
+  });
+
+  it('planetaryAPI.acceptOwnershipTransfer POSTs /accept', async () => {
+    post.mockResolvedValue({
+      data: { success: true, planet_id: 'planet-1', fee_credits: 12 },
+    });
+    await planetaryAPI.acceptOwnershipTransfer('planet-1');
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/planets/planet-1/ownership-transfer/accept',
+      undefined,
+      jsonHeaders,
+    );
+  });
+
+  it('planetaryAPI.getOwnershipTransfer GETs status', async () => {
+    get.mockResolvedValue({ data: { planet_id: 'planet-1', pending: false, offer: null } });
+    const out = await planetaryAPI.getOwnershipTransfer('planet-1');
+    expect(out).toEqual({ planet_id: 'planet-1', pending: false, offer: null });
+    expect(get).toHaveBeenCalledWith(
+      '/api/v1/planets/planet-1/ownership-transfer',
       jsonHeaders,
     );
   });

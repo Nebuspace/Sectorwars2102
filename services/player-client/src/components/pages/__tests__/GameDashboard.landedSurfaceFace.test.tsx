@@ -44,6 +44,9 @@ vi.mock('../../../services/api', () => ({
     getThreat: vi.fn().mockResolvedValue([]),
   },
   sectorAPI: { sectorWrecks: vi.fn().mockResolvedValue([]), getContents: vi.fn().mockResolvedValue({ star: null, bodies: [] }), },
+  planetaryAPI: {
+    getOwnershipTransfer: vi.fn().mockResolvedValue({ planet_id: '', pending: false, offer: null }),
+  },
 }));
 
 vi.mock('react-router-dom', () => ({
