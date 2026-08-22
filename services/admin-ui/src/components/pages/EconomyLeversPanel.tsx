@@ -2,6 +2,23 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../../utils/auth';
 import { useToast } from '../../contexts/ToastContext';
 
+
+const responseStatus = (err: unknown): number | undefined =>
+  typeof err === 'object' && err !== null && 'response' in err
+    ? (err as { response?: { status?: number } }).response?.status
+    : undefined;
+
+const economyLeversError = (err: unknown, fallback: string): string => {
+  const status = responseStatus(err);
+  if (status === 401 || status === 403) {
+    return 'Access denied — economy levers require the admin economy manage scope (ECONOMY_MANAGE).';
+  }
+  if (status === 429) {
+    return 'Admin rate limit exceeded — wait a moment and try again.';
+  }
+  return fallback;
+};
+
 interface RegionLever {
   id: string;
   name: string;
@@ -113,7 +130,7 @@ const EconomyLeversPanel: React.FC = () => {
       setCommodityDrafts(cDrafts);
     } catch (err) {
       console.error(err);
-      toast.error('Failed to load economy levers');
+      toast.error(economyLeversError(err, 'Failed to load economy levers'));
     } finally {
       setLoading(false);
     }
@@ -158,7 +175,7 @@ const EconomyLeversPanel: React.FC = () => {
       await load();
     } catch (err) {
       console.error(err);
-      toast.error('Failed to save region levers');
+      toast.error(economyLeversError(err, 'Failed to save region levers'));
     } finally {
       setSaving(null);
     }
@@ -178,7 +195,7 @@ const EconomyLeversPanel: React.FC = () => {
       await load();
     } catch (err) {
       console.error(err);
-      toast.error('Failed to save ship cost');
+      toast.error(economyLeversError(err, 'Failed to save ship cost'));
     } finally {
       setSaving(null);
     }
@@ -207,7 +224,7 @@ const EconomyLeversPanel: React.FC = () => {
       await load();
     } catch (err) {
       console.error(err);
-      toast.error('Failed to save upgrade costs');
+      toast.error(economyLeversError(err, 'Failed to save upgrade costs'));
     } finally {
       setSaving(null);
     }
@@ -226,7 +243,7 @@ const EconomyLeversPanel: React.FC = () => {
       await load();
     } catch (err) {
       console.error(err);
-      toast.error('Failed to save bounty payout ratio');
+      toast.error(economyLeversError(err, 'Failed to save bounty payout ratio'));
     } finally {
       setSaving(null);
     }
@@ -259,7 +276,7 @@ const EconomyLeversPanel: React.FC = () => {
       await load();
     } catch (err) {
       console.error(err);
-      toast.error('Failed to save insurance levers');
+      toast.error(economyLeversError(err, 'Failed to save insurance levers'));
     } finally {
       setSaving(null);
     }
@@ -289,7 +306,7 @@ const EconomyLeversPanel: React.FC = () => {
       await load();
     } catch (err) {
       console.error(err);
-      toast.error('Failed to save station commodity levers');
+      toast.error(economyLeversError(err, 'Failed to save station commodity levers'));
     } finally {
       setSaving(null);
     }
