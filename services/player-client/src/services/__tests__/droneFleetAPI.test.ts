@@ -64,4 +64,19 @@ describe('droneFleetAPI (LEG-277)', () => {
       jsonHeaders,
     );
   });
+
+  it('deployOne POSTs snake_case sector_id + deployment_type to /drones/{id}/deploy', async () => {
+    post.mockResolvedValue({ data: { id: 'd1', status: 'deployed' } });
+    await droneFleetAPI.deployOne('d1', {
+      sector_id: '11111111-1111-1111-1111-111111111111',
+    });
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/drones/d1/deploy',
+      JSON.stringify({
+        sector_id: '11111111-1111-1111-1111-111111111111',
+        deployment_type: 'defense',
+      }),
+      jsonHeaders,
+    );
+  });
 });
