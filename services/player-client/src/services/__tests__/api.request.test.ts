@@ -88,6 +88,22 @@ describe('apiRequest via trade/combat/grey wrappers', () => {
     );
   });
 
+  it('combatAPI.getHistory GETs limit/offset query (LEG-372)', async () => {
+    get.mockResolvedValue({
+      data: { items: [], total: 0, limit: 10, offset: 5 },
+    });
+    await expect(combatAPI.getHistory({ limit: 10, offset: 5 })).resolves.toEqual({
+      items: [],
+      total: 0,
+      limit: 10,
+      offset: 5,
+    });
+    expect(get).toHaveBeenCalledWith(
+      '/api/v1/combat/history?limit=10&offset=5',
+      jsonHeaders,
+    );
+  });
+
   it('surfaces string detail from FastAPI errors', async () => {
     post.mockRejectedValue(axiosHttpError(400, { detail: 'not enough credits' }));
     await expect(greyStatusAPI.clearFine()).rejects.toThrow('not enough credits');
