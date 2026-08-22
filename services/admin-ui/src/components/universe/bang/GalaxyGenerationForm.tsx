@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useAdmin } from '../../../contexts/AdminContext';
 import { useAuth } from '../../../contexts/AuthContext';
 import { previewBangConfig } from '../../../services/bangGalaxyApi';
+import { adminHttpErrorMessage, adminHttpStatus } from '../../../utils/adminHttpError';
 import { i18nKeyForBangCode } from './errorCodeMap';
 import {
   BangConfig,
@@ -107,8 +108,14 @@ const GalaxyGenerationForm: React.FC<GalaxyGenerationFormProps> = ({
       const result = await previewBangConfig(payload, token);
       setPreview(result);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setPreviewError(t('bang.form.preview.previewFailed', { error: message }));
+      // LEG-1253: 403/429 honesty — never opaque previewFailed alone for RBAC/rate-limit
+      const status = adminHttpStatus(err);
+      if (status === 401 || status === 403 || status === 429) {
+        setPreviewError(adminHttpErrorMessage(err, 'Preview failed', 'BANG_REGENERATE'));
+      } else {
+        const message = err instanceof Error ? err.message : String(err);
+        setPreviewError(t('bang.form.preview.previewFailed', { error: message }));
+      }
     } finally {
       setIsPreviewing(false);
     }
@@ -123,8 +130,13 @@ const GalaxyGenerationForm: React.FC<GalaxyGenerationFormProps> = ({
       const job = await bangGalaxy(payload.config, payload.galaxy_name);
       if (job && onJobStarted) onJobStarted(job.id);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setError(t('bang.form.errors.submitFailed', { error: message }));
+      const status = adminHttpStatus(err);
+      if (status === 401 || status === 403 || status === 429) {
+        setError(adminHttpErrorMessage(err, 'Submit failed', 'BANG_REGENERATE'));
+      } else {
+        const message = err instanceof Error ? err.message : String(err);
+        setError(t('bang.form.errors.submitFailed', { error: message }));
+      }
     } finally {
       setIsCommitting(false);
     }
@@ -482,7 +494,11 @@ const GalaxyGenerationForm: React.FC<GalaxyGenerationFormProps> = ({
       {/* --- Preview stats card --- */}
       <div className="form-preview-card">
         <h3>{t('bang.form.preview.title')}</h3>
-        {previewError && <p className="form-error">{previewError}</p>}
+        {previewError && (
+          <p className="form-error" role="alert">
+            {previewError}
+          </p>
+        )}
         {!preview && !previewError && (
           <p className="form-hint">{t('bang.form.preview.noPreview')}</p>
         )}
