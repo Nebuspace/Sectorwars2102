@@ -3,6 +3,44 @@ import { api } from '../../utils/auth';
 import { useToast, useConfirm } from '../../contexts/ToastContext';
 import './drone-operations.css';
 
+const responseStatus = (err: unknown): number | undefined =>
+  typeof err === 'object' && err !== null && 'response' in err
+    ? (err as { response?: { status?: number } }).response?.status
+    : undefined;
+
+const settledStatuses = (results: PromiseSettledResult<unknown>[]): number[] =>
+  results
+    .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+    .map((r) => responseStatus(r.reason))
+    .filter((s): s is number => s !== undefined);
+
+const droneLoadError = (results: PromiseSettledResult<unknown>[], allFailed: boolean): string => {
+  const statuses = settledStatuses(results);
+  if (statuses.some((s) => s === 429)) {
+    return 'Admin rate limit exceeded — wait a moment and try again.';
+  }
+  if (statuses.some((s) => s === 401 || s === 403)) {
+    return 'Access denied — drone operations require the admin players view scope (PLAYERS_VIEW).';
+  }
+  return allFailed
+    ? 'Failed to load drone operations data.'
+    : 'Some drone operations data could not be loaded.';
+};
+
+const droneActError = (err: unknown, fallback: string): string => {
+  const status = responseStatus(err);
+  if (status === 401 || status === 403) {
+    return 'Access denied — drone overrides require COMBAT_INTERVENE.';
+  }
+  if (status === 429) {
+    return 'Admin rate limit exceeded — wait a moment and try again.';
+  }
+  const detail =
+    (err as { response?: { data?: { detail?: string } } }).response?.data?.detail;
+  return typeof detail === 'string' ? detail : fallback;
+};
+
+
 // =============================================================================
 // Types — mirror the response shapes in
 // services/gameserver/src/api/routes/admin_drones.py
@@ -147,11 +185,10 @@ const DroneOperationsTab: React.FC = () => {
       setDrones([]);
     }
 
-    const failed = [statsRes, dronesRes].filter((r) => r.status === 'rejected');
-    if (failed.length === 2) {
-      setError('Failed to load drone operations data.');
-    } else if (failed.length > 0) {
-      setError('Some drone operations data could not be loaded.');
+    const results = [statsRes, dronesRes];
+    const failed = results.filter((r) => r.status === 'rejected');
+    if (failed.length > 0) {
+      setError(droneLoadError(results, failed.length === 2));
     }
 
     setLoading(false);
@@ -178,10 +215,7 @@ const DroneOperationsTab: React.FC = () => {
         toast.success(`Drone "${drone.name}" recalled.`);
         await loadData();
       } catch (err) {
-        const detail =
-          (err as { response?: { data?: { detail?: string } } }).response?.data
-            ?.detail ?? 'Failed to force-recall drone.';
-        toast.error(detail);
+        toast.error(droneActError(err, 'Failed to force-recall drone.'));
       } finally {
         setActioningId(null);
       }
@@ -205,10 +239,7 @@ const DroneOperationsTab: React.FC = () => {
         toast.success(`Drone "${drone.name}" restored.`);
         await loadData();
       } catch (err) {
-        const detail =
-          (err as { response?: { data?: { detail?: string } } }).response?.data
-            ?.detail ?? 'Failed to restore drone.';
-        toast.error(detail);
+        toast.error(droneActError(err, 'Failed to restore drone.'));
       } finally {
         setActioningId(null);
       }
