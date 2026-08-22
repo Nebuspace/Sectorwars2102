@@ -23,6 +23,10 @@ vi.mock('../../../i18n', () => ({
   SUPPORTED_LANGUAGES: {
     en: { name: 'English', nativeName: 'English' },
     es: { name: 'Spanish', nativeName: 'Español' },
+    fr: { name: 'French', nativeName: 'Français' },
+    zh: { name: 'Chinese (Simplified)', nativeName: '中文(简体)' },
+    pt: { name: 'Portuguese', nativeName: 'Português' },
+    de: { name: 'German', nativeName: 'Deutsch' },
   },
   default: {},
 }));
@@ -76,6 +80,76 @@ describe('LanguageSwitcher', () => {
       (el) => el.textContent,
     );
     expect(options.some((t) => t?.includes('Español'))).toBe(true);
+  });
+
+  it('includes zh in the picker when fetch fails (i18n key is zh, not zh-CN)', async () => {
+    await act(async () => {
+      root.render(<LanguageSwitcher variant="full" />);
+    });
+    await act(async () => {
+      await flush();
+      await flush();
+    });
+
+    await act(async () => {
+      (container.querySelector('.player-language-button') as HTMLButtonElement).click();
+      await flush();
+    });
+
+    const options = Array.from(container.querySelectorAll('.language-option')).map(
+      (el) => el.textContent,
+    );
+    expect(options.some((t) => t?.includes('中文'))).toBe(true);
+  });
+
+  it('includes zh when the languages API responds non-OK', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: false }),
+    );
+
+    await act(async () => {
+      root.render(<LanguageSwitcher variant="full" />);
+    });
+    await act(async () => {
+      await flush();
+      await flush();
+    });
+
+    await act(async () => {
+      (container.querySelector('.player-language-button') as HTMLButtonElement).click();
+      await flush();
+    });
+
+    const options = Array.from(container.querySelectorAll('.language-option')).map(
+      (el) => el.textContent,
+    );
+    expect(options.some((t) => t?.includes('中文'))).toBe(true);
+  });
+
+  it('shows honest completion for Complete locales and partial German on API-down fallback', async () => {
+    await act(async () => {
+      root.render(<LanguageSwitcher variant="full" showProgress />);
+    });
+    await act(async () => {
+      await flush();
+      await flush();
+    });
+
+    await act(async () => {
+      (container.querySelector('.player-language-button') as HTMLButtonElement).click();
+      await flush();
+    });
+
+    const spanish = Array.from(container.querySelectorAll('.language-option')).find((el) =>
+      el.textContent?.includes('Español'),
+    );
+    expect(spanish?.querySelector('.completion-text')).toBeNull();
+
+    const german = Array.from(container.querySelectorAll('.language-option')).find((el) =>
+      el.textContent?.includes('Deutsch'),
+    );
+    expect(german?.querySelector('.completion-text')?.textContent).toBe('26%');
   });
 
   it('calls i18n.changeLanguage when a different option is chosen', async () => {

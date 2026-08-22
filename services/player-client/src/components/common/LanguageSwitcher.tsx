@@ -23,6 +23,30 @@ interface LanguageSwitcherProps {
   showProgress?: boolean;
 }
 
+/** Canon-aligned offline completion (sw2102-docs OPERATIONS/i18n.md §1). */
+const STATIC_COMPLETION_PERCENT: Record<string, number> = {
+  en: 100,
+  es: 100,
+  fr: 100,
+  zh: 100,
+  pt: 100,
+  de: 26,
+};
+
+const STATIC_ACTIVE_LOCALES = new Set(['en', 'es', 'fr', 'zh', 'pt', 'de']);
+
+function buildStaticLanguages(): Language[] {
+  return Object.entries(SUPPORTED_LANGUAGES)
+    .filter(([code]) => STATIC_ACTIVE_LOCALES.has(code))
+    .map(([code, info]) => ({
+      code,
+      name: info.name,
+      nativeName: info.nativeName,
+      isActive: true,
+      completionPercentage: STATIC_COMPLETION_PERCENT[code] ?? 0,
+    }));
+}
+
 const LanguageSwitcher: React.FC<LanguageSwitcherProps> = ({ 
   variant = 'compact',
   showProgress = true 
@@ -50,24 +74,13 @@ const LanguageSwitcher: React.FC<LanguageSwitcherProps> = ({
           const data = await response.json();
           setLanguages(data);
         } else {
-          // Fallback to static configuration
-          const staticLanguages = Object.entries(SUPPORTED_LANGUAGES).map(([code, info]) => ({
-            code,
-            name: info.name,
-            nativeName: info.nativeName,
-            isActive: code === 'en' || ['es', 'fr', 'zh-CN', 'pt'].includes(code),
-            completionPercentage: code === 'en' ? 100 : 0
-          }));
-          setLanguages(staticLanguages.filter(lang => lang.isActive));
+          setLanguages(buildStaticLanguages());
         }
       } catch {
         // Soft fallback is intentional (offline / test / API down) — do not
         // console.error; StatusBar smoke asserts zero console.error and the
         // switcher still works from the static list.
-        setLanguages([
-          { code: 'en', name: 'English', nativeName: 'English', direction: 'ltr', isActive: true, completionPercentage: 100 },
-          { code: 'es', name: 'Spanish', nativeName: 'Español', direction: 'ltr', isActive: true, completionPercentage: 0 }
-        ]);
+        setLanguages(buildStaticLanguages());
       }
     };
 
