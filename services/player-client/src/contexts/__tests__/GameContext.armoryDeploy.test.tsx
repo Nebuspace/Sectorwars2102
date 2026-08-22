@@ -132,7 +132,7 @@ describe('GameContext armoryAPI.deploy', () => {
       result = await captured!.deployMines(3);
       await flush();
     });
-    expect(mockDeploy).toHaveBeenCalledWith(3);
+    expect(mockDeploy).toHaveBeenCalledWith(3, 'armored_mine');
     expect(result).toEqual({ success: true, deployed: 3 });
     const rawPosts = mockPost.mock.calls.filter((c) =>
       String(c[0]).includes('/armory/deploy'),
