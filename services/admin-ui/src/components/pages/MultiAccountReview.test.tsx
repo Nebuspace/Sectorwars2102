@@ -41,6 +41,26 @@ describe('MultiAccountReview (LEG-1098 honesty banner)', () => {
     expect(banner).toMatch(/hourly/i);
     expect(banner).toMatch(/empty queue|no open clusters/i);
   });
+  it('reports a 403 as scope denial on cluster load', async () => {
+    vi.mocked(api.get).mockRejectedValue({ response: { status: 403 } });
+
+    render(<MultiAccountReview />);
+
+    await waitFor(() => {
+      expect(document.body.textContent).toMatch(/Access denied|scope/i);
+    });
+    expect(document.body.textContent).not.toMatch(/Failed to load clusters$/);
+  });
+
+  it('reports a 429 as an admin rate-limit on cluster load', async () => {
+    vi.mocked(api.get).mockRejectedValue({ response: { status: 429 } });
+
+    render(<MultiAccountReview />);
+
+    await waitFor(() => {
+      expect(document.body.textContent).toMatch(/rate limit/i);
+    });
+  });
 });
 
 describe('MultiAccountReview scope errors (LEG-968)', () => {
