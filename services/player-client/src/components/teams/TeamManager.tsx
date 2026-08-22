@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { teamAPI } from '../../services/api';
+import { medalsAPI, teamAPI } from '../../services/api';
 import { useGame } from '../../contexts/GameContext';
 import type {
   Team,
@@ -12,6 +12,7 @@ import type {
 import CockpitInstrument from '../cockpit/CockpitInstrument';
 import EmptyState from '../common/EmptyState';
 import LoadingState from '../common/LoadingState';
+import PlayerNamePlate from '../common/PlayerNamePlate';
 import { ResourceSharing } from './ResourceSharing';
 import { TeamChat } from './TeamChat';
 import { TeamWarPanel } from './TeamWarPanel';
@@ -176,6 +177,43 @@ export const TeamManager: React.FC = () => {
   // Two-step inline confirmations (no native dialogs)
   const [confirmingLeave, setConfirmingLeave] = useState(false);
   const [confirmingKickId, setConfirmingKickId] = useState<string | null>(null);
+
+  // LEG-357 / LEG-33 — self pin from GET /medals/me.pinned_medal_id (GS #613).
+  // Teams roster has no per-member medal fields; only the local player row pins.
+  const [selfMedalCount, setSelfMedalCount] = useState<number | null>(null);
+  const [selfPinnedIcon, setSelfPinnedIcon] = useState<string | null>(null);
+  const [selfPinnedId, setSelfPinnedId] = useState<string | null>(null);
+  const [selfPinnedName, setSelfPinnedName] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = (await medalsAPI.getMe()) as {
+          earned?: Array<{ key: string; name: string; icon?: string }>;
+          pinned_medal_id?: string | null;
+          total_earned?: number;
+        };
+        if (cancelled) return;
+        const earned = data.earned ?? [];
+        setSelfMedalCount(
+          typeof data.total_earned === 'number' ? data.total_earned : earned.length,
+        );
+        const pinId = data.pinned_medal_id ?? null;
+        if (pinId) {
+          const match = earned.find(m => m.key === pinId);
+          setSelfPinnedId(pinId);
+          setSelfPinnedName(match?.name ?? pinId);
+          setSelfPinnedIcon(match?.icon || '🏅');
+        }
+      } catch {
+        /* roster still renders without medals */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const loadTeamData = useCallback(async (id: string | null) => {
     if (!id) {
@@ -609,7 +647,22 @@ export const TeamManager: React.FC = () => {
                   <div className="member-info">
                     <div className="member-name">
                       <span className={`role-badge ${member.role}`}>{member.role}</span>
-                      {member.playerName}
+                      <PlayerNamePlate
+                        name={member.playerName}
+                        size="sm"
+                        pinnedMedalId={
+                          member.playerId === playerState.id ? selfPinnedId : null
+                        }
+                        pinnedMedalIcon={
+                          member.playerId === playerState.id ? selfPinnedIcon : null
+                        }
+                        pinnedMedalName={
+                          member.playerId === playerState.id ? selfPinnedName : null
+                        }
+                        medalCount={
+                          member.playerId === playerState.id ? selfMedalCount : null
+                        }
+                      />
                     </div>
                     <div className="member-details">
                       <span>📍 {member.location.sectorName}</span>
