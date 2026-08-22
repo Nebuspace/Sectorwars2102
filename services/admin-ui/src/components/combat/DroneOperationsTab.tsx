@@ -1,7 +1,115 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import { useToast, useConfirm } from '../../contexts/ToastContext';
 import './drone-operations.css';
+
+const responseStatus = (err: unknown): number | undefined =>
+  typeof err === 'object' && err !== null && 'response' in err
+    ? (err as { response?: { status?: number } }).response?.status
+    : undefined;
+
+const settledStatuses = (results: PromiseSettledResult<unknown>[]): number[] =>
+  results
+    .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+    .map((r) => responseStatus(r.reason))
+    .filter((s): s is number => s !== undefined);
+
+const droneLoadError = (results: PromiseSettledResult<unknown>[], allFailed: boolean): string => {
+  const statuses = settledStatuses(results);
+  if (statuses.some((s) => s === 429)) {
+    return 'Admin rate limit exceeded — wait a moment and try again.';
+  }
+  if (statuses.some((s) => s === 401 || s === 403)) {
+    return 'Access denied — drone operations require the admin players view scope (PLAYERS_VIEW).';
+  }
+  return allFailed
+    ? 'Failed to load drone operations data.'
+    : 'Some drone operations data could not be loaded.';
+};
+
+const droneActError = (err: unknown, fallback: string): string => {
+  const status = responseStatus(err);
+  if (status === 401 || status === 403) {
+    return 'Access denied — drone overrides require COMBAT_INTERVENE.';
+  }
+  if (status === 429) {
+    return 'Admin rate limit exceeded — wait a moment and try again.';
+  }
+  const detail =
+    (err as { response?: { data?: { detail?: string } } }).response?.data?.detail;
+  return typeof detail === 'string' ? detail : fallback;
+};
+
+/** PATCH/DELETE use GS SHIPS_MANAGE — do not reuse COMBAT_INTERVENE recall/restore copy. */
+const droneMutateError = (err: unknown, fallback: string): string =>
+  formatAdminApiError(err, {
+    fallback,
+    scopeHint:
+      'drone edit/delete require the admin ships manage scope (SHIPS_MANAGE).',
+  });
+
+interface DroneEditForm {
+  name: string;
+  level: string;
+  health: string;
+  max_health: string;
+  attack_power: string;
+  defense_power: string;
+  speed: string;
+  status: string;
+  abilities: string;
+}
+
+const formFromDrone = (drone: AdminDrone): DroneEditForm => ({
+  name: drone.name,
+  level: String(drone.level),
+  health: String(drone.health),
+  max_health: String(drone.max_health),
+  attack_power: String(drone.attack_power),
+  defense_power: String(drone.defense_power),
+  speed: String(drone.speed),
+  status: drone.status,
+  abilities: drone.abilities ?? '',
+});
+
+const parseOptionalInt = (raw: string): number | undefined => {
+  const t = raw.trim();
+  if (t === '') return undefined;
+  const n = Number.parseInt(t, 10);
+  return Number.isFinite(n) ? n : undefined;
+};
+
+const parseOptionalFloat = (raw: string): number | undefined => {
+  const t = raw.trim();
+  if (t === '') return undefined;
+  const n = Number.parseFloat(t);
+  return Number.isFinite(n) ? n : undefined;
+};
+
+/** Body keys match GS AdminDroneUpdate; omit empty / unparseable (exclude_unset). */
+const payloadFromForm = (form: DroneEditForm): Record<string, string | number> => {
+  const payload: Record<string, string | number> = {};
+  const name = form.name.trim();
+  if (name) payload.name = name;
+  const level = parseOptionalInt(form.level);
+  if (level !== undefined) payload.level = level;
+  const health = parseOptionalInt(form.health);
+  if (health !== undefined) payload.health = health;
+  const maxHealth = parseOptionalInt(form.max_health);
+  if (maxHealth !== undefined) payload.max_health = maxHealth;
+  const attack = parseOptionalInt(form.attack_power);
+  if (attack !== undefined) payload.attack_power = attack;
+  const defense = parseOptionalInt(form.defense_power);
+  if (defense !== undefined) payload.defense_power = defense;
+  const speed = parseOptionalFloat(form.speed);
+  if (speed !== undefined) payload.speed = speed;
+  const status = form.status.trim();
+  if (status) payload.status = status;
+  payload.abilities = form.abilities.trim();
+  return payload;
+};
+
 
 // =============================================================================
 // Types — mirror the response shapes in
@@ -117,6 +225,8 @@ const DroneOperationsTab: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actioningId, setActioningId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState<DroneEditForm | null>(null);
 
   // Combat-history row expansion. Fetched lazily per drone on first expand
   // (no polling); 'loading' / 'error' are sentinel states distinct from "not
@@ -147,11 +257,10 @@ const DroneOperationsTab: React.FC = () => {
       setDrones([]);
     }
 
-    const failed = [statsRes, dronesRes].filter((r) => r.status === 'rejected');
-    if (failed.length === 2) {
-      setError('Failed to load drone operations data.');
-    } else if (failed.length > 0) {
-      setError('Some drone operations data could not be loaded.');
+    const results = [statsRes, dronesRes];
+    const failed = results.filter((r) => r.status === 'rejected');
+    if (failed.length > 0) {
+      setError(droneLoadError(results, failed.length === 2));
     }
 
     setLoading(false);
@@ -178,10 +287,7 @@ const DroneOperationsTab: React.FC = () => {
         toast.success(`Drone "${drone.name}" recalled.`);
         await loadData();
       } catch (err) {
-        const detail =
-          (err as { response?: { data?: { detail?: string } } }).response?.data
-            ?.detail ?? 'Failed to force-recall drone.';
-        toast.error(detail);
+        toast.error(droneActError(err, 'Failed to force-recall drone.'));
       } finally {
         setActioningId(null);
       }
@@ -205,15 +311,68 @@ const DroneOperationsTab: React.FC = () => {
         toast.success(`Drone "${drone.name}" restored.`);
         await loadData();
       } catch (err) {
-        const detail =
-          (err as { response?: { data?: { detail?: string } } }).response?.data
-            ?.detail ?? 'Failed to restore drone.';
-        toast.error(detail);
+        toast.error(droneActError(err, 'Failed to restore drone.'));
       } finally {
         setActioningId(null);
       }
     },
     [confirm, toast, loadData]
+  );
+
+  const openEdit = useCallback((drone: AdminDrone) => {
+    setEditingId(drone.id);
+    setEditForm(formFromDrone(drone));
+  }, []);
+
+  const cancelEdit = useCallback(() => {
+    setEditingId(null);
+    setEditForm(null);
+  }, []);
+
+  const handleSaveEdit = useCallback(async () => {
+    if (!editingId || !editForm) return;
+    const payload = payloadFromForm(editForm);
+    setActioningId(editingId);
+    try {
+      await api.patch(`/api/v1/admin/drones/${editingId}`, payload);
+      toast.success('Drone updated.');
+      setEditingId(null);
+      setEditForm(null);
+      await loadData();
+    } catch (err) {
+      toast.error(droneMutateError(err, 'Failed to update drone.'));
+    } finally {
+      setActioningId(null);
+    }
+  }, [editingId, editForm, toast, loadData]);
+
+  const handleDelete = useCallback(
+    async (drone: AdminDrone) => {
+      const ok = await confirm({
+        title: 'Delete Drone',
+        message: `Permanently delete "${drone.name}"? This cannot be undone.`,
+        confirmLabel: 'Delete',
+        cancelLabel: 'Cancel',
+        danger: true,
+      });
+      if (!ok) return;
+
+      setActioningId(drone.id);
+      try {
+        await api.delete(`/api/v1/admin/drones/${drone.id}`);
+        toast.success(`Drone "${drone.name}" deleted.`);
+        if (editingId === drone.id) {
+          setEditingId(null);
+          setEditForm(null);
+        }
+        await loadData();
+      } catch (err) {
+        toast.error(droneMutateError(err, 'Failed to delete drone.'));
+      } finally {
+        setActioningId(null);
+      }
+    },
+    [confirm, toast, loadData, editingId]
   );
 
   const fetchCombatHistory = useCallback(async (droneId: string) => {
@@ -244,6 +403,151 @@ const DroneOperationsTab: React.FC = () => {
     },
     [expandedDroneId, combatHistory, fetchCombatHistory]
   );
+
+  const updateEditField = useCallback((field: keyof DroneEditForm, value: string) => {
+    setEditForm((prev) => (prev ? { ...prev, [field]: value } : prev));
+  }, []);
+
+  const renderMutateButtons = (drone: AdminDrone) => {
+    const isActioning = actioningId === drone.id;
+    const isEditing = editingId === drone.id;
+    return (
+      <>
+        <button
+          type="button"
+          className="drone-ops-action-btn edit"
+          onClick={() => openEdit(drone)}
+          disabled={isActioning}
+          aria-expanded={isEditing}
+        >
+          {isEditing ? 'Editing' : 'Edit'}
+        </button>
+        <button
+          type="button"
+          className="drone-ops-action-btn delete"
+          onClick={() => handleDelete(drone)}
+          disabled={isActioning}
+        >
+          Delete
+        </button>
+      </>
+    );
+  };
+
+  const renderEditFormRow = (colSpan: number) => {
+    if (!editForm) return null;
+    const isActioning = actioningId === editingId;
+    return (
+      <tr className="drone-ops-edit-row">
+        <td colSpan={colSpan}>
+          <form
+            className="drone-ops-edit-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void handleSaveEdit();
+            }}
+          >
+            <label className="drone-ops-edit-field">
+              Name
+              <input
+                value={editForm.name}
+                onChange={(e) => updateEditField('name', e.target.value)}
+                disabled={isActioning}
+              />
+            </label>
+            <label className="drone-ops-edit-field">
+              Level
+              <input
+                type="number"
+                value={editForm.level}
+                onChange={(e) => updateEditField('level', e.target.value)}
+                disabled={isActioning}
+              />
+            </label>
+            <label className="drone-ops-edit-field">
+              Health
+              <input
+                type="number"
+                value={editForm.health}
+                onChange={(e) => updateEditField('health', e.target.value)}
+                disabled={isActioning}
+              />
+            </label>
+            <label className="drone-ops-edit-field">
+              Max Health
+              <input
+                type="number"
+                value={editForm.max_health}
+                onChange={(e) => updateEditField('max_health', e.target.value)}
+                disabled={isActioning}
+              />
+            </label>
+            <label className="drone-ops-edit-field">
+              Attack
+              <input
+                type="number"
+                value={editForm.attack_power}
+                onChange={(e) => updateEditField('attack_power', e.target.value)}
+                disabled={isActioning}
+              />
+            </label>
+            <label className="drone-ops-edit-field">
+              Defense
+              <input
+                type="number"
+                value={editForm.defense_power}
+                onChange={(e) => updateEditField('defense_power', e.target.value)}
+                disabled={isActioning}
+              />
+            </label>
+            <label className="drone-ops-edit-field">
+              Speed
+              <input
+                type="number"
+                step="any"
+                value={editForm.speed}
+                onChange={(e) => updateEditField('speed', e.target.value)}
+                disabled={isActioning}
+              />
+            </label>
+            <label className="drone-ops-edit-field">
+              Status
+              <input
+                value={editForm.status}
+                onChange={(e) => updateEditField('status', e.target.value)}
+                disabled={isActioning}
+              />
+            </label>
+            <label className="drone-ops-edit-field wide">
+              Abilities
+              <input
+                value={editForm.abilities}
+                onChange={(e) => updateEditField('abilities', e.target.value)}
+                disabled={isActioning}
+              />
+            </label>
+            <div className="drone-ops-edit-actions">
+              <button
+                type="submit"
+                className="drone-ops-action-btn restore"
+                disabled={isActioning}
+              >
+                {isActioning ? 'Working…' : 'Save'}
+              </button>
+              <button
+                type="button"
+                className="drone-ops-action-btn history"
+                onClick={cancelEdit}
+                disabled={isActioning}
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        </td>
+      </tr>
+    );
+  };
 
   const renderCombatHistoryPanel = (droneId: string) => {
     const entry = combatHistory[droneId];
@@ -541,19 +845,22 @@ const DroneOperationsTab: React.FC = () => {
                           </button>
                         </td>
                         <td>
-                          {isDeployedOrCombat ? (
-                            <button
-                              className="drone-ops-action-btn recall"
-                              onClick={() => handleForceRecall(drone)}
-                              disabled={isActioning}
-                            >
-                              {isActioning ? 'Working…' : 'Force Recall'}
-                            </button>
-                          ) : (
-                            '—'
-                          )}
+                          <div className="drone-ops-actions">
+                            {isDeployedOrCombat ? (
+                              <button
+                                type="button"
+                                className="drone-ops-action-btn recall"
+                                onClick={() => handleForceRecall(drone)}
+                                disabled={isActioning}
+                              >
+                                {isActioning ? 'Working…' : 'Force Recall'}
+                              </button>
+                            ) : null}
+                            {renderMutateButtons(drone)}
+                          </div>
                         </td>
                       </tr>
+                      {editingId === drone.id && renderEditFormRow(10)}
                       {isExpanded && (
                         <tr className="drone-ops-combat-expand-row">
                           <td colSpan={10}>
@@ -622,15 +929,20 @@ const DroneOperationsTab: React.FC = () => {
                               </button>
                             </td>
                             <td>
-                              <button
-                                className="drone-ops-action-btn restore"
-                                onClick={() => handleRestore(drone)}
-                                disabled={isActioning}
-                              >
-                                {isActioning ? 'Working…' : 'Restore'}
-                              </button>
+                              <div className="drone-ops-actions">
+                                <button
+                                  type="button"
+                                  className="drone-ops-action-btn restore"
+                                  onClick={() => handleRestore(drone)}
+                                  disabled={isActioning}
+                                >
+                                  {isActioning ? 'Working…' : 'Restore'}
+                                </button>
+                                {renderMutateButtons(drone)}
+                              </div>
                             </td>
                           </tr>
+                          {editingId === drone.id && renderEditFormRow(7)}
                           {isExpanded && (
                             <tr className="drone-ops-combat-expand-row">
                               <td colSpan={7}>

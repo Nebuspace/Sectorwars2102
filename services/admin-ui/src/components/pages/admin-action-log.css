@@ -27,6 +27,13 @@
   color: #fde68a;
 }
 
+.aal-alert-sweep {
+  background: #4c0519;
+  border-left: 3px solid #fb7185;
+  color: #fecdd3;
+  font-weight: 600;
+}
+
 .aal-filters {
   display: flex;
   flex-wrap: wrap;
