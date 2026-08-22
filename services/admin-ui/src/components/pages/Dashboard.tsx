@@ -80,11 +80,37 @@ function auditFetchErrorMessage(reason: unknown): string {
   });
 }
 
+/** Map rejected /admin/stats (PLAYERS_VIEW) — LEG-1250 invent=0 inline colonization. */
+function statsFetchErrorMessage(reason: unknown): string {
+  if (reason && typeof reason === 'object') {
+    const err = reason as { response?: { status?: number }; code?: string };
+    if (err.response?.status === 401 || err.response?.status === 403) {
+      return (
+        'Access denied — loading dashboard stats requires the admin players view scope (PLAYERS_VIEW).'
+      );
+    }
+    if (err.response?.status === 429) {
+      return 'Admin rate limit exceeded — wait a moment and try again.';
+    }
+    if (err.response?.status != null) {
+      return `Dashboard stats request failed (HTTP ${err.response.status}).`;
+    }
+    if (err.code === 'ECONNABORTED') {
+      return 'Dashboard stats request timed out.';
+    }
+    if ('response' in err || 'request' in err) {
+      return 'Gameserver unreachable — network error loading dashboard stats.';
+    }
+  }
+  return 'Unable to load dashboard stats.';
+}
+
 const Dashboard: React.FC = () => {
   const [dashboardData, setDashboardData] = useState<DashboardData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
   const [auditFeed, setAuditFeed] = useState<AuditFeedState>({ status: 'loading' });
+  const [statsError, setStatsError] = useState<string | null>(null);
 
   const fetchDashboardData = async () => {
     try {
@@ -123,9 +149,15 @@ const Dashboard: React.FC = () => {
         } : { status: 'unavailable', response_time: 0 }
       };
 
-      // Process admin stats data
-      const stats = adminStatsRes.status === 'fulfilled' ? adminStatsRes.value.data as any : {};
-      
+      // Process admin stats — rejected must surface 403/429, never silent unavailable alone (LEG-1250)
+      let stats: Record<string, unknown> = {};
+      if (adminStatsRes.status === 'fulfilled') {
+        stats = adminStatsRes.value.data as Record<string, unknown>;
+        setStatsError(null);
+      } else {
+        setStatsError(statsFetchErrorMessage(adminStatsRes.reason));
+      }
+
       const dashboardData: DashboardData = {
         system_health: systemHealth,
         player_stats: {
@@ -148,6 +180,7 @@ const Dashboard: React.FC = () => {
       setLastRefresh(new Date());
     } catch (error) {
       console.error('Error fetching dashboard data:', error);
+      setStatsError(statsFetchErrorMessage(error));
       // Set fallback data on error
       setDashboardData({
         system_health: {
@@ -240,7 +273,7 @@ const Dashboard: React.FC = () => {
       <div className="page-container">
         <PageHeader title="Dashboard" subtitle="Game Galaxy Overview" />
         <div className="dashboard-error">
-          <p>Unable to load dashboard data. Please check your connection.</p>
+          <p role="alert">{statsError ?? 'Unable to load dashboard data. Please check your connection.'}</p>
           <button onClick={fetchDashboardData} className="retry-button">
             Retry
           </button>
@@ -252,6 +285,12 @@ const Dashboard: React.FC = () => {
   return (
     <div className="page-container">
       <PageHeader title="Dashboard" subtitle="Game Galaxy Overview" />
+
+      {statsError && (
+        <div className="alert error" role="alert" style={{ margin: '12px 16px' }}>
+          <span className="alert-message">{statsError}</span>
+        </div>
+      )}
 
       <div className="page-content">
         {/* Quick Access Section */}
