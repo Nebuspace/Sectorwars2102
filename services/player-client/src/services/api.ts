@@ -106,6 +106,39 @@ async function apiRequest(
   }
 }
 
+/** LEG-372 / LEG-304 — player-scoped combat history list item (GS shape). */
+export interface CombatHistoryOpponent {
+  id: string | null;
+  name: string;
+}
+
+export interface CombatHistoryTarget {
+  type: string;
+  id?: string | null;
+  name?: string;
+  sector_id?: number | null;
+}
+
+export interface CombatHistoryItem {
+  id: string;
+  timestamp: string | null;
+  combat_type: string;
+  role: 'attacker' | 'defender' | string;
+  result: string | null;
+  sector_id: number | null;
+  drones_lost: number | null;
+  ship_destroyed: boolean;
+  opponent?: CombatHistoryOpponent;
+  target?: CombatHistoryTarget;
+}
+
+export interface CombatHistoryResponse {
+  items: CombatHistoryItem[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 // Combat APIs
 export const combatAPI = {
   engage: (targetType: 'ship' | 'planet' | 'port', targetId: string) =>
@@ -119,6 +152,15 @@ export const combatAPI = {
 
   retreat: (combatId: string) =>
     apiRequest(`/api/v1/combat/${combatId}/retreat`, { method: 'POST' }),
+
+  /** Paginated own-combat log (LEG-372). Server scopes to current player. */
+  getHistory: (opts?: { limit?: number; offset?: number }): Promise<CombatHistoryResponse> => {
+    const params = new URLSearchParams();
+    if (opts?.limit != null) params.set('limit', String(opts.limit));
+    if (opts?.offset != null) params.set('offset', String(opts.offset));
+    const q = params.toString();
+    return apiRequest(`/api/v1/combat/history${q ? `?${q}` : ''}`);
+  },
 
   // Drone management
   deployDrones: (sectorId: string, droneCount: number) =>
@@ -544,7 +586,25 @@ export const teamAPI = {
 
   // Permissions
   getPermissions: (teamId: string) =>
-    apiRequest(`/api/v1/teams/${teamId}/permissions`)
+    apiRequest(`/api/v1/teams/${teamId}/permissions`),
+
+  // Team wars — mirrors teams.py declare_war / list_wars / ceasefire
+  listWars: (teamId: string, status?: 'active' | 'ceased') => {
+    const q = status ? `?status=${status}` : '';
+    return apiRequest(`/api/v1/teams/${teamId}/wars${q}`);
+  },
+
+  declareWar: (teamId: string, targetTeamId: string, reason = '') =>
+    apiRequest(`/api/v1/teams/${teamId}/wars/declare`, {
+      method: 'POST',
+      body: JSON.stringify({ target_team_id: targetTeamId, reason }),
+    }),
+
+  ceasefire: (teamId: string, targetTeamId: string) =>
+    apiRequest(`/api/v1/teams/${teamId}/wars/ceasefire`, {
+      method: 'POST',
+      body: JSON.stringify({ target_team_id: targetTeamId }),
+    }),
 };
 
 // Fleet Management APIs
@@ -760,6 +820,10 @@ export const miningAPI = {
       method: 'POST',
       body: JSON.stringify({ ship_id: shipId }),
     }),
+
+  /** LEG-430 tip GET — nearest AM-flagged refinery + ore buy_price. */
+  getNearestAmRefinery: () =>
+    apiRequest('/api/v1/mining/nearest-am-refinery'),
 };
 
 /** First-login gate / onboarding session (GameContext + FirstLoginContext). */
@@ -1159,6 +1223,15 @@ export const shipUpgradeAPI = {
   //   harvester is live (residual 2): install succeeds; passive_income from _baked.
   installModule: (shipId: string, slotIndex: number, moduleClass: string, tier: number) =>
     apiRequest(`/api/v1/ships/${shipId}/modules/install`, {
+      method: 'POST',
+      body: JSON.stringify({ slot_index: slotIndex, module_class: moduleClass, tier }),
+    }),
+
+  // previewModule → dry-run before/after effect rows (LEG-320 / LEG-1095). No DB
+  //   write / no credit charge. Payload: current / projected / delta maps from GS
+  //   — client must not re-implement MODULE_DEFINITIONS bake math.
+  previewModule: (shipId: string, slotIndex: number, moduleClass: string, tier: number) =>
+    apiRequest(`/api/v1/ships/${shipId}/modules/preview`, {
       method: 'POST',
       body: JSON.stringify({ slot_index: slotIndex, module_class: moduleClass, tier }),
     }),
@@ -1956,6 +2029,46 @@ export const warpGatesAPI = {
   advanceConstruction: (siteId: string) =>
     apiRequest(`/api/v1/warp-gates/${siteId}/advance-construction`, {
       method: 'POST',
+    }),
+
+  /** Owner: set access mode / whitelist / allies / toll (POST …/permissions). */
+  setPermissions: (
+    gateId: string,
+    body: {
+      mode: string;
+      whitelist?: string[];
+      allies?: string[];
+      toll?: number;
+    },
+  ) =>
+    apiRequest(`/api/v1/warp-gates/${gateId}/permissions`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  /** Owner: layered access (faction-rep / toll_bypass / npc_factions). */
+  setAccessLayers: (
+    gateId: string,
+    body: {
+      faction_rep_min?: { faction_type: string; value: number };
+      faction_rep_max?: { faction_type: string; value: number };
+      toll_bypass?: string[];
+      npc_factions?: string[];
+    },
+  ) =>
+    apiRequest(`/api/v1/warp-gates/${gateId}/access-requirements`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+
+  /** Owner: transfer (optional sale) to another player. */
+  transfer: (gateId: string, newOwnerId: string, salePrice?: number) =>
+    apiRequest(`/api/v1/warp-gates/${gateId}/transfer`, {
+      method: 'POST',
+      body: JSON.stringify({
+        new_owner_id: newOwnerId,
+        ...(salePrice != null ? { sale_price: salePrice } : {}),
+      }),
     }),
 };
 

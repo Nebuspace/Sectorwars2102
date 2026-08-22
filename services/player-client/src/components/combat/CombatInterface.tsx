@@ -12,6 +12,7 @@ import { useGame } from '../../contexts/GameContext';
 import { gameAPI } from '../../services/api';
 import { InputValidator, SecurityAudit } from '../../utils/security/inputValidation';
 import CockpitInstrument from '../cockpit/CockpitInstrument';
+import { CombatHistoryPanel } from './CombatHistoryPanel';
 import './combat-interface.css';
 
 /* WEAPONS CONSOLE shell (Law 3) — module-level so the frame keeps its
@@ -516,6 +517,9 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
           </div>
         </div>
       )}
+
+      {/* LEG-372 — paginated own-history browse (standalone Weapons Console only) */}
+      {isStandalone && <CombatHistoryPanel />}
     </div>
     </Wrapper>
   );

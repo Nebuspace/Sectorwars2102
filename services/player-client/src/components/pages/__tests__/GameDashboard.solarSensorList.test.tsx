@@ -47,6 +47,7 @@ vi.mock('../../../services/api', () => ({
   },
   miningAPI: {
     harvest: vi.fn(),
+    getNearestAmRefinery: vi.fn().mockResolvedValue({ found: false, reason: 'none_reachable' }),
   },
 }));
 
@@ -71,6 +72,7 @@ vi.mock('../../spacedock/ContractBoardVenue', () => ({ default: () => <div /> })
 vi.mock('../../planetary/PopulationCenterInterface', () => ({ default: () => <div /> }));
 vi.mock('../../tactical/SolarSystemViewscreen', () => ({ default: () => <div /> }));
 vi.mock('../../tactical/WindshieldTableau', () => ({ default: () => <div /> }));
+vi.mock('../../mining/NearestAmRefineryOverlay', () => ({ default: () => null }));
 vi.mock('../../tactical/PlanetPortPair', () => ({ default: () => <div /> }));
 vi.mock('../../quantum/QuantumDriveConsole', () => ({ default: () => <div /> }));
 vi.mock('../../gatewright/GatewrightPanel', () => ({ default: () => <div /> }));
