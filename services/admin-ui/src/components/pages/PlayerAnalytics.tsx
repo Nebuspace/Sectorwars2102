@@ -9,6 +9,7 @@ import PlayerBountyPanel from '../admin/PlayerBountyPanel';
 import RankingLeaderboardPanel from './RankingLeaderboardPanel';
 import ReEngagementQueuePanel, { ReEngagementSummary } from './ReEngagementQueuePanel';
 import { api } from '../../utils/auth';
+import { adminHttpErrorMessage } from '../../utils/adminHttpError';
 import {
   PlayerModel,
   PlayerFilters,
@@ -177,10 +178,16 @@ const PlayerAnalytics: React.FC = () => {
       }));
     } catch (error) {
       console.error('Failed to fetch player data:', error);
+      // LEG-1255 invent=0: PLAYERS_VIEW / 429 honesty — not generic Failed to load alone
+      const message = adminHttpErrorMessage(
+        error,
+        'Failed to load player data',
+        'PLAYERS_VIEW',
+      );
       setState(prev => ({
         ...prev,
         loading: false,
-        errors: [{ field: 'fetch', message: 'Failed to load player data' }]
+        errors: [{ field: 'fetch', message }]
       }));
     }
   }, [state.currentPage, state.pageSize, state.sortBy, state.sortOrder, state.filters]);
@@ -191,6 +198,15 @@ const PlayerAnalytics: React.FC = () => {
       setRegions((response.data as any)?.regions || []);
     } catch (error) {
       console.error('Failed to fetch regions:', error);
+      const message = adminHttpErrorMessage(
+        error,
+        'Failed to load regions',
+        'admin.galaxy.manage',
+      );
+      setState(prev => ({
+        ...prev,
+        errors: [...prev.errors.filter((e) => e.field !== 'regions'), { field: 'regions', message }],
+      }));
     }
   }, []);
 
@@ -291,7 +307,7 @@ const PlayerAnalytics: React.FC = () => {
 
         {/* Error Display */}
         {state.errors.length > 0 && (
-          <div className="alert alert-error mb-6">
+          <div className="alert alert-error mb-6" role="alert">
             <div className="flex items-center gap-3">
               <span>⚠️</span>
               <div className="flex-1">

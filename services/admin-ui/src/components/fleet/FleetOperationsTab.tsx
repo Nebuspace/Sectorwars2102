@@ -2,6 +2,42 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { api } from '../../utils/auth';
 import './fleet-operations.css';
 
+const responseStatus = (err: unknown): number | undefined =>
+  typeof err === 'object' && err !== null && 'response' in err
+    ? (err as { response?: { status?: number } }).response?.status
+    : undefined;
+
+const settledStatuses = (results: PromiseSettledResult<unknown>[]): number[] =>
+  results
+    .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+    .map((r) => responseStatus(r.reason))
+    .filter((s): s is number => s !== undefined);
+
+const fleetLoadError = (results: PromiseSettledResult<unknown>[], allFailed: boolean): string => {
+  const statuses = settledStatuses(results);
+  if (statuses.some((s) => s === 429)) {
+    return 'Admin rate limit exceeded — wait a moment and try again.';
+  }
+  if (statuses.some((s) => s === 401 || s === 403)) {
+    return 'Access denied — fleet operations require the admin players view scope (PLAYERS_VIEW).';
+  }
+  return allFailed
+    ? 'Failed to load fleet operations data.'
+    : 'Some fleet operations data could not be loaded.';
+};
+
+const fleetActError = (err: unknown, fallback: string): string => {
+  const status = responseStatus(err);
+  if (status === 401 || status === 403) {
+    return 'Access denied — fleet interventions require COMBAT_INTERVENE.';
+  }
+  if (status === 429) {
+    return 'Admin rate limit exceeded — wait a moment and try again.';
+  }
+  return fallback;
+};
+
+
 // =============================================================================
 // Types — mirror the Pydantic response models in
 // services/gameserver/src/api/routes/admin_fleets.py
@@ -125,15 +161,10 @@ const FleetOperationsTab: React.FC = () => {
       setBattles(battlesRes.value.data);
     }
 
-    const failed = [statsRes, fleetsRes, battlesRes].filter(
-      (r) => r.status === 'rejected'
-    );
+    const results = [statsRes, fleetsRes, battlesRes];
+    const failed = results.filter((r) => r.status === 'rejected');
     if (failed.length > 0) {
-      setError(
-        failed.length === 3
-          ? 'Failed to load fleet operations data.'
-          : 'Some fleet operations data could not be loaded.'
-      );
+      setError(fleetLoadError(results, failed.length === 3));
     }
 
     setLoading(false);
@@ -187,7 +218,7 @@ const FleetOperationsTab: React.FC = () => {
       await loadData();
     } catch (err) {
       console.error('Error intervening in battle:', err);
-      setError('Failed to apply battle intervention.');
+      setError(fleetActError(err, 'Failed to apply battle intervention.'));
     } finally {
       setSubmitting(false);
     }
@@ -235,9 +266,12 @@ const FleetOperationsTab: React.FC = () => {
     } catch (err) {
       console.error(`Error applying fleet ${fleetAction} action:`, err);
       setError(
-        fleetAction === 'morale'
-          ? 'Failed to adjust fleet morale.'
-          : 'Failed to dissolve fleet.',
+        fleetActError(
+          err,
+          fleetAction === 'morale'
+            ? 'Failed to adjust fleet morale.'
+            : 'Failed to dissolve fleet.',
+        ),
       );
     } finally {
       setFleetSubmitting(false);
