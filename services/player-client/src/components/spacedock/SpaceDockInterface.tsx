@@ -13,7 +13,7 @@ import MiningVenue from './MiningVenue';
 import GamblingVenue from './GamblingVenue';
 import RefiningVenue from './RefiningVenue';
 import { getStationClassInfo } from '../common/stationIdentity';
-import { shipAPI, registryAPI } from '../../services/api';
+import { shipAPI, registryAPI, ariaMarketAPI, type AriaMarketIntelList } from '../../services/api';
 import { formatCredits } from '../../utils/formatters';
 import './spacedock.css';
 
@@ -375,6 +375,11 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
   const [armoryError, setArmoryError] = useState<string | null>(null);
   const [armorySuccess, setArmorySuccess] = useState<string | null>(null);
 
+  const [marketIntelOpen, setMarketIntelOpen] = useState(false);
+  const [marketIntelLoading, setMarketIntelLoading] = useState(false);
+  const [marketIntelError, setMarketIntelError] = useState<string | null>(null);
+  const [marketIntel, setMarketIntel] = useState<AriaMarketIntelList | null>(null);
+
   // Get the current docked station
   const currentStation = stationsInSector?.find(
     s => s.id === playerState?.current_port_id
@@ -400,6 +405,30 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
 
   // Define available venues based on station services
   const stationServices = currentStation?.services || {};
+
+  const loadMarketIntelligence = async () => {
+    const stationId = currentStation?.id;
+    if (!stationId) {
+      setMarketIntelOpen(true);
+      setMarketIntel(null);
+      setMarketIntelError('Docked station id unavailable.');
+      return;
+    }
+    setMarketIntelOpen(true);
+    setMarketIntelLoading(true);
+    setMarketIntelError(null);
+    try {
+      const data = await ariaMarketAPI.getMarketIntelligence(stationId);
+      setMarketIntel(data);
+    } catch (err) {
+      setMarketIntel(null);
+      setMarketIntelError(
+        err instanceof Error ? err.message : 'Could not load market intelligence.',
+      );
+    } finally {
+      setMarketIntelLoading(false);
+    }
+  };
 
   const venues: Venue[] = [
     {
@@ -1820,9 +1849,23 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
                 <span className="status-label">Services</span>
                 <div className="station-service-icons">
                   {activeServices.map(s => (
-                    <span key={s.key} className="station-service-icon" title={s.label}>
-                      {s.icon}
-                    </span>
+                    s.key === 'market_intelligence' ? (
+                      <button
+                        key={s.key}
+                        type="button"
+                        className="station-service-icon station-service-icon-action"
+                        title={s.label}
+                        aria-label="Open market intelligence"
+                        data-testid="market-intelligence-service"
+                        onClick={() => void loadMarketIntelligence()}
+                      >
+                        {s.icon}
+                      </button>
+                    ) : (
+                      <span key={s.key} className="station-service-icon" title={s.label}>
+                        {s.icon}
+                      </span>
+                    )
                   ))}
                 </div>
               </div>
@@ -1833,6 +1876,35 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
         <div className="hub-welcome">
           <p>{greeting}</p>
         </div>
+
+        {marketIntelOpen && (
+          <div className="market-intel-panel" data-testid="market-intelligence-panel">
+            <h3>Market intelligence</h3>
+            {marketIntelLoading && <p>Loading observations…</p>}
+            {marketIntelError && (
+              <p role="alert" data-testid="market-intelligence-error">{marketIntelError}</p>
+            )}
+            {marketIntel && (
+              marketIntel.items.length === 0 ? (
+                <p data-testid="market-intelligence-empty">No observations at this port yet.</p>
+              ) : (
+                <ul className="market-intel-list">
+                  {marketIntel.items.map((item) => {
+                    const ready =
+                      item.observation_count >= 5 && item.next_prediction != null;
+                    return (
+                      <li key={item.commodity} data-testid={`market-intel-row-${item.commodity}`}>
+                        {ready
+                          ? `I expect ${item.commodity} to trade around ${item.next_prediction}${item.price_band != null ? `±${item.price_band}` : ''} credits, based on ${item.observation_count} observations.`
+                          : `${item.commodity}: ${item.observation_count} observation(s) — not enough data for a prediction (need 5).`}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )
+            )}
+          </div>
+        )}
 
         <div className="venues-grid">
           {venues.map(venue => (
