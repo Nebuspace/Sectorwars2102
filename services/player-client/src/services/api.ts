@@ -2432,3 +2432,23 @@ export const ariaMemoryAPI = {
     apiRequest('/api/v1/ai/data-index'),
 };
 
+/** LEG-1937 — docked ARIA market-intelligence GET (owner JWT; 403 if not docked / cannot trade). */
+export type AriaMarketIntelItem = {
+  commodity: string;
+  observation_count: number;
+  average_price: number | null;
+  price_band: number | null;
+  next_prediction: number | null;
+  prediction_confidence: number | null;
+};
+
+export type AriaMarketIntelList = {
+  station_id: string;
+  items: AriaMarketIntelItem[];
+};
+
+export const ariaMarketAPI = {
+  getMarketIntelligence: (stationId: string): Promise<AriaMarketIntelList> =>
+    apiRequest(`/api/v1/ai/market-intelligence/${encodeURIComponent(stationId)}`),
+};
+
