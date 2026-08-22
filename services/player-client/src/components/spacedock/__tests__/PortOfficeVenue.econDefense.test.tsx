@@ -430,4 +430,104 @@ describe('PortOfficeVenue — economic defense + fee distribution', () => {
     });
     expect(setStorageRental).toHaveBeenCalledWith('station-1', 2500);
   });
+
+  const openOwnerTab = async () => {
+    const ownerTab = Array.from(container.querySelectorAll('[role="tab"]')).find((t) =>
+      (t.textContent || '').toLowerCase().includes('owner'),
+    ) as HTMLElement | undefined;
+    await act(async () => {
+      ownerTab!.click();
+      await flush();
+      await flush();
+    });
+  };
+
+  it('hydrates revenue levers from tip my-stations keys (LEG-371)', async () => {
+    getListing.mockResolvedValue(ownedListing);
+    getMyStations.mockResolvedValue({
+      stations: [
+        {
+          station_id: 'station-1',
+          treasury_balance: 5000,
+          tax_rate: 0.1,
+          price_adjustment_lever: 0.07,
+          docking_fee: 200,
+          docking_fee_enabled: false,
+          service_charge_multiplier: 1.5,
+          storage_rental_per_day: 4000,
+        },
+      ],
+    });
+
+    await act(async () => {
+      root.render(
+        <PortOfficeVenue
+          stationId="station-1"
+          stationName="Test Port"
+          credits={100_000}
+          onCreditsSet={vi.fn()}
+          onBack={vi.fn()}
+        />,
+      );
+    });
+    await act(async () => {
+      await flush();
+      await flush();
+    });
+    await openOwnerTab();
+
+    expect(container.querySelector<HTMLInputElement>('[data-testid="po-price-lever-pct"]')!.value).toBe(
+      '0.07',
+    );
+    expect(
+      container.querySelector<HTMLInputElement>('[data-testid="po-docking-fee-amount"]')!.value,
+    ).toBe('200');
+    expect(
+      container.querySelector<HTMLInputElement>('[data-testid="po-docking-fee-enabled"]')!.checked,
+    ).toBe(false);
+    expect(
+      container.querySelector<HTMLInputElement>('[data-testid="po-service-charge-mult"]')!.value,
+    ).toBe('1.5');
+    expect(
+      container.querySelector<HTMLInputElement>('[data-testid="po-storage-rental-per-day"]')!.value,
+    ).toBe('4000');
+  });
+
+  it('keeps Field defaults when my-stations omits lever keys (LEG-371)', async () => {
+    getListing.mockResolvedValue(ownedListing);
+    // beforeEach already returns a row without lever keys — pin that contract.
+
+    await act(async () => {
+      root.render(
+        <PortOfficeVenue
+          stationId="station-1"
+          stationName="Test Port"
+          credits={100_000}
+          onCreditsSet={vi.fn()}
+          onBack={vi.fn()}
+        />,
+      );
+    });
+    await act(async () => {
+      await flush();
+      await flush();
+    });
+    await openOwnerTab();
+
+    expect(container.querySelector<HTMLInputElement>('[data-testid="po-price-lever-pct"]')!.value).toBe(
+      '0',
+    );
+    expect(
+      container.querySelector<HTMLInputElement>('[data-testid="po-docking-fee-amount"]')!.value,
+    ).toBe('50');
+    expect(
+      container.querySelector<HTMLInputElement>('[data-testid="po-docking-fee-enabled"]')!.checked,
+    ).toBe(true);
+    expect(
+      container.querySelector<HTMLInputElement>('[data-testid="po-service-charge-mult"]')!.value,
+    ).toBe('1');
+    expect(
+      container.querySelector<HTMLInputElement>('[data-testid="po-storage-rental-per-day"]')!.value,
+    ).toBe('1000');
+  });
 });
