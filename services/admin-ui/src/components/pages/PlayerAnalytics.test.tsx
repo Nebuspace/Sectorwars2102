@@ -184,4 +184,38 @@ describe('PlayerAnalytics session time card (LEG-386)', () => {
     expect(card.className).toContain('stat-not-tracked');
     expect(card.textContent).toMatch(/Analytics endpoint unavailable/i);
   });
+
+  it('surfaces comprehensive 403 as PLAYERS_VIEW denial (LEG-1255)', async () => {
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (typeof url === 'string' && url.startsWith('/api/v1/admin/players/comprehensive')) {
+        return Promise.reject(
+          Object.assign(new Error('HTTP 403'), { response: { status: 403 } }),
+        );
+      }
+      return Promise.resolve({ data: {} });
+    });
+
+    render(<PlayerAnalytics />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/PLAYERS_VIEW/);
+    });
+  });
+
+  it('surfaces comprehensive 429 as admin rate-limit (LEG-1255)', async () => {
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (typeof url === 'string' && url.startsWith('/api/v1/admin/players/comprehensive')) {
+        return Promise.reject(
+          Object.assign(new Error('HTTP 429'), { response: { status: 429 } }),
+        );
+      }
+      return Promise.resolve({ data: {} });
+    });
+
+    render(<PlayerAnalytics />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
+    });
+  });
 });
