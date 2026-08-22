@@ -1428,15 +1428,6 @@ const GameDashboardInner: React.FC = () => {
   const overflowResources: string[] = overflowWarning && typeof overflowWarning === 'object'
     ? Object.keys(overflowWarning.resources || {})
     : [];
-  const fmtDaysUntilFull = (d: number | null): string => {
-    if (d === null) return '';
-    if (d < 1) {
-      const hrs = Math.max(1, Math.round(d * 24));
-      return `~${hrs}h to cap`;
-    }
-    return `~${Math.round(d)}d to cap`;
-  };
-
   // Planetary-ops notice (upgrade/safe outcomes), auto-dismissed like the
   // colonist transfer notice
   const [opsNotice, setOpsNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
@@ -3239,6 +3230,7 @@ const GameDashboardInner: React.FC = () => {
                                 canStore,
                                 storeBusy,
                                 storeDisabledTitle,
+                                daysUntilFull: ss.daysUntilFull,
                               };
                             });
                             // DEFENSE-OPS tab body — the slim controls the cockpit
