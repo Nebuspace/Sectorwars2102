@@ -191,6 +191,23 @@ export interface TeamReputationChangedMessage {
   new_level: string;
 }
 
+// Team-war victory (team_war_service._emit_team_war_victory_event) —
+// broadcast_to_team on both winner and loser rooms. LEG-73 UI refreshes
+// the war list on this event; scores/cease state still come from GET wars.
+export interface TeamWarVictoryMessage {
+  type: 'team_war_victory';
+  winner_team_id: string;
+  loser_team_id: string;
+  victory_at: string;
+  cease_reason: string;
+  threshold: number;
+  score: {
+    winner_us: number;
+    loser_us: number;
+  };
+  timestamp: string;
+}
+
 // Coarse link-status projection of the reconnect state machine below, for
 // chrome that needs "is the uplink healthy" without tracking every close
 // code/backoff detail itself (WO-PUX-UPLINK-HUD). 'reconnecting' covers both
@@ -820,6 +837,17 @@ class WebSocketService {
     const handler = (message: WebSocketMessage) => {
       if (message.type === 'turn_pool_updated') {
         callback(message as TurnPoolUpdatedMessage);
+      }
+    };
+    this.addMessageHandler(handler);
+    return () => this.removeMessageHandler(handler);
+  }
+
+  // Team-war victory push (see TeamWarVictoryMessage above)
+  onTeamWarVictory(callback: (message: TeamWarVictoryMessage) => void): () => void {
+    const handler = (message: WebSocketMessage) => {
+      if (message.type === 'team_war_victory') {
+        callback(message as TeamWarVictoryMessage);
       }
     };
     this.addMessageHandler(handler);
