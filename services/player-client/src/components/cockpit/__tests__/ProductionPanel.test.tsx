@@ -156,4 +156,44 @@ describe('ProductionPanel', () => {
     });
     expect(onOpenSpecialization).toHaveBeenCalledTimes(1);
   });
+
+  it('shows days-until-full when capped with a positive rate estimate', async () => {
+    await act(async () => {
+      root.render(
+        <ProductionPanel
+          {...defaultProps}
+          lines={[baseLine({ capped: true, atCap: false, rate: 40, daysUntilFull: 2.4 })]}
+        />,
+      );
+    });
+    const eta = container.querySelector('[data-testid="days-until-full-fuel"]');
+    expect(eta?.textContent).toBe('~2d to cap');
+  });
+
+  it('shows hours-to-cap when the estimate is under one day', async () => {
+    await act(async () => {
+      root.render(
+        <ProductionPanel
+          {...defaultProps}
+          lines={[baseLine({ capped: true, atCap: false, daysUntilFull: 0.2 })]}
+        />,
+      );
+    });
+    expect(container.querySelector('[data-testid="days-until-full-fuel"]')?.textContent).toBe(
+      '~5h to cap',
+    );
+  });
+
+  it('hides days-until-full when atCap or rate is zero (null estimate)', async () => {
+    await act(async () => {
+      root.render(
+        <ProductionPanel
+          {...defaultProps}
+          lines={[baseLine({ capped: true, atCap: true, rate: 0, daysUntilFull: null })]}
+        />,
+      );
+    });
+    expect(container.querySelector('[data-testid="days-until-full-fuel"]')).toBeNull();
+    expect(container.textContent).not.toContain('to cap');
+  });
 });
