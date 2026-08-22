@@ -49,6 +49,8 @@ test.describe('Admin UI route smoke (WO-ADM-ROUTE-SMOKE-E2E)', () => {
       { path: '/audit', title: 'Admin Action Log' },
       { path: '/universe/sectors', title: 'Sectors Management' },
       { path: '/universe/bang', title: 'Bang Galaxy' },
+      // Soft-ORDER LEG-1714/#1790 — bare /sectors (distinct from /universe/sectors alias)
+      { path: '/sectors', title: 'Sectors Management' },
     ];
 
     for (const { path, title } of routes) {
@@ -63,6 +65,19 @@ test.describe('Admin UI route smoke (WO-ADM-ROUTE-SMOKE-E2E)', () => {
         await expect(page.getByRole('heading', { name: title, level: 1 })).toBeVisible();
       });
     }
+
+    // Soft-ORDER LEG-1714/#1790 — UniverseManager landmark is h2 "No Universe"
+    // (or galaxy name). The authenticated loop asserts level-1 headings only.
+    test('/universe renders UniverseManager galaxy landmark (h2)', async ({ page }) => {
+      await page.goto('/universe', { waitUntil: 'domcontentloaded' });
+      await expect(page).toHaveURL((url) => {
+        const pathname = url.pathname;
+        return pathname === '/universe' || pathname === '/universe/';
+      });
+      await expect(
+        page.getByRole('heading', { name: 'No Universe', level: 2 })
+      ).toBeVisible();
+    });
 
     test('/review-queue aliases to Admin Action Log review tab (LEG-1640 / LEG-77 residual)', async ({
       page,
