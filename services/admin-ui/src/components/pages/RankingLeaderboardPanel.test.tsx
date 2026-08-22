@@ -68,4 +68,23 @@ describe('RankingLeaderboardPanel', () => {
       expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
     });
   });
+  it('reports a 403 as PLAYERS_VIEW scope, not bare Forbidden detail', async () => {
+    vi.mocked(api.get).mockRejectedValue({ response: { status: 403 } });
+
+    render(<RankingLeaderboardPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/PLAYERS_VIEW/);
+    });
+  });
+
+  it('reports a 429 as an admin rate-limit', async () => {
+    vi.mocked(api.get).mockRejectedValue({ response: { status: 429 } });
+
+    render(<RankingLeaderboardPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
+    });
+  });
 });
