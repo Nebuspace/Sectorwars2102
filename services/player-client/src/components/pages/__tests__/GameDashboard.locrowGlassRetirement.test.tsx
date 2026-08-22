@@ -91,6 +91,7 @@ vi.mock('../../tactical/WindshieldTableau', () => ({
     <div data-testid="windshield-tableau-stub" data-scan-active={String(!!props.scanActive)} />
   ),
 }));
+vi.mock('../../mining/NearestAmRefineryOverlay', () => ({ default: () => null }));
 vi.mock('../../tactical/PlanetPortPair', () => ({ default: () => <div /> }));
 vi.mock('../../quantum/QuantumDriveConsole', () => ({ default: () => <div /> }));
 vi.mock('../../gatewright/GatewrightPanel', () => ({ default: () => <div /> }));

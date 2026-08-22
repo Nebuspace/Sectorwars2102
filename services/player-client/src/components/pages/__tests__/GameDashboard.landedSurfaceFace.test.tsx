@@ -78,6 +78,7 @@ const windshieldTableauMock = vi.fn((_props?: unknown) => <div data-testid="wind
 vi.mock('../../tactical/WindshieldTableau', () => ({
   default: (props: unknown) => windshieldTableauMock(props),
 }));
+vi.mock('../../mining/NearestAmRefineryOverlay', () => ({ default: () => null }));
 vi.mock('../../tactical/PlanetPortPair', () => ({ default: () => <div /> }));
 vi.mock('../../quantum/QuantumDriveConsole', () => ({ default: () => <div /> }));
 vi.mock('../../gatewright/GatewrightPanel', () => ({ default: () => <div /> }));
