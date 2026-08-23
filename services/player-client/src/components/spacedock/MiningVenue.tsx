@@ -101,11 +101,12 @@ const MiningVenue: React.FC<MiningVenueProps> = ({
               )}
               {!licensesLoading && !licensesError && licenses.length > 0 && (
                 <table className="license-list-table">
+                  <caption>Active and recently expired claim licenses</caption>
                   <thead>
                     <tr>
-                      <th>Sector</th>
-                      <th>Expires</th>
-                      <th>Status</th>
+                      <th scope="col">Sector</th>
+                      <th scope="col">Expires</th>
+                      <th scope="col">Status</th>
                     </tr>
                   </thead>
                   <tbody>

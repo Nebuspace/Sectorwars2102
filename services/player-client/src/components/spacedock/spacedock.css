@@ -1152,6 +1152,14 @@
   border-collapse: collapse;
 }
 
+.license-list-table caption {
+  caption-side: top;
+  text-align: left;
+  padding: 0 6px 4px;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 0.85em;
+}
+
 .license-list-table th,
 .license-list-table td {
   text-align: left;
