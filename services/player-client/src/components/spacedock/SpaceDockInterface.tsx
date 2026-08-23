@@ -10,10 +10,11 @@ import GenesisVenue from './GenesisVenue';
 import ArmoryVenue from './ArmoryVenue';
 import ServicesVenue from './ServicesVenue';
 import MiningVenue from './MiningVenue';
+import type { ClaimLicenseRow } from './MiningVenue';
 import GamblingVenue from './GamblingVenue';
 import RefiningVenue from './RefiningVenue';
 import { getStationClassInfo } from '../common/stationIdentity';
-import { shipAPI, registryAPI } from '../../services/api';
+import { shipAPI, registryAPI, miningAPI } from '../../services/api';
 import { formatCredits } from '../../utils/formatters';
 import './spacedock.css';
 
@@ -1265,9 +1266,49 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
   const [licenseBusy, setLicenseBusy] = useState(false);
   const [licenseError, setLicenseError] = useState<string | null>(null);
   const [licenseSuccess, setLicenseSuccess] = useState<string | null>(null);
+  const [licenses, setLicenses] = useState<ClaimLicenseRow[]>([]);
+  const [licensesLoading, setLicensesLoading] = useState(false);
+  const [licensesError, setLicensesError] = useState<string | null>(null);
   const [laserBusy, setLaserBusy] = useState(false);
   const [laserError, setLaserError] = useState<string | null>(null);
   const [laserSuccess, setLaserSuccess] = useState<string | null>(null);
+
+  const parseLicenseList = (raw: unknown): ClaimLicenseRow[] => {
+    if (!raw || typeof raw !== 'object') return [];
+    const items = (raw as { items?: unknown }).items;
+    if (!Array.isArray(items)) return [];
+    const rows: ClaimLicenseRow[] = [];
+    for (const entry of items) {
+      if (!entry || typeof entry !== 'object') continue;
+      const r = entry as Record<string, unknown>;
+      if (typeof r.id !== 'string') continue;
+      rows.push({
+        id: r.id,
+        region_id: typeof r.region_id === 'string' ? r.region_id : null,
+        sector_number: typeof r.sector_number === 'number' ? r.sector_number : Number(r.sector_number) || 0,
+        expires_at: typeof r.expires_at === 'string' ? r.expires_at : null,
+        purchased_at: typeof r.purchased_at === 'string' ? r.purchased_at : null,
+        cost_paid_cr: typeof r.cost_paid_cr === 'number' ? r.cost_paid_cr : 0,
+        is_active: Boolean(r.is_active),
+      });
+    }
+    return rows;
+  };
+
+  const fetchLicenses = useCallback(async () => {
+    setLicensesLoading(true);
+    setLicensesError(null);
+    try {
+      const data = await miningAPI.listLicenses();
+      setLicenses(parseLicenseList(data));
+    } catch (error) {
+      console.error('Claim license list error:', error);
+      setLicenses([]);
+      setLicensesError('Could not load licenses.');
+    } finally {
+      setLicensesLoading(false);
+    }
+  }, []);
 
   React.useEffect(() => {
     if (activeVenue === 'mining') {
@@ -1277,8 +1318,9 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
       setLicenseSuccess(null);
       setLaserError(null);
       setLaserSuccess(null);
+      void fetchLicenses();
     }
-  }, [activeVenue, fetchShipData]);
+  }, [activeVenue, fetchShipData, fetchLicenses]);
 
   // Purchase / renew the AM claim license for the current sector
   // (POST /api/v1/mining/license {ship_id}). The fee is sector-tier-scaled and
@@ -1318,14 +1360,14 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
       const cost = formatCredits(result.cost_paid_cr ?? 0);
       const expires = result.expires_at ? new Date(result.expires_at).toLocaleString() : 'soon';
       setLicenseSuccess(`Claim filed for ${cost} — license valid until ${expires}.`);
-      Promise.allSettled([refreshPlayerState(), fetchShipData()]);
+      Promise.allSettled([refreshPlayerState(), fetchShipData(), fetchLicenses()]);
     } catch (error) {
       console.error('Claim license error:', error);
       setLicenseError('Connection error. Please try again.');
     } finally {
       setLicenseBusy(false);
     }
-  }, [shipData?.id, licenseBusy, refreshPlayerState, fetchShipData]);
+  }, [shipData?.id, licenseBusy, refreshPlayerState, fetchShipData, fetchLicenses]);
 
   // Buy the next Mining Laser ladder level
   // (POST /api/v1/mining/laser-upgrade {ship_id}). Requires a Mining Laser
@@ -2024,6 +2066,9 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
             licenseError={licenseError}
             licenseSuccess={licenseSuccess}
             purchaseClaimLicense={purchaseClaimLicense}
+            licenses={licenses}
+            licensesLoading={licensesLoading}
+            licensesError={licensesError}
             laserBusy={laserBusy}
             laserError={laserError}
             laserSuccess={laserSuccess}

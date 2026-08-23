@@ -1135,6 +1135,30 @@
   gap: 8px;
 }
 
+.license-list {
+  width: 100%;
+  margin: 8px 0;
+  font-size: 0.8em;
+}
+
+.license-list-empty {
+  color: rgba(255, 255, 255, 0.55);
+  text-align: center;
+  padding: 6px 0;
+}
+
+.license-list-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.license-list-table th,
+.license-list-table td {
+  text-align: left;
+  padding: 4px 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+
 /* WO-UI5-CANON-PASS(C): scoped to `.service-status` (ServicesVenue.tsx's
    real, direct-child ancestor of each `.status-bar` service-readout row) so
    this rule stops colliding at the top level with the unrelated real

@@ -70,7 +70,23 @@ vi.mock('../../../contexts/GameContext', () => ({
   useGame: () => gameState,
 }));
 
+vi.mock('../../../services/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../services/api')>();
+  return {
+    ...actual,
+    miningAPI: {
+      ...actual.miningAPI,
+      listLicenses: vi.fn(async () => ({
+        items: [],
+        total: 0,
+        recently_expired_window_hours: 24,
+      })),
+    },
+  };
+});
+
 import SpaceDockInterface from '../SpaceDockInterface';
+import { miningAPI } from '../../../services/api';
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -160,7 +176,15 @@ describe('SpaceDockInterface — mining license / laser', () => {
     await vi.waitFor(() => {
       expect(container.textContent).toContain('Claim License');
     });
+    await vi.waitFor(() => {
+      expect(miningAPI.listLicenses).toHaveBeenCalled();
+    });
   };
+
+  it('renders empty license list from tip GET when items is empty', async () => {
+    await openMining();
+    expect(container.textContent).toContain('No active or recently expired licenses.');
+  });
 
   it('posts mining/license when Purchase / Renew License is clicked', async () => {
     await openMining();
