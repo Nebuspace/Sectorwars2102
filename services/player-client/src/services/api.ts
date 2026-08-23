@@ -2092,6 +2092,20 @@ export const tradeAPI = {
     apiRequest(`/api/v1/trade/${sessionId}/cancel`, { method: 'POST' }),
   get: (sessionId: string) => apiRequest(`/api/v1/trade/${sessionId}`),
   getOpen: () => apiRequest('/api/v1/trade/open'),
+  /** Same-sector fuel-for-credits primitive (POST /trade/deliver-fuel). Not escrow. */
+  deliverFuel: (args: {
+    recipientPlayerId: string;
+    fuelAmount: number;
+    paymentCredits: number;
+  }) =>
+    apiRequest('/api/v1/trade/deliver-fuel', {
+      method: 'POST',
+      body: JSON.stringify({
+        recipient_player_id: args.recipientPlayerId,
+        fuel_amount: args.fuelAmount,
+        payment_credits: args.paymentCredits,
+      }),
+    }),
 };
 
 // Quantum drive (Warp Jumper) — status / scan / jump / refine / harvest.

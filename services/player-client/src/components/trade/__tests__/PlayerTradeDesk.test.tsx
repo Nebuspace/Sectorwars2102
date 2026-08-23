@@ -17,6 +17,7 @@ const { tradeAPI } = vi.hoisted(() => ({
     offer: vi.fn(),
     confirm: vi.fn(),
     cancel: vi.fn(),
+    deliverFuel: vi.fn(),
   },
 }));
 
@@ -334,5 +335,79 @@ describe('PlayerTradeDesk', () => {
       close.click();
     });
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it('delivers fuel to the targeted peer via tradeAPI.deliverFuel', async () => {
+    tradeAPI.getOpen.mockResolvedValue({ session: null });
+    tradeAPI.initiate.mockResolvedValue({
+      session: openSession({ status: 'PENDING_ACCEPT' }),
+    });
+    tradeAPI.deliverFuel.mockResolvedValue({ ok: true });
+
+    await act(async () => {
+      root.render(
+        <PlayerTradeDesk targetPlayerId={THEM} myPlayerId={ME} onClose={onClose} ships={TEST_SHIPS} />,
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const amount = document.body.querySelector(
+      '[data-testid="fuel-amount"]',
+    ) as HTMLInputElement;
+    const payment = document.body.querySelector(
+      '[data-testid="fuel-payment"]',
+    ) as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+    await act(async () => {
+      setter?.call(amount, '12');
+      amount.dispatchEvent(new Event('input', { bubbles: true }));
+      amount.dispatchEvent(new Event('change', { bubbles: true }));
+      setter?.call(payment, '400');
+      payment.dispatchEvent(new Event('input', { bubbles: true }));
+      payment.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+
+    await act(async () => {
+      (document.body.querySelector('[data-testid="deliver-fuel-submit"]') as HTMLButtonElement).click();
+      await Promise.resolve();
+    });
+
+    expect(tradeAPI.deliverFuel).toHaveBeenCalledWith({
+      recipientPlayerId: THEM,
+      fuelAmount: 12,
+      paymentCredits: 400,
+    });
+    expect(document.body.querySelector('.p2p-trade-desk')?.textContent).toContain(
+      'Fuel delivered to their ship',
+    );
+  });
+
+  it('surfaces GS 400 detail when deliver-fuel is refused', async () => {
+    tradeAPI.getOpen.mockResolvedValue({ session: openSession() });
+    tradeAPI.deliverFuel.mockRejectedValue(
+      new Error('delivery_requires_same_sector: the deliverer and recipient must be in the same sector for a fuel hand-off'),
+    );
+
+    await act(async () => {
+      root.render(<PlayerTradeDesk myPlayerId={ME} onClose={onClose} ships={TEST_SHIPS} />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      (document.body.querySelector('[data-testid="deliver-fuel-submit"]') as HTMLButtonElement).click();
+      await Promise.resolve();
+    });
+
+    const alert = document.body.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain('delivery_requires_same_sector');
+    expect(tradeAPI.deliverFuel).toHaveBeenCalledWith({
+      recipientPlayerId: THEM,
+      fuelAmount: 1,
+      paymentCredits: 0,
+    });
   });
 });

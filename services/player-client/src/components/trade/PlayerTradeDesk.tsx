@@ -145,6 +145,8 @@ const PlayerTradeDesk: React.FC<Props> = ({ targetPlayerId, myPlayerId, onClose,
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
+  const [fuelAmount, setFuelAmount] = useState(1);
+  const [fuelPayment, setFuelPayment] = useState(0);
 
   const cargoShip = ownedShips.find((s) => s.id === cargoShipId);
   const cargoKeys = Object.keys(cargoShip?.cargo ?? {}).filter((k) => (cargoShip?.cargo?.[k] ?? 0) > 0);
@@ -212,6 +214,31 @@ const PlayerTradeDesk: React.FC<Props> = ({ targetPlayerId, myPlayerId, onClose,
 
   const amInitiator = session?.initiator_id === myPlayerId;
   const amTarget = session?.target_id === myPlayerId;
+  const fuelRecipientId =
+    targetPlayerId ||
+    (session
+      ? session.initiator_id === myPlayerId
+        ? session.target_id
+        : session.initiator_id
+      : null);
+
+  const deliverFuel = async () => {
+    if (!fuelRecipientId) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await tradeAPI.deliverFuel({
+        recipientPlayerId: fuelRecipientId,
+        fuelAmount: Math.max(1, Math.floor(Number(fuelAmount)) || 1),
+        paymentCredits: Math.max(0, Math.floor(Number(fuelPayment)) || 0),
+      });
+      setInfo('Fuel delivered to their ship.');
+    } catch (e: unknown) {
+      setError(formatTradeError(e, 'trade_action_failed'));
+    } finally {
+      setBusy(false);
+    }
+  };
   const myOffer = amInitiator ? session?.initiator_offer : session?.target_offer;
   const theirOffer = amInitiator ? session?.target_offer : session?.initiator_offer;
 
@@ -299,6 +326,44 @@ const PlayerTradeDesk: React.FC<Props> = ({ targetPlayerId, myPlayerId, onClose,
         <p className="p2p-trade-desk__info" role="status">
           {info}
         </p>
+      )}
+
+      {fuelRecipientId && (
+        <fieldset className="p2p-trade-desk__fuel" data-testid="deliver-fuel">
+          <legend>Deliver fuel</legend>
+          <p className="p2p-trade-desk__muted">
+            Same-sector handoff onto their ship. Not a contract. They still fly their own Slipdrive.
+          </p>
+          <label className="p2p-trade-desk__field">
+            Fuel amount
+            <input
+              type="number"
+              min={1}
+              data-testid="fuel-amount"
+              value={fuelAmount}
+              disabled={busy}
+              aria-label="Fuel amount to deliver"
+              onChange={(e) => setFuelAmount(Math.max(1, Number(e.target.value) || 1))}
+            />
+          </label>
+          <label className="p2p-trade-desk__field">
+            Payment (their credits)
+            <input
+              type="number"
+              min={0}
+              data-testid="fuel-payment"
+              value={fuelPayment}
+              disabled={busy}
+              aria-label="Payment credits charged to recipient"
+              onChange={(e) => setFuelPayment(Math.max(0, Number(e.target.value) || 0))}
+            />
+          </label>
+          <div className="p2p-trade-desk__row">
+            <button type="button" disabled={busy} data-testid="deliver-fuel-submit" onClick={deliverFuel}>
+              Deliver fuel
+            </button>
+          </div>
+        </fieldset>
       )}
 
       {!session && !busy && <p className="p2p-trade-desk__muted">No open trade session.</p>}
