@@ -139,4 +139,12 @@ describe('GameContext armoryAPI.deploy', () => {
     );
     expect(rawPosts).toHaveLength(0);
   });
+
+  it('deployMines passes limpet_mine through to armoryAPI.deploy', async () => {
+    await act(async () => {
+      await captured!.deployMines(2, 'limpet_mine');
+      await flush();
+    });
+    expect(mockDeploy).toHaveBeenCalledWith(2, 'limpet_mine');
+  });
 });
