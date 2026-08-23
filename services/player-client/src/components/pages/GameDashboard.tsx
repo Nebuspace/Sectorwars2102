@@ -11,6 +11,7 @@ import SpaceDockInterface from '../spacedock/SpaceDockInterface';
 import PortOfficeVenue from '../spacedock/PortOfficeVenue';
 import ContractBoardVenue from '../spacedock/ContractBoardVenue';
 import PopulationCenterInterface from '../planetary/PopulationCenterInterface';
+import SurveyExpeditionPanel from '../survey/SurveyExpeditionPanel';
 import { LandingRightsControl } from '../planetary/LandingRightsControl';
 import SolarSystemViewscreen from '../tactical/SolarSystemViewscreen';
 import WindshieldTableau from '../tactical/WindshieldTableau';
@@ -30,6 +31,7 @@ import type { PerColonistRates, ProdRole } from '../cockpit/CoupledColonistSlide
 import SafeVaultPanel from '../cockpit/SafeVaultPanel';
 import BankPanel, { isStarportPrimeStation, shipCargoFree } from '../cockpit/BankPanel';
 import { miningAPI, navAPI, playerAPI, type NavChartResponse, sectorAPI, type SectorWreck } from '../../services/api';
+import NearestAmRefineryOverlay from '../mining/NearestAmRefineryOverlay';
 import { projectedWarpBearing, subscribeWarpDepart, WARP_TURN_MS } from '../../services/warpCinematicBus';
 import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import { TurnsIcon } from '../icons/TurnsIcon';
@@ -1232,6 +1234,19 @@ const GameDashboardInner: React.FC = () => {
   if (landedPlanet?.id) lastLandedPlanetIdRef.current = landedPlanet.id;
 
   const isLandedPlanetMine = !!(landedPlanet && playerState && landedPlanet.owner_id === playerState.id);
+
+  const isLandedPopulationHub = !!(
+    landedPlanet?.is_population_hub
+    || (landedPlanet?.population ?? 0) >= 1_000_000
+  );
+
+  /** ADR-0091 founding surface: unclaimed planet, not a capital hub — survey before claim. */
+  const showSurveyFoundingPanel = !!(
+    playerState?.is_landed
+    && landedPlanet
+    && !landedPlanet.owner_id
+    && !isLandedPopulationHub
+  );
 
   // Colonists riding in the current ship's cargo.
   // Cargo shape from /player/ships is {used, capacity, contents: {colonists: N}}
@@ -2869,6 +2884,7 @@ const GameDashboardInner: React.FC = () => {
         {(() => {
         const consoleNode = (
         <div className="cockpit-console">
+          <NearestAmRefineryOverlay />
           {/* DOCKED STATE: the station-face venue workspace (WO-UI3-STATION-
               MODE) — replaces the flight-monitor bezel wrapper
               (.console-monitor.trading-monitor.full-width + .monitor-bezel
@@ -2988,10 +3004,7 @@ const GameDashboardInner: React.FC = () => {
                 </div>
               </div>
             </div>
-          ) : playerState?.is_landed && (
-            landedPlanet?.is_population_hub
-            || (landedPlanet?.population ?? 0) >= 1_000_000
-          ) ? (
+          ) : playerState?.is_landed && isLandedPopulationHub ? (
             /* LANDED ON A POPULATION HUB: the Capital Sector welcome +
                Pioneer Office, not the generic owned-colony console.
                Pop ≥1M fallback mirrors server land/claim/pioneer — a missed
@@ -3006,6 +3019,20 @@ const GameDashboardInner: React.FC = () => {
                is the only change needed here. */
             <div className="surface-face-workspace">
               <PopulationCenterInterface planet={landedPlanet} />
+            </div>
+          ) : showSurveyFoundingPanel && landedPlanet ? (
+            /* UNCLAIMED FOUNDING SURFACE (ADR-0091 / LEG-670): orbital scan →
+               dispatch → compare → settle (claim). Replaces the generic ops
+               console on planets with no owner — discovery is mandatory at the
+               claim gate (planetary-survey.md § Discovery is the mandatory
+               first act). */
+            <div className="surface-face-workspace">
+              <SurveyExpeditionPanel
+                planetId={landedPlanet.id}
+                planetName={landedPlanet.name}
+                planetType={landedPlanet.type}
+                shipId={currentShip?.id ?? playerState?.current_ship_id ?? null}
+              />
             </div>
           ) : playerState?.is_landed ? (
             /* LANDED STATE: Show Comprehensive Planetary Operations Terminal.

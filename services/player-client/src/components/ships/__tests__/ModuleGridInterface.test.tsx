@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const getModules = vi.fn();
 const installModule = vi.fn();
 const removeModule = vi.fn();
+const previewModule = vi.fn();
 const setCosmetic = vi.fn();
 const getCosmetics = vi.fn();
 
@@ -17,6 +18,7 @@ vi.mock('../../../services/api', () => ({
     getModules: (...a: unknown[]) => getModules(...a),
     installModule: (...a: unknown[]) => installModule(...a),
     removeModule: (...a: unknown[]) => removeModule(...a),
+    previewModule: (...a: unknown[]) => previewModule(...a),
     setCosmetic: (...a: unknown[]) => setCosmetic(...a),
     getCosmetics: (...a: unknown[]) => getCosmetics(...a),
   },
@@ -73,9 +75,17 @@ describe('ModuleGridInterface', () => {
     getModules.mockReset();
     installModule.mockReset();
     removeModule.mockReset();
+    previewModule.mockReset();
     setCosmetic.mockReset();
     getCosmetics.mockReset();
     getCosmetics.mockResolvedValue(SERVER_COSMETICS);
+    previewModule.mockResolvedValue({
+      current: { speed_bonus: 1, cargo_bonus_percent: 10 },
+      projected: { speed_bonus: 2, cargo_bonus_percent: 10 },
+      delta: { speed_bonus: 1, cargo_bonus_percent: 0 },
+      candidate: { name: 'Engine Module', tier: 1, class: 'engine' },
+      replacing: null,
+    });
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -160,5 +170,63 @@ describe('ModuleGridInterface', () => {
 
     expect(installModule).toHaveBeenCalledWith('ship-1', 0, 'engine', 1);
     expect(container.textContent).toMatch(/Engine fitted/);
+  });
+
+  it('shows GS before/after preview deltas on tier hover (no client bake math)', async () => {
+    getModules.mockResolvedValue(EMPTY_MODULES);
+
+    await act(async () => {
+      root.render(<ModuleGridInterface ship={{ id: 'ship-1' }} playerCredits={100000} />);
+      await flush();
+    });
+
+    const fitBtn = container.querySelector('button.mgi-slot-add');
+    expect(fitBtn).toBeTruthy();
+    await act(async () => {
+      fitBtn!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await flush();
+    });
+
+    const tierBtn = container.querySelector('button.mgi-tier-btn') as HTMLButtonElement | null;
+    expect(tierBtn).toBeTruthy();
+    await act(async () => {
+      // React maps onMouseEnter from mouseover (jsdom mouseenter is a no-op for React).
+      tierBtn!.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      await flush();
+      await flush();
+    });
+
+    expect(previewModule).toHaveBeenCalledWith('ship-1', 0, 'engine', 1);
+    const preview = container.querySelector('[data-testid="mgi-stat-preview"]');
+    expect(preview).toBeTruthy();
+    expect(preview!.textContent).toMatch(/Speed/);
+    expect(preview!.textContent).toMatch(/\+1/);
+    expect(installModule).not.toHaveBeenCalled();
+  });
+
+  it('surfaces preview API errors without inventing stats', async () => {
+    getModules.mockResolvedValue(EMPTY_MODULES);
+    previewModule.mockRejectedValue(new Error('preview offline'));
+
+    await act(async () => {
+      root.render(<ModuleGridInterface ship={{ id: 'ship-1' }} playerCredits={100000} />);
+      await flush();
+    });
+
+    const fitBtn = container.querySelector('button.mgi-slot-add');
+    await act(async () => {
+      fitBtn!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await flush();
+    });
+
+    const tierBtn = container.querySelector('button.mgi-tier-btn') as HTMLButtonElement | null;
+    await act(async () => {
+      tierBtn!.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      await flush();
+      await flush();
+    });
+
+    expect(container.textContent).toMatch(/preview offline/);
+    expect(container.querySelector('.mgi-preview-table')).toBeNull();
   });
 });

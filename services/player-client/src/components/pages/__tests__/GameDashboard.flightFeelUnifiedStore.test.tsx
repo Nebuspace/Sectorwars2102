@@ -38,7 +38,10 @@ vi.mock('../../../services/api', () => ({
     sectorWrecks: (...a: unknown[]) => mockSectorWrecks(...a),
     getContents: (...a: unknown[]) => mockGetContents(...a),
   },
-  miningAPI: { harvest: vi.fn() },
+  miningAPI: {
+    harvest: vi.fn(),
+    getNearestAmRefinery: vi.fn().mockResolvedValue({ found: false, reason: 'none_reachable' }),
+  },
   playerAPI: { investigateFormation: vi.fn() },
   // WindshieldTableau (real, unstubbed) calls helmAPI.getPose on mount.
   helmAPI: {
