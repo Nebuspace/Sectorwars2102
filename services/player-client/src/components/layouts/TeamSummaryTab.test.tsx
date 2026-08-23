@@ -11,11 +11,21 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const mockGetTeam = vi.fn();
 const mockGetPermissions = vi.fn();
+const mockListWars = vi.fn();
 
 vi.mock('../../services/api', () => ({
   teamAPI: {
     getTeam: (...a: unknown[]) => mockGetTeam(...a),
     getPermissions: (...a: unknown[]) => mockGetPermissions(...a),
+    listWars: (...a: unknown[]) => mockListWars(...a),
+    declareWar: vi.fn(),
+    ceasefire: vi.fn(),
+  },
+}));
+
+vi.mock('../../services/websocket', () => ({
+  default: {
+    onTeamWarVictory: vi.fn(() => () => undefined),
   },
 }));
 
@@ -62,6 +72,8 @@ describe('TeamSummaryTab', () => {
   beforeEach(() => {
     mockGetTeam.mockReset();
     mockGetPermissions.mockReset();
+    mockListWars.mockReset();
+    mockListWars.mockResolvedValue([]);
     mockPlayerState = null;
     container = document.createElement('div');
     document.body.appendChild(container);

@@ -5,8 +5,12 @@ import { AuditLogViewer } from '../security/AuditLogViewer';
 import { MFASetup } from '../auth/MFASetup';
 import { useAuth } from '../../contexts/AuthContext';
 import { api } from '../../utils/auth';
+import { formatAdminApiError, formatSettledRejection } from '../../utils/adminApiError';
+import { useToast, useConfirm } from '../../contexts/ToastContext';
 import { useSystemAlerts } from '../../contexts/WebSocketContext';
 import './security-dashboard.css';
+
+type PlayerSecurityActionKind = 'block' | 'unblock' | 'reset_violations' | 'reset_trust';
 
 // Shape of GET /api/v1/admin/security/report
 // (admin_comprehensive.py -> AISecurityService.generate_security_report)
@@ -54,12 +58,19 @@ interface SecurityAlertsResponse {
 
 export const SecurityDashboard: React.FC = () => {
   const { user } = useAuth();
+  const toast = useToast();
+  const confirm = useConfirm();
   const [report, setReport] = useState<SecurityReport | null>(null);
   const [alerts, setAlerts] = useState<SecurityAlertsResponse | null>(null);
   const [overviewError, setOverviewError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [showMFASetup, setShowMFASetup] = useState(false);
   const [activeTab, setActiveTab] = useState<'overview' | 'audit' | 'threats' | 'settings'>('overview');
+  const [daysToKeep, setDaysToKeep] = useState(7);
+  const [playerId, setPlayerId] = useState('');
+  const [playerAction, setPlayerAction] = useState<PlayerSecurityActionKind>('block');
+  const [durationHours, setDurationHours] = useState('');
+  const [actionReason, setActionReason] = useState('');
 
   useEffect(() => {
     fetchSecurityOverview();
@@ -78,19 +89,98 @@ export const SecurityDashboard: React.FC = () => {
     if (reportResult.status === 'fulfilled') {
       setReport(reportResult.value.data as SecurityReport);
     } else {
-      const reason: any = reportResult.reason;
-      failures.push(`security report: ${reason?.response?.data?.detail || reason?.message || 'request failed'}`);
+      failures.push(
+        formatSettledRejection(
+          reportResult.reason,
+          'security report',
+          'admin security report scope required'
+        )
+      );
     }
 
     if (alertsResult.status === 'fulfilled') {
       setAlerts(alertsResult.value.data as SecurityAlertsResponse);
     } else {
-      const reason: any = alertsResult.reason;
-      failures.push(`security alerts: ${reason?.response?.data?.detail || reason?.message || 'request failed'}`);
+      failures.push(
+        formatSettledRejection(
+          alertsResult.reason,
+          'security alerts',
+          'admin security alerts scope required'
+        )
+      );
     }
 
-    setOverviewError(failures.length > 0 ? `Failed to load ${failures.join('; ')}` : null);
+    setOverviewError(failures.length > 0 ? failures.join(' | ') : null);
     setLoading(false);
+  };
+
+  const securityActError = (err: unknown, fallback: string) =>
+    formatAdminApiError(err, {
+      fallback,
+      scopeHint: 'SECURITY_ACT scope required',
+    });
+
+  /** Tip GS: POST /api/v1/admin/security/cleanup — query days_to_keep (LEG-1713). */
+  const handleSecurityCleanup = async () => {
+    if (!(await confirm({
+      title: 'Clean up old security data',
+      message:
+        `Remove security tracking older than ${daysToKeep} day(s)? This posts the tip admin security/cleanup route (SECURITY_ACT).`,
+      confirmLabel: 'Clean up',
+    }))) {
+      return;
+    }
+
+    try {
+      const response = await api.post('/api/v1/admin/security/cleanup', null, {
+        params: { days_to_keep: daysToKeep },
+      });
+      const data = response.data as { message?: string; days_kept?: number } | undefined;
+      toast.success(
+        data?.message ?? `Cleaned up security data older than ${data?.days_kept ?? daysToKeep} days`
+      );
+      void fetchSecurityOverview();
+    } catch (err: unknown) {
+      toast.error(securityActError(err, 'Failed to clean up security data'));
+    }
+  };
+
+  /** Tip GS: POST /api/v1/admin/security/player/{id}/action (LEG-1713). */
+  const handlePlayerSecurityAction = async () => {
+    const id = playerId.trim();
+    if (!id) {
+      toast.error('Player id is required');
+      return;
+    }
+    if (playerAction === 'block' && durationHours.trim() === '') {
+      toast.error('Block duration in hours is required');
+      return;
+    }
+
+    const body: {
+      action: PlayerSecurityActionKind;
+      duration_hours?: number;
+      reason?: string;
+    } = { action: playerAction };
+    if (playerAction === 'block') {
+      body.duration_hours = Number(durationHours);
+    }
+    const reason = actionReason.trim();
+    if (reason) {
+      body.reason = reason;
+    }
+
+    try {
+      const response = await api.post(
+        `/api/v1/admin/security/player/${id}/action`,
+        body
+      );
+      const data = response.data as { message?: string } | undefined;
+      toast.success(data?.message ?? `Player security action ${playerAction} completed`);
+      void fetchSecurityOverview();
+    } catch (err: unknown) {
+      toast.error(securityActError(err, 'Failed to take player security action'));
+    }
   };
 
   // Live updates: complements the 30s poll above with an immediate refresh on
@@ -261,6 +351,89 @@ export const SecurityDashboard: React.FC = () => {
                   </div>
                 </div>
               )}
+
+              <div className="security-ops" role="region" aria-label="Security operations">
+                <h3>Security operations</h3>
+                <p className="security-ops-note">
+                  Tip routes only: cleanup old security tracking, or take a player security action
+                  (block, unblock, reset violations, reset trust). SECURITY_ACT required.
+                </p>
+                <div className="security-ops-row">
+                  <label>
+                    Days to keep
+                    <input
+                      type="number"
+                      min={1}
+                      max={30}
+                      value={daysToKeep}
+                      onChange={(e) => setDaysToKeep(Number(e.target.value) || 7)}
+                      aria-label="Days of security data to keep"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    className="btn btn-outline"
+                    onClick={handleSecurityCleanup}
+                    aria-label="Clean up old security data"
+                  >
+                    Clean up old data
+                  </button>
+                </div>
+                <div className="security-ops-row">
+                  <label>
+                    Player id
+                    <input
+                      type="text"
+                      value={playerId}
+                      onChange={(e) => setPlayerId(e.target.value)}
+                      aria-label="Player id for security action"
+                      placeholder="player uuid"
+                    />
+                  </label>
+                  <label>
+                    Action
+                    <select
+                      value={playerAction}
+                      onChange={(e) => setPlayerAction(e.target.value as PlayerSecurityActionKind)}
+                      aria-label="Player security action type"
+                    >
+                      <option value="block">block</option>
+                      <option value="unblock">unblock</option>
+                      <option value="reset_violations">reset_violations</option>
+                      <option value="reset_trust">reset_trust</option>
+                    </select>
+                  </label>
+                  {playerAction === 'block' && (
+                    <label>
+                      Duration (hours)
+                      <input
+                        type="number"
+                        min={1}
+                        value={durationHours}
+                        onChange={(e) => setDurationHours(e.target.value)}
+                        aria-label="Block duration in hours"
+                      />
+                    </label>
+                  )}
+                  <label>
+                    Reason (optional)
+                    <input
+                      type="text"
+                      value={actionReason}
+                      onChange={(e) => setActionReason(e.target.value)}
+                      aria-label="Reason for player security action"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={handlePlayerSecurityAction}
+                    aria-label="Take player security action"
+                  >
+                    Take action
+                  </button>
+                </div>
+              </div>
 
               <div className="recent-threats">
                 <h3>

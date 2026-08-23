@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { useAuth } from '../../contexts/AuthContext';
+import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import './colony-overview.css';
 
@@ -79,7 +80,6 @@ interface ColonyStats {
 }
 
 export const ColonyOverview: React.FC = () => {
-  const { token } = useAuth();
   const { getIcon, getLabel } = useResourceCatalog();
   const [colonies, setColonies] = useState<Colony[]>([]);
   const [stats, setStats] = useState<ColonyStats | null>(null);
@@ -106,23 +106,15 @@ export const ColonyOverview: React.FC = () => {
 
   const loadColonies = async () => {
     try {
-      const response = await fetch('/api/v1/admin/colonies', {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
-      });
-
-      if (!response.ok) {
-        throw new Error(`Failed to load colonies: ${response.status}`);
-      }
-
-      const data = await response.json();
+      // Shared api client (Bearer + refresh) — no raw fetch / localStorage.
+      const response = await api.get<{ colonies?: RawColony[] }>('/api/v1/admin/colonies');
+      const data = response.data;
 
       // The /admin/colonies endpoint returns ALL planets (colonized and
       // uncolonized worldgen planets). Only planets with an owner are actual
       // colonies, so filter out the uncolonized ones client-side to avoid
       // inflating the colony count and population totals.
-      const colonizedPlanets = (data.colonies as RawColony[]).filter(
+      const colonizedPlanets = (data.colonies ?? []).filter(
         (colony) => colony.owner_id != null && colony.owner_id !== ''
       );
 
@@ -215,7 +207,12 @@ export const ColonyOverview: React.FC = () => {
       setRetryCount(0); // Reset retry count on success
     } catch (err) {
       console.error('Error loading colonies:', err);
-      setError('Failed to load colonies data');
+      setError(
+        formatAdminApiError(err, {
+          fallback: 'Failed to load colonies data',
+          scopeHint: 'admin.colonization.view scope required for colony overview',
+        }),
+      );
       setColonies([]);
       setStats(null);
       setRetryCount(prev => prev + 1); // Increment retry count
@@ -276,6 +273,12 @@ export const ColonyOverview: React.FC = () => {
       <div className="overview-header">
         <h2>Colony Overview</h2>
       </div>
+
+      {error && (
+        <div className="alert alert-error colony-overview-error" role="alert">
+          {error}
+        </div>
+      )}
 
       <div className="colony-controls">
         <input

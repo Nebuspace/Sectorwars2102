@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAIUpdates } from '../../contexts/WebSocketContext';
 import { api } from '../../utils/auth';
+import { axiosResponseStatus, formatAdminApiError } from '../../utils/adminApiError';
 import './market-prediction-interface.css';
 
 interface PricePrediction {
@@ -69,12 +70,18 @@ export const MarketPredictionInterface: React.FC = () => {
       
       const response = await api.get(`/api/v1/admin/ai/predictions?${params}`);
       setPredictions(response.data);
-    } catch (err: any) {
-      const errorMessage = err.response?.data?.detail || err.message || 'Failed to load predictions';
-      if (err.response?.status === 401) {
+    } catch (err: unknown) {
+      const status = axiosResponseStatus(err);
+      if (status === 401) {
         setError('Authentication required. Please log in as an admin user.');
       } else {
-        setError(errorMessage);
+        setError(
+          formatAdminApiError(err, {
+            fallback: 'Failed to load predictions',
+            scopeHint:
+              'market predictions require the admin players view scope (PLAYERS_VIEW).',
+          })
+        );
       }
     } finally {
       setLoading(false);
@@ -85,8 +92,19 @@ export const MarketPredictionInterface: React.FC = () => {
     try {
       const response = await api.get('/api/v1/admin/ai/predictions/accuracy');
       setAccuracyStats(response.data);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to load accuracy stats:', err);
+      const status = err.response?.status as number | undefined;
+      if (status === 401) {
+        setError('Authentication required. Please log in as an admin user.');
+      } else if (status === 403) {
+        setError(
+          'Access denied — prediction accuracy requires the admin players view scope (PLAYERS_VIEW).'
+        );
+      } else if (status === 429) {
+        setError('Admin rate limit exceeded — wait a moment and try again.');
+      }
+      // Transport/other: leave accuracy empty; primary predictions may still render.
     }
   };
 
@@ -106,7 +124,7 @@ export const MarketPredictionInterface: React.FC = () => {
   };
 
   if (loading) return <div className="loading">Loading predictions...</div>;
-  if (error) return <div className="error">Error: {error}</div>;
+  if (error) return <div className="error" role="alert">Error: {error}</div>;
 
   return (
     <div className="market-prediction-interface">

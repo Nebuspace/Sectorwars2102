@@ -5,6 +5,7 @@ Handles ship upgrades (engine, cargo, shields, etc.) and equipment installation.
 
 import logging
 import random
+import types
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional, List
@@ -314,6 +315,19 @@ class ShipUpgradeService:
             "effects": {"weapon_type": "torpedo"},
         },
     }
+
+    @classmethod
+    def equipment_key_openapi_description(cls) -> str:
+        """OpenAPI Field text for installable equipment keys (LEG-131).
+
+        Derived from EQUIPMENT_DEFINITIONS so the schema cannot list a stale
+        subset when new keys ship.
+        """
+        keys = ", ".join(sorted(cls.EQUIPMENT_DEFINITIONS.keys()))
+        return (
+            "Installable equipment key from ShipUpgradeService.EQUIPMENT_DEFINITIONS. "
+            f"One of: {keys}"
+        )
 
     # ========================================================================
     # WO-MINING — Mining Laser upgrade ladder (the "mining_laser_level" entry).
@@ -1225,6 +1239,182 @@ class ShipUpgradeService:
 
         return updated
 
+    # Effect keys the shipyard before/after preview always surfaces (LEG-320 /
+    # ships.md "Upgrade interface at shipyards with before/after stat preview").
+    # Magnitudes come only from MODULE_DEFINITIONS — never invented here.
+    _MODULE_PREVIEW_EFFECT_KEYS = (
+        "speed_bonus",              # Engine
+        "cargo_bonus_percent",      # Cargo
+        "shield_bonus",             # Shield
+        "hull_bonus",               # Hull
+        "evasion_bonus_percent",    # Sensor
+        "scanner_range_bonus",      # Sensor (derived range; tracked in totals)
+        "drone_capacity_bonus",     # Drone
+        "genesis_capacity_bonus",   # Genesis
+        "failure_rate_reduction",   # Maintenance (extra honesty row)
+        "landing_bonus",            # lander family (when installed)
+        "passive_income",           # harvester family
+        "mining_efficiency",        # mining family (catalog; may be deferred)
+    )
+
+    def _module_effect_totals(self, ship: Ship, installed: Dict[str, Any]) -> Dict[str, float]:
+        """Accumulate §4.2 best-N module effect totals for an ``installed`` map.
+
+        Shared by ``_apply_module_effects`` (writes columns) and
+        ``preview_module_install`` (dry-run). Citizen-gated slots contribute 0
+        while the owner's membership is lapsed — same firewall as the bake.
+        """
+        if not isinstance(installed, dict):
+            installed = {}
+
+        # --- WO-GC-C leg 4 — Citizen lapse-neutralization FIREWALL. -----------
+        slot_requires: Dict[str, Any] = {}
+        spec = self.db.query(ShipSpecification).filter(
+            ShipSpecification.type == ship.type
+        ).first()
+        if spec is not None:
+            slot_requires = {
+                str(s["i"]): s.get("requires")
+                for s in (spec.module_slots or {}).get("slots", []) or []
+                if isinstance(s, dict) and "i" in s and s.get("requires")
+            }
+        owner = None
+        if slot_requires:
+            owner = self.db.query(Player).filter(Player.id == ship.owner_id).first()
+
+        # ordering §4.4: per-module base → ×adjacency (Phase B; 1.0) → ×supercharge
+        by_effect: Dict[str, List[float]] = {}
+        for slot_key, m in installed.items():
+            if not isinstance(m, dict):
+                continue
+            req = slot_requires.get(slot_key)
+            if req and (owner is None or not requires_satisfied(self.db, owner, req)):
+                continue
+            cls = m.get("class")
+            tier = m.get("tier")
+            entry = self.MODULE_DEFINITIONS.get((cls, tier))
+            if not entry:
+                continue
+            base = entry.get("effects", {})
+            adj = self._adjacency_factor(slot_key, cls, ship)
+            sc = self.SUPERCHARGE_MULT if m.get("super_at_install") else 1.0
+            for k, v in base.items():
+                if isinstance(v, bool) or not isinstance(v, (int, float)):
+                    continue
+                by_effect.setdefault(k, []).append(v * adj * sc)
+
+        return {
+            k: self._best_n_flat(vs, self.MODULE_STACK_BEST_N)
+            for k, vs in by_effect.items()
+        }
+
+    @staticmethod
+    def _preview_effect_rows(totals: Dict[str, Any]) -> Dict[str, float]:
+        """Normalize a totals map onto the fixed preview key set (0 when absent)."""
+        out: Dict[str, float] = {}
+        for key in ShipUpgradeService._MODULE_PREVIEW_EFFECT_KEYS:
+            v = totals.get(key, 0) if isinstance(totals, dict) else 0
+            out[key] = float(v) if isinstance(v, (int, float)) else 0.0
+        return out
+
+    def preview_module_install(
+        self,
+        ship_id: uuid.UUID,
+        player_id: uuid.UUID,
+        slot_index: int,
+        module_class: str,
+        tier: int,
+    ) -> Dict[str, Any]:
+        """Dry-run before/after module effect preview — no DB write, no credit charge.
+
+        Reuses the same ``_module_effect_totals`` math the bake uses so LEG-306
+        (player-client shipyard UI) does not re-implement MODULE_DEFINITIONS /
+        best-N stacking. Also returns ``get_combined_effects`` current vs a
+        projected ship view (equipment-family merge) for lander/tractor honesty.
+        """
+        # Read-only ownership (no FOR UPDATE — preview must not contend with writes).
+        player = self.db.query(Player).filter(Player.id == player_id).first()
+        if not player:
+            return {"success": False, "message": "Player not found"}
+        ship = self.db.query(Ship).filter(Ship.id == ship_id).first()
+        if not ship:
+            return {"success": False, "message": "Ship not found"}
+        if ship.owner_id != player_id:
+            return {"success": False, "message": "You do not own this ship"}
+        if ship.is_destroyed:
+            return {"success": False, "message": "Cannot preview modules on a destroyed ship"}
+
+        entry = self.MODULE_DEFINITIONS.get((module_class, tier))
+        if not entry:
+            return {"success": False, "message": f"Unknown module: {module_class} Mk{tier}"}
+
+        modules = ship.modules if isinstance(getattr(ship, "modules", None), dict) else {}
+        raw_installed = modules.get("installed") if isinstance(modules.get("installed"), dict) else {}
+        current_installed = {
+            str(k): (dict(v) if isinstance(v, dict) else v) for k, v in raw_installed.items()
+        }
+
+        replacing = current_installed.get(str(slot_index))
+        if replacing is not None and not isinstance(replacing, dict):
+            replacing = None
+
+        projected_installed = {
+            str(k): (dict(v) if isinstance(v, dict) else v) for k, v in current_installed.items()
+        }
+        candidate_record: Dict[str, Any] = {"class": module_class, "tier": tier}
+        spec = self.db.query(ShipSpecification).filter(
+            ShipSpecification.type == ship.type
+        ).first()
+        slot = self._spec_slot(spec, slot_index) if spec is not None else None
+        if slot and slot.get("super"):
+            candidate_record["super_at_install"] = True
+        projected_installed[str(slot_index)] = candidate_record
+
+        current_totals = self._module_effect_totals(ship, current_installed)
+        projected_totals = self._module_effect_totals(ship, projected_installed)
+        current_rows = self._preview_effect_rows(current_totals)
+        projected_rows = self._preview_effect_rows(projected_totals)
+        delta_rows = {
+            k: projected_rows[k] - current_rows[k] for k in current_rows
+        }
+
+        combined_current = ShipUpgradeService.get_combined_effects(ship)
+        projected_modules = dict(modules) if modules else {"v": 1}
+        projected_modules["installed"] = projected_installed
+        projected_modules["_baked"] = dict(projected_totals)
+        faux_ship = types.SimpleNamespace(
+            equipment_slots=getattr(ship, "equipment_slots", None),
+            modules=projected_modules,
+        )
+        combined_projected = ShipUpgradeService.get_combined_effects(faux_ship)
+
+        return {
+            "success": True,
+            "ship_id": str(ship.id),
+            "slot_index": slot_index,
+            "candidate": {
+                "class": module_class,
+                "tier": tier,
+                "name": entry.get("name"),
+                "effects": dict(entry.get("effects") or {}),
+                "cost": entry.get("cost"),
+                "super_at_install": bool(candidate_record.get("super_at_install")),
+            },
+            "replacing": (
+                {
+                    "class": replacing.get("class"),
+                    "tier": replacing.get("tier"),
+                }
+                if replacing
+                else None
+            ),
+            "current": current_rows,
+            "projected": projected_rows,
+            "delta": delta_rows,
+            "combined_effects_current": combined_current,
+            "combined_effects_projected": combined_projected,
+        }
+
     def _apply_module_effects(self, ship: Ship) -> Dict[str, Any]:
         """SHIP-MODS §7 — bake-on-install: recompute the MODULE subsystem's total
         contribution from ``Ship.modules`` and re-derive each baked stat column so
@@ -1272,64 +1462,9 @@ class ShipUpgradeService:
         if not isinstance(installed, dict):
             installed = {}
 
-        # --- 0. WO-GC-C leg 4 — Citizen lapse-neutralization FIREWALL. -----------
-        # Resolve the spec's per-slot `requires` predicates ONCE. For non-citizen
-        # hulls (no gated slot) this is an empty map → zero per-bake overhead and the
-        # owner is never resolved. For the Citizen Clipper, slot 3 carries "citizen":
-        # if the ship's OWNER is not an active Galactic Citizen, that slot's module is
-        # SKIPPED below (contributes 0). Because the bake is a REPLACE (column =
-        # current − prev_baked + new_total), skipping the slot DROPS its contribution
-        # from the baked column while lapsed and a later re-bake (nightly sweep / on
-        # re-subscribe) RESTORES it — idempotent, and the install→remove _baked-delta
-        # contract (§7.1) is preserved (it just sees a smaller new_total this bake).
-        slot_requires: Dict[str, Any] = {}
-        spec = self.db.query(ShipSpecification).filter(
-            ShipSpecification.type == ship.type
-        ).first()
-        if spec is not None:
-            slot_requires = {
-                str(s["i"]): s.get("requires")
-                for s in (spec.module_slots or {}).get("slots", []) or []
-                if isinstance(s, dict) and "i" in s and s.get("requires")
-            }
-        # Lazy-resolve owner ONLY when a gated slot exists (the common path skips it).
-        owner = None
-        if slot_requires:
-            owner = self.db.query(Player).filter(Player.id == ship.owner_id).first()
-
-        # --- 1. Accumulate per-effect contributions from every installed module. ---
-        # ordering §4.4:  per-module base  →  ×adjacency (Phase B; 1.0 here)  →  ×supercharge
-        by_effect: Dict[str, List[float]] = {}
-        for slot_key, m in installed.items():  # slot_key is a STR (JSON keys) — never assume int
-            if not isinstance(m, dict):
-                continue  # stray / malformed slot record
-            # WO-GC-C leg 4 firewall: a citizen-conditional slot contributes 0 while
-            # its owner's membership is lapsed (skip → dropped from the REPLACE bake).
-            req = slot_requires.get(slot_key)
-            if req and (owner is None or not requires_satisfied(self.db, owner, req)):
-                continue
-            cls = m.get("class")
-            tier = m.get("tier")
-            entry = self.MODULE_DEFINITIONS.get((cls, tier))
-            if not entry:
-                continue  # unknown (class, tier) — skip, don't crash
-            base = entry.get("effects", {})
-
-            adj = self._adjacency_factor(slot_key, cls, ship)   # Phase-B stub == 1.0
-            sc = self.SUPERCHARGE_MULT if m.get("super_at_install") else 1.0
-
-            for k, v in base.items():
-                # Only NUMERIC effects accumulate/scale. Boolean/string effects
-                # (tractor tow_capable / weapon_mode) are presence-flags handled by
-                # their own consumers, NOT summed into a baked numeric column.
-                if isinstance(v, bool) or not isinstance(v, (int, float)):
-                    continue
-                by_effect.setdefault(k, []).append(v * adj * sc)
-
-        # --- 2. §4.2 FLAT best-3 cap per effect: keep only the 3 largest, sum them. ---
-        module_totals: Dict[str, float] = {
-            k: self._best_n_flat(vs, self.MODULE_STACK_BEST_N) for k, vs in by_effect.items()
-        }
+        # Shared accumulation with preview_module_install (LEG-320) — same best-N
+        # + adjacency + citizen-firewall math, no column writes.
+        module_totals = self._module_effect_totals(ship, installed)
 
         # --- 3. The previously-baked module total (zero on first bake). ---
         prev = modules.get("_baked")

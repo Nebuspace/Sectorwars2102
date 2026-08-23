@@ -13,12 +13,14 @@ import { createRoot } from 'react-dom/client';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const mockGetTeam = vi.fn();
+const mockFlagMessage = vi.fn();
 const mockGetConversations = vi.fn();
 vi.mock('../../../services/api', () => ({
   teamAPI: {
     getTeam: (...a: unknown[]) => mockGetTeam(...a),
   },
   messageAPI: {
+    flagMessage: (...a: unknown[]) => mockFlagMessage(...a),
     getConversations: (...a: unknown[]) => mockGetConversations(...a),
   },
 }));
@@ -83,7 +85,7 @@ vi.mock('../../../contexts/AuthContext', () => ({
   useAuth: () => ({ user: { id: 'player-1' } }),
 }));
 
-import CommsCrewPage from './CommsCrewPage';
+import CommsCrewPage, { FLAG_REASON_BY_CATEGORY } from './CommsCrewPage';
 
 describe('CommsCrewPage — MFD-B COMM', () => {
   let container: HTMLElement;
@@ -91,6 +93,8 @@ describe('CommsCrewPage — MFD-B COMM', () => {
 
   beforeEach(() => {
     mockGetTeam.mockReset();
+    mockFlagMessage.mockReset();
+    mockFlagMessage.mockResolvedValue({ success: true });
     mockGetConversations.mockReset();
     mockGetConversations.mockResolvedValue({ conversations: [], total: 0, page: 1, limit: 20, pages: 0 });
     mockRefreshInbox.mockReset();
@@ -148,11 +152,6 @@ describe('CommsCrewPage — MFD-B COMM', () => {
       root.render(<CommsCrewPage />);
     });
     await flush();
-    // Conversations fetch resolves in a microtask after mount effect.
-    await act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
-    });
   };
 
   it('renders the working inbox: unread dot, sender, subject, and expands the body on click', async () => {
@@ -161,16 +160,15 @@ describe('CommsCrewPage — MFD-B COMM', () => {
 
     await mount();
 
-    const inbox = container.querySelector('.mfd-page-comms-inbox');
-    expect(inbox?.querySelector('.mfd-page-comms-hail-item')).not.toBeNull();
-    expect(inbox?.querySelector('.mfd-page-comms-unread-dot.off')).toBeNull();
-    expect(inbox?.querySelector('.mfd-page-comms-hail-sender')?.textContent).toBe('NOVA');
-    expect(inbox?.querySelector('.mfd-page-comms-hail-subject')?.textContent).toBe('Hello');
-    expect(inbox?.querySelector('.mfd-page-comms-hail-content')).toBeNull();
+    expect(container.querySelector('.mfd-page-comms-hail-item')).not.toBeNull();
+    expect(container.querySelector('.mfd-page-comms-unread-dot.off')).toBeNull();
+    expect(container.querySelector('.mfd-page-comms-hail-sender')?.textContent).toBe('NOVA');
+    expect(container.querySelector('.mfd-page-comms-hail-subject')?.textContent).toBe('Hello');
+    expect(container.querySelector('.mfd-page-comms-hail-content')).toBeNull();
 
-    await click(inbox!.querySelector('.mfd-page-comms-hail-summary')!);
+    await click(container.querySelector('.mfd-page-comms-hail-summary')!);
 
-    expect(inbox?.querySelector('.mfd-page-comms-hail-content')?.textContent).toBe(
+    expect(container.querySelector('.mfd-page-comms-hail-content')?.textContent).toBe(
       'Rendezvous at Sector 5.'
     );
     expect(mockMarkMessageRead).toHaveBeenCalledWith('msg-1');
@@ -179,10 +177,39 @@ describe('CommsCrewPage — MFD-B COMM', () => {
   it('PURGE on an expanded hail calls deletePlayerMessage', async () => {
     mockInboxMessages = [makeMessage()];
     await mount();
-    const inbox = container.querySelector('.mfd-page-comms-inbox')!;
-    await click(inbox.querySelector('.mfd-page-comms-hail-summary')!);
+    await click(container.querySelector('.mfd-page-comms-hail-summary')!);
     await click(container.querySelector('[data-testid="comms-purge-hail"]')!);
     expect(mockDeletePlayerMessage).toHaveBeenCalledWith('msg-1');
+  });
+
+  it('FLAG category calls messageAPI.flagMessage with tip-length reason', async () => {
+    mockInboxMessages = [makeMessage()];
+    await mount();
+    await click(container.querySelector('.mfd-page-comms-hail-summary')!);
+    await click(container.querySelector('[data-testid="comms-flag-hail"]')!);
+    expect(container.querySelector('[data-testid="comms-flag-categories"]')).not.toBeNull();
+    await click(container.querySelector('[data-testid="comms-flag-cat-spam"]')!);
+    await flush();
+    expect(mockFlagMessage).toHaveBeenCalledWith('msg-1', FLAG_REASON_BY_CATEGORY.spam);
+    expect(FLAG_REASON_BY_CATEGORY.spam.length).toBeGreaterThanOrEqual(10);
+    expect(container.querySelector('.mfd-page-comms-flag-notice')?.textContent).toBe(
+      'FLAGGED FOR MODERATION',
+    );
+  });
+
+  it('FLAG error path surfaces honesty without crashing', async () => {
+    mockFlagMessage.mockRejectedValueOnce(new Error('Message not found'));
+    mockInboxMessages = [makeMessage()];
+    await mount();
+    await click(container.querySelector('.mfd-page-comms-hail-summary')!);
+    await click(container.querySelector('[data-testid="comms-flag-hail"]')!);
+    await click(container.querySelector('[data-testid="comms-flag-cat-harassment"]')!);
+    await flush();
+    expect(mockFlagMessage).toHaveBeenCalledWith('msg-1', FLAG_REASON_BY_CATEGORY.harassment);
+    expect(container.querySelector('.mfd-page-comms-flag-error')?.textContent).toBe(
+      'Message not found',
+    );
+    expect(container.querySelector('.mfd-page-comms-hail-content')).not.toBeNull();
   });
 
   it('shows the honest empty state with no transmissions', async () => {
@@ -196,8 +223,7 @@ describe('CommsCrewPage — MFD-B COMM', () => {
   it('opens the composer on REPLY, pre-filling RE: subject and recipient from the sender', async () => {
     mockInboxMessages = [makeMessage()];
     await mount();
-    const inbox = container.querySelector('.mfd-page-comms-inbox')!;
-    await click(inbox.querySelector('.mfd-page-comms-hail-summary')!);
+    await click(container.querySelector('.mfd-page-comms-hail-summary')!);
 
     await click(container.querySelector('.mfd-page-comms-reply-btn')!);
 
@@ -211,8 +237,7 @@ describe('CommsCrewPage — MFD-B COMM', () => {
     mockInboxMessages = [makeMessage({ id: 'msg-2', sender_id: 'sender-9', sender_name: 'Nova' })];
     mockSendPlayerMessage.mockResolvedValue({ message_id: 'sent-1', sent_at: '2026-07-10T12:05:00Z' });
     await mount();
-    const inbox = container.querySelector('.mfd-page-comms-inbox')!;
-    await click(inbox.querySelector('.mfd-page-comms-hail-summary')!);
+    await click(container.querySelector('.mfd-page-comms-hail-summary')!);
     await click(container.querySelector('.mfd-page-comms-reply-btn')!);
 
     const textarea = container.querySelector('.mfd-page-comms-compose-content') as HTMLTextAreaElement;

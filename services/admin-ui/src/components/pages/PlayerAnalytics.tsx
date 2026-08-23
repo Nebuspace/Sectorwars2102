@@ -5,8 +5,11 @@ import PlayerDetailEditor from '../admin/PlayerDetailEditor';
 import BulkOperationPanel from '../admin/BulkOperationPanel';
 import PlayerAssetManager from '../admin/PlayerAssetManager';
 import EmergencyOperationsPanel from '../admin/EmergencyOperationsPanel';
+import PlayerBountyPanel from '../admin/PlayerBountyPanel';
 import RankingLeaderboardPanel from './RankingLeaderboardPanel';
+import ReEngagementQueuePanel, { ReEngagementSummary } from './ReEngagementQueuePanel';
 import { api } from '../../utils/auth';
+import { adminHttpErrorMessage } from '../../utils/adminHttpError';
 import {
   PlayerModel,
   PlayerFilters,
@@ -20,6 +23,7 @@ const fmtCount = (n: number | null | undefined): string =>
   n != null ? String(n) : '—';
 
 const PlayerAnalytics: React.FC = () => {
+  const [reEngagementSummary, setReEngagementSummary] = useState<ReEngagementSummary | null>(null);
   const [state, setState] = useState<PlayerAnalyticsState>({
     players: [],
     selectedPlayer: null,
@@ -174,10 +178,16 @@ const PlayerAnalytics: React.FC = () => {
       }));
     } catch (error) {
       console.error('Failed to fetch player data:', error);
+      // LEG-1255 invent=0: PLAYERS_VIEW / 429 honesty — not generic Failed to load alone
+      const message = adminHttpErrorMessage(
+        error,
+        'Failed to load player data',
+        'PLAYERS_VIEW',
+      );
       setState(prev => ({
         ...prev,
         loading: false,
-        errors: [{ field: 'fetch', message: 'Failed to load player data' }]
+        errors: [{ field: 'fetch', message }]
       }));
     }
   }, [state.currentPage, state.pageSize, state.sortBy, state.sortOrder, state.filters]);
@@ -188,6 +198,15 @@ const PlayerAnalytics: React.FC = () => {
       setRegions((response.data as any)?.regions || []);
     } catch (error) {
       console.error('Failed to fetch regions:', error);
+      const message = adminHttpErrorMessage(
+        error,
+        'Failed to load regions',
+        'admin.galaxy.manage',
+      );
+      setState(prev => ({
+        ...prev,
+        errors: [...prev.errors.filter((e) => e.field !== 'regions'), { field: 'regions', message }],
+      }));
     }
   }, []);
 
@@ -280,9 +299,15 @@ const PlayerAnalytics: React.FC = () => {
         {/* WO-WIRE-ADMIN-RANKING-LEADERBOARD: admin GET /ranking/leaderboard */}
         <RankingLeaderboardPanel />
 
+        {/* LEG-880 — re-engagement OPEN queue (retention.md); Retention Rate card stays separate */}
+        <ReEngagementQueuePanel
+          embedded={false}
+          onSummaryChange={setReEngagementSummary}
+        />
+
         {/* Error Display */}
         {state.errors.length > 0 && (
-          <div className="alert alert-error mb-6">
+          <div className="alert alert-error mb-6" role="alert">
             <div className="flex items-center gap-3">
               <span>⚠️</span>
               <div className="flex-1">
@@ -675,13 +700,24 @@ const PlayerAnalytics: React.FC = () => {
                     <div className="dashboard-stat-description">{analyticsAvailable && state.metrics.total_credits_circulation != null ? 'In Circulation' : (analyticsAvailable ? 'Credits circulation unavailable' : 'Analytics endpoint unavailable')}</div>
                   </div>
 
-                  <div className="dashboard-stat-card stat-not-tracked">
+                  <div
+                    className={`dashboard-stat-card${analyticsAvailable && state.metrics.average_session_time != null ? '' : ' stat-not-tracked'}`}
+                    data-testid="player-metrics-session-time"
+                  >
                     <div className="dashboard-stat-header">
                       <span className="dashboard-stat-icon">⏱️</span>
                       <h4 className="dashboard-stat-title">Session Time</h4>
                     </div>
-                    <div className="dashboard-stat-value">&mdash;</div>
-                    <div className="dashboard-stat-description">No session tracking yet</div>
+                    <div className="dashboard-stat-value">
+                      {analyticsAvailable && state.metrics.average_session_time != null
+                        ? `${state.metrics.average_session_time.toLocaleString()}h`
+                        : <>&mdash;</>}
+                    </div>
+                    <div className="dashboard-stat-description">
+                      {analyticsAvailable && state.metrics.average_session_time != null
+                        ? 'Average (hours)'
+                        : (analyticsAvailable ? 'Session time unavailable' : 'Analytics endpoint unavailable')}
+                    </div>
                   </div>
 
                   <div className={`dashboard-stat-card${analyticsAvailable && state.metrics.new_players_today != null ? '' : ' stat-not-tracked'}`}>
@@ -693,13 +729,43 @@ const PlayerAnalytics: React.FC = () => {
                     <div className="dashboard-stat-description">{analyticsAvailable && state.metrics.new_players_today != null ? 'Today' : (analyticsAvailable ? 'New-player count unavailable' : 'Analytics endpoint unavailable')}</div>
                   </div>
 
-                  <div className="dashboard-stat-card stat-not-tracked">
+                  <div
+                    className={`dashboard-stat-card${analyticsAvailable && state.metrics.player_retention_rate != null ? '' : ' stat-not-tracked'}`}
+                    data-testid="player-metrics-retention-rate"
+                  >
                     <div className="dashboard-stat-header">
                       <span className="dashboard-stat-icon">📈</span>
                       <h4 className="dashboard-stat-title">Retention Rate</h4>
                     </div>
-                    <div className="dashboard-stat-value">&mdash;</div>
-                    <div className="dashboard-stat-description">No retention telemetry surfaced yet</div>
+                    <div className="dashboard-stat-value">
+                      {analyticsAvailable && state.metrics.player_retention_rate != null
+                        ? `${state.metrics.player_retention_rate.toLocaleString()}%`
+                        : <>&mdash;</>}
+                    </div>
+                    <div className="dashboard-stat-description">
+                      {analyticsAvailable && state.metrics.player_retention_rate != null
+                        ? '7-day retention'
+                        : (analyticsAvailable ? 'Retention rate unavailable' : 'Analytics endpoint unavailable')}
+                    </div>
+                  </div>
+
+                  <div
+                    className={`dashboard-stat-card${reEngagementSummary ? '' : ' stat-not-tracked'}`}
+                    data-testid="player-metrics-re-engagement-open"
+                    data-variant={reEngagementSummary && reEngagementSummary.open > 0 ? 'warning' : undefined}
+                  >
+                    <div className="dashboard-stat-header">
+                      <span className="dashboard-stat-icon">📬</span>
+                      <h4 className="dashboard-stat-title">Re-engagement queue</h4>
+                    </div>
+                    <div className="dashboard-stat-value">
+                      {reEngagementSummary ? reEngagementSummary.open.toLocaleString() : <>&mdash;</>}
+                    </div>
+                    <div className="dashboard-stat-description">
+                      {reEngagementSummary
+                        ? `OPEN at-risk · ${reEngagementSummary.total} total rows`
+                        : 'Queue summary unavailable'}
+                    </div>
                   </div>
 
                   <div className={`dashboard-stat-card${analyticsAvailable && state.metrics.suspicious_activity_alerts != null ? '' : ' stat-not-tracked'}`} data-variant="warning">
@@ -834,6 +900,11 @@ const PlayerAnalytics: React.FC = () => {
                     </div>
                   </div>
                 </div>
+
+                <PlayerBountyPanel
+                  targetId={state.selectedPlayer.id}
+                  targetName={state.selectedPlayer.username}
+                />
               </div>
               
               <div className="modal-footer">

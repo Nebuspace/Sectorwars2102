@@ -404,6 +404,14 @@
 .cp-prod-bar-fill.near-cap { background: linear-gradient(90deg, #fbbf24, #f59e0b); }
 .cp-prod-bar-fill.at-cap { background: linear-gradient(90deg, #f87171, #ef4444); }
 
+.cp-prod-eta {
+  grid-column: 1 / -1;
+  font-size: 0.55rem;
+  letter-spacing: 0.06em;
+  color: #94a3b8;
+  text-align: right;
+}
+
 .cp-prod-overflow {
   margin-top: 0.35rem;
   font-size: 0.58rem;

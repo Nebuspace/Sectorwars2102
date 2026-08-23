@@ -49,3 +49,45 @@
   font-size: 0.68rem;
   color: rgba(180, 190, 220, 0.7);
 }
+
+.landing-rights-list-editor {
+  flex-basis: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-top: 0.25rem;
+}
+
+.landing-rights-list-label {
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(200, 210, 255, 0.8);
+}
+
+.landing-rights-list-input {
+  width: 100%;
+  min-height: 3.5rem;
+  padding: 0.35rem 0.45rem;
+  font-size: 0.75rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: #e8ecff;
+  background: rgba(20, 24, 40, 0.95);
+  border: 1px solid rgba(140, 160, 220, 0.45);
+  resize: vertical;
+}
+
+.landing-rights-apply {
+  align-self: flex-start;
+  padding: 0.3rem 0.65rem;
+  font-size: 0.75rem;
+  color: #e8ecff;
+  background: rgba(70, 50, 140, 0.85);
+  border: 1px solid rgba(160, 120, 255, 0.5);
+  cursor: pointer;
+}
+
+.landing-rights-apply:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}

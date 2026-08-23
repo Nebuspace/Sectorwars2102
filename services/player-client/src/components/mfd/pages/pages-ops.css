@@ -328,6 +328,79 @@
   cursor: wait;
 }
 
+.mfd-page-comms-flag-btn {
+  padding: 0.15rem 0.45rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.55rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(255, 196, 0, 0.9);
+  background: rgba(255, 196, 0, 0.08);
+  border: 1px solid rgba(255, 196, 0, 0.4);
+  border-radius: 2px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.mfd-page-comms-flag-btn:hover:not(:disabled) {
+  color: #ffc400;
+  border-color: rgba(255, 196, 0, 0.75);
+  background: rgba(255, 196, 0, 0.16);
+}
+
+.mfd-page-comms-flag-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.mfd-page-comms-flag-categories {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.35rem;
+}
+
+.mfd-page-comms-flag-cat-btn {
+  padding: 0.12rem 0.4rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.5rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(255, 196, 0, 0.85);
+  background: rgba(255, 196, 0, 0.06);
+  border: 1px solid rgba(255, 196, 0, 0.3);
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.mfd-page-comms-flag-cat-btn:hover:not(:disabled) {
+  background: rgba(255, 196, 0, 0.14);
+  border-color: rgba(255, 196, 0, 0.65);
+}
+
+.mfd-page-comms-flag-cat-btn:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.mfd-page-comms-flag-notice {
+  margin-top: 0.35rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.55rem;
+  letter-spacing: 0.1em;
+  color: rgba(255, 196, 0, 0.9);
+}
+
+.mfd-page-comms-flag-error {
+  margin-top: 0.35rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.55rem;
+  letter-spacing: 0.08em;
+  color: #ff4d6d;
+}
+
 .mfd-page-comms-compose {
   display: flex;
   flex-direction: column;

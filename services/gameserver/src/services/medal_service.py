@@ -200,6 +200,39 @@ def _medal_privacy_block(player: Player) -> Dict[str, Any]:
     return dict(privacy) if isinstance(privacy, dict) else {}
 
 
+def _medal_privacy_block_from_settings(settings: Any) -> Dict[str, Any]:
+    """JSONB settings → medal_privacy dict (for dispatch queries without ORM load)."""
+    settings = settings if isinstance(settings, dict) else {}
+    privacy = settings.get(_MEDAL_PRIVACY_SETTINGS_KEY)
+    return dict(privacy) if isinstance(privacy, dict) else {}
+
+
+def medal_awarded_should_broadcast_team(
+    team_id: Any, settings: Any
+) -> bool:
+    """Team room fan-out when teamed and ``broadcast_to_team`` not opted out (medals.md:228)."""
+    if not team_id:
+        return False
+    privacy = _medal_privacy_block_from_settings(settings)
+    return privacy.get("broadcast_to_team", True) is not False
+
+
+def medal_awarded_should_broadcast_sector(
+    tier: Any, category: Any, sector_id: Any
+) -> bool:
+    """Sector room fan-out for GOLD+ tier or UNIQUE category (medal-service.md:278)."""
+    if sector_id is None:
+        return False
+    from src.services.medal_catalog import TIER_GOLD, TIER_PLATINUM, TIER_UNIQUE
+
+    tier_l = (tier or "").lower()
+    if tier_l in (TIER_GOLD, TIER_UNIQUE, TIER_PLATINUM):
+        return True
+    if (category or "").upper() == "UNIQUE":
+        return True
+    return False
+
+
 def public_medal_identity(
     player: Player,
     *,
@@ -356,23 +389,40 @@ def _dispatch_medal_awarded_event(
     skipped — never raised.
     """
     try:
-        user_id = (
-            db.query(Player.user_id).filter(Player.id == player_id).scalar()
+        player_row = (
+            db.query(
+                Player.user_id,
+                Player.team_id,
+                Player.current_sector_id,
+                Player.settings,
+            )
+            .filter(Player.id == player_id)
+            .one_or_none()
         )
-        if not user_id:
+        if not player_row or not player_row.user_id:
             return
 
+        user_id = player_row.user_id
         entry = get_catalog_entry(medal_id) or {}
         criteria = entry.get("criteria") or {}
+        medal_tier = entry.get("tier")
+        medal_category = entry.get("category")
         medal_payload = {
             "medal_id": medal_id,
             "medal_name": entry.get("name"),
-            "medal_category": entry.get("category"),
-            "medal_tier": entry.get("tier"),
+            "medal_category": medal_category,
+            "medal_tier": medal_tier,
             "medal_description": entry.get("description"),
             "medal_icon": criteria.get("icon"),
             "awarded_via": awarded_via,
         }
+
+        broadcast_team = medal_awarded_should_broadcast_team(
+            player_row.team_id, player_row.settings
+        )
+        broadcast_sector = medal_awarded_should_broadcast_sector(
+            medal_tier, medal_category, player_row.current_sector_id
+        )
 
         import asyncio
         from src.services.enhanced_websocket_service import (
@@ -382,7 +432,12 @@ def _dispatch_medal_awarded_event(
         loop = asyncio.get_running_loop()
         loop.create_task(
             get_enhanced_websocket_service().send_medal_awarded(
-                str(user_id), medal_payload
+                str(user_id),
+                medal_payload,
+                team_id=str(player_row.team_id) if player_row.team_id else None,
+                sector_id=player_row.current_sector_id,
+                broadcast_team=broadcast_team,
+                broadcast_sector=broadcast_sector,
             )
         )
     except Exception:
@@ -1476,6 +1531,93 @@ class MedalService:
             logger.error(f"Error retrieving medals for player {player_id}: {e}")
             return {"success": False, "error": str(e)}
 
+    def admin_get_player_collection(
+        self,
+        player_id: uuid.UUID,
+        *,
+        viewing_admin_id: uuid.UUID,
+    ) -> Dict[str, Any]:
+        """Admin full collection with audit fields (medals.md:194 / LEG-264).
+
+        Always returns every earned medal including catalog-hidden (Special)
+        awards. When the player's ``medal_privacy.show_hidden`` is not opted-in
+        and a returned medal is catalog-hidden, write one ``view_hidden_medal``
+        audit per such medal (medals.md:263).
+        """
+        from src.services.medal_catalog import CAT_SPECIAL
+
+        player = self.db.query(Player).filter(Player.id == player_id).first()
+        if not player:
+            return {"success": False, "error": "Player not found"}
+
+        privacy = _medal_privacy_block(player)
+        show_hidden = bool(privacy.get("show_hidden"))
+
+        rows = (
+            self.db.query(PlayerMedal, Medal)
+            .join(Medal, PlayerMedal.medal_id == Medal.id)
+            .filter(PlayerMedal.player_id == player_id)
+            .order_by(PlayerMedal.awarded_at.desc())
+            .all()
+        )
+
+        items: List[Dict[str, Any]] = []
+        audits_written = 0
+        for pm, medal in rows:
+            is_hidden_catalog = medal.category == CAT_SPECIAL
+            privacy_overridden = is_hidden_catalog and not show_hidden
+            ctx = pm.context_payload if isinstance(pm.context_payload, dict) else {}
+            items.append(
+                {
+                    "medal_id": medal.id,
+                    "name": medal.name,
+                    "category": medal.category,
+                    "tier": medal.tier,
+                    "description": medal.description,
+                    "awarded_at": pm.awarded_at.isoformat() if pm.awarded_at else None,
+                    "awarded_via": pm.awarded_via,
+                    "awarded_by_user_id": (
+                        str(pm.awarded_by_user_id) if pm.awarded_by_user_id else None
+                    ),
+                    "reason": ctx.get("reason"),
+                    "source_event_key": pm.source_event_key,
+                    "source_combat_log_id": (
+                        str(pm.source_combat_log_id)
+                        if pm.source_combat_log_id
+                        else None
+                    ),
+                    "is_hidden_catalog": is_hidden_catalog,
+                    "privacy_overridden": privacy_overridden,
+                }
+            )
+            if privacy_overridden:
+                from src.models.audit_log import AuditLog
+
+                self.db.add(
+                    AuditLog(
+                        method="API",
+                        path=f"/admin/medals/players/{player_id}/collection",
+                        client_ip="127.0.0.1",
+                        user_id=viewing_admin_id,
+                        user_type="admin",
+                        action="view_hidden_medal",
+                        resource_type="medal",
+                        resource_id=pm.id,
+                        request_body={
+                            "player_id": str(player_id),
+                            "medal_id": medal.id,
+                        },
+                    )
+                )
+                audits_written += 1
+
+        self.db.flush()
+        return {
+            "success": True,
+            "items": items,
+            "total": len(items),
+            "view_hidden_medal_audits_written": audits_written,
+        }
 
     # ── Admin ────────────────────────────────────────────────────────
     def admin_grant(

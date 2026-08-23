@@ -85,7 +85,13 @@ from src.core.market_bootstrap import build_market_prices
 from src.models.market_transaction import MarketPrice, MarketTransaction, TransactionType
 from src.models.player import Player
 from src.models.port_ownership import PurchaseOffer, StationListing, TakeoverCampaign
+from src.models.sector import Sector
 from src.models.station import Station, player_stations
+from src.services.faction_service import (
+    FAIR_OPS_SECTOR_INFLUENCE_DELTA,
+    adjust_sector_influence,
+    sector_spawn_bias,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -2620,12 +2626,39 @@ def _accrue_fair_operation_bonus(
         if owner_id is not None:
             _apply_reputation(db, owner_id, FAIR_OPS_REPUTATION, "port_fair_operation")
             granted = FAIR_OPS_REPUTATION
+            _apply_fair_ops_sector_influence(db, station)
             logger.info(
                 "Fair-operation bonus: station %s owner %s granted +%d reputation "
                 "after %d consecutive low-tariff months",
                 station.id, owner_id, FAIR_OPS_REPUTATION, streak,
             )
     return granted
+
+
+def _apply_fair_ops_sector_influence(db: Session, station: Station) -> None:
+    """Grant +2% sector influence to the host sector's dominant faction (canon table).
+
+    Called once alongside the personal-reputation fair-operation bonus; idempotency
+    is enforced by the caller's ``fair_ops_bonus_granted`` ledger flag."""
+    if station.sector_id is None:
+        return
+    sector_row = (
+        db.query(Sector)
+        .filter(Sector.sector_id == station.sector_id)
+        .first()
+    )
+    if sector_row is None:
+        return
+    bias = sector_spawn_bias(db, sector_row.id)
+    dominant_faction_id = bias.get("dominant_faction_id")
+    if dominant_faction_id is None:
+        return
+    adjust_sector_influence(
+        db,
+        sector_row.id,
+        dominant_faction_id,
+        FAIR_OPS_SECTOR_INFLUENCE_DELTA,
+    )
 
 
 def auto_sell_insolvent(
@@ -3587,9 +3620,56 @@ def submit_offer(
     }
 
 
+def _owner_price_lever_fields(station: Station) -> Dict[str, Any]:
+    """Current owner revenue-lever values for Port Office hydrate (LEG-370).
+
+    Reads Station.price_modifiers; when a key is unset, returns the same honest
+    defaults the setter request Fields / consume-side readers use (0.0 / 50+on /
+    1.0 / 1000) — no invented magnitudes. fee_distribution stays under revenue.
+    """
+    mods = getattr(station, "price_modifiers", None) or {}
+
+    raw_lever = mods.get(PRICE_LEVER_KEY)
+    try:
+        lever = float(raw_lever) if raw_lever is not None else 0.0
+    except (TypeError, ValueError):
+        lever = 0.0
+
+    raw_fee = mods.get(DOCKING_FEE_KEY)
+    try:
+        docking_fee = int(raw_fee) if raw_fee is not None else DOCKING_FEE_MIN
+    except (TypeError, ValueError):
+        docking_fee = DOCKING_FEE_MIN
+
+    if DOCKING_FEE_ENABLED_KEY in mods:
+        docking_enabled = bool(mods.get(DOCKING_FEE_ENABLED_KEY))
+    else:
+        docking_enabled = True
+
+    raw_svc = mods.get(SERVICE_CHARGE_KEY)
+    try:
+        service_mult = float(raw_svc) if raw_svc is not None else 1.0
+    except (TypeError, ValueError):
+        service_mult = 1.0
+
+    raw_storage = mods.get(STORAGE_RENTAL_KEY)
+    try:
+        storage = int(raw_storage) if raw_storage is not None else STORAGE_RENTAL_MIN
+    except (TypeError, ValueError):
+        storage = STORAGE_RENTAL_MIN
+
+    return {
+        PRICE_LEVER_KEY: lever,
+        DOCKING_FEE_KEY: docking_fee,
+        DOCKING_FEE_ENABLED_KEY: docking_enabled,
+        SERVICE_CHARGE_KEY: service_mult,
+        STORAGE_RENTAL_KEY: storage,
+    }
+
+
 def my_stations(db: Session, player: Player) -> Dict[str, Any]:
     """Every station the player owns, with treasury/tax state, the
-    acquisition cost basis, and the trailing-30-day revenue summary."""
+    acquisition cost basis, trailing-30-day revenue, and current price levers."""
     stations = (
         db.query(Station)
         .filter(Station.owner_id == player.id)
@@ -3598,14 +3678,16 @@ def my_stations(db: Session, player: Player) -> Dict[str, Any]:
     )
     out = []
     for station in stations:
-        out.append({
+        row = {
             "station_id": str(station.id),
             "name": station.name,
             "tax_rate": station.tax_rate,
             "treasury_balance": station.treasury_balance or 0,
             "acquisition_cost": _acquisition_cost(station),
             "revenue": revenue_summary(db, station),
-        })
+        }
+        row.update(_owner_price_lever_fields(station))
+        out.append(row)
     return {"stations": out}
 
 

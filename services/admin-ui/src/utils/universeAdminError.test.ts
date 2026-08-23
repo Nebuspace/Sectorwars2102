@@ -1,0 +1,23 @@
+import { describe, it, expect } from 'vitest';
+import { formatUniverseAdminError } from './universeAdminError';
+
+const axiosError = (status: number, detail?: string) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: detail ? { detail } : {} },
+  });
+
+describe('formatUniverseAdminError (LEG-1213 invent=0 colonization)', () => {
+  it('surfaces universe manage scope on 403', () => {
+    expect(formatUniverseAdminError(axiosError(403), 'Failed to update')).toMatch(
+      /admin\.universe\.manage|Access denied/i,
+    );
+  });
+
+  it('surfaces admin rate-limit on 429', () => {
+    expect(formatUniverseAdminError(axiosError(429), 'Failed to update')).toMatch(/rate limit/i);
+  });
+
+  it('keeps detail for non-scope failures', () => {
+    expect(formatUniverseAdminError(axiosError(500, 'boom'), 'Failed to update')).toBe('boom');
+  });
+});

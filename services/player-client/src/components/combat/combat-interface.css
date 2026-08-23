@@ -582,3 +582,64 @@
   from { opacity: 0; transform: translateY(-5px); }
   to { opacity: 1; transform: translateY(0); }
 }
+/* LEG-372 — combat history browse */
+.combat-history-panel {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--cockpit-primary, #0ff);
+}
+.combat-history-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+.combat-history-header h3 {
+  margin: 0;
+  color: var(--cockpit-primary, #0ff);
+  font-family: var(--cockpit-font, monospace);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.95rem;
+}
+.combat-history-meta {
+  font-size: 0.8rem;
+  opacity: 0.75;
+}
+.combat-history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.combat-history-row {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 0.7fr 1fr 1fr 0.7fr;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  padding: 0.35rem 0.4rem;
+  border: 1px solid rgba(0, 255, 255, 0.15);
+  border-radius: 4px;
+}
+.combat-history-pager {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+.combat-history-empty,
+.combat-history-error,
+.combat-history-loading {
+  margin: 0.5rem 0;
+  font-size: 0.85rem;
+}
+.combat-history-error {
+  color: var(--cockpit-danger, #f66);
+}
+@media (max-width: 720px) {
+  .combat-history-row {
+    grid-template-columns: 1fr 1fr;
+  }
+}

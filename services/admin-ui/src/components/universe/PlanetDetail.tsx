@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import './universe-detail.css';
 
@@ -10,13 +11,55 @@ interface PlanetDetailProps {
 }
 
 /** Fields PlanetDetail may click-edit — must match PlanetUpdateRequest. */
-const PATCHABLE_FIELDS = new Set(['name', 'planet_type', 'defense_level']);
+const PATCHABLE_FIELDS = new Set([
+  'name',
+  'planet_type',
+  'defense_level',
+  'owner_id',
+  // LEG-1489 residual schema fields (tip PlanetUpdateRequest)
+  'size',
+  'position',
+  'gravity',
+  'temperature',
+  'water_coverage',
+  'habitability_score',
+  'resource_richness',
+]);
+
+const FLOAT_PATCH_FIELDS = new Set([
+  'gravity',
+  'temperature',
+  'water_coverage',
+  'resource_richness',
+]);
+
+/** Build PATCH body for a PlanetDetail EditableField (tip PlanetUpdateRequest). */
+export function buildPlanetPatchPayload(field: string, value: unknown): Record<string, unknown> {
+  if (field === 'planet_type') {
+    return { type: value };
+  }
+  if (field === 'owner_id') {
+    const raw = String(value ?? '').trim();
+    // Tip: explicit null clears ownership (uncolonized); omit is leave-unchanged.
+    return { owner_id: raw === '' ? null : raw };
+  }
+  if (FLOAT_PATCH_FIELDS.has(field)) {
+    const n = typeof value === 'number' ? value : parseFloat(String(value));
+    return { [field]: Number.isFinite(n) ? n : 0 };
+  }
+  if (field === 'size' || field === 'position' || field === 'habitability_score' || field === 'defense_level') {
+    const n = typeof value === 'number' ? value : parseInt(String(value), 10);
+    return { [field]: Number.isFinite(n) ? n : 0 };
+  }
+  return { [field]: value };
+}
 
 const PlanetDetail: React.FC<PlanetDetailProps> = ({ planet, onBack, onUpdate }) => {
   const { getIcon, getLabel } = useResourceCatalog();
   const [editingField, setEditingField] = useState<string | null>(null);
   const [editValues, setEditValues] = useState<any>({});
   const [isLoading, setIsLoading] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const handleSave = async (field: string) => {
     const newValue = editValues[field];
@@ -28,17 +71,27 @@ const PlanetDetail: React.FC<PlanetDetailProps> = ({ planet, onBack, onUpdate })
       setEditingField(null);
       return;
     }
-    // API expects `type`; the UI field is still `planet_type`.
-    const payload =
-      field === 'planet_type' ? { type: newValue } : { [field]: newValue };
+    const payload = buildPlanetPatchPayload(field, newValue);
     setIsLoading(true);
+    setSaveError(null);
     try {
       await api.patch(`/api/v1/admin/planets/${planet.id}`, payload);
-      if (onUpdate) onUpdate({ ...planet, [field]: newValue });
+      if (onUpdate) {
+        const local =
+          field === 'owner_id'
+            ? { owner_id: (payload as { owner_id: string | null }).owner_id }
+            : { [field]: newValue };
+        onUpdate({ ...planet, ...local });
+      }
       setEditingField(null);
       setEditValues({});
-    } catch (err: any) {
-      alert(err.response?.data?.detail || `Failed to update ${field}`);
+    } catch (err: unknown) {
+      setSaveError(
+        formatAdminApiError(err, {
+          fallback: `Failed to update ${field}`,
+          scopeHint: 'admin.universe.manage',
+        })
+      );
       setEditingField(null);
     } finally {
       setIsLoading(false);
@@ -74,11 +127,19 @@ const PlanetDetail: React.FC<PlanetDetailProps> = ({ planet, onBack, onUpdate })
           ) : (
             <input
               type={type}
+              step={FLOAT_PATCH_FIELDS.has(field) ? 'any' : undefined}
               value={editValues[field] !== undefined ? editValues[field] : value}
-              onChange={(e) => setEditValues({ 
-                ...editValues, 
-                [field]: type === 'number' ? parseInt(e.target.value) || 0 : e.target.value 
-              })}
+              onChange={(e) =>
+                setEditValues({
+                  ...editValues,
+                  [field]:
+                    type === 'number'
+                      ? FLOAT_PATCH_FIELDS.has(field)
+                        ? parseFloat(e.target.value) || 0
+                        : parseInt(e.target.value, 10) || 0
+                      : e.target.value,
+                })
+              }
               onKeyDown={(e) => {
                 if (e.key === 'Enter') handleSave(field);
                 if (e.key === 'Escape') handleCancel();
@@ -108,7 +169,14 @@ const PlanetDetail: React.FC<PlanetDetailProps> = ({ planet, onBack, onUpdate })
     }
 
     if (!PATCHABLE_FIELDS.has(field)) {
-      return <span className="editable-field">{value}</span>;
+      return (
+        <span
+          className="editable-field read-only"
+          title="Not editable via admin planet PATCH"
+        >
+          {value}
+        </span>
+      );
     }
 
     return (
@@ -230,6 +298,11 @@ const PlanetDetail: React.FC<PlanetDetailProps> = ({ planet, onBack, onUpdate })
       </div>
 
       <div className="detail-content">
+        {saveError ? (
+          <div className="admin-save-error" role="alert">
+            {saveError}
+          </div>
+        ) : null}
         <div className="planet-overview">
           <h3>Planet Overview</h3>
           <div className="info-grid">
@@ -251,11 +324,23 @@ const PlanetDetail: React.FC<PlanetDetailProps> = ({ planet, onBack, onUpdate })
               </span>
             </div>
             <div className="info-item">
-              <span className="label">Owner:</span>
+              <span className="label">Owner ID:</span>
               <span className="value">
-                <EditableField field="owner_name" value={planet.owner_name || 'Uncolonized'} type="text" />
+                <EditableField
+                  field="owner_id"
+                  value={planet.owner_id || ''}
+                  type="text"
+                />
               </span>
             </div>
+            {planet.owner_name ? (
+              <div className="info-item">
+                <span className="label">Owner name:</span>
+                <span className="value">
+                  <EditableField field="owner_name" value={planet.owner_name} type="text" />
+                </span>
+              </div>
+            ) : null}
             <div className="info-item">
               <span className="label">Citadel Level:</span>
               <span className="value">
@@ -288,6 +373,66 @@ const PlanetDetail: React.FC<PlanetDetailProps> = ({ planet, onBack, onUpdate })
               <span className="label">Breeding Rate:</span>
               <span className="value">
                 <EditableField field="breeding_rate" value={planet.breeding_rate} type="number" />% per day
+              </span>
+            </div>
+            <div className="info-item">
+              <span className="label">Size:</span>
+              <span className="value">
+                <EditableField field="size" value={planet.size ?? 1} type="number" />
+              </span>
+            </div>
+            <div className="info-item">
+              <span className="label">Position:</span>
+              <span className="value">
+                <EditableField field="position" value={planet.position ?? 1} type="number" />
+              </span>
+            </div>
+            <div className="info-item">
+              <span className="label">Gravity:</span>
+              <span className="value">
+                <EditableField field="gravity" value={planet.gravity ?? 1} type="number" />
+              </span>
+            </div>
+            <div className="info-item">
+              <span className="label">Temperature:</span>
+              <span className="value">
+                <EditableField field="temperature" value={planet.temperature ?? 20} type="number" />
+              </span>
+            </div>
+            <div className="info-item">
+              <span className="label">Water coverage:</span>
+              <span className="value">
+                <EditableField field="water_coverage" value={planet.water_coverage ?? 0} type="number" />%
+              </span>
+            </div>
+            <div className="info-item">
+              <span className="label">Habitability:</span>
+              <span className="value">
+                <EditableField
+                  field="habitability_score"
+                  value={planet.habitability_score ?? 0}
+                  type="number"
+                />
+              </span>
+            </div>
+            <div className="info-item">
+              <span className="label">Resource richness:</span>
+              <span className="value">
+                <EditableField
+                  field="resource_richness"
+                  value={planet.resource_richness ?? 1}
+                  type="number"
+                />
+              </span>
+            </div>
+            <div className="info-item">
+              <span className="label">Defense level:</span>
+              <span className="value">
+                <EditableField
+                  field="defense_level"
+                  value={planet.defense_level ?? 0}
+                  type="number"
+                />
               </span>
             </div>
           </div>

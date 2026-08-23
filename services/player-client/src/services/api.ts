@@ -106,6 +106,39 @@ async function apiRequest(
   }
 }
 
+/** LEG-372 / LEG-304 — player-scoped combat history list item (GS shape). */
+export interface CombatHistoryOpponent {
+  id: string | null;
+  name: string;
+}
+
+export interface CombatHistoryTarget {
+  type: string;
+  id?: string | null;
+  name?: string;
+  sector_id?: number | null;
+}
+
+export interface CombatHistoryItem {
+  id: string;
+  timestamp: string | null;
+  combat_type: string;
+  role: 'attacker' | 'defender' | string;
+  result: string | null;
+  sector_id: number | null;
+  drones_lost: number | null;
+  ship_destroyed: boolean;
+  opponent?: CombatHistoryOpponent;
+  target?: CombatHistoryTarget;
+}
+
+export interface CombatHistoryResponse {
+  items: CombatHistoryItem[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 // Combat APIs
 export const combatAPI = {
   engage: (targetType: 'ship' | 'planet' | 'port', targetId: string) =>
@@ -119,6 +152,15 @@ export const combatAPI = {
 
   retreat: (combatId: string) =>
     apiRequest(`/api/v1/combat/${combatId}/retreat`, { method: 'POST' }),
+
+  /** Paginated own-combat log (LEG-372). Server scopes to current player. */
+  getHistory: (opts?: { limit?: number; offset?: number }): Promise<CombatHistoryResponse> => {
+    const params = new URLSearchParams();
+    if (opts?.limit != null) params.set('limit', String(opts.limit));
+    if (opts?.offset != null) params.set('offset', String(opts.offset));
+    const q = params.toString();
+    return apiRequest(`/api/v1/combat/history${q ? `?${q}` : ''}`);
+  },
 
   // Drone management
   deployDrones: (sectorId: string, droneCount: number) =>
@@ -134,6 +176,60 @@ export const combatAPI = {
     apiRequest(`/api/v1/drones/${deploymentId}/recall`, {
       method: 'DELETE'
     })
+};
+
+/**
+ * Typed DroneType fleet (attack/defense/scout/mining/repair) — distinct from
+ * planetary defense fighters, which the colony UI labels "Drones".
+ * Canon: FEATURES/gameplay/drones.md. Routes: services/gameserver/.../drones.py
+ */
+export type DroneTypeId = 'attack' | 'defense' | 'scout' | 'mining' | 'repair';
+
+export interface DroneTypeCatalogEntry {
+  type: string;
+  description: string;
+  base_stats: {
+    health: number;
+    attack_power: number;
+    defense_power: number;
+    speed: number;
+  };
+  abilities: string[];
+}
+
+export const droneFleetAPI = {
+  getTypes: (): Promise<{ types: DroneTypeCatalogEntry[] }> =>
+    apiRequest('/api/v1/drones/types'),
+
+  getMyDrones: (includeDestroyed = false) =>
+    apiRequest(`/api/v1/drones/?include_destroyed=${includeDestroyed ? 'true' : 'false'}`),
+
+  create: (body: { drone_type: string; name?: string }) =>
+    apiRequest('/api/v1/drones/', {
+      method: 'POST',
+      body: JSON.stringify({
+        drone_type: body.drone_type,
+        ...(body.name ? { name: body.name } : {}),
+      }),
+    }),
+
+  repair: (droneId: string, repairAmount: number) =>
+    apiRequest(`/api/v1/drones/${droneId}/repair`, {
+      method: 'POST',
+      body: JSON.stringify({ repair_amount: repairAmount }),
+    }),
+
+  upgrade: (droneId: string) =>
+    apiRequest(`/api/v1/drones/${droneId}/upgrade`, {
+      method: 'POST',
+    }),
+
+  /** Batch deploy undeployed drones — same contract as combatAPI.deployDrones. */
+  deploy: (sectorId: string, droneCount: number) =>
+    apiRequest('/api/v1/drones/deploy', {
+      method: 'POST',
+      body: JSON.stringify({ sectorId, droneCount }),
+    }),
 };
 
 // Armory — sector mine laying (open space). Distinct from combatAPI.deployDrones.
@@ -490,7 +586,25 @@ export const teamAPI = {
 
   // Permissions
   getPermissions: (teamId: string) =>
-    apiRequest(`/api/v1/teams/${teamId}/permissions`)
+    apiRequest(`/api/v1/teams/${teamId}/permissions`),
+
+  // Team wars — mirrors teams.py declare_war / list_wars / ceasefire
+  listWars: (teamId: string, status?: 'active' | 'ceased') => {
+    const q = status ? `?status=${status}` : '';
+    return apiRequest(`/api/v1/teams/${teamId}/wars${q}`);
+  },
+
+  declareWar: (teamId: string, targetTeamId: string, reason = '') =>
+    apiRequest(`/api/v1/teams/${teamId}/wars/declare`, {
+      method: 'POST',
+      body: JSON.stringify({ target_team_id: targetTeamId, reason }),
+    }),
+
+  ceasefire: (teamId: string, targetTeamId: string) =>
+    apiRequest(`/api/v1/teams/${teamId}/wars/ceasefire`, {
+      method: 'POST',
+      body: JSON.stringify({ target_team_id: targetTeamId }),
+    }),
 };
 
 // Fleet Management APIs
@@ -603,6 +717,13 @@ export const messageAPI = {
       method: 'DELETE'
     }),
 
+  /** LEG-412: tip POST /messages/{id}/flag?reason= (10–255 chars). */
+  flagMessage: (messageId: string, reason: string) =>
+    apiRequest(
+      `/api/v1/messages/${encodeURIComponent(messageId)}/flag?reason=${encodeURIComponent(reason)}`,
+      { method: 'POST' },
+    ),
+
   getTeamMessages: (teamId: string, page: number = 1) =>
     apiRequest(`/api/v1/messages/team/${teamId}?page=${page}`)
 };
@@ -703,6 +824,10 @@ export const miningAPI = {
       method: 'POST',
       body: JSON.stringify({ ship_id: shipId }),
     }),
+
+  /** LEG-430 tip GET — nearest AM-flagged refinery + ore buy_price. */
+  getNearestAmRefinery: () =>
+    apiRequest('/api/v1/mining/nearest-am-refinery'),
 };
 
 /** First-login gate / onboarding session (GameContext + FirstLoginContext). */
@@ -1102,6 +1227,15 @@ export const shipUpgradeAPI = {
   //   harvester is live (residual 2): install succeeds; passive_income from _baked.
   installModule: (shipId: string, slotIndex: number, moduleClass: string, tier: number) =>
     apiRequest(`/api/v1/ships/${shipId}/modules/install`, {
+      method: 'POST',
+      body: JSON.stringify({ slot_index: slotIndex, module_class: moduleClass, tier }),
+    }),
+
+  // previewModule → dry-run before/after effect rows (LEG-320 / LEG-1095). No DB
+  //   write / no credit charge. Payload: current / projected / delta maps from GS
+  //   — client must not re-implement MODULE_DEFINITIONS bake math.
+  previewModule: (shipId: string, slotIndex: number, moduleClass: string, tier: number) =>
+    apiRequest(`/api/v1/ships/${shipId}/modules/preview`, {
       method: 'POST',
       body: JSON.stringify({ slot_index: slotIndex, module_class: moduleClass, tier }),
     }),
@@ -1619,6 +1753,19 @@ export const tradingAPI = {
       body: JSON.stringify({ occupant_player_id: occupantPlayerId }),
     }),
 
+  // LEG-438 — long-term mooring (docking-slips.md; tip POST /trading/mooring/long-term).
+  // Rate is tip docking_service.LONG_TERM_MOORING_RATE_PER_DAY (200 cr/day) — preview only.
+  acquireLongTermMooring: (stationId: string, days: number) =>
+    apiRequest('/api/v1/trading/mooring/long-term', {
+      method: 'POST',
+      body: JSON.stringify({ station_id: stationId, days }),
+    }),
+
+  releaseLongTermMooring: () =>
+    apiRequest('/api/v1/trading/mooring/long-term/release', {
+      method: 'POST',
+    }),
+
   getMarket: (stationId: string) =>
     apiRequest(`/api/v1/trading/market/${stationId}`),
 
@@ -1887,6 +2034,46 @@ export const warpGatesAPI = {
     apiRequest(`/api/v1/warp-gates/${siteId}/advance-construction`, {
       method: 'POST',
     }),
+
+  /** Owner: set access mode / whitelist / allies / toll (POST …/permissions). */
+  setPermissions: (
+    gateId: string,
+    body: {
+      mode: string;
+      whitelist?: string[];
+      allies?: string[];
+      toll?: number;
+    },
+  ) =>
+    apiRequest(`/api/v1/warp-gates/${gateId}/permissions`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  /** Owner: layered access (faction-rep / toll_bypass / npc_factions). */
+  setAccessLayers: (
+    gateId: string,
+    body: {
+      faction_rep_min?: { faction_type: string; value: number };
+      faction_rep_max?: { faction_type: string; value: number };
+      toll_bypass?: string[];
+      npc_factions?: string[];
+    },
+  ) =>
+    apiRequest(`/api/v1/warp-gates/${gateId}/access-requirements`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+
+  /** Owner: transfer (optional sale) to another player. */
+  transfer: (gateId: string, newOwnerId: string, salePrice?: number) =>
+    apiRequest(`/api/v1/warp-gates/${gateId}/transfer`, {
+      method: 'POST',
+      body: JSON.stringify({
+        new_owner_id: newOwnerId,
+        ...(salePrice != null ? { sale_price: salePrice } : {}),
+      }),
+    }),
 };
 
 /** Quantum Crystal / Lumen Crystal refining (DISTINCT from quantum refine-charge). */
@@ -1943,10 +2130,63 @@ export const portOwnershipAPI = {
       body: JSON.stringify({ rate: taxRate }),
     }),
 
+  // Owner revenue levers (port-ownership.md § Revenue streams) — tip GS shapes.
+  setPriceLever: (stationId: string, pct: number) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/price-lever`, {
+      method: 'POST',
+      body: JSON.stringify({ pct }),
+    }),
+
+  setDockingFee: (stationId: string, amount: number, enabled: boolean) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/docking-fee`, {
+      method: 'POST',
+      body: JSON.stringify({ amount, enabled }),
+    }),
+
+  setServiceCharge: (stationId: string, multiplier: number) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/service-charge`, {
+      method: 'POST',
+      body: JSON.stringify({ multiplier }),
+    }),
+
+  setStorageRental: (stationId: string, perDay: number) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/storage-rental`, {
+      method: 'POST',
+      body: JSON.stringify({ per_day: perDay }),
+    }),
+
   withdraw: (stationId: string, amount: number) =>
     apiRequest(`/api/v1/port-ownership/stations/${stationId}/withdraw`, {
       method: 'POST',
       body: JSON.stringify({ amount }),
+    }),
+
+  // Owner defense_policy levers (port-ownership.md § Defense system).
+  // GS DefensePolicyRequest — patrol_radius must stay 0 (deferred).
+  getDefensePolicy: (stationId: string) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/defense-policy`),
+
+  setDefensePolicy: (
+    stationId: string,
+    policy: {
+      docking_access: 'open' | 'faction' | 'whitelist' | 'hostile_deny';
+      hostility_list: string[];
+      punitive_fee_mult: number;
+      defender_posture: string;
+      drone_allocation_pct: number;
+      patrol_radius?: number;
+    },
+  ) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/defense-policy`, {
+      method: 'POST',
+      body: JSON.stringify({
+        docking_access: policy.docking_access,
+        hostility_list: policy.hostility_list,
+        punitive_fee_mult: policy.punitive_fee_mult,
+        defender_posture: policy.defender_posture,
+        drone_allocation_pct: policy.drone_allocation_pct,
+        patrol_radius: 0,
+      }),
     }),
 
   getTakeoverStatus: (stationId: string) =>
@@ -1961,6 +2201,45 @@ export const portOwnershipAPI = {
     apiRequest(`/api/v1/port-ownership/stations/${stationId}/takeover/counter`, {
       method: 'POST',
       body: JSON.stringify({ action }),
+    }),
+
+  // Economic takeover defense (port-ownership.md § Takeover defense).
+  // Magnitudes ratified: TARIFF_CUT_FRACTION=0.5 (server-side),
+  // COUNTER_TRADE_CREDITS_PER_VOLUME=1, ceilings 500_000.
+  activateTariffCut: (stationId: string) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/takeover/defense/tariff-cut`, {
+      method: 'POST',
+    }),
+
+  activateCounterTrade: (stationId: string, defenseVolume: number) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/takeover/defense/counter-trade`, {
+      method: 'POST',
+      body: JSON.stringify({ defense_volume: defenseVolume }),
+    }),
+
+  activateFriendlyTrade: (
+    stationId: string,
+    payload: {
+      contracted_volume: number;
+      ally_team_id?: string | null;
+      ally_faction?: string | null;
+    },
+  ) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/takeover/defense/friendly-trade`, {
+      method: 'POST',
+      body: JSON.stringify({
+        contracted_volume: payload.contracted_volume,
+        ...(payload.ally_team_id ? { ally_team_id: payload.ally_team_id } : {}),
+        ...(payload.ally_faction ? { ally_faction: payload.ally_faction } : {}),
+      }),
+    }),
+
+  // Fee-distribution rebalance (port-ownership.md § Fee distribution).
+  // Operating is immutable 30% server-side; client sends defense_pct + owner_pct.
+  setFeeDistribution: (stationId: string, defensePct: number, ownerPct: number) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/fee-distribution`, {
+      method: 'POST',
+      body: JSON.stringify({ defense_pct: defensePct, owner_pct: ownerPct }),
     }),
 };
 
@@ -2004,6 +2283,7 @@ export const beaconAPI = {
 
 export const gameAPI = {
   combat: combatAPI,
+  droneFleet: droneFleetAPI,
   armory: armoryAPI,
   greyStatus: greyStatusAPI,
   planetary: planetaryAPI,
@@ -2179,5 +2459,35 @@ export const recoveryAPI = {
       method: 'POST',
       body: JSON.stringify({}),
     }),
+};
+
+/** LEG-397 — ARIA Tier-1 memory journal + data-index catalog (owner JWT only). */
+export type AriaMemory = {
+  id: string;
+  memory_type: string;
+  importance_score: number;
+  confidence_level: number;
+  created_at?: string | null;
+  content: Record<string, unknown>;
+};
+
+export type AriaDataStream = {
+  key: string;
+  domain: string;
+  display_name: string;
+  retention_class: string;
+  transparency_visible: boolean;
+};
+
+export const ariaMemoryAPI = {
+  getMemories: (opts?: { memoryType?: string; limit?: number }): Promise<AriaMemory[]> => {
+    const params = new URLSearchParams();
+    if (opts?.memoryType) params.set('memory_type', opts.memoryType);
+    if (opts?.limit != null) params.set('limit', String(opts.limit));
+    const q = params.toString();
+    return apiRequest(`/api/v1/ai/memories${q ? `?${q}` : ''}`);
+  },
+  getDataIndex: (): Promise<AriaDataStream[]> =>
+    apiRequest('/api/v1/ai/data-index'),
 };
 
