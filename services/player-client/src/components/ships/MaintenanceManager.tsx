@@ -90,7 +90,13 @@ const MaintenanceManager: React.FC<MaintenanceManagerProps> = ({ shipId, playerC
   }
 
   const c = status.condition;
-  const barClass = c >= 75 ? 'good' : c >= 50 ? 'worn' : c >= 25 ? 'degraded' : 'critical';
+  // Canon bands (ships.md): 90-100 / 75-89 / 50-74 / 25-49 / 10-24 / 0-9
+  const barClass =
+    c >= 75 ? 'good' : c >= 50 ? 'worn' : c >= 25 ? 'degraded' : c >= 10 ? 'critical' : 'catastrophic';
+  const catastrophic =
+    c < 10 ||
+    (typeof status.band.failure_tier === 'string' &&
+      /catastroph/i.test(status.band.failure_tier));
 
   return (
     <div className="maintenance-manager">
@@ -108,6 +114,12 @@ const MaintenanceManager: React.FC<MaintenanceManagerProps> = ({ shipId, playerC
         <div className="mnt-bar-track">
           <div className={`mnt-bar-fill ${barClass}`} style={{ width: `${Math.max(0, Math.min(100, c))}%` }} />
         </div>
+        {catastrophic && (
+          <p className="mnt-catastrophic-warn" role="alert" data-testid="mnt-catastrophic-warn">
+            Catastrophic hull failure risk — condition below 10%. Service immediately.
+            {status.band.failure_tier ? ` (${status.band.failure_tier})` : ''}
+          </p>
+        )}
         <p className="mnt-note">Decays {status.decay_pct_per_day}%/day for this hull class. Service it to restore condition.</p>
       </div>
 
