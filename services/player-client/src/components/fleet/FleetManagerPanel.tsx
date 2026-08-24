@@ -13,6 +13,10 @@
  * `sector_id` is NAV/player-move only — never POSTed to fleet move.
  * LEG-141: call getAvailableMoves on mount / sector-id change so hop cache
  * is not empty until an intervening warp.
+ * LEG-2278 / LEG-308: initiateBattle + simulateBattleRound on existing
+ * fleetAPI (no new GS fields). Tip GET /fleets is team-only — defender is a
+ * UUID the server validates (same-sector, not same-team). GET battle detail
+ * omits battle_log (LEG-400); rounds from simulate-round are shown locally.
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
@@ -105,11 +109,50 @@ type BattleStatusSnapshot = {
   rounds_completed?: number;
   winner?: string | null;
   battle_log?: BattleLogEntry[] | null;
-  attacker?: { ships_remaining?: number; formation?: string | null };
-  defender?: { ships_remaining?: number; formation?: string | null };
+  attacker?: {
+    ships_remaining?: number;
+    ships_retreated?: number;
+    formation?: string | null;
+  };
+  defender?: {
+    ships_remaining?: number;
+    ships_retreated?: number;
+    formation?: string | null;
+  };
   casualties?: {
-    attacker?: Array<{ ship_name?: string; destroyed?: boolean }>;
-    defender?: Array<{ ship_name?: string; destroyed?: boolean }>;
+    attacker?: Array<{ ship_name?: string; destroyed?: boolean; retreated?: boolean }>;
+    defender?: Array<{ ship_name?: string; destroyed?: boolean; retreated?: boolean }>;
+  };
+};
+
+type FlatRound = {
+  round: number;
+  attacker_damage: unknown;
+  defender_damage: unknown;
+  destroyed: number;
+  retreated: number;
+};
+
+const flattenRoundEntry = (entry: BattleLogEntry): FlatRound | null => {
+  const nested =
+    entry.results && typeof entry.results === 'object'
+      ? (entry.results as BattleLogEntry)
+      : entry;
+  const round =
+    typeof nested.round === 'number'
+      ? nested.round
+      : typeof entry.round === 'number'
+        ? entry.round
+        : null;
+  if (round == null) return null;
+  const destroyedList = Array.isArray(nested.ships_destroyed) ? nested.ships_destroyed : [];
+  const retreatedList = Array.isArray(nested.ships_retreated) ? nested.ships_retreated : [];
+  return {
+    round,
+    attacker_damage: nested.attacker_damage,
+    defender_damage: nested.defender_damage,
+    destroyed: destroyedList.length,
+    retreated: retreatedList.length,
   };
 };
 
@@ -124,6 +167,8 @@ type Busy =
   | 'disband'
   | 'resupply'
   | 'move'
+  | 'initiate'
+  | 'simulate'
   | null;
 
 const errMsg = (e: unknown): string =>
@@ -172,6 +217,8 @@ export const FleetManagerPanel: React.FC = () => {
   const [previewFormation, setPreviewFormation] = useState('standard');
   const [battleId, setBattleId] = useState<string | null>(null);
   const [battleStatus, setBattleStatus] = useState<BattleStatusSnapshot | null>(null);
+  const [defenderFleetId, setDefenderFleetId] = useState('');
+  const [localRounds, setLocalRounds] = useState<FlatRound[]>([]);
 
   const selected = fleets.find((f) => f.id === selectedId) ?? null;
   const inBattle = selected?.status === 'in_battle';
@@ -279,6 +326,7 @@ export const FleetManagerPanel: React.FC = () => {
     if (!selected || !inBattle) {
       setBattleId(null);
       setBattleStatus(null);
+      setLocalRounds([]);
       return;
     }
 
@@ -322,6 +370,19 @@ export const FleetManagerPanel: React.FC = () => {
 
   const memberShipIds = new Set(members.map((m) => m.ship_id));
   const availableShips = ships.filter((s) => !memberShipIds.has(s.id));
+  const defenderIdTrimmed = defenderFleetId.trim();
+  const defenderIdValid = isUuid(defenderIdTrimmed);
+  const outOfSupply = (selected?.supply_level ?? 0) <= 0;
+  const battleEnded =
+    battleStatus?.is_active === false || Boolean(battleStatus?.winner);
+  const logRounds: FlatRound[] = (() => {
+    const raw = battleStatus?.battle_log;
+    const fromGet = Array.isArray(raw)
+      ? raw.map(flattenRoundEntry).filter((r): r is FlatRound => r != null)
+      : [];
+    if (fromGet.length > 0) return fromGet;
+    return localRounds;
+  })();
 
   const run = async (kind: Exclude<Busy, 'load' | null>, fn: () => Promise<void>) => {
     setBusy(kind);
@@ -611,6 +672,58 @@ export const FleetManagerPanel: React.FC = () => {
               </button>
             </div>
 
+            {!inBattle && (
+              <section
+                className="fleet-manager-battle-initiate"
+                data-testid="fleet-battle-initiate"
+                aria-label="Initiate fleet battle"
+              >
+                <h4 className="fleet-manager-subheading">Initiate battle</h4>
+                <p className="fleet-manager-muted" data-testid="fleet-battle-initiate-hint">
+                  GET /fleets is team-only; same-team fleets cannot fight. Enter a
+                  defender fleet UUID in this sector — the server rejects friendly
+                  fire, out-of-sector, and out-of-supply.
+                </p>
+                {outOfSupply && (
+                  <p className="fleet-manager-muted" data-testid="fleet-battle-out-of-supply">
+                    This fleet is out of supply and cannot initiate combat.
+                  </p>
+                )}
+                <div className="fleet-manager-row">
+                  <label className="fleet-manager-label">
+                    Defender fleet id
+                    <input
+                      data-testid="fleet-battle-defender"
+                      type="text"
+                      value={defenderFleetId}
+                      onChange={(e) => setDefenderFleetId(e.target.value)}
+                      placeholder="uuid"
+                      disabled={busy !== null || outOfSupply}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    data-testid="fleet-battle-initiate-submit"
+                    disabled={busy !== null || !defenderIdValid || outOfSupply}
+                    onClick={() =>
+                      run('initiate', async () => {
+                        const created = (await fleetAPI.initiateBattle(
+                          selected.id,
+                          defenderIdTrimmed,
+                        )) as { battle_id?: string };
+                        const id = created?.battle_id ? String(created.battle_id) : null;
+                        if (id) setBattleId(id);
+                        setLocalRounds([]);
+                        await refresh();
+                      })
+                    }
+                  >
+                    {busy === 'initiate' ? 'Initiating…' : 'Initiate battle'}
+                  </button>
+                </div>
+              </section>
+            )}
+
             {inBattle && (
               <section
                 className="fleet-manager-battle"
@@ -618,16 +731,61 @@ export const FleetManagerPanel: React.FC = () => {
                 aria-label="Active battle"
               >
                 <h4 className="fleet-manager-subheading">Battle viewer</h4>
+                {battleEnded && (
+                  <p className="fleet-manager-battle-meta" data-testid="fleet-battle-terminal">
+                    Battle ended{battleStatus?.winner ? ` — winner ${battleStatus.winner}` : ''}.
+                  </p>
+                )}
                 {!battleId && (
                   <p className="fleet-manager-muted" data-testid="fleet-battle-waiting">
                     Looking up active battle for this fleet…
                   </p>
                 )}
+                {battleId && !battleEnded && (
+                  <div className="fleet-manager-row">
+                    <button
+                      type="button"
+                      data-testid="fleet-battle-simulate"
+                      disabled={busy !== null}
+                      onClick={() =>
+                        run('simulate', async () => {
+                          const result = (await fleetAPI.simulateBattleRound(battleId)) as {
+                            battle_id?: string;
+                            battle_ongoing?: boolean;
+                            winner?: string | null;
+                            round_results?: BattleLogEntry;
+                          };
+                          const flat = result?.round_results
+                            ? flattenRoundEntry(result.round_results)
+                            : null;
+                          if (flat) {
+                            setLocalRounds((prev) => [...prev, flat]);
+                          }
+                          if (result?.battle_ongoing === false) {
+                            setBattleStatus((prev) => ({
+                              ...(prev ?? {}),
+                              is_active: false,
+                              winner: result.winner ?? prev?.winner ?? null,
+                            }));
+                            await refresh();
+                            return;
+                          }
+                          const detail = (await fleetAPI.getBattle(battleId)) as BattleStatusSnapshot;
+                          setBattleStatus(
+                            detail && typeof detail === 'object' ? detail : null,
+                          );
+                        })
+                      }
+                    >
+                      {busy === 'simulate' ? 'Resolving round…' : 'Simulate round'}
+                    </button>
+                  </div>
+                )}
                 {battleStatus && (
                   <>
                     <p className="fleet-manager-battle-meta" data-testid="fleet-battle-meta">
                       Phase {battleStatus.phase ?? '—'} · rounds completed{' '}
-                      {battleStatus.rounds_completed ?? 0}
+                      {battleStatus.rounds_completed ?? logRounds.length}
                       {battleStatus.attacker?.ships_remaining != null &&
                         battleStatus.defender?.ships_remaining != null && (
                           <>
@@ -638,29 +796,19 @@ export const FleetManagerPanel: React.FC = () => {
                         )}
                       {battleStatus.winner ? ` · winner ${battleStatus.winner}` : ''}
                     </p>
-                    {Array.isArray(battleStatus.battle_log) && battleStatus.battle_log.length > 0 ? (
+                    {logRounds.length > 0 ? (
                       <ol className="fleet-manager-battle-log" data-testid="fleet-battle-log">
-                        {battleStatus.battle_log.map((entry, idx) => {
-                          const round =
-                            typeof entry.round === 'number' ? entry.round : idx + 1;
-                          const atk =
-                            typeof entry.attacker_damage === 'number'
-                              ? entry.attacker_damage
-                              : '—';
-                          const def =
-                            typeof entry.defender_damage === 'number'
-                              ? entry.defender_damage
-                              : '—';
-                          const destroyed = Array.isArray(entry.ships_destroyed)
-                            ? entry.ships_destroyed.length
-                            : 0;
-                          return (
-                            <li key={`round-${round}-${idx}`} data-testid={`fleet-battle-round-${round}`}>
-                              Round {round}: atk dmg {String(atk)} · def dmg {String(def)}
-                              {destroyed > 0 ? ` · destroyed ${destroyed}` : ''}
-                            </li>
-                          );
-                        })}
+                        {logRounds.map((entry, idx) => (
+                          <li
+                            key={`round-${entry.round}-${idx}`}
+                            data-testid={`fleet-battle-round-${entry.round}`}
+                          >
+                            Round {entry.round}: atk dmg {String(entry.attacker_damage ?? '—')} · def
+                            dmg {String(entry.defender_damage ?? '—')}
+                            {entry.destroyed > 0 ? ` · destroyed ${entry.destroyed}` : ''}
+                            {entry.retreated > 0 ? ` · retreated ${entry.retreated}` : ''}
+                          </li>
+                        ))}
                       </ol>
                     ) : (
                       <p
@@ -668,8 +816,8 @@ export const FleetManagerPanel: React.FC = () => {
                         data-testid="fleet-battle-log-residual"
                       >
                         Round-by-round battle_log is not on player GET /fleets/battles/
-                        {'{id}'} yet (tip returns rounds_completed / casualties only). Showing
-                        status summary above — GS sibling needed to expose battle_log.
+                        {'{id}'} yet (tip returns rounds_completed / casualties only). Use
+                        Simulate round to record each server-resolved round locally.
                       </p>
                     )}
                     {battleStatus.casualties && (
@@ -680,6 +828,15 @@ export const FleetManagerPanel: React.FC = () => {
                         {(battleStatus.casualties.defender ?? []).filter((c) => c.destroyed).length}
                       </p>
                     )}
+                    <p className="fleet-manager-muted" data-testid="fleet-battle-retreats">
+                      Retreated — attacker:{' '}
+                      {battleStatus.attacker?.ships_retreated ??
+                        (battleStatus.casualties?.attacker ?? []).filter((c) => c.retreated).length}
+                      , defender:{' '}
+                      {battleStatus.defender?.ships_retreated ??
+                        (battleStatus.casualties?.defender ?? []).filter((c) => c.retreated).length}
+                      {' '}(hull-break retreat is server-side; no player retreat POST)
+                    </p>
                   </>
                 )}
               </section>

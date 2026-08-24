@@ -18,6 +18,8 @@ const {
   move,
   getBattles,
   getBattle,
+  initiateBattle,
+  simulateBattleRound,
 } = vi.hoisted(() => ({
   getFleets: vi.fn(),
   createFleet: vi.fn(),
@@ -30,6 +32,8 @@ const {
   move: vi.fn(),
   getBattles: vi.fn(),
   getBattle: vi.fn(),
+  initiateBattle: vi.fn(),
+  simulateBattleRound: vi.fn(),
 }));
 
 vi.mock('../../../services/api', () => ({
@@ -46,6 +50,8 @@ vi.mock('../../../services/api', () => ({
     move: (...a: unknown[]) => move(...a),
     getBattles: (...a: unknown[]) => getBattles(...a),
     getBattle: (...a: unknown[]) => getBattle(...a),
+    initiateBattle: (...a: unknown[]) => initiateBattle(...a),
+    simulateBattleRound: (...a: unknown[]) => simulateBattleRound(...a),
   },
 }));
 
@@ -53,6 +59,7 @@ const CURRENT_SECTOR_UUID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 const WARP_UUID = '11111111-2222-3333-4444-555555555555';
 const TUNNEL_UUID = '66666666-7777-8888-9999-aaaaaaaaaaaa';
 const UNAFFORDABLE_UUID = 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff';
+const DEFENDER_FLEET_UUID = 'cccccccc-dddd-eeee-ffff-000000000001';
 
 const mockGame = vi.hoisted(() => {
   const CURRENT = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
@@ -151,6 +158,12 @@ describe('FleetManagerPanel', () => {
     move.mockReset().mockResolvedValue({ message: 'Fleet moved' });
     getBattles.mockReset().mockResolvedValue([]);
     getBattle.mockReset().mockResolvedValue({});
+    initiateBattle.mockReset().mockResolvedValue({ battle_id: 'battle-1' });
+    simulateBattleRound.mockReset().mockResolvedValue({
+      battle_id: 'battle-1',
+      battle_ongoing: true,
+      round_results: { round: 1, attacker_damage: 4, defender_damage: 2, ships_destroyed: [] },
+    });
     mockGame.currentSector = {
       id: CURRENT_SECTOR_UUID,
       sector_id: 42,
@@ -534,6 +547,145 @@ describe('FleetManagerPanel', () => {
     );
     expect(container.querySelector('[data-testid="fleet-battle-round-2"]')?.textContent).toMatch(
       /destroyed 1/,
+    );
+  });
+
+  it('calls initiateBattle with selected fleet id and defender uuid (LEG-2278)', async () => {
+    getFleets.mockResolvedValue([sampleFleet]);
+    getFleetMembers.mockResolvedValue([]);
+
+    await act(async () => {
+      root.render(<FleetManagerPanel />);
+    });
+    await selectFleet(container);
+
+    const input = container.querySelector(
+      '[data-testid="fleet-battle-defender"]',
+    ) as HTMLInputElement;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        'value',
+      )?.set;
+      setter?.call(input, DEFENDER_FLEET_UUID);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    await act(async () => {
+      (container.querySelector(
+        '[data-testid="fleet-battle-initiate-submit"]',
+      ) as HTMLButtonElement).click();
+    });
+
+    expect(initiateBattle).toHaveBeenCalledWith('fleet-1', DEFENDER_FLEET_UUID);
+  });
+
+  it('surfaces initiateBattle API errors in the panel alert', async () => {
+    getFleets.mockResolvedValue([sampleFleet]);
+    getFleetMembers.mockResolvedValue([]);
+    initiateBattle.mockRejectedValue(new Error('Fleets must be in the same sector'));
+
+    await act(async () => {
+      root.render(<FleetManagerPanel />);
+    });
+    await selectFleet(container);
+
+    const input = container.querySelector(
+      '[data-testid="fleet-battle-defender"]',
+    ) as HTMLInputElement;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        'value',
+      )?.set;
+      setter?.call(input, DEFENDER_FLEET_UUID);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    await act(async () => {
+      (container.querySelector(
+        '[data-testid="fleet-battle-initiate-submit"]',
+      ) as HTMLButtonElement).click();
+    });
+
+    expect(
+      container.querySelector('[data-testid="fleet-manager-error"]')?.textContent,
+    ).toMatch(/Fleets must be in the same sector/);
+  });
+
+  it('calls simulateBattleRound with the polled battle id (LEG-2278)', async () => {
+    getFleets.mockResolvedValue([{ ...sampleFleet, status: 'in_battle' }]);
+    getFleetMembers.mockResolvedValue([]);
+    getBattles.mockResolvedValue([
+      {
+        battle_id: 'battle-1',
+        attacker_fleet_id: 'fleet-1',
+        defender_fleet_id: 'fleet-2',
+        battle_ongoing: true,
+      },
+    ]);
+    getBattle.mockResolvedValue({
+      battle_id: 'battle-1',
+      phase: 'combat',
+      rounds_completed: 1,
+      is_active: true,
+    });
+
+    await act(async () => {
+      root.render(<FleetManagerPanel />);
+    });
+    await selectFleet(container);
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    await act(async () => {
+      (container.querySelector(
+        '[data-testid="fleet-battle-simulate"]',
+      ) as HTMLButtonElement).click();
+    });
+
+    expect(simulateBattleRound).toHaveBeenCalledWith('battle-1');
+  });
+
+  it('shows terminal winner when simulate-round reports battle_ongoing false', async () => {
+    getFleets.mockResolvedValue([{ ...sampleFleet, status: 'in_battle' }]);
+    getFleetMembers.mockResolvedValue([]);
+    getBattles.mockResolvedValue([
+      {
+        battle_id: 'battle-1',
+        attacker_fleet_id: 'fleet-1',
+        defender_fleet_id: 'fleet-2',
+        battle_ongoing: true,
+      },
+    ]);
+    getBattle.mockResolvedValue({
+      battle_id: 'battle-1',
+      phase: 'combat',
+      is_active: true,
+    });
+    simulateBattleRound.mockResolvedValue({
+      battle_id: 'battle-1',
+      battle_ongoing: false,
+      winner: 'attacker',
+    });
+
+    await act(async () => {
+      root.render(<FleetManagerPanel />);
+    });
+    await selectFleet(container);
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    await act(async () => {
+      (container.querySelector(
+        '[data-testid="fleet-battle-simulate"]',
+      ) as HTMLButtonElement).click();
+    });
+
+    expect(container.querySelector('[data-testid="fleet-battle-terminal"]')?.textContent).toMatch(
+      /winner attacker/,
     );
   });
 });
