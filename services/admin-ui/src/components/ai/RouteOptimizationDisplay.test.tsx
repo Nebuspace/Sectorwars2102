@@ -49,3 +49,49 @@ describe('RouteOptimizationDisplay scope honesty (LEG-1326)', () => {
     expect(screen.getByRole('alert').textContent ?? '').toMatch(/rate limit/i);
   });
 });
+
+describe('RouteOptimizationDisplay route-stats secondary honesty (LEG-1260)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('surfaces PLAYERS_VIEW when second route-optimization GET is 403', async () => {
+    let calls = 0;
+    vi.mocked(api.get).mockImplementation(async () => {
+      calls += 1;
+      if (calls === 1) {
+        return { data: { active_optimizations: [], optimization_stats: null } };
+      }
+      throw axiosError(403);
+    });
+
+    render(<RouteOptimizationDisplay />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/PLAYERS_VIEW|Access denied/i);
+  });
+
+  it('surfaces admin rate-limit when second route-optimization GET is 429', async () => {
+    let calls = 0;
+    vi.mocked(api.get).mockImplementation(async () => {
+      calls += 1;
+      if (calls === 1) {
+        return { data: { active_optimizations: [], optimization_stats: null } };
+      }
+      throw axiosError(429);
+    });
+
+    render(<RouteOptimizationDisplay />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    expect(screen.getByRole('alert').textContent ?? '').toMatch(/rate limit/i);
+  });
+});
