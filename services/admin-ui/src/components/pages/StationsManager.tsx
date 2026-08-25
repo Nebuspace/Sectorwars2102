@@ -631,7 +631,7 @@ const AddPortModal: React.FC<AddPortModalProps> = ({ onClose, onSave }) => {
         setSectors(availableSectors);
       } catch (err: unknown) {
         console.error('Failed to fetch sectors:', err);
-        toast.error('Failed to load sectors. Please try again.');
+        toast.error(`Failed to load sectors: ${getErrorMessage(err)}`);
       } finally {
         setLoadingSectors(false);
       }
@@ -646,7 +646,7 @@ const AddPortModal: React.FC<AddPortModalProps> = ({ onClose, onSave }) => {
         setPlayers(playersData);
       } catch (err: unknown) {
         console.error('Failed to fetch players:', err);
-        toast.error('Failed to load players. Please try again.');
+        toast.error(`Failed to load players: ${getErrorMessage(err)}`);
       } finally {
         setLoadingPlayers(false);
       }
