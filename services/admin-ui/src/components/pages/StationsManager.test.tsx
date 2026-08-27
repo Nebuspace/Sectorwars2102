@@ -206,3 +206,98 @@ describe('StationsManager update-stock-levels (LEG-1712)', () => {
     expect(api.post).not.toHaveBeenCalled();
   });
 });
+
+describe('StationsManager AddPortModal load honesty (LEG-2399)', () => {
+  const stationsOk = { data: { stations: [], total: 0 } };
+  const sectorsOk = {
+    data: {
+      sectors: [{ id: 'sec-uuid', sector_id: 42, name: 'Alpha', has_port: false }],
+    },
+  };
+  const playersOk = { data: { players: [] } };
+
+  const mockGets = (overrides: { sectors?: unknown; players?: unknown }) => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/stations')) {
+        return stationsOk;
+      }
+      if (String(url).includes('/sectors')) {
+        if (overrides.sectors) {
+          throw overrides.sectors;
+        }
+        return sectorsOk;
+      }
+      if (String(url).includes('/players')) {
+        if (overrides.players) {
+          throw overrides.players;
+        }
+        return playersOk;
+      }
+      return { data: {} };
+    });
+  };
+
+  const openAddPortModal = async () => {
+    render(<StationsManager />);
+    fireEvent.click(await screen.findByRole('button', { name: /Add New Station/i }));
+    expect(await screen.findByText(/Add New Port/i)).toBeTruthy();
+  };
+
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    toastSuccess.mockReset();
+    toastError.mockReset();
+    confirmMock.mockReset();
+    confirmMock.mockResolvedValue(false);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('sectors 403 surfaces formatAdminApiError station-management scope copy', async () => {
+    mockGets({ sectors: axiosError(403) });
+    await openAddPortModal();
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalled();
+    });
+    const messages = toastError.mock.calls.map((c) => String(c[0]));
+    expect(messages.some((m) => /Access denied|station management/i.test(m))).toBe(true);
+    expect(messages).not.toContain('Failed to load sectors. Please try again.');
+  });
+
+  it('sectors 429 surfaces admin rate-limit helper copy', async () => {
+    mockGets({ sectors: axiosError(429) });
+    await openAddPortModal();
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/rate limit/i));
+    });
+    expect(toastError.mock.calls.map((c) => String(c[0]))).not.toContain(
+      'Failed to load sectors. Please try again.',
+    );
+  });
+
+  it('players 403 surfaces formatAdminApiError station-management scope copy', async () => {
+    mockGets({ players: axiosError(403) });
+    await openAddPortModal();
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalled();
+    });
+    const messages = toastError.mock.calls.map((c) => String(c[0]));
+    expect(messages.some((m) => /Access denied|station management/i.test(m))).toBe(true);
+    expect(messages).not.toContain('Failed to load players. Please try again.');
+  });
+
+  it('players 429 surfaces admin rate-limit helper copy', async () => {
+    mockGets({ players: axiosError(429) });
+    await openAddPortModal();
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/rate limit/i));
+    });
+    expect(toastError.mock.calls.map((c) => String(c[0]))).not.toContain(
+      'Failed to load players. Please try again.',
+    );
+  });
+});
