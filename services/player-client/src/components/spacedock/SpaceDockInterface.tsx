@@ -13,7 +13,7 @@ import MiningVenue from './MiningVenue';
 import GamblingVenue from './GamblingVenue';
 import RefiningVenue from './RefiningVenue';
 import { getStationClassInfo } from '../common/stationIdentity';
-import { shipAPI, registryAPI, ariaMarketAPI, type AriaMarketIntelList } from '../../services/api';
+import { shipAPI, registryAPI, ariaMarketAPI, shipUpgradeAPI, type AriaMarketIntelList } from '../../services/api';
 import { formatCredits } from '../../utils/formatters';
 import './spacedock.css';
 
@@ -969,6 +969,8 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
     cargo?: Record<string, number> | null;
     cargo_capacity?: number;
     current_value?: number;
+    /** null when no Mining Laser fitted (GET /player/current-ship). */
+    mining_laser_level?: number | null;
   } | null>(null);
 
   const [showInsurance, setShowInsurance] = useState(false);
@@ -1355,6 +1357,40 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
       setLicenseBusy(false);
     }
   }, [shipData?.id, licenseBusy, refreshPlayerState, fetchShipData]);
+
+  // First Mining Laser fit (LEG-1226 / LEG-109): POST .../equipment/install { equipment_key }.
+  // Distinct from laser-upgrade (requires an existing equipment_slots mining_laser).
+  const installMiningLaser = useCallback(async () => {
+    const shipId = shipData?.id;
+    if (!shipId || laserBusy) {
+      if (!shipId) setLaserError('No active ship found.');
+      return;
+    }
+    setLaserBusy(true);
+    setLaserError(null);
+    setLaserSuccess(null);
+    try {
+      const result = await shipUpgradeAPI.installEquipment(shipId, 'mining_laser');
+      const cost = formatCredits(result.cost_paid ?? 0);
+      setLaserSuccess(
+        `${result.message || 'Mining Laser installed successfully'} — ${cost}.`,
+      );
+      if (typeof result.remaining_credits === 'number') {
+        setLocalCredits(result.remaining_credits);
+        updatePlayerCredits(result.remaining_credits);
+      }
+      Promise.allSettled([refreshPlayerState(), fetchShipData()]);
+    } catch (error) {
+      console.error('Mining laser install error:', error);
+      setLaserError(
+        error instanceof Error && error.message
+          ? error.message
+          : 'Mining laser install failed',
+      );
+    } finally {
+      setLaserBusy(false);
+    }
+  }, [shipData?.id, laserBusy, updatePlayerCredits, refreshPlayerState, fetchShipData]);
 
   // Buy the next Mining Laser ladder level
   // (POST /api/v1/mining/laser-upgrade {ship_id}). Requires a Mining Laser
@@ -2092,6 +2128,7 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
         return (
           <MiningVenue
             shipId={shipData?.id}
+            miningLaserLevel={shipData?.mining_laser_level ?? null}
             licenseBusy={licenseBusy}
             licenseError={licenseError}
             licenseSuccess={licenseSuccess}
@@ -2099,6 +2136,7 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
             laserBusy={laserBusy}
             laserError={laserError}
             laserSuccess={laserSuccess}
+            installMiningLaser={installMiningLaser}
             upgradeMiningLaser={upgradeMiningLaser}
             onBack={() => setActiveVenue('hub')}
             blackMarketButton={<BlackMarketButton />}
