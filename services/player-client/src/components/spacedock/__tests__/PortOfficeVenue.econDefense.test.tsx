@@ -59,6 +59,7 @@ vi.mock('../../../contexts/GameContext', () => ({
     activateCounterTrade,
     activateFriendlyTrade,
     setFeeDistribution,
+    militaryTakeover: vi.fn(),
   }),
 }));
 
