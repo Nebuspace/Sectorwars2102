@@ -1312,8 +1312,22 @@ export const shipUpgradeAPI = {
       body: JSON.stringify({ upgrade_type: upgradeType }),
     }),
 
-  // Legacy equipment install/uninstall retired (WO-RETIRE-SHIP-LEGACY-EQUIPMENT-API):
-  // superseded by module-grid installModule/removeModule below.
+  // Equipment-slot install/uninstall (LEG-1226 / LEG-109). Still live for
+  // equipment_slots keys (mining_laser, …). Distinct from module-grid
+  // installModule/removeModule below — the deferred lattice `mining` family
+  // stays consumer_inert / Design-only; do not route Mining Laser through it.
+  // Quantum Field Harvester CTA stays on installModule (LEG-2484).
+  installEquipment: (shipId: string, equipmentKey: string) =>
+    apiRequest(`/api/v1/ships/${shipId}/equipment/install`, {
+      method: 'POST',
+      body: JSON.stringify({ equipment_key: equipmentKey }),
+    }),
+
+  uninstallEquipment: (shipId: string, equipmentKey: string) =>
+    apiRequest(`/api/v1/ships/${shipId}/equipment/uninstall`, {
+      method: 'POST',
+      body: JSON.stringify({ equipment_key: equipmentKey }),
+    }),
 
   // SHIP-MODS (WO-SM-5): module slot-grid lattice + install/remove.
   //
