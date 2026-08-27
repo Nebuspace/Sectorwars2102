@@ -34,6 +34,8 @@ test.describe('Admin UI route smoke (WO-ADM-ROUTE-SMOKE-E2E)', () => {
       { path: '/universe/planets', title: 'Planets Manager' },
       { path: '/universe/stations', title: 'Stations Manager' },
       { path: '/universe/warptunnels', title: 'Warp Tunnels Manager' },
+      { path: '/tradedocks', title: 'TradeDock management' },
+      { path: '/medals', title: 'Medal Admin' },
       { path: '/events', title: 'Event Management' },
       { path: '/security', title: 'Security Dashboard' },
       { path: '/analytics', title: 'Advanced Analytics' },
