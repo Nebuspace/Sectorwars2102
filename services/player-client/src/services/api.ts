@@ -646,13 +646,21 @@ export const fleetAPI = {
     }),
 
   updateFormation: (fleetId: string, formation: string) =>
-    apiRequest(`/api/v1/fleets/${fleetId}/formation?formation=${formation}`, {
+    apiRequest(`/api/v1/fleets/${fleetId}/formation?formation=${encodeURIComponent(formation)}`, {
       method: 'PATCH'
     }),
 
   disbandFleet: (fleetId: string) =>
     apiRequest(`/api/v1/fleets/${fleetId}`, {
       method: 'DELETE'
+    }),
+
+  getFleetMembers: (fleetId: string) =>
+    apiRequest(`/api/v1/fleets/${fleetId}/members`),
+
+  resupplyFleet: (fleetId: string) =>
+    apiRequest(`/api/v1/fleets/${fleetId}/resupply`, {
+      method: 'POST'
     }),
 
   initiateBattle: (fleetId: string, defenderFleetId: string) =>
@@ -669,7 +677,11 @@ export const fleetAPI = {
   getBattles: (activeOnly?: boolean) => {
     const params = activeOnly ? '?active_only=true' : '';
     return apiRequest(`/api/v1/fleets/battles${params}`);
-  }
+  },
+
+  /** Tip GET /fleets/battles/{id} — status/casualties; battle_log may be absent (LEG-400). */
+  getBattle: (battleId: string) =>
+    apiRequest(`/api/v1/fleets/battles/${battleId}`),
 };
 
 // Faction APIs
