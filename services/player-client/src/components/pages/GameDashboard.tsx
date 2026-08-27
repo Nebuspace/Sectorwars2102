@@ -33,6 +33,7 @@ import SafeVaultPanel from '../cockpit/SafeVaultPanel';
 import BankPanel, { isStarportPrimeStation, shipCargoFree } from '../cockpit/BankPanel';
 import { miningAPI, navAPI, playerAPI, type NavChartResponse, sectorAPI, type SectorWreck } from '../../services/api';
 import NearestAmRefineryOverlay from '../mining/NearestAmRefineryOverlay';
+import HarvestYieldPreview, { HARVEST_GATE_COPY } from '../mining/HarvestYieldPreview';
 import { projectedWarpBearing, subscribeWarpDepart, WARP_TURN_MS } from '../../services/warpCinematicBus';
 import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import { TurnsIcon } from '../icons/TurnsIcon';
@@ -2247,16 +2248,6 @@ const GameDashboardInner: React.FC = () => {
   // code in the HTTP detail, which we translate to player-facing copy. Refresh
   // player state after a successful harvest so the cockpit turns/cargo reflect
   // the spend immediately.
-  const HARVEST_GATE_COPY: Record<string, string> = {
-    no_mining_laser: 'No mining laser equipped — fit one at a TradeDock to extract ore.',
-    must_be_undocked: 'You must be undocked and in open space to deploy the mining laser.',
-    cargo_full: 'Cargo hold is full — no room for ore. Sell or jettison before mining.',
-    insufficient_turns: 'Not enough turns to run a harvest cycle.',
-    not_an_asteroid_field: 'No asteroids here — harvesting requires an asteroid field.',
-    ship_not_found: 'Active ship not found — re-select a ship and try again.',
-    already_mining: 'Mining laser already deployed — wait for the current harvest to finish.',
-  };
-
   const handleHarvest = async () => {
     if (harvestBusy) return;
     const shipId = currentShip?.id;
@@ -3923,6 +3914,7 @@ const GameDashboardInner: React.FC = () => {
                         currentSector?.type?.toUpperCase() === 'ASTEROID_FIELD' ? (
                           <div className="planetary-asteroid-state">
                             <b className="planetary-asteroid-label">⚫ ASTEROID FIELD</b>
+                            <HarvestYieldPreview shipId={currentShip?.id} />
                             {flying ? (
                               // Demo L1352 field-row branch: here?HARVEST:(flying?HALT:APPROACH) —
                               // under burn, the row offers HALT instead of HARVEST (same

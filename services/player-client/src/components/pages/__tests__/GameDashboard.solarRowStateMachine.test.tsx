@@ -53,6 +53,7 @@ vi.mock('../../tactical/SolarSystemViewscreen', () => ({ default: () => <div /> 
 // PlanetPortPair below, not the windshield scene itself.
 vi.mock('../../tactical/WindshieldTableau', () => ({ default: () => <div /> }));
 vi.mock('../../mining/NearestAmRefineryOverlay', () => ({ default: () => null }));
+vi.mock('../../mining/HarvestYieldPreview', () => ({ default: () => null, HARVEST_GATE_COPY: {} }));
 
 // Prop-capturing stub — records every render's props keyed by planet/station
 // id so this file can assert the per-row flying/here wiring GameDashboard
