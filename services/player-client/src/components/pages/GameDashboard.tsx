@@ -33,6 +33,7 @@ import SafeVaultPanel from '../cockpit/SafeVaultPanel';
 import BankPanel, { isStarportPrimeStation, shipCargoFree } from '../cockpit/BankPanel';
 import { miningAPI, navAPI, playerAPI, type NavChartResponse, sectorAPI, type SectorWreck } from '../../services/api';
 import NearestAmRefineryOverlay from '../mining/NearestAmRefineryOverlay';
+import AsteroidDepletionOverlay from '../mining/AsteroidDepletionOverlay';
 import { projectedWarpBearing, subscribeWarpDepart, WARP_TURN_MS } from '../../services/warpCinematicBus';
 import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import { TurnsIcon } from '../icons/TurnsIcon';
@@ -2923,6 +2924,7 @@ const GameDashboardInner: React.FC = () => {
         const consoleNode = (
         <div className="cockpit-console">
           <NearestAmRefineryOverlay />
+          <AsteroidDepletionOverlay readout={currentSector?.asteroid_depletion} />
           {/* DOCKED STATE: the station-face venue workspace (WO-UI3-STATION-
               MODE) — replaces the flight-monitor bezel wrapper
               (.console-monitor.trading-monitor.full-width + .monitor-bezel

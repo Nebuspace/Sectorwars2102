@@ -59,6 +59,8 @@ export interface Sector {
   x_coord?: number | null;
   y_coord?: number | null;
   z_coord?: number | null;
+  /** LEG-427 / mining.md:255 — GS asteroid_depletion on current-sector (null off ASTEROID_FIELD). */
+  asteroid_depletion?: Record<string, unknown> | null;
 }
 
 export interface Planet {

@@ -1,0 +1,25 @@
+.depletion-overlay {
+  font-family: inherit;
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  padding: 0.4em 0.7em;
+  border-bottom: 1px solid rgba(255, 186, 73, 0.28);
+  color: #fc9;
+}
+
+.depletion-overlay[data-empty='true'] {
+  display: none;
+}
+
+.depletion-head {
+  opacity: 0.7;
+  margin-bottom: 0.2em;
+}
+
+.depletion-line {
+  line-height: 1.35;
+}
+
+.depletion-band {
+  text-transform: uppercase;
+}
