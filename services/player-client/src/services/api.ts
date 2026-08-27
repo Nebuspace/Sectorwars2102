@@ -231,6 +231,20 @@ export const droneFleetAPI = {
       body: JSON.stringify({ sectorId, droneCount }),
     }),
 
+  /** Per-drone deploy (LEG-1811). GS body is snake_case; idle drones only. */
+  deployOne: (
+    droneId: string,
+    body: { sector_id: string; deployment_type?: string; target_id?: string },
+  ) =>
+    apiRequest(`/api/v1/drones/${droneId}/deploy`, {
+      method: 'POST',
+      body: JSON.stringify({
+        sector_id: body.sector_id,
+        deployment_type: body.deployment_type ?? 'defense',
+        ...(body.target_id ? { target_id: body.target_id } : {}),
+      }),
+    }),
+
   /** Recall a deployed drone by drone id (POST /drones/{id}/recall). */
   recall: (droneId: string) =>
     apiRequest(`/api/v1/drones/${droneId}/recall`, { method: 'POST' }),
