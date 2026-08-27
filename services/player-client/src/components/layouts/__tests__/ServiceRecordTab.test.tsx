@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 /**
- * ServiceRecordTab — RankDisplay + RankProgress + MedalShowcase + CombatHistoryPanel + BountyBoard.
+ * ServiceRecordTab — RankDisplay + RankProgress + MedalShowcase + CombatHistoryPanel
+ * + BountyBoard + BountyPlaceCancel.
  */
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -23,6 +24,9 @@ vi.mock('../../combat/CombatHistoryPanel', () => ({
 vi.mock('../../ranking/BountyBoard', () => ({
   default: () => <div data-testid="bounty-board" />,
 }));
+vi.mock('../../ranking/BountyPlaceCancel', () => ({
+  default: () => <div data-testid="bounty-place-cancel" />,
+}));
 
 import ServiceRecordTab from '../ServiceRecordTab';
 
@@ -43,7 +47,7 @@ describe('ServiceRecordTab', () => {
     container.remove();
   });
 
-  it('mounts personal-standing views, combat history, and the public bounty board', async () => {
+  it('mounts personal-standing views, combat history, bounty board, and place/cancel', async () => {
     await act(async () => {
       root.render(<ServiceRecordTab />);
     });
@@ -54,5 +58,6 @@ describe('ServiceRecordTab', () => {
     expect(container.querySelector('[data-testid="medal-showcase"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="combat-history-panel"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="bounty-board"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="bounty-place-cancel"]')).toBeTruthy();
   });
 });

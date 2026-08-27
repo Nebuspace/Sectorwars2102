@@ -4,6 +4,7 @@ import RankProgress from '../ranking/RankProgress';
 import MedalShowcase from '../ranking/MedalShowcase';
 import { CombatHistoryPanel } from '../combat/CombatHistoryPanel';
 import BountyBoard from '../ranking/BountyBoard';
+import BountyPlaceCancel from '../ranking/BountyPlaceCancel';
 
 /**
  * ServiceRecordTab — the StatusBar dossier dropdown's "Service Record" tab
@@ -29,6 +30,8 @@ import BountyBoard from '../ranking/BountyBoard';
  * and no longer mounts CombatInterface.
  * LEG-1109 / LEG-156: public Federation BountyBoard (available bounties) under
  * the personal medals — browse surface, not fabricated portraits/kill logs.
+ * LEG-2553: BountyPlaceCancel beside the board — place + placer-only cancel
+ * via tip GS routes (does not remint browse).
  */
 const ServiceRecordTab: React.FC = () => (
   <div className="sb-service-record">
@@ -37,6 +40,7 @@ const ServiceRecordTab: React.FC = () => (
     <MedalShowcase />
     <CombatHistoryPanel />
     <BountyBoard />
+    <BountyPlaceCancel />
   </div>
 );
 
