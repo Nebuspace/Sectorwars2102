@@ -1053,12 +1053,20 @@ export const medalsAPI = {
     apiRequest('/api/v1/medals/unviewed'),
 };
 
-// Bounty APIs
+// Bounty APIs — place / getOnTarget / getAvailable tip-PRESENT; cancel binds
+// tip GS POST /ranking/bounties/{bounty_id}/cancel (ranking.py CancelBountyRequest).
 export const bountyAPI = {
   place: (targetId: string, amount: number) =>
     apiRequest('/api/v1/ranking/bounties/place', {
       method: 'POST',
       body: JSON.stringify({ target_id: targetId, amount }),
+    }),
+
+  /** Placer-only cancel; body requires target_id (GS CancelBountyRequest). */
+  cancel: (bountyId: string, targetId: string) =>
+    apiRequest(`/api/v1/ranking/bounties/${encodeURIComponent(bountyId)}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({ target_id: targetId }),
     }),
 
   getOnTarget: (playerId: string) =>
