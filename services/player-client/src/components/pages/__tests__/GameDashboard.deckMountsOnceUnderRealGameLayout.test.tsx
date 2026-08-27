@@ -82,6 +82,7 @@ vi.mock('../../tactical/SolarSystemViewscreen', () => ({ default: () => <div /> 
 // WO-UI2-WINDSHIELD-TABLEAU: flight-mode mount is now WindshieldTableau.
 vi.mock('../../tactical/WindshieldTableau', () => ({ default: () => <div /> }));
 vi.mock('../../mining/NearestAmRefineryOverlay', () => ({ default: () => null }));
+vi.mock('../../mining/HarvestYieldPreview', () => ({ default: () => null, HARVEST_GATE_COPY: {} }));
 vi.mock('../../tactical/PlanetPortPair', () => ({ default: () => <div /> }));
 vi.mock('../../galaxy/Galaxy3DRenderer', () => ({ default: () => <div /> }));
 vi.mock('../../quantum/QuantumDriveConsole', () => ({ default: () => <div /> }));
