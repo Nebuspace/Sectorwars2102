@@ -443,6 +443,10 @@ interface GameContextType {
     defensePct: number,
     ownerPct: number,
   ) => Promise<unknown>;
+  militaryTakeover: (
+    stationId: string,
+    action: 'declare' | 'siege' | 'occupy',
+  ) => Promise<unknown>;
 
   // Player-to-player hails (COMMS mailbox) — bound to /api/v1/messages/*.
   // Follows the Port Office mold: no global isLoading/error churn, the
@@ -1714,6 +1718,26 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
+  // Military takeover stages (declare → siege → occupy). Magnitudes /
+  // immunity / notice window enforced server-side — client posts action only.
+  const militaryTakeover = async (
+    stationId: string,
+    action: 'declare' | 'siege' | 'occupy',
+  ): Promise<unknown> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      const data = await portOwnershipAPI.militaryTakeover(stationId, action);
+      if (action === 'occupy') {
+        await refreshPlayerState();
+      }
+      return data;
+    } catch (error: any) {
+      console.error('Error on military takeover action:', error);
+      throw error;
+    }
+  };
+
   // Owner counter during the 7-canonical-day window: accept (forced sale),
   // match (volume contest resets the clock), or dispute (auto-arbitration)
   const counterTakeover = async (
@@ -2123,6 +2147,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     activateCounterTrade,
     activateFriendlyTrade,
     setFeeDistribution,
+    militaryTakeover,
 
     // Player-to-player hails (COMMS mailbox)
     inboxMessages,
