@@ -97,6 +97,7 @@ const Sidebar: React.FC = () => {
         { to: '/multi-account', label: 'Multi-Account Review', icon: '🔍' },
         { to: '/scopes', label: 'Scopes', icon: '🪪' },
         { to: '/audit', label: 'Action Log', icon: '📋' },
+        { to: '/review-queue', label: 'Review Queue', icon: '✅' },
         { to: '/translations', label: 'Translations', icon: '🌍' }
       ]
     }

@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
-import axios from 'axios';
+import userEvent from '@testing-library/user-event';
 import { AdminProvider, useAdmin } from './AdminContext';
+import { api } from '../utils/auth';
+import { wipeBangGalaxy } from '../services/bangGalaxyApi';
 
 const mockUseAuth = vi.fn();
 vi.mock('./AuthContext', () => ({
@@ -14,11 +16,23 @@ vi.mock('../services/bangGalaxyApi', () => ({
   wipeBangGalaxy: vi.fn(),
 }));
 
-vi.mock('axios');
-const mockedAxios = vi.mocked(axios, true);
+vi.mock('../utils/auth', () => ({
+  api: {
+    get: vi.fn(),
+    post: vi.fn(),
+    put: vi.fn(),
+    delete: vi.fn(),
+  },
+}));
+
+function httpErr(status: number, detail?: string) {
+  return Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: detail ? { detail } : {} },
+  });
+}
 
 function Probe() {
-  const { adminStats, loadAdminStats, users, loadUsers, error } = useAdmin();
+  const { adminStats, loadAdminStats, users, loadUsers, error, wipeGalaxy } = useAdmin();
   return (
     <div>
       <span data-testid="total-users">{adminStats?.totalUsers ?? 'none'}</span>
@@ -26,21 +40,29 @@ function Probe() {
       <span data-testid="error">{error ?? 'none'}</span>
       <button onClick={() => loadAdminStats()}>load-stats</button>
       <button onClick={() => loadUsers()}>load-users</button>
+      <button
+        onClick={() => {
+          void wipeGalaxy('g1', 'CONFIRM').catch(() => undefined);
+        }}
+      >
+        wipe-galaxy
+      </button>
     </div>
   );
 }
 
 describe('AdminContext / AdminProvider', () => {
-  let mockApiInstance: { get: ReturnType<typeof vi.fn>; post: ReturnType<typeof vi.fn>; put: ReturnType<typeof vi.fn>; delete: ReturnType<typeof vi.fn> };
-
   beforeEach(() => {
-    mockApiInstance = { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() };
-    mockedAxios.create = vi.fn().mockReturnValue(mockApiInstance);
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    vi.mocked(api.put).mockReset();
+    vi.mocked(api.delete).mockReset();
+    vi.mocked(wipeBangGalaxy).mockReset();
   });
 
   it('does not fetch admin stats for a non-admin user (loadAdminStats is a no-op)', async () => {
     mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: false }, token: 'tok' });
-    const user = (await import('@testing-library/user-event')).default.setup();
+    const user = userEvent.setup();
 
     render(
       <AdminProvider>
@@ -49,16 +71,16 @@ describe('AdminContext / AdminProvider', () => {
     );
 
     await user.click(screen.getByText('load-stats'));
-    expect(mockApiInstance.get).not.toHaveBeenCalled();
+    expect(api.get).not.toHaveBeenCalled();
     expect(screen.getByTestId('total-users')).toHaveTextContent('none');
   });
 
   it('loads and maps admin stats from snake_case to camelCase for an admin user', async () => {
     mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
-    mockApiInstance.get.mockResolvedValue({
+    vi.mocked(api.get).mockResolvedValue({
       data: { total_users: 42, total_players: 10, total_sectors: 1, total_planets: 2, total_ports: 3, total_ships: 4, active_sessions: 5 },
     });
-    const user = (await import('@testing-library/user-event')).default.setup();
+    const user = userEvent.setup();
 
     render(
       <AdminProvider>
@@ -68,12 +90,13 @@ describe('AdminContext / AdminProvider', () => {
 
     await user.click(screen.getByText('load-stats'));
     await waitFor(() => expect(screen.getByTestId('total-users')).toHaveTextContent('42'));
+    expect(api.get).toHaveBeenCalledWith('/api/v1/admin/stats');
   });
 
   it('sets an error and clears stats when loadAdminStats fails', async () => {
     mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
-    mockApiInstance.get.mockRejectedValue(new Error('network down'));
-    const user = (await import('@testing-library/user-event')).default.setup();
+    vi.mocked(api.get).mockRejectedValue(new Error('network down'));
+    const user = userEvent.setup();
 
     render(
       <AdminProvider>
@@ -88,10 +111,47 @@ describe('AdminContext / AdminProvider', () => {
     expect(screen.getByTestId('total-users')).toHaveTextContent('none');
   });
 
+  it('surfaces loadAdminStats 403 as PLAYERS_VIEW denial (LEG-1254)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    vi.mocked(api.get).mockRejectedValue(httpErr(403));
+    const user = userEvent.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>
+    );
+
+    await user.click(screen.getByText('load-stats'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/PLAYERS_VIEW/),
+    );
+    expect(screen.getByTestId('error').textContent).not.toMatch(
+      /Failed to load admin statistics/,
+    );
+  });
+
+  it('surfaces loadUsers 429 as admin rate-limit (LEG-1254)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    vi.mocked(api.get).mockRejectedValue(httpErr(429));
+    const user = userEvent.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>
+    );
+
+    await user.click(screen.getByText('load-users'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/rate limit/i),
+    );
+  });
+
   it('loads user accounts for an admin user', async () => {
     mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
-    mockApiInstance.get.mockResolvedValue({ data: { users: [{ id: 'u1' }, { id: 'u2' }] } });
-    const user = (await import('@testing-library/user-event')).default.setup();
+    vi.mocked(api.get).mockResolvedValue({ data: { users: [{ id: 'u1' }, { id: 'u2' }] } });
+    const user = userEvent.setup();
 
     render(
       <AdminProvider>
@@ -101,5 +161,42 @@ describe('AdminContext / AdminProvider', () => {
 
     await user.click(screen.getByText('load-users'));
     await waitFor(() => expect(screen.getByTestId('user-count')).toHaveTextContent('2'));
+    expect(api.get).toHaveBeenCalledWith('/api/v1/admin/users');
+  });
+
+  it('surfaces wipeGalaxy 403 as admin.universe.manage denial (LEG-1315)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    vi.mocked(wipeBangGalaxy).mockRejectedValueOnce(httpErr(403));
+    const user = userEvent.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>
+    );
+
+    await user.click(screen.getByText('wipe-galaxy'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/admin\.universe\.manage|Access denied/i),
+    );
+    expect(screen.getByTestId('error')).not.toHaveTextContent('Failed to wipe galaxy');
+  });
+
+  it('surfaces wipeGalaxy 429 as admin rate-limit (LEG-1315)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    vi.mocked(wipeBangGalaxy).mockRejectedValueOnce(httpErr(429));
+    const user = userEvent.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>
+    );
+
+    await user.click(screen.getByText('wipe-galaxy'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/rate limit/i),
+    );
+    expect(screen.getByTestId('error')).not.toHaveTextContent('Failed to wipe galaxy');
   });
 });
