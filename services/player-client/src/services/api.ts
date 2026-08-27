@@ -230,6 +230,10 @@ export const droneFleetAPI = {
       method: 'POST',
       body: JSON.stringify({ sectorId, droneCount }),
     }),
+
+  /** Recall a deployed drone by drone id (POST /drones/{id}/recall). */
+  recall: (droneId: string) =>
+    apiRequest(`/api/v1/drones/${droneId}/recall`, { method: 'POST' }),
 };
 
 // Armory — sector mine laying (open space). Distinct from combatAPI.deployDrones.
