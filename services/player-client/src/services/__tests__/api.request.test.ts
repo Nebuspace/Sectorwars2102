@@ -19,7 +19,7 @@ vi.mock('../apiClient', () => ({
 }));
 
 import apiClient from '../apiClient';
-import { centralBankAPI, citadelAPI, combatAPI, greyStatusAPI, miningAPI, navAPI, playerAPI, sectorAPI, shipRegistryAPI, tradeAPI } from '../api';
+import { centralBankAPI, citadelAPI, combatAPI, greyStatusAPI, miningAPI, navAPI, planetaryAPI, playerAPI, sectorAPI, shipRegistryAPI, tradeAPI } from '../api';
 
 const get = apiClient.get as ReturnType<typeof vi.fn>;
 const post = apiClient.post as ReturnType<typeof vi.fn>;
@@ -334,5 +334,29 @@ describe('apiRequest via trade/combat/grey wrappers', () => {
       JSON.stringify({ kind: 'PLANET_MINEFIELD', x: 0, y: 0, level: 1 }),
       jsonHeaders,
     );
+  });
+
+  it('planetaryAPI.withdrawStockpileToCargo POSTs tip path and payload', async () => {
+    post.mockResolvedValue({
+      data: { success: true, message: 'Withdrew 10 fuel ore to cargo.', amount_to_cargo: 10, tax_skimmed: 0 },
+    });
+    const out = await planetaryAPI.withdrawStockpileToCargo('planet-9', 'fuel_ore', 10);
+    expect(out.success).toBe(true);
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/planets/planet-9/stockpile/withdraw',
+      JSON.stringify({ commodity: 'fuel_ore', amount: 10 }),
+      jsonHeaders,
+    );
+  });
+
+  it('planetaryAPI.withdrawStockpileToCargo surfaces 403 non-owner detail', async () => {
+    post.mockRejectedValue(
+      axiosHttpError(403, {
+        detail: 'You do not own this planet and are not on the owner\'s team',
+      }),
+    );
+    await expect(
+      planetaryAPI.withdrawStockpileToCargo('planet-9', 'organics', 1),
+    ).rejects.toThrow('You do not own this planet and are not on the owner\'s team');
   });
 });

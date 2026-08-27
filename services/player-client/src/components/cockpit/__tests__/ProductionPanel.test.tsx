@@ -41,6 +41,7 @@ const defaultProps = {
   totalColonists: 10,
   onSetAllocations: vi.fn(),
   onStoreToSafe: vi.fn(),
+  onWithdrawToCargo: vi.fn(),
 };
 
 describe('ProductionPanel', () => {
@@ -101,6 +102,47 @@ describe('ProductionPanel', () => {
       storeBtn.click();
     });
     expect(onStoreToSafe).toHaveBeenCalledWith('fuel', 50);
+  });
+
+  it('loads stockpile to cargo without calling Store→Safe', async () => {
+    const onStoreToSafe = vi.fn();
+    const onWithdrawToCargo = vi.fn();
+    await act(async () => {
+      root.render(
+        <ProductionPanel
+          {...defaultProps}
+          onStoreToSafe={onStoreToSafe}
+          onWithdrawToCargo={onWithdrawToCargo}
+          lines={[baseLine({ stock: 120, canWithdraw: 120 })]}
+        />,
+      );
+    });
+
+    const cargoBtn = Array.from(container.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('Cargo'),
+    ) as HTMLButtonElement;
+    expect(cargoBtn.disabled).toBe(false);
+
+    await act(async () => {
+      cargoBtn.click();
+    });
+    expect(onWithdrawToCargo).toHaveBeenCalledWith('fuel', 120);
+    expect(onStoreToSafe).not.toHaveBeenCalled();
+  });
+
+  it('disables Cargo when canWithdraw < 1', async () => {
+    await act(async () => {
+      root.render(
+        <ProductionPanel
+          {...defaultProps}
+          lines={[baseLine({ canWithdraw: 0, withdrawDisabledTitle: 'empty' })]}
+        />,
+      );
+    });
+    const cargoBtn = Array.from(container.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('Cargo'),
+    ) as HTMLButtonElement;
+    expect(cargoBtn.disabled).toBe(true);
   });
 
   it('disables Store when canStore < 1 or busy', async () => {
