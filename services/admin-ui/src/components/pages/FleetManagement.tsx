@@ -202,7 +202,12 @@ const FleetManagement: React.FC = () => {
       fetchShips();
     } catch (error) {
       console.error('Error creating ship:', error);
-      toast.error('Failed to create ship');
+      toast.error(
+        formatAdminApiError(error, {
+          fallback: 'Failed to create ship',
+          scopeHint: 'admin.ships.manage scope required for fleet management',
+        })
+      );
     }
   };
 
@@ -217,7 +222,12 @@ const FleetManagement: React.FC = () => {
       fetchShips();
     } catch (error) {
       console.error('Error updating ship:', error);
-      toast.error('Failed to update ship');
+      toast.error(
+        formatAdminApiError(error, {
+          fallback: 'Failed to update ship',
+          scopeHint: 'admin.ships.manage scope required for fleet management',
+        })
+      );
     }
   };
 
@@ -236,7 +246,12 @@ const FleetManagement: React.FC = () => {
       fetchShips();
     } catch (error) {
       console.error('Error deleting ship:', error);
-      toast.error('Failed to delete ship');
+      toast.error(
+        formatAdminApiError(error, {
+          fallback: 'Failed to delete ship',
+          scopeHint: 'admin.ships.manage scope required for fleet management',
+        })
+      );
     }
   };
 
@@ -257,7 +272,12 @@ const FleetManagement: React.FC = () => {
       fetchShips();
     } catch (error) {
       console.error('Error teleporting ship:', error);
-      toast.error('Failed to teleport ship');
+      toast.error(
+        formatAdminApiError(error, {
+          fallback: 'Failed to teleport ship',
+          scopeHint: 'admin.ships.manage scope required for fleet management',
+        })
+      );
     }
   };
 
