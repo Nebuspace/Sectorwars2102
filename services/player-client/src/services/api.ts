@@ -448,6 +448,65 @@ export const planetaryAPI = {
         denylist: body.denylist ?? [],
       }),
     }),
+
+  // Voluntary ownership transfer (colonization.md Ownership controls; LEG-514).
+  // Fee lives on the tip payload (offer.fee_credits / accept.fee_credits) —
+  // do not compute a client-side percentage.
+  getOwnershipTransfer: (
+    planetId: string,
+  ): Promise<{
+    planet_id: string;
+    pending: boolean;
+    offer?: {
+      from_player_id: string;
+      to_player_id: string;
+      fee_credits: number;
+      fee_base?: number;
+      offered_at?: string;
+      expires_at?: string;
+    } | null;
+  }> => apiRequest(`/api/v1/planets/${planetId}/ownership-transfer`),
+
+  offerOwnershipTransfer: (
+    planetId: string,
+    recipientPlayerId: string,
+  ): Promise<{
+    success: boolean;
+    planet_id: string;
+    offer: {
+      from_player_id: string;
+      to_player_id: string;
+      fee_credits: number;
+      fee_base?: number;
+      offered_at?: string;
+      expires_at?: string;
+    };
+  }> =>
+    apiRequest(`/api/v1/planets/${planetId}/ownership-transfer`, {
+      method: 'POST',
+      body: JSON.stringify({ recipient_player_id: recipientPlayerId }),
+    }),
+
+  acceptOwnershipTransfer: (
+    planetId: string,
+  ): Promise<{
+    success: boolean;
+    planet_id: string;
+    from_player_id: string;
+    to_player_id: string;
+    fee_credits: number;
+    owner_credits_remaining: number;
+  }> =>
+    apiRequest(`/api/v1/planets/${planetId}/ownership-transfer/accept`, {
+      method: 'POST',
+    }),
+
+  cancelOwnershipTransfer: (
+    planetId: string,
+  ): Promise<{ success: boolean; planet_id: string; cancelled: boolean }> =>
+    apiRequest(`/api/v1/planets/${planetId}/ownership-transfer/cancel`, {
+      method: 'POST',
+    }),
 };
 
 /** Station-protection tractor lock (Guarantee #2) — player responses. */

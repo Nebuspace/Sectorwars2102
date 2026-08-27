@@ -377,4 +377,43 @@ describe('apiRequest via trade/combat/grey wrappers', () => {
       planetaryAPI.withdrawStockpileToCargo('planet-9', 'organics', 1),
     ).rejects.toThrow('You do not own this planet and are not on the owner\'s team');
   });
+
+  it('planetaryAPI.offerOwnershipTransfer POSTs recipient_player_id', async () => {
+    post.mockResolvedValue({
+      data: { success: true, planet_id: 'planet-1', offer: { fee_credits: 12 } },
+    });
+    const out = await planetaryAPI.offerOwnershipTransfer('planet-1', 'player-9');
+    expect(out).toEqual({
+      success: true,
+      planet_id: 'planet-1',
+      offer: { fee_credits: 12 },
+    });
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/planets/planet-1/ownership-transfer',
+      JSON.stringify({ recipient_player_id: 'player-9' }),
+      jsonHeaders,
+    );
+  });
+
+  it('planetaryAPI.acceptOwnershipTransfer POSTs /accept', async () => {
+    post.mockResolvedValue({
+      data: { success: true, planet_id: 'planet-1', fee_credits: 12 },
+    });
+    await planetaryAPI.acceptOwnershipTransfer('planet-1');
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/planets/planet-1/ownership-transfer/accept',
+      undefined,
+      jsonHeaders,
+    );
+  });
+
+  it('planetaryAPI.getOwnershipTransfer GETs status', async () => {
+    get.mockResolvedValue({ data: { planet_id: 'planet-1', pending: false, offer: null } });
+    const out = await planetaryAPI.getOwnershipTransfer('planet-1');
+    expect(out).toEqual({ planet_id: 'planet-1', pending: false, offer: null });
+    expect(get).toHaveBeenCalledWith(
+      '/api/v1/planets/planet-1/ownership-transfer',
+      jsonHeaders,
+    );
+  });
 });

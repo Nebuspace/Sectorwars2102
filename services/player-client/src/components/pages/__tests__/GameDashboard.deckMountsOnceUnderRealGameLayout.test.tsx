@@ -60,7 +60,10 @@ vi.mock('../../../services/api', () => ({
     salvageWreck: vi.fn(), getContents: vi.fn().mockResolvedValue({ star: null, bodies: [] }), },
   combatAPI: { engage: vi.fn(), getStatus: vi.fn() },
   greyStatusAPI: { getStatus: () => Promise.resolve({ isGrey: false, kind: null, greyUntil: null, remainingSeconds: 0, clearFineCredits: null }) },
-  planetaryAPI: { getOwnedPlanets: () => Promise.resolve({ planets: [] }) },
+  planetaryAPI: {
+    getOwnedPlanets: () => Promise.resolve({ planets: [] }),
+    getOwnershipTransfer: () => Promise.resolve({ planet_id: '', pending: false, offer: null }),
+  },
 }));
 
 vi.mock('react-router-dom', () => ({

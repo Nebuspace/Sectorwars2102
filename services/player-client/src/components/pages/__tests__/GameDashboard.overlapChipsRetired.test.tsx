@@ -39,6 +39,9 @@ vi.mock('../../../services/api', () => ({
   // WO-UI2-LIVING-WINDSHIELD: the flight SSV's SCAN-layer wrecks fetch --
   // not under test here, resolved empty so the mount doesn't reject.
   sectorAPI: { sectorWrecks: vi.fn().mockResolvedValue([]), getContents: vi.fn().mockResolvedValue({ star: null, bodies: [] }), },
+  planetaryAPI: {
+    getOwnershipTransfer: vi.fn().mockResolvedValue({ planet_id: '', pending: false, offer: null }),
+  },
 }));
 
 vi.mock('react-router-dom', () => ({
