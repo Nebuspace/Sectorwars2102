@@ -19,7 +19,7 @@ vi.mock('../apiClient', () => ({
 }));
 
 import apiClient from '../apiClient';
-import { centralBankAPI, citadelAPI, combatAPI, greyStatusAPI, miningAPI, navAPI, planetaryAPI, playerAPI, sectorAPI, shipRegistryAPI, tradeAPI } from '../api';
+import { centralBankAPI, citadelAPI, combatAPI, greyStatusAPI, miningAPI, navAPI, planetaryAPI, playerAPI, portOwnershipAPI, sectorAPI, shipRegistryAPI, tradeAPI } from '../api';
 
 const get = apiClient.get as ReturnType<typeof vi.fn>;
 const post = apiClient.post as ReturnType<typeof vi.fn>;
@@ -416,4 +416,16 @@ describe('apiRequest via trade/combat/grey wrappers', () => {
       jsonHeaders,
     );
   });
+
+  it('portOwnershipAPI.militaryTakeover POSTs action to /stations/{id}/military', async () => {
+    post.mockResolvedValue({ data: { campaign_type: 'military', status: 'building' } });
+    const out = await portOwnershipAPI.militaryTakeover('st-1', 'declare');
+    expect(out).toEqual({ campaign_type: 'military', status: 'building' });
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/port-ownership/stations/st-1/military',
+      JSON.stringify({ action: 'declare' }),
+      jsonHeaders,
+    );
+  });
+
 });
