@@ -59,6 +59,8 @@ export interface Sector {
   x_coord?: number | null;
   y_coord?: number | null;
   z_coord?: number | null;
+  /** LEG-427 / mining.md:255 — GS asteroid_depletion on current-sector (null off ASTEROID_FIELD). */
+  asteroid_depletion?: Record<string, unknown> | null;
 }
 
 export interface Planet {
@@ -387,6 +389,11 @@ interface GameContextType {
   withdrawFromSafe: (planetId: string, amount: number) => Promise<any>;
   depositCommodityToSafe: (planetId: string, commodity: string, amount: number) => Promise<any>;
   withdrawCommodityFromSafe: (planetId: string, commodity: string, amount: number) => Promise<any>;
+  withdrawStockpileToCargo: (
+    planetId: string,
+    commodity: 'fuel_ore' | 'organics' | 'equipment',
+    amount: number,
+  ) => Promise<any>;
   setCitadelAutoDeposit: (planetId: string, enabled: boolean) => Promise<any>;
   deployMines: (quantity: number) => Promise<any>;
   // Planetary defenses — shield generator status/upgrade
@@ -1368,6 +1375,22 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
+  // Planet stockpile → ship cargo. GS POST /planets/{id}/stockpile/withdraw
+  // (LEG-546). Tax skim / ACL / landed-on-planet are server-enforced.
+  const withdrawStockpileToCargo = async (
+    planetId: string,
+    commodity: 'fuel_ore' | 'organics' | 'equipment',
+    amount: number,
+  ) => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+    try {
+      return await planetaryAPI.withdrawStockpileToCargo(planetId, commodity, amount);
+    } catch (error: any) {
+      console.error('Error withdrawing stockpile to cargo:', error);
+      throw error;
+    }
+  };
+
   // Toggle auto-deposit of production into the protected safe (opt-in, default
   // OFF). WO-WIRE-CITADEL-AUTO-DEPOSIT-API — citadelAPI.setAutoDeposit (same
   // URL as before; body is the response payload directly).
@@ -2073,6 +2096,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     withdrawFromSafe,
     depositCommodityToSafe,
     withdrawCommodityFromSafe,
+    withdrawStockpileToCargo,
     setCitadelAutoDeposit,
     deployMines,
     getPlanetDefenseInfo,

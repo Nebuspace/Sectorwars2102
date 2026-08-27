@@ -106,6 +106,39 @@ async function apiRequest(
   }
 }
 
+/** LEG-372 / LEG-304 — player-scoped combat history list item (GS shape). */
+export interface CombatHistoryOpponent {
+  id: string | null;
+  name: string;
+}
+
+export interface CombatHistoryTarget {
+  type: string;
+  id?: string | null;
+  name?: string;
+  sector_id?: number | null;
+}
+
+export interface CombatHistoryItem {
+  id: string;
+  timestamp: string | null;
+  combat_type: string;
+  role: 'attacker' | 'defender' | string;
+  result: string | null;
+  sector_id: number | null;
+  drones_lost: number | null;
+  ship_destroyed: boolean;
+  opponent?: CombatHistoryOpponent;
+  target?: CombatHistoryTarget;
+}
+
+export interface CombatHistoryResponse {
+  items: CombatHistoryItem[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 // Combat APIs
 export const combatAPI = {
   engage: (targetType: 'ship' | 'planet' | 'port', targetId: string) =>
@@ -119,6 +152,15 @@ export const combatAPI = {
 
   retreat: (combatId: string) =>
     apiRequest(`/api/v1/combat/${combatId}/retreat`, { method: 'POST' }),
+
+  /** Paginated own-combat log (LEG-372). Server scopes to current player. */
+  getHistory: (opts?: { limit?: number; offset?: number }): Promise<CombatHistoryResponse> => {
+    const params = new URLSearchParams();
+    if (opts?.limit != null) params.set('limit', String(opts.limit));
+    if (opts?.offset != null) params.set('offset', String(opts.offset));
+    const q = params.toString();
+    return apiRequest(`/api/v1/combat/history${q ? `?${q}` : ''}`);
+  },
 
   // Drone management
   deployDrones: (sectorId: string, droneCount: number) =>
@@ -188,6 +230,24 @@ export const droneFleetAPI = {
       method: 'POST',
       body: JSON.stringify({ sectorId, droneCount }),
     }),
+
+  /** Per-drone deploy (LEG-1811). GS body is snake_case; idle drones only. */
+  deployOne: (
+    droneId: string,
+    body: { sector_id: string; deployment_type?: string; target_id?: string },
+  ) =>
+    apiRequest(`/api/v1/drones/${droneId}/deploy`, {
+      method: 'POST',
+      body: JSON.stringify({
+        sector_id: body.sector_id,
+        deployment_type: body.deployment_type ?? 'defense',
+        ...(body.target_id ? { target_id: body.target_id } : {}),
+      }),
+    }),
+
+  /** Recall a deployed drone by drone id (POST /drones/{id}/recall). */
+  recall: (droneId: string) =>
+    apiRequest(`/api/v1/drones/${droneId}/recall`, { method: 'POST' }),
 };
 
 // Armory — sector mine laying (open space). Distinct from combatAPI.deployDrones.
@@ -348,6 +408,19 @@ export const planetaryAPI = {
 
   getSiegeStatus: (planetId: string) =>
     apiRequest(`/api/v1/planets/${planetId}/siege-status`),
+
+  // Move production stockpile into the caller's ship cargo. GS
+  // StockpileWithdrawRequest: commodity fuel_ore|organics|equipment, amount>0.
+  // Owner tax-free; teammates skimmed server-side. Do not invent keys.
+  withdrawStockpileToCargo: (
+    planetId: string,
+    commodity: 'fuel_ore' | 'organics' | 'equipment',
+    amount: number,
+  ) =>
+    apiRequest(`/api/v1/planets/${planetId}/stockpile/withdraw`, {
+      method: 'POST',
+      body: JSON.stringify({ commodity, amount }),
+    }),
 
   // Owner-only landing-rights ACL (colonization.md five modes; WO LEG-155).
   // Body matches gameserver LandingRightsRequest — lists always accepted so
@@ -650,13 +723,21 @@ export const fleetAPI = {
     }),
 
   updateFormation: (fleetId: string, formation: string) =>
-    apiRequest(`/api/v1/fleets/${fleetId}/formation?formation=${formation}`, {
+    apiRequest(`/api/v1/fleets/${fleetId}/formation?formation=${encodeURIComponent(formation)}`, {
       method: 'PATCH'
     }),
 
   disbandFleet: (fleetId: string) =>
     apiRequest(`/api/v1/fleets/${fleetId}`, {
       method: 'DELETE'
+    }),
+
+  getFleetMembers: (fleetId: string) =>
+    apiRequest(`/api/v1/fleets/${fleetId}/members`),
+
+  resupplyFleet: (fleetId: string) =>
+    apiRequest(`/api/v1/fleets/${fleetId}/resupply`, {
+      method: 'POST'
     }),
 
   initiateBattle: (fleetId: string, defenderFleetId: string) =>
@@ -673,7 +754,11 @@ export const fleetAPI = {
   getBattles: (activeOnly?: boolean) => {
     const params = activeOnly ? '?active_only=true' : '';
     return apiRequest(`/api/v1/fleets/battles${params}`);
-  }
+  },
+
+  /** Tip GET /fleets/battles/{id} — status/casualties; battle_log may be absent (LEG-400). */
+  getBattle: (battleId: string) =>
+    apiRequest(`/api/v1/fleets/battles/${battleId}`),
 };
 
 // Faction APIs
@@ -837,6 +922,14 @@ export const miningAPI = {
       method: 'POST',
       body: JSON.stringify({ ship_id: shipId }),
     }),
+
+  /** LEG-430 tip GET — nearest AM-flagged refinery + ore buy_price. */
+  getNearestAmRefinery: () =>
+    apiRequest('/api/v1/mining/nearest-am-refinery'),
+
+  /** LEG-2459 tip GET — yield band before committing harvest turns. */
+  getYieldPreview: (shipId: string) =>
+    apiRequest(`/api/v1/mining/yield-preview?ship_id=${encodeURIComponent(shipId)}`),
 };
 
 /** First-login gate / onboarding session (GameContext + FirstLoginContext). */
@@ -1236,6 +1329,15 @@ export const shipUpgradeAPI = {
   //   harvester is live (residual 2): install succeeds; passive_income from _baked.
   installModule: (shipId: string, slotIndex: number, moduleClass: string, tier: number) =>
     apiRequest(`/api/v1/ships/${shipId}/modules/install`, {
+      method: 'POST',
+      body: JSON.stringify({ slot_index: slotIndex, module_class: moduleClass, tier }),
+    }),
+
+  // previewModule → dry-run before/after effect rows (LEG-320 / LEG-1095). No DB
+  //   write / no credit charge. Payload: current / projected / delta maps from GS
+  //   — client must not re-implement MODULE_DEFINITIONS bake math.
+  previewModule: (shipId: string, slotIndex: number, moduleClass: string, tier: number) =>
+    apiRequest(`/api/v1/ships/${shipId}/modules/preview`, {
       method: 'POST',
       body: JSON.stringify({ slot_index: slotIndex, module_class: moduleClass, tier }),
     }),
@@ -2489,5 +2591,25 @@ export const ariaMemoryAPI = {
   },
   getDataIndex: (): Promise<AriaDataStream[]> =>
     apiRequest('/api/v1/ai/data-index'),
+};
+
+/** LEG-1937 — docked ARIA market-intelligence GET (owner JWT; 403 if not docked / cannot trade). */
+export type AriaMarketIntelItem = {
+  commodity: string;
+  observation_count: number;
+  average_price: number | null;
+  price_band: number | null;
+  next_prediction: number | null;
+  prediction_confidence: number | null;
+};
+
+export type AriaMarketIntelList = {
+  station_id: string;
+  items: AriaMarketIntelItem[];
+};
+
+export const ariaMarketAPI = {
+  getMarketIntelligence: (stationId: string): Promise<AriaMarketIntelList> =>
+    apiRequest(`/api/v1/ai/market-intelligence/${encodeURIComponent(stationId)}`),
 };
 

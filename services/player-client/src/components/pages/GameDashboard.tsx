@@ -11,6 +11,7 @@ import SpaceDockInterface from '../spacedock/SpaceDockInterface';
 import PortOfficeVenue from '../spacedock/PortOfficeVenue';
 import ContractBoardVenue from '../spacedock/ContractBoardVenue';
 import PopulationCenterInterface from '../planetary/PopulationCenterInterface';
+import SurveyExpeditionPanel from '../survey/SurveyExpeditionPanel';
 import { LandingRightsControl } from '../planetary/LandingRightsControl';
 import { OwnershipTransferControl } from '../planetary/OwnershipTransferControl';
 import SolarSystemViewscreen from '../tactical/SolarSystemViewscreen';
@@ -25,12 +26,16 @@ import GatewrightPanel from '../gatewright/GatewrightPanel';
 import TacticalMonitor from '../tactical/TacticalMonitor';
 import SolarSalvagePage from '../tactical/pages/SolarSalvagePage';
 import CockpitColonyManagement from '../cockpit/CockpitColonyManagement';
+import StockpileWithdrawControl from '../cockpit/StockpileWithdrawControl';
 import DeckPageTabs from '../cockpit/DeckPageTabs';
 import type { ProductionLine } from '../cockpit/ProductionPanel';
 import type { PerColonistRates, ProdRole } from '../cockpit/CoupledColonistSliders';
 import SafeVaultPanel from '../cockpit/SafeVaultPanel';
 import BankPanel, { isStarportPrimeStation, shipCargoFree } from '../cockpit/BankPanel';
 import { miningAPI, navAPI, playerAPI, type NavChartResponse, sectorAPI, type SectorWreck } from '../../services/api';
+import NearestAmRefineryOverlay from '../mining/NearestAmRefineryOverlay';
+import AsteroidDepletionOverlay from '../mining/AsteroidDepletionOverlay';
+import HarvestYieldPreview, { HARVEST_GATE_COPY } from '../mining/HarvestYieldPreview';
 import { projectedWarpBearing, subscribeWarpDepart, WARP_TURN_MS } from '../../services/warpCinematicBus';
 import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import { TurnsIcon } from '../icons/TurnsIcon';
@@ -624,6 +629,7 @@ const GameDashboardInner: React.FC = () => {
     withdrawFromSafe,
     depositCommodityToSafe,
     withdrawCommodityFromSafe,
+    withdrawStockpileToCargo,
     setCitadelAutoDeposit,
     getPlanetDefenseInfo,
     upgradeShields,
@@ -1234,6 +1240,19 @@ const GameDashboardInner: React.FC = () => {
 
   const isLandedPlanetMine = !!(landedPlanet && playerState && landedPlanet.owner_id === playerState.id);
 
+  const isLandedPopulationHub = !!(
+    landedPlanet?.is_population_hub
+    || (landedPlanet?.population ?? 0) >= 1_000_000
+  );
+
+  /** ADR-0091 founding surface: unclaimed planet, not a capital hub — survey before claim. */
+  const showSurveyFoundingPanel = !!(
+    playerState?.is_landed
+    && landedPlanet
+    && !landedPlanet.owner_id
+    && !isLandedPopulationHub
+  );
+
   // Colonists riding in the current ship's cargo.
   // Cargo shape from /player/ships is {used, capacity, contents: {colonists: N}}
   // (the legacy flat shape is kept as a fallback).
@@ -1429,15 +1448,6 @@ const GameDashboardInner: React.FC = () => {
   const overflowResources: string[] = overflowWarning && typeof overflowWarning === 'object'
     ? Object.keys(overflowWarning.resources || {})
     : [];
-  const fmtDaysUntilFull = (d: number | null): string => {
-    if (d === null) return '';
-    if (d < 1) {
-      const hrs = Math.max(1, Math.round(d * 24));
-      return `~${hrs}h to cap`;
-    }
-    return `~${Math.round(d)}d to cap`;
-  };
-
   // Planetary-ops notice (upgrade/safe outcomes), auto-dismissed like the
   // colonist transfer notice
   const [opsNotice, setOpsNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
@@ -1592,6 +1602,7 @@ const GameDashboardInner: React.FC = () => {
   // --- Commodity safe storage (move planet stockpile <-> protected safe) ---
   const [commodityBusy, setCommodityBusy] = useState<string | null>(null);
   const [autoDepositBusy, setAutoDepositBusy] = useState(false);
+  const [stockpileWithdrawBusy, setStockpileWithdrawBusy] = useState<string | null>(null);
 
   // Toggle "auto-deposit production into safe" (opt-in, default OFF). The server
   // is authoritative on the resulting flag — merge it back into citadelInfo so
@@ -1657,6 +1668,41 @@ const GameDashboardInner: React.FC = () => {
     const safeKey = SAFE_COMMODITIES.find((c) => c.stock === key)?.safe;
     if (!safeKey || amount < 1) return;
     moveCommoditySafe('store', safeKey, amount);
+  };
+
+  // Stockpile → ship cargo (LEG-546). Distinct from Store→Safe. GS enforces
+  // landed-on-planet, owner/team ACL, cargo space, and teammate tax skim.
+  const apiErrorDetail = (error: any, fallback: string): string => {
+    const detail = error?.response?.data?.detail ?? error?.message;
+    return typeof detail === 'string' && detail.trim() ? detail : fallback;
+  };
+  const withdrawStockpileByGsKey = async (
+    commodity: 'fuel_ore' | 'organics' | 'equipment',
+    amount: number,
+  ) => {
+    if (!landedPlanet || stockpileWithdrawBusy || amount < 1) return;
+    setStockpileWithdrawBusy(commodity);
+    try {
+      const result = await withdrawStockpileToCargo(landedPlanet.id, commodity, amount);
+      const detail = await getPlanetDetails(landedPlanet.id).catch(() => null);
+      if (detail) setLandedPlanetDetail(detail);
+      void refreshPlayerState();
+      setOpsNotice({ type: 'success', message: result?.message || 'Stockpile loaded to cargo.' });
+      setOpsRefresh((n) => n + 1);
+    } catch (error: any) {
+      setOpsNotice({ type: 'error', message: apiErrorDetail(error, 'Stockpile withdraw failed') });
+    } finally {
+      setStockpileWithdrawBusy(null);
+    }
+  };
+  const withdrawStockToCargo = (key: 'fuel' | 'organics' | 'equipment', amount: number) => {
+    const commodity = SAFE_COMMODITIES.find((c) => c.stock === key)?.safe as
+      | 'fuel_ore'
+      | 'organics'
+      | 'equipment'
+      | undefined;
+    if (!commodity) return;
+    void withdrawStockpileByGsKey(commodity, amount);
   };
 
   // --- Colonist transfer modal (quantity pattern mirrors the trading modal) ---
@@ -2204,16 +2250,6 @@ const GameDashboardInner: React.FC = () => {
   // code in the HTTP detail, which we translate to player-facing copy. Refresh
   // player state after a successful harvest so the cockpit turns/cargo reflect
   // the spend immediately.
-  const HARVEST_GATE_COPY: Record<string, string> = {
-    no_mining_laser: 'No mining laser equipped — fit one at a TradeDock to extract ore.',
-    must_be_undocked: 'You must be undocked and in open space to deploy the mining laser.',
-    cargo_full: 'Cargo hold is full — no room for ore. Sell or jettison before mining.',
-    insufficient_turns: 'Not enough turns to run a harvest cycle.',
-    not_an_asteroid_field: 'No asteroids here — harvesting requires an asteroid field.',
-    ship_not_found: 'Active ship not found — re-select a ship and try again.',
-    already_mining: 'Mining laser already deployed — wait for the current harvest to finish.',
-  };
-
   const handleHarvest = async () => {
     if (harvestBusy) return;
     const shipId = currentShip?.id;
@@ -2879,6 +2915,8 @@ const GameDashboardInner: React.FC = () => {
         {(() => {
         const consoleNode = (
         <div className="cockpit-console">
+          <NearestAmRefineryOverlay />
+          <AsteroidDepletionOverlay readout={currentSector?.asteroid_depletion} />
           {/* DOCKED STATE: the station-face venue workspace (WO-UI3-STATION-
               MODE) — replaces the flight-monitor bezel wrapper
               (.console-monitor.trading-monitor.full-width + .monitor-bezel
@@ -2998,10 +3036,7 @@ const GameDashboardInner: React.FC = () => {
                 </div>
               </div>
             </div>
-          ) : playerState?.is_landed && (
-            landedPlanet?.is_population_hub
-            || (landedPlanet?.population ?? 0) >= 1_000_000
-          ) ? (
+          ) : playerState?.is_landed && isLandedPopulationHub ? (
             /* LANDED ON A POPULATION HUB: the Capital Sector welcome +
                Pioneer Office, not the generic owned-colony console.
                Pop ≥1M fallback mirrors server land/claim/pioneer — a missed
@@ -3016,6 +3051,20 @@ const GameDashboardInner: React.FC = () => {
                is the only change needed here. */
             <div className="surface-face-workspace">
               <PopulationCenterInterface planet={landedPlanet} />
+            </div>
+          ) : showSurveyFoundingPanel && landedPlanet ? (
+            /* UNCLAIMED FOUNDING SURFACE (ADR-0091 / LEG-670): orbital scan →
+               dispatch → compare → settle (claim). Replaces the generic ops
+               console on planets with no owner — discovery is mandatory at the
+               claim gate (planetary-survey.md § Discovery is the mandatory
+               first act). */
+            <div className="surface-face-workspace">
+              <SurveyExpeditionPanel
+                planetId={landedPlanet.id}
+                planetName={landedPlanet.name}
+                planetType={landedPlanet.type}
+                shipId={currentShip?.id ?? playerState?.current_ship_id ?? null}
+              />
             </div>
           ) : playerState?.is_landed ? (
             /* LANDED STATE: Show Comprehensive Planetary Operations Terminal.
@@ -3158,6 +3207,15 @@ const GameDashboardInner: React.FC = () => {
                             </span>
                           </span>
 
+                          {!isLandedPlanetMine && landedPlanet?.id && (
+                            <StockpileWithdrawControl
+                              busy={!!stockpileWithdrawBusy}
+                              onWithdraw={(commodity, amount) => {
+                                void withdrawStockpileByGsKey(commodity, amount);
+                              }}
+                            />
+                          )}
+
                           {isLandedPlanetMine && landedPlanet?.id && (
                             <LandingRightsControl
                               planetId={String(landedPlanet.id)}
@@ -3224,6 +3282,9 @@ const GameDashboardInner: React.FC = () => {
                               const storeBusy = !!safeKey && commodityBusy === safeKey;
                               const rate = Number(landedPlanetDetail?.productionRates?.[key] ?? 0);
                               const allocation = Number(landedPlanetDetail?.allocations?.[key] ?? 0);
+                              const canWithdraw = onPlanet;
+                              const withdrawBusy = stockpileWithdrawBusy === safeKey || stockpileWithdrawBusy === key;
+                              const withdrawDisabledTitle = onPlanet < 1 ? 'No stockpile to load to cargo' : '';
                               const storeDisabledTitle =
                                 !citadelInfo || citadelInfo.citadel_level < 1
                                   ? 'No citadel safe — establish an Outpost (Citadel Level 1)'
@@ -3248,6 +3309,10 @@ const GameDashboardInner: React.FC = () => {
                                 canStore,
                                 storeBusy,
                                 storeDisabledTitle,
+                                canWithdraw,
+                                withdrawBusy,
+                                withdrawDisabledTitle,
+                                daysUntilFull: ss.daysUntilFull,
                               };
                             });
                             // DEFENSE-OPS tab body — the slim controls the cockpit
@@ -3456,6 +3521,7 @@ const GameDashboardInner: React.FC = () => {
                                 allocSyncing={allocSyncing}
                                 allocError={allocError}
                                 onStoreToSafe={storeStockToSafe}
+                                onWithdrawToCargo={withdrawStockToCargo}
                                 onOpsChange={() => setOpsRefresh(n => n + 1)}
                                 defenseTab={defenseTabBody}
                                 safeTab={safeTabBody}
@@ -3859,6 +3925,7 @@ const GameDashboardInner: React.FC = () => {
                         currentSector?.type?.toUpperCase() === 'ASTEROID_FIELD' ? (
                           <div className="planetary-asteroid-state">
                             <b className="planetary-asteroid-label">⚫ ASTEROID FIELD</b>
+                            <HarvestYieldPreview shipId={currentShip?.id} />
                             {flying ? (
                               // Demo L1352 field-row branch: here?HARVEST:(flying?HALT:APPROACH) —
                               // under burn, the row offers HALT instead of HARVEST (same

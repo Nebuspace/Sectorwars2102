@@ -88,6 +88,22 @@ describe('apiRequest via trade/combat/grey wrappers', () => {
     );
   });
 
+  it('combatAPI.getHistory GETs limit/offset query (LEG-372)', async () => {
+    get.mockResolvedValue({
+      data: { items: [], total: 0, limit: 10, offset: 5 },
+    });
+    await expect(combatAPI.getHistory({ limit: 10, offset: 5 })).resolves.toEqual({
+      items: [],
+      total: 0,
+      limit: 10,
+      offset: 5,
+    });
+    expect(get).toHaveBeenCalledWith(
+      '/api/v1/combat/history?limit=10&offset=5',
+      jsonHeaders,
+    );
+  });
+
   it('surfaces string detail from FastAPI errors', async () => {
     post.mockRejectedValue(axiosHttpError(400, { detail: 'not enough credits' }));
     await expect(greyStatusAPI.clearFine()).rejects.toThrow('not enough credits');
@@ -209,6 +225,37 @@ describe('apiRequest via trade/combat/grey wrappers', () => {
     );
   });
 
+  it('miningAPI.getNearestAmRefinery GETs the tip overlay path', async () => {
+    const payload = {
+      found: true,
+      station: { id: 'st-1', name: 'AM 7', sector_id: 9 },
+      hop_distance: 2,
+      ore_buy_price: 11,
+      reason: null,
+    };
+    get.mockResolvedValue({ data: payload });
+    await expect(miningAPI.getNearestAmRefinery()).resolves.toEqual(payload);
+    expect(get).toHaveBeenCalledWith('/api/v1/mining/nearest-am-refinery', jsonHeaders);
+  });
+
+  it('miningAPI.getYieldPreview GETs the tip yield-preview path', async () => {
+    const payload = {
+      success: true,
+      ore_lo: 4,
+      ore_hi: 9,
+      richness_tier: 2,
+      laser_level: 1,
+      depletion_modifier: 1,
+      turns_cost: 5,
+    };
+    get.mockResolvedValue({ data: payload });
+    await expect(miningAPI.getYieldPreview('ship-9')).resolves.toEqual(payload);
+    expect(get).toHaveBeenCalledWith(
+      '/api/v1/mining/yield-preview?ship_id=ship-9',
+      jsonHeaders,
+    );
+  });
+
   it('miningAPI.harvest POSTs ship_id', async () => {
     post.mockResolvedValue({ data: { status: 'in_progress', harvest_id: 'h1' } });
     await expect(miningAPI.harvest('ship-9')).resolves.toEqual({
@@ -305,6 +352,30 @@ describe('apiRequest via trade/combat/grey wrappers', () => {
       JSON.stringify({ kind: 'PLANET_MINEFIELD', x: 0, y: 0, level: 1 }),
       jsonHeaders,
     );
+  });
+
+  it('planetaryAPI.withdrawStockpileToCargo POSTs tip path and payload', async () => {
+    post.mockResolvedValue({
+      data: { success: true, message: 'Withdrew 10 fuel ore to cargo.', amount_to_cargo: 10, tax_skimmed: 0 },
+    });
+    const out = await planetaryAPI.withdrawStockpileToCargo('planet-9', 'fuel_ore', 10);
+    expect(out.success).toBe(true);
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/planets/planet-9/stockpile/withdraw',
+      JSON.stringify({ commodity: 'fuel_ore', amount: 10 }),
+      jsonHeaders,
+    );
+  });
+
+  it('planetaryAPI.withdrawStockpileToCargo surfaces 403 non-owner detail', async () => {
+    post.mockRejectedValue(
+      axiosHttpError(403, {
+        detail: 'You do not own this planet and are not on the owner\'s team',
+      }),
+    );
+    await expect(
+      planetaryAPI.withdrawStockpileToCargo('planet-9', 'organics', 1),
+    ).rejects.toThrow('You do not own this planet and are not on the owner\'s team');
   });
 
   it('planetaryAPI.offerOwnershipTransfer POSTs recipient_player_id', async () => {
