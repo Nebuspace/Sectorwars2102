@@ -61,7 +61,8 @@ const Sidebar: React.FC = () => {
       items: [
         { to: '/users', label: 'Users', icon: '👤' },
         { to: '/players', label: 'Players', icon: '🎮' },
-        { to: '/teams', label: 'Teams', icon: '🤝' }
+        { to: '/teams', label: 'Teams', icon: '🤝' },
+        { to: '/medals', label: 'Medals', icon: '🏅' }
       ]
     },
     {
@@ -73,7 +74,8 @@ const Sidebar: React.FC = () => {
         { to: '/combat', label: 'Combat', icon: '⚔️' },
         { to: '/contract-disputes', label: 'Contract Disputes', icon: '⚖️' },
         { to: '/events', label: 'Events', icon: '🎯' },
-        { to: '/factions', label: 'Factions', icon: '🏴' }
+        { to: '/factions', label: 'Factions', icon: '🏴' },
+        { to: '/tradedocks', label: 'TradeDocks', icon: '🏗️' }
       ]
     },
     {

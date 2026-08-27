@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import PageHeader from '../ui/PageHeader';
 import { useToast, useConfirm } from '../../contexts/ToastContext';
 import './pages.css';
@@ -23,14 +24,11 @@ interface Station {
   commodities: string[];
 }
 
-// Extracts a human-readable message from an Axios-style error without using `any`.
-const getErrorMessage = (err: unknown): string => {
-  if (typeof err === 'object' && err !== null) {
-    const maybeAxios = err as { response?: { data?: { detail?: string } }; message?: string };
-    return maybeAxios.response?.data?.detail || maybeAxios.message || 'An unexpected error occurred';
-  }
-  return 'An unexpected error occurred';
-};
+const getErrorMessage = (err: unknown, fallback = 'An unexpected error occurred'): string =>
+  formatAdminApiError(err, {
+    fallback,
+    scopeHint: 'admin universe station management scopes required',
+  });
 
 const StationsManager: React.FC = () => {
   const toast = useToast();
@@ -111,6 +109,32 @@ const StationsManager: React.FC = () => {
     setShowAddModal(true);
   };
 
+  /** Tip GS: POST /api/v1/admin/ports/update-stock-levels — ECONOMY_INTERVENE (LEG-1712). */
+  const handleUpdateStockLevels = async () => {
+    if (!(await confirm({
+      title: 'Update Port Stock Levels',
+      message:
+        'Recalculate commodity stock levels for every port to match trading roles? This posts the tip admin ports/update-stock-levels route (ECONOMY_INTERVENE).',
+      confirmLabel: 'Update stock levels',
+    }))) {
+      return;
+    }
+
+    try {
+      const response = await api.post('/api/v1/admin/ports/update-stock-levels');
+      const portsUpdated =
+        (response.data as { ports_updated?: number } | undefined)?.ports_updated ?? 0;
+      toast.success(`Updated stock levels for ${portsUpdated} port(s)`);
+    } catch (err: unknown) {
+      toast.error(
+        formatAdminApiError(err, {
+          fallback: 'Failed to update port stock levels',
+          scopeHint: 'ECONOMY_INTERVENE scope required to update port stock levels',
+        })
+      );
+    }
+  };
+
   const closeModal = () => {
     setShowPortModal(false);
     setShowAddModal(false);
@@ -162,6 +186,14 @@ const StationsManager: React.FC = () => {
 
       {/* Add New Station Button */}
       <div className="page-actions">
+        <button
+          type="button"
+          className="add-btn add-btn-secondary"
+          onClick={handleUpdateStockLevels}
+          aria-label="Update port stock levels"
+        >
+          Update stock levels
+        </button>
         <button className="add-btn" onClick={handleAddPort}>
           + Add New Station
         </button>
@@ -570,14 +602,13 @@ interface Player {
 
 const AddPortModal: React.FC<AddPortModalProps> = ({ onClose, onSave }) => {
   const toast = useToast();
+  // create_port reads station_class (defaults CLASS_1 if omitted). Demoted from
+  // POST: max_capacity / security_level / docking_fee (no create_port columns).
   const [formData, setFormData] = useState({
     name: '',
     sector_id: '',
-    station_type: 'CLASS_1',
+    station_class: 'CLASS_1',
     trade_volume: 1000,
-    max_capacity: 5000,
-    security_level: 50,
-    docking_fee: 100,
     owner_name: ''
   });
   const [saving, setSaving] = useState(false);
@@ -600,7 +631,7 @@ const AddPortModal: React.FC<AddPortModalProps> = ({ onClose, onSave }) => {
         setSectors(availableSectors);
       } catch (err: unknown) {
         console.error('Failed to fetch sectors:', err);
-        toast.error('Failed to load sectors. Please try again.');
+        toast.error(`Failed to load sectors: ${getErrorMessage(err)}`);
       } finally {
         setLoadingSectors(false);
       }
@@ -615,7 +646,7 @@ const AddPortModal: React.FC<AddPortModalProps> = ({ onClose, onSave }) => {
         setPlayers(playersData);
       } catch (err: unknown) {
         console.error('Failed to fetch players:', err);
-        toast.error('Failed to load players. Please try again.');
+        toast.error(`Failed to load players: ${getErrorMessage(err)}`);
       } finally {
         setLoadingPlayers(false);
       }
@@ -635,7 +666,16 @@ const AddPortModal: React.FC<AddPortModalProps> = ({ onClose, onSave }) => {
 
     try {
       setSaving(true);
-      const response = await api.post('/api/v1/admin/ports', formData);
+      const payload: Record<string, unknown> = {
+        name: formData.name,
+        sector_id: formData.sector_id,
+        station_class: formData.station_class,
+        trade_volume: formData.trade_volume,
+      };
+      if (formData.owner_name) {
+        payload.owner_name = formData.owner_name;
+      }
+      const response = await api.post('/api/v1/admin/ports', payload);
       onSave(response.data);
     } catch (err: unknown) {
       toast.error(`Failed to create port: ${getErrorMessage(err)}`);
@@ -706,8 +746,8 @@ const AddPortModal: React.FC<AddPortModalProps> = ({ onClose, onSave }) => {
             <div className="form-group">
               <label>Port Class *</label>
               <select
-                value={formData.station_type}
-                onChange={(e) => setFormData({ ...formData, station_type: e.target.value })}
+                value={formData.station_class}
+                onChange={(e) => setFormData({ ...formData, station_class: e.target.value })}
                 required
               >
                 <option value="CLASS_0">CLASS_0 - Sol System</option>
@@ -734,37 +774,8 @@ const AddPortModal: React.FC<AddPortModalProps> = ({ onClose, onSave }) => {
                 min="0"
               />
             </div>
-            
-            <div className="form-group">
-              <label>Max Capacity</label>
-              <input
-                type="number"
-                value={formData.max_capacity}
-                onChange={(e) => setFormData({ ...formData, max_capacity: parseInt(e.target.value) })}
-                min="0"
-              />
-            </div>
-            
-            <div className="form-group">
-              <label>Security Level</label>
-              <input
-                type="number"
-                value={formData.security_level}
-                onChange={(e) => setFormData({ ...formData, security_level: parseInt(e.target.value) })}
-                min="0"
-                max="100"
-              />
-            </div>
-            
-            <div className="form-group">
-              <label>Docking Fee</label>
-              <input
-                type="number"
-                value={formData.docking_fee}
-                onChange={(e) => setFormData({ ...formData, docking_fee: parseInt(e.target.value) })}
-                min="0"
-              />
-            </div>
+
+            {/* Demoted — create_port ignores max_capacity / security_level / docking_fee */}
             
             <div className="form-group">
               <label>Port Owner</label>
