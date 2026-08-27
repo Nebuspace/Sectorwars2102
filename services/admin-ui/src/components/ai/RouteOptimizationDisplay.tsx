@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAIUpdates } from '../../contexts/WebSocketContext';
 import { api } from '../../utils/auth';
+import { axiosResponseStatus, formatAdminApiError } from '../../utils/adminApiError';
 import './route-optimization-display.css';
 
 interface OptimizedRoute {
@@ -60,12 +61,18 @@ export const RouteOptimizationDisplay: React.FC = () => {
       setLoading(true);
       const response = await api.get('/api/v1/admin/ai/route-optimization');
       setActiveRoutes(response.data.active_optimizations || []);
-    } catch (err: any) {
-      const errorMessage = err.response?.data?.detail || err.message || 'Failed to load routes';
-      if (err.response?.status === 401) {
+    } catch (err: unknown) {
+      const status = axiosResponseStatus(err);
+      if (status === 401) {
         setError('Authentication required. Please log in as an admin user.');
       } else {
-        setError(errorMessage);
+        setError(
+          formatAdminApiError(err, {
+            fallback: 'Failed to load routes',
+            scopeHint:
+              'route optimization requires the admin players view scope (PLAYERS_VIEW).',
+          })
+        );
       }
     } finally {
       setLoading(false);
@@ -76,8 +83,19 @@ export const RouteOptimizationDisplay: React.FC = () => {
     try {
       const response = await api.get('/api/v1/admin/ai/route-optimization');
       setRouteStats(response.data.optimization_stats);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to load route stats:', err);
+      const status = err.response?.status as number | undefined;
+      if (status === 401) {
+        setError('Authentication required. Please log in as an admin user.');
+      } else if (status === 403) {
+        setError(
+          'Access denied — route optimization requires the admin players view scope (PLAYERS_VIEW).'
+        );
+      } else if (status === 429) {
+        setError('Admin rate limit exceeded — wait a moment and try again.');
+      }
+      // Transport/other: leave stats empty; active routes may still render.
     }
   };
 
@@ -115,7 +133,7 @@ export const RouteOptimizationDisplay: React.FC = () => {
   };
 
   if (loading) return <div className="loading">Loading route optimizations...</div>;
-  if (error) return <div className="error">Error: {error}</div>;
+  if (error) return <div className="error" role="alert">Error: {error}</div>;
 
   return (
     <div className="route-optimization-display">

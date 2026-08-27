@@ -1,6 +1,6 @@
 import React, { createContext, useCallback, useContext, useState, useEffect, ReactNode } from 'react';
-import axios from 'axios';
 import { useAuth } from './AuthContext';
+import { api } from '../utils/auth';
 import type {
   BangConfig,
   BangJobListItem,
@@ -11,6 +11,8 @@ import {
   listBangJobs,
   wipeBangGalaxy,
 } from '../services/bangGalaxyApi';
+import { formatAdminApiError } from '../utils/adminApiError';
+import { adminHttpErrorMessage } from '../utils/adminHttpError';
 
 // Types for admin context
 export interface AdminStats {
@@ -226,11 +228,6 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   const [bangHistory, setBangHistory] = useState<BangJobListItem[]>([]);
   const [bangHistoryTotal, setBangHistoryTotal] = useState<number>(0);
   
-  // Set up axios instance (headers set per request)
-  const api = axios.create({
-    baseURL: '/api/v1',
-  });
-  
   // Load admin stats
   const loadAdminStats = async () => {
     if (!user || !user.is_admin) return;
@@ -240,9 +237,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
 
     try {
       // Backend returns snake_case, we need to map to camelCase for TypeScript interface
-      const response = await api.get<any>('/admin/stats', {
-        headers: token ? { Authorization: `Bearer ${token}` } : {}
-      });
+      const response = await api.get<any>('/api/v1/admin/stats');
 
       // Map snake_case API response to camelCase interface
       const mappedStats: AdminStats = {
@@ -258,7 +253,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       setAdminStats(mappedStats);
     } catch (error) {
       console.error('Error loading admin stats:', error);
-      setError('Failed to load admin statistics');
+      setError(adminHttpErrorMessage(error, 'Failed to load admin statistics', 'PLAYERS_VIEW'));
       setAdminStats(null);
     } finally {
       setIsLoading(false);
@@ -279,9 +274,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     setError(null);
 
     try {
-      const response = await api.get<GalaxyState | {galaxy: null}>('/admin/galaxy', {
-        headers: token ? { Authorization: `Bearer ${token}` } : {}
-      });
+      const response = await api.get<GalaxyState | {galaxy: null}>('/api/v1/admin/galaxy');
 
       if (response.data && 'galaxy' in response.data && response.data.galaxy === null) {
         setGalaxyState(null);
@@ -293,12 +286,12 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       }
     } catch (error) {
       console.error('Error loading galaxy info:', error);
-      setError('Failed to load galaxy information');
+      setError(adminHttpErrorMessage(error, 'Failed to load galaxy information', 'admin.galaxy.manage'));
       setGalaxyState(null);
     } finally {
       setIsLoading(false);
     }
-  }, [user, token]);
+  }, [user]);
   
   // Load regions
   const loadRegions = async () => {
@@ -308,13 +301,11 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     setError(null);
 
     try {
-      const response = await api.get<{regions: Region[]}>('/admin/regions', {
-        headers: token ? { Authorization: `Bearer ${token}` } : {}
-      });
+      const response = await api.get<{regions: Region[]}>('/api/v1/admin/regions');
       setRegions(response.data.regions || []);
     } catch (error) {
       console.error('Error loading regions:', error);
-      setError('Failed to load regions');
+      setError(adminHttpErrorMessage(error, 'Failed to load regions', 'admin.galaxy.manage'));
     } finally {
       setIsLoading(false);
     }
@@ -328,13 +319,11 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     setError(null);
 
     try {
-      const response = await api.get<{zones: Zone[]}>(`/admin/regions/${regionId}/zones`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {}
-      });
+      const response = await api.get<{zones: Zone[]}>(`/api/v1/admin/regions/${regionId}/zones`);
       setZones(response.data.zones || []);
     } catch (error) {
       console.error('Error loading region zones:', error);
-      setError('Failed to load region zones');
+      setError(adminHttpErrorMessage(error, 'Failed to load region zones', 'admin.galaxy.manage'));
     } finally {
       setIsLoading(false);
     }
@@ -345,14 +334,12 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     if (!user || !user.is_admin) return;
 
     try {
-      let url = '/admin/clusters';
+      let url = '/api/v1/admin/clusters';
       if (regionId) {
-        url = `/admin/regions/${regionId}/clusters`;
+        url = `/api/v1/admin/regions/${regionId}/clusters`;
       }
 
-      const response = await api.get<{clusters: Cluster[]}>(url, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {}
-      });
+      const response = await api.get<{clusters: Cluster[]}>(url);
       setClusters(response.data.clusters || []);
     } catch (error) {
       console.error('Error loading clusters:', error);
@@ -375,7 +362,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     setError(null);
 
     try {
-      await api.post(`/admin/galaxy/${galaxyId}/sectors/add`, {
+      await api.post(`/api/v1/admin/galaxy/${galaxyId}/sectors/add`, {
         num_sectors: numSectors,
         config
       });
@@ -391,7 +378,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       }
     } catch (error) {
       console.error('Error adding sectors:', error);
-      setError('Failed to add sectors to galaxy');
+      setError(adminHttpErrorMessage(error, 'Failed to add sectors to galaxy', 'admin.galaxy.manage'));
       throw error; // Re-throw to allow component to handle it
     } finally {
       setIsLoading(false);
@@ -406,7 +393,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     setError(null);
 
     try {
-      await api.delete('/admin/galaxy/clear');
+      await api.delete('/api/v1/admin/galaxy/clear');
 
       // After clearing, reset all state
       setGalaxyState(null);
@@ -417,7 +404,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
 
     } catch (error) {
       console.error('Error clearing galaxy data:', error);
-      setError('Failed to clear galaxy data');
+      setError(adminHttpErrorMessage(error, 'Failed to clear galaxy data', 'admin.galaxy.manage'));
       throw error;
     } finally {
       setIsLoading(false);
@@ -432,7 +419,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     setError(null);
     
     try {
-      await api.post('/admin/warp-tunnels/create', {
+      await api.post('/api/v1/admin/warp-tunnels/create', {
         source_sector_id: sourceSectorId,
         target_sector_id: targetSectorId,
         stability: stability ?? 0.75 // Default to 75% stability if not specified
@@ -442,7 +429,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       await loadGalaxyInfo();
     } catch (error) {
       console.error('Error creating warp tunnel:', error);
-      setError('Failed to create warp tunnel');
+      setError(adminHttpErrorMessage(error, 'Failed to create warp tunnel', 'admin.galaxy.manage'));
       throw error; // Re-throw to allow component to handle it
     } finally {
       setIsLoading(false);
@@ -459,11 +446,11 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     setError(null);
     
     try {
-      const response = await api.get<{sectors: SectorData[]}>('/admin/sectors');
+      const response = await api.get<{sectors: SectorData[]}>('/api/v1/admin/sectors');
       setSectors(response.data.sectors || []);
     } catch (error) {
       console.error('Error loading sectors:', error);
-      setError('Failed to load sectors');
+      setError(adminHttpErrorMessage(error, 'Failed to load sectors', 'admin.galaxy.manage'));
     } finally {
       setIsLoading(false);
     }
@@ -477,13 +464,11 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     setError(null);
     
     try {
-      const response = await api.get<{users: UserAccount[]}>('/admin/users', {
-        headers: token ? { Authorization: `Bearer ${token}` } : {}
-      });
+      const response = await api.get<{users: UserAccount[]}>('/api/v1/admin/users');
       setUsers(response.data.users || []);
     } catch (error) {
       console.error('Error loading users:', error);
-      setError('Failed to load user accounts');
+      setError(adminHttpErrorMessage(error, 'Failed to load user accounts', 'PLAYERS_VIEW'));
     } finally {
       setIsLoading(false);
     }
@@ -497,13 +482,11 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     setError(null);
     
     try {
-      const response = await api.get<{players: PlayerAccount[]}>('/admin/players', {
-        headers: token ? { Authorization: `Bearer ${token}` } : {}
-      });
+      const response = await api.get<{players: PlayerAccount[]}>('/api/v1/admin/players');
       setPlayers(response.data.players || []);
     } catch (error) {
       console.error('Error loading players:', error);
-      setError('Failed to load player accounts');
+      setError(adminHttpErrorMessage(error, 'Failed to load player accounts', 'PLAYERS_VIEW'));
     } finally {
       setIsLoading(false);
     }
@@ -520,9 +503,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     setError(null);
 
     try {
-      await api.put(`/users/${userId}`, { is_active: true }, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {}
-      });
+      await api.put(`/api/v1/users/${userId}`, { is_active: true });
 
       // Update local state
       setUsers(users.map(u =>
@@ -530,7 +511,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       ));
     } catch (error) {
       console.error('Error activating user:', error);
-      setError('Failed to activate user account');
+      setError(adminHttpErrorMessage(error, 'Failed to activate user account', 'PLAYERS_VIEW'));
     } finally {
       setIsLoading(false);
     }
@@ -544,9 +525,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     setError(null);
 
     try {
-      await api.put(`/users/${userId}`, { is_active: false }, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {}
-      });
+      await api.put(`/api/v1/users/${userId}`, { is_active: false });
 
       // Update local state
       setUsers(users.map(u =>
@@ -554,7 +533,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       ));
     } catch (error) {
       console.error('Error deactivating user:', error);
-      setError('Failed to deactivate user account');
+      setError(adminHttpErrorMessage(error, 'Failed to deactivate user account', 'PLAYERS_VIEW'));
     } finally {
       setIsLoading(false);
     }
@@ -580,7 +559,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         return job;
       } catch (err) {
         console.error('Error starting bang generation job:', err);
-        setError('Failed to start bang generation job');
+        setError(adminHttpErrorMessage(err, 'Failed to start bang generation job', 'BANG_REGENERATE'));
         throw err;
       } finally {
         setIsLoading(false);
@@ -603,7 +582,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         console.error('Error loading bang history:', err);
         setBangHistory([]);
         setBangHistoryTotal(0);
-        setError('Failed to load bang generation history');
+        setError(adminHttpErrorMessage(err, 'Failed to load bang generation history', 'BANG_REGENERATE'));
         throw err;
       } finally {
         setIsLoading(false);
@@ -627,7 +606,13 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         setSectors([]);
       } catch (err) {
         console.error('Error wiping galaxy:', err);
-        setError('Failed to wipe galaxy');
+        // LEG-1315: context-layer wipe must distinguish RBAC/rate-limit from bare Failed
+        setError(
+          formatAdminApiError(err, {
+            fallback: 'Failed to wipe galaxy',
+            scopeHint: 'admin.universe.manage',
+          }),
+        );
         throw err;
       } finally {
         setIsLoading(false);
