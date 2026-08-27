@@ -70,6 +70,16 @@
   flex-shrink: 0;
 }
 
+/* LEG-2482 — 5→1 refine conversion hint under quantum MANIFEST lines */
+.mfd-cargo-quantum-hint {
+  margin: 6px 0 0;
+  padding: 0;
+  font-size: 0.72em;
+  line-height: 1.35;
+  letter-spacing: 0.02em;
+  color: rgba(158, 197, 255, 0.72);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .mfd-cargo-tank-seg.filled {
     transition: none;
