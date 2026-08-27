@@ -142,6 +142,7 @@ function buildMockGameValue(mode: ShellMode): NonNullable<React.ContextType<type
     withdrawFromSafe: asyncNoop,
     depositCommodityToSafe: asyncNoop,
     withdrawCommodityFromSafe: asyncNoop,
+    withdrawStockpileToCargo: asyncNoop,
     setCitadelAutoDeposit: asyncNoop,
     deployMines: asyncNoop,
     getPlanetDefenseInfo: asyncNoop,

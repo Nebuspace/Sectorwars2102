@@ -55,6 +55,8 @@ export interface CockpitColonyManagementProps {
   allocError?: string | null;
   /** Store a resource's storable amount into the citadel safe (reuses deposit flow). */
   onStoreToSafe: (key: 'fuel' | 'organics' | 'equipment', amount: number) => void;
+  /** Load planet stockpile into ship cargo (GS POST stockpile/withdraw). */
+  onWithdrawToCargo: (key: 'fuel' | 'organics' | 'equipment', amount: number) => void;
   /** Bump the caller's opsRefresh so the landed poll re-fetches after a mutation. */
   onOpsChange: () => void;
   /**
@@ -112,6 +114,7 @@ const CockpitColonyManagement: React.FC<CockpitColonyManagementProps> = ({
   allocSyncing,
   allocError,
   onStoreToSafe,
+  onWithdrawToCargo,
   onOpsChange,
   defenseTab,
   safeTab,
@@ -283,6 +286,7 @@ const CockpitColonyManagement: React.FC<CockpitColonyManagementProps> = ({
             allocSyncing={allocSyncing}
             allocError={allocError}
             onStoreToSafe={onStoreToSafe}
+            onWithdrawToCargo={onWithdrawToCargo}
           />
         )}
         {tab === 'defense' && (defenseTab ?? <div className="cp-empty">Defense telemetry unavailable</div>)}

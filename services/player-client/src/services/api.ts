@@ -391,6 +391,19 @@ export const planetaryAPI = {
   getSiegeStatus: (planetId: string) =>
     apiRequest(`/api/v1/planets/${planetId}/siege-status`),
 
+  // Move production stockpile into the caller's ship cargo. GS
+  // StockpileWithdrawRequest: commodity fuel_ore|organics|equipment, amount>0.
+  // Owner tax-free; teammates skimmed server-side. Do not invent keys.
+  withdrawStockpileToCargo: (
+    planetId: string,
+    commodity: 'fuel_ore' | 'organics' | 'equipment',
+    amount: number,
+  ) =>
+    apiRequest(`/api/v1/planets/${planetId}/stockpile/withdraw`, {
+      method: 'POST',
+      body: JSON.stringify({ commodity, amount }),
+    }),
+
   // Owner-only landing-rights ACL (colonization.md five modes; WO LEG-155).
   // Body matches gameserver LandingRightsRequest — lists always accepted so
   // mode flips stay lossless server-side even when the UI omits list editing.
