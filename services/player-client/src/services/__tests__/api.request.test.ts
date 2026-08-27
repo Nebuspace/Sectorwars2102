@@ -238,6 +238,24 @@ describe('apiRequest via trade/combat/grey wrappers', () => {
     expect(get).toHaveBeenCalledWith('/api/v1/mining/nearest-am-refinery', jsonHeaders);
   });
 
+  it('miningAPI.getYieldPreview GETs the tip yield-preview path', async () => {
+    const payload = {
+      success: true,
+      ore_lo: 4,
+      ore_hi: 9,
+      richness_tier: 2,
+      laser_level: 1,
+      depletion_modifier: 1,
+      turns_cost: 5,
+    };
+    get.mockResolvedValue({ data: payload });
+    await expect(miningAPI.getYieldPreview('ship-9')).resolves.toEqual(payload);
+    expect(get).toHaveBeenCalledWith(
+      '/api/v1/mining/yield-preview?ship_id=ship-9',
+      jsonHeaders,
+    );
+  });
+
   it('miningAPI.harvest POSTs ship_id', async () => {
     post.mockResolvedValue({ data: { status: 'in_progress', harvest_id: 'h1' } });
     await expect(miningAPI.harvest('ship-9')).resolves.toEqual({

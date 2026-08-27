@@ -853,6 +853,10 @@ export const miningAPI = {
   /** LEG-430 tip GET — nearest AM-flagged refinery + ore buy_price. */
   getNearestAmRefinery: () =>
     apiRequest('/api/v1/mining/nearest-am-refinery'),
+
+  /** LEG-2459 tip GET — yield band before committing harvest turns. */
+  getYieldPreview: (shipId: string) =>
+    apiRequest(`/api/v1/mining/yield-preview?ship_id=${encodeURIComponent(shipId)}`),
 };
 
 /** First-login gate / onboarding session (GameContext + FirstLoginContext). */
