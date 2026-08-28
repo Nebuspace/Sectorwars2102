@@ -71,7 +71,7 @@
 }
 
 .trade-cascade-error {
-  color: var(--danger-color, #f66);
+  color: var(--cockpit-danger, #f66);
   font-size: var(--text-sm);
   margin: var(--space-sm) 0 0;
 }
