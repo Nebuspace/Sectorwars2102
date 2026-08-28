@@ -24,6 +24,7 @@ from src.services.port_ownership_service import (
     SYNDICATE_MODE_KEY,
     _ensure_primary_share,
     _lock_station,
+    apply_syndicate_tariff_rate,
 )
 
 logger = logging.getLogger(__name__)
@@ -254,7 +255,62 @@ def _ballot_map(ballots: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     return out
 
 
-def _maybe_resolve_row(row: StationGovernanceVote, now: datetime) -> None:
+def _rate_from_proposed(proposed_value: Any) -> Optional[float]:
+    if isinstance(proposed_value, (int, float)) and not isinstance(proposed_value, bool):
+        return float(proposed_value)
+    if isinstance(proposed_value, dict):
+        for key in ("rate", "tax_rate", "value"):
+            raw = proposed_value.get(key)
+            if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+                return float(raw)
+    return None
+
+
+def _vote_passed(outcome: Dict[str, Any]) -> bool:
+    if outcome.get("passed") is not True:
+        return False
+    return outcome.get("status") in {"passed", "tiebreak"}
+
+
+def _mark_outcome_modified(row: StationGovernanceVote) -> None:
+    if hasattr(row, "_sa_instance_state"):
+        flag_modified(row, "outcome")
+
+
+def _apply_passed_vote_effects(
+    db: Session,
+    station: Station,
+    row: StationGovernanceVote,
+    outcome: Dict[str, Any],
+) -> None:
+    if not _vote_passed(outcome):
+        return
+    if row.vote_type != "tariff":
+        return
+    rate = _rate_from_proposed(row.proposed_value)
+    if rate is None:
+        outcome["applied"] = False
+        outcome["apply_error"] = "tariff vote missing valid proposed rate"
+        _mark_outcome_modified(row)
+        return
+    try:
+        apply_syndicate_tariff_rate(db, station, rate)
+    except PortOwnershipError as exc:
+        outcome["applied"] = False
+        outcome["apply_error"] = str(exc.detail if hasattr(exc, "detail") else exc)
+        _mark_outcome_modified(row)
+        return
+    outcome["applied"] = True
+    outcome["applied_tax_rate"] = float(station.tax_rate or rate)
+    _mark_outcome_modified(row)
+
+
+def _maybe_resolve_row(
+    db: Session,
+    station: Station,
+    row: StationGovernanceVote,
+    now: datetime,
+) -> None:
     if row.status != "open":
         return
     closed = now >= row.window_ends_at
@@ -270,6 +326,7 @@ def _maybe_resolve_row(row: StationGovernanceVote, now: datetime) -> None:
     row.status = outcome["status"]
     row.outcome = outcome
     flag_modified(row, "outcome")
+    _apply_passed_vote_effects(db, station, row, outcome)
 
 
 def cast_governance_vote(
@@ -318,7 +375,7 @@ def cast_governance_vote(
         .all()
     )
     for row in open_rows:
-        _maybe_resolve_row(row, now)
+        _maybe_resolve_row(db, station, row, now)
 
     row = (
         db.query(StationGovernanceVote)
@@ -356,7 +413,7 @@ def cast_governance_vote(
         )
         db.add(row)
         db.flush()
-        _maybe_resolve_row(row, now)
+        _maybe_resolve_row(db, station, row, now)
         logger.info(
             "Governance vote opened station=%s type=%s by %s",
             station.id, vote_type, pid,
@@ -383,7 +440,7 @@ def cast_governance_vote(
     row.ballots = list(by_p.values())
     flag_modified(row, "ballots")
     db.flush()
-    _maybe_resolve_row(row, now)
+    _maybe_resolve_row(db, station, row, now)
     return _vote_payload(row)
 
 

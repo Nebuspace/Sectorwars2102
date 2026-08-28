@@ -1132,6 +1132,19 @@ def set_tax_rate(db: Session, station: Station, owner: Player, rate: float) -> D
     return {"station_id": str(station.id), "tax_rate": station.tax_rate}
 
 
+def apply_syndicate_tariff_rate(db: Session, station: Station, rate: float) -> Dict[str, Any]:
+    """Syndicate governance vote path: set trade tax without owner gate."""
+    station = _lock_station(db, station.id)
+    if not (MIN_TAX_RATE <= rate <= MAX_TAX_RATE):
+        raise PortOwnershipError(
+            400, f"Tax rate must be between {MIN_TAX_RATE:.2f} and {MAX_TAX_RATE:.2f}"
+        )
+    station.tax_rate = float(rate)
+    db.flush()
+    logger.info("Station %s tax rate set to %.4f via syndicate vote", station.id, rate)
+    return {"station_id": str(station.id), "tax_rate": station.tax_rate}
+
+
 def _price_modifiers(station: Station) -> Dict[str, Any]:
     """Mutable handle on station.price_modifiers (created if absent). The owner
     revenue levers all persist here. Caller MUST

@@ -207,3 +207,82 @@ def test_route_registered():
 
     paths = [getattr(r, "path", None) for r in router.routes]
     assert "/stations/{station_id}/governance/vote" in paths
+
+
+def test_rate_from_proposed_aliases():
+    from src.services.station_governance_service import _rate_from_proposed
+
+    assert _rate_from_proposed(0.15) == 0.15
+    assert _rate_from_proposed({"rate": 0.12}) == 0.12
+    assert _rate_from_proposed({"tax_rate": 0.18}) == 0.18
+    assert _rate_from_proposed({"value": 0.20}) == 0.20
+    assert _rate_from_proposed({"value": "bad"}) is None
+    assert _rate_from_proposed(None) is None
+
+
+def test_apply_passed_tariff_sets_station_tax_rate():
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from src.services.station_governance_service import _apply_passed_vote_effects
+
+    station = SimpleNamespace(id="s1", tax_rate=0.10)
+    outcome = {"status": "passed", "passed": True}
+    row = SimpleNamespace(
+        vote_type="tariff",
+        proposed_value={"rate": 0.15},
+        outcome=outcome,
+    )
+    db = MagicMock()
+    db.query.return_value.filter.return_value.populate_existing.return_value.with_for_update.return_value.first.return_value = station
+
+    _apply_passed_vote_effects(db, station, row, outcome)
+
+    assert station.tax_rate == 0.15
+    assert outcome["applied"] is True
+    assert outcome["applied_tax_rate"] == 0.15
+
+
+def test_apply_passed_tariff_out_of_bounds_fails_closed():
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from src.services.station_governance_service import _apply_passed_vote_effects
+
+    station = SimpleNamespace(id="s1", tax_rate=0.10)
+    outcome = {"status": "passed", "passed": True}
+    row = SimpleNamespace(
+        vote_type="tariff",
+        proposed_value={"rate": 0.30},
+        outcome=outcome,
+    )
+    db = MagicMock()
+    db.query.return_value.filter.return_value.populate_existing.return_value.with_for_update.return_value.first.return_value = station
+
+    _apply_passed_vote_effects(db, station, row, outcome)
+
+    assert station.tax_rate == 0.10
+    assert outcome["applied"] is False
+    assert "apply_error" in outcome
+
+
+def test_apply_passed_tariff_invalid_proposed_fails_closed():
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from src.services.station_governance_service import _apply_passed_vote_effects
+
+    station = SimpleNamespace(id="s1", tax_rate=0.10)
+    outcome = {"status": "passed", "passed": True}
+    row = SimpleNamespace(
+        vote_type="tariff",
+        proposed_value={"capex": 999},
+        outcome=outcome,
+    )
+    db = MagicMock()
+
+    _apply_passed_vote_effects(db, station, row, outcome)
+
+    assert station.tax_rate == 0.10
+    assert outcome["applied"] is False
+    assert "missing valid proposed rate" in outcome["apply_error"]
