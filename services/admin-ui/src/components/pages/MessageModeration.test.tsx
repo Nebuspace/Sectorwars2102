@@ -1,7 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import MessageModeration from './MessageModeration';
+import { MemoryRouter } from 'react-router-dom';
+import MessageModeration, {
+  buildEscalationAuditLedgerHref,
+} from './MessageModeration';
 import { api } from '../../utils/auth';
 
 vi.mock('../../utils/auth', () => ({
@@ -97,6 +100,14 @@ function mockLoad({
   });
 }
 
+function renderPage() {
+  return render(
+    <MemoryRouter>
+      <MessageModeration />
+    </MemoryRouter>,
+  );
+}
+
 describe('MessageModeration', () => {
   beforeEach(() => {
     vi.mocked(api.get).mockReset();
@@ -121,7 +132,7 @@ describe('MessageModeration', () => {
 
   it('shows honest empty states when nothing is flagged', async () => {
     mockLoad();
-    render(<MessageModeration />);
+    renderPage();
 
     await waitFor(() => {
       expect(screen.getByText('No flagged messages.')).toBeTruthy();
@@ -182,7 +193,7 @@ describe('MessageModeration', () => {
       stats: { ...emptyStats, total_messages: 10, flagged_messages: 1 },
     });
 
-    render(<MessageModeration />);
+    renderPage();
 
     await waitFor(() => {
       expect(screen.getByText('Alice')).toBeTruthy();
@@ -203,7 +214,7 @@ describe('MessageModeration', () => {
       },
     });
 
-    render(<MessageModeration />);
+    renderPage();
 
     await waitFor(() => {
       expect(screen.getByText('abcdef12345678')).toBeTruthy();
@@ -221,7 +232,7 @@ describe('MessageModeration', () => {
       return Promise.resolve({ data: emptyBeacons });
     });
 
-    render(<MessageModeration />);
+    renderPage();
 
     await waitFor(() => {
       expect(
@@ -238,7 +249,7 @@ describe('MessageModeration', () => {
     confirmMock.mockResolvedValue(true);
     vi.mocked(api.post).mockResolvedValue({ data: { success: true } });
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
 
     await user.click(screen.getByRole('button', { name: 'Delete' }));
@@ -270,7 +281,7 @@ describe('MessageModeration', () => {
       },
     });
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
 
     await user.click(screen.getByRole('button', { name: 'Accept' }));
@@ -300,7 +311,7 @@ describe('MessageModeration', () => {
       },
     });
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
 
     await user.click(screen.getByRole('button', { name: 'Redact' }));
@@ -326,7 +337,7 @@ describe('MessageModeration', () => {
       }),
     );
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
 
     await user.click(screen.getByRole('button', { name: 'Block' }));
@@ -342,12 +353,52 @@ describe('MessageModeration', () => {
     );
   });
 
+  it('block escalation surfaces audit ledger deep link when flagged (LEG-2703)', async () => {
+    const user = userEvent.setup();
+    mockLoad({ messages: { ...emptyMessages, messages: [message], total: 1 } });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockResolvedValue({
+      data: {
+        success: true,
+        action: 'block',
+        message_id: 'm1',
+        rep_delta: -100,
+        sender_notified: true,
+        block_count_30d: 2,
+        escalation_audit_logged: true,
+      },
+    });
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: 'Block' }));
+
+    await waitFor(() => {
+      expect(toastSuccess).toHaveBeenCalledWith(
+        expect.stringMatching(/Message blocked\..*Escalation audit logged/),
+      );
+    });
+
+    const auditLink = screen.getByRole('link', { name: 'View audit ledger entry' });
+    expect(auditLink).toHaveAttribute(
+      'href',
+      buildEscalationAuditLedgerHref('sender-uuid'),
+    );
+  });
+
+  it('buildEscalationAuditLedgerHref encodes sender filter query (LEG-2703)', () => {
+    expect(buildEscalationAuditLedgerHref('sender-uuid')).toBe(
+      '/audit?tab=ledger&target_type=player&target_id=sender-uuid',
+    );
+  });
+
   it('does not call the API when the delete confirm is dismissed', async () => {
     const user = userEvent.setup();
     mockLoad({ messages: { ...emptyMessages, messages: [message], total: 1 } });
     confirmMock.mockResolvedValue(false);
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
 
     await user.click(screen.getByRole('button', { name: 'Delete' }));
@@ -362,7 +413,7 @@ describe('MessageModeration', () => {
     confirmMock.mockResolvedValue(true);
     vi.mocked(api.post).mockRejectedValue(new Error('server error'));
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
 
     await user.click(screen.getByRole('button', { name: 'Clear Flag' }));
@@ -392,7 +443,7 @@ describe('MessageModeration', () => {
       },
     });
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Bob')).toBeTruthy());
 
     await user.click(screen.getByRole('button', { name: 'Confirm Abuse' }));
@@ -420,7 +471,7 @@ describe('MessageModeration', () => {
       }),
     );
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Bob')).toBeTruthy());
 
     await user.click(screen.getByRole('button', { name: 'Clear Flag' }));
@@ -444,7 +495,7 @@ describe('MessageModeration', () => {
       }),
     );
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Bob')).toBeTruthy());
 
     await user.click(screen.getByRole('button', { name: 'Clear Flag' }));
@@ -470,7 +521,7 @@ describe('MessageModeration', () => {
       }),
     );
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Bob')).toBeTruthy());
 
     await user.click(screen.getByRole('button', { name: 'Confirm Abuse' }));
@@ -498,7 +549,7 @@ describe('MessageModeration', () => {
       }),
     );
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Bob')).toBeTruthy());
 
     await user.click(screen.getByRole('button', { name: 'Confirm Abuse' }));
@@ -528,7 +579,7 @@ describe('MessageModeration', () => {
       },
     });
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Page 1 of 2')).toBeTruthy());
 
     await user.click(screen.getByRole('button', { name: 'Next' }));
@@ -541,7 +592,7 @@ describe('MessageModeration', () => {
   it('subscribes to flagged:message:alert and debounced-refetches on alert', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     mockLoad();
-    render(<MessageModeration />);
+    renderPage();
 
     await waitFor(() => {
       expect(subscribeMock).toHaveBeenCalledWith(
@@ -583,7 +634,7 @@ describe('MessageModeration', () => {
 
   it('does not register handlers for unrelated WS event types', async () => {
     mockLoad();
-    render(<MessageModeration />);
+    renderPage();
 
     await waitFor(() => expect(subscribeMock).toHaveBeenCalled());
     const events = subscribeMock.mock.calls.map((c) => c[0]);
@@ -595,7 +646,7 @@ describe('MessageModeration', () => {
   it('shows honest live-update demotion when WebSocket is disconnected', async () => {
     isConnectedMock = false;
     mockLoad();
-    render(<MessageModeration />);
+    renderPage();
 
     await waitFor(() => {
       expect(
@@ -623,7 +674,7 @@ describe('MessageModeration', () => {
       return Promise.resolve({ data: emptyBeacons });
     });
 
-    render(<MessageModeration />);
+    renderPage();
 
     await waitFor(() => {
       expect(screen.getByText(/Missing scope admin\.messages\.moderate/i)).toBeTruthy();
@@ -645,7 +696,7 @@ describe('MessageModeration', () => {
       return Promise.resolve({ data: emptyBeacons });
     });
 
-    render(<MessageModeration />);
+    renderPage();
 
     await waitFor(() => {
       expect(screen.getByText(/rate limit/i)).toBeTruthy();
@@ -718,7 +769,7 @@ describe('MessageModeration', () => {
       },
     });
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
 
     await user.click(
@@ -756,7 +807,7 @@ describe('MessageModeration', () => {
       },
     });
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
 
     await user.click(screen.getByRole('checkbox', { name: 'Select message m1' }));
@@ -805,7 +856,7 @@ describe('MessageModeration', () => {
       },
     });
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
 
     await user.click(
@@ -836,7 +887,7 @@ describe('MessageModeration', () => {
       }),
     );
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
 
     await user.click(screen.getByRole('checkbox', { name: 'Select message m1' }));
@@ -864,7 +915,7 @@ describe('MessageModeration', () => {
       }),
     );
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
 
     await user.click(screen.getByRole('checkbox', { name: 'Select message m1' }));
@@ -895,7 +946,7 @@ describe('MessageModeration', () => {
       }),
     );
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
 
     await user.click(screen.getByRole('checkbox', { name: 'Select message m1' }));
@@ -923,7 +974,7 @@ describe('MessageModeration', () => {
       }),
     );
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
 
     await user.click(screen.getByRole('checkbox', { name: 'Select message m1' }));
