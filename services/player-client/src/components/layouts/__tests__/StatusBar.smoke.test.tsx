@@ -413,10 +413,10 @@ describe('StatusBar — live-mount smoke', () => {
     expect(tabs[1].tabIndex).toBe(0);
     expect(tabs[0].tabIndex).toBe(-1);
 
-    // End: jump straight to the last tab (Settings, index 8).
+    // End: jump straight to the last tab (Settings, index 9).
     await pressKey('End');
-    expect(tabs[8].getAttribute('aria-selected')).toBe('true');
-    expect(document.activeElement).toBe(tabs[8]);
+    expect(tabs[9].getAttribute('aria-selected')).toBe('true');
+    expect(document.activeElement).toBe(tabs[9]);
 
     // ArrowRight wraps from the last tab back to the first.
     await pressKey('ArrowRight');
@@ -425,8 +425,8 @@ describe('StatusBar — live-mount smoke', () => {
 
     // ArrowLeft wraps from the first tab back to the last.
     await pressKey('ArrowLeft');
-    expect(tabs[8].getAttribute('aria-selected')).toBe('true');
-    expect(document.activeElement).toBe(tabs[8]);
+    expect(tabs[9].getAttribute('aria-selected')).toBe('true');
+    expect(document.activeElement).toBe(tabs[9]);
 
     // Home: jump straight back to the first tab.
     await pressKey('Home');
