@@ -476,6 +476,21 @@
   gap: 2px;
 }
 
+.rank-progress-current-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.rank-progress-current-row .rank-badge.rank-badge--compact {
+  width: 1.75rem;
+  height: 1.75rem;
+}
+
+.rank-progress-current-row .rank-badge--compact .rank-level {
+  font-size: 0.75rem;
+}
+
 .rank-progress-label {
   font-size: 0.65rem;
   color: #666;
