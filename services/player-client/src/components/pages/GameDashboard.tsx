@@ -39,6 +39,12 @@ import NearestAmRefineryOverlay from '../mining/NearestAmRefineryOverlay';
 import AsteroidDepletionOverlay from '../mining/AsteroidDepletionOverlay';
 import HarvestYieldPreview, { HARVEST_GATE_COPY, type HarvestGateState } from '../mining/HarvestYieldPreview';
 import { deriveSectorContacts } from '../tactical/contactClassification';
+import {
+  formatHarvestCountdown,
+  HARVEST_POLL_INTERVAL_MS,
+  isTerminalHarvestStatus,
+  PENDING_HARVEST_STORAGE_KEY,
+} from '../mining/harvestPoll';
 import { projectedWarpBearing, subscribeWarpDepart, WARP_TURN_MS } from '../../services/warpCinematicBus';
 import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import { TurnsIcon } from '../icons/TurnsIcon';
@@ -756,6 +762,99 @@ const GameDashboardInner: React.FC = () => {
     setHarvestPreviewBlocked(blocked);
     setHarvestPreviewGateMessage(message);
   }, []);
+  const harvestPollRef = useRef<ReturnType<typeof window.setInterval> | null>(null);
+
+  const clearHarvestPoll = useCallback(() => {
+    if (harvestPollRef.current) {
+      window.clearInterval(harvestPollRef.current);
+      harvestPollRef.current = null;
+    }
+  }, []);
+
+  const applyTerminalHarvest = useCallback(async (data: Record<string, unknown>) => {
+    clearHarvestPoll();
+    sessionStorage.removeItem(PENDING_HARVEST_STORAGE_KEY);
+    setHarvestBusy(false);
+    const status = String(data.status || '').toUpperCase();
+    if (status === 'COMPLETED') {
+      setHarvestResult({
+        success: true,
+        status: 'COMPLETED',
+        ore: data.ore,
+        precious_metals: data.precious_metals,
+        quantum_shards: data.quantum_shards,
+        turns_spent: data.turns_spent,
+        am_rep_delta: data.am_rep_delta,
+      });
+    } else if (status === 'INTERRUPTED') {
+      const reason = data.terminal_reason ? String(data.terminal_reason) : '';
+      setHarvestResult({
+        success: false,
+        status: 'INTERRUPTED',
+        message: reason
+          ? `Mining interrupted — ${reason.replace(/_/g, ' ')}.`
+          : 'Mining interrupted before completion.',
+      });
+    } else {
+      setHarvestResult({
+        success: false,
+        status,
+        message: data.terminal_reason
+          ? String(data.terminal_reason)
+          : `Harvest ended (${status}).`,
+      });
+    }
+    try {
+      await refreshPlayerState();
+    } catch {
+      /* non-fatal */
+    }
+  }, [clearHarvestPoll, refreshPlayerState]);
+
+  const pollHarvestOnce = useCallback(async (harvestId: string) => {
+    try {
+      const data = ((await miningAPI.getHarvestStatus(harvestId)) || {}) as Record<string, unknown>;
+      const status = String(data.status || '');
+      if (!isTerminalHarvestStatus(status)) {
+        setHarvestResult((prev: any) => ({
+          ...(prev || {}),
+          success: true,
+          status: 'in_progress',
+          harvest_id: harvestId,
+          resolves_at: data.resolves_at ?? prev?.resolves_at,
+          message: 'Mining in progress — hold position while the laser works the field.',
+        }));
+        return;
+      }
+      await applyTerminalHarvest(data);
+    } catch {
+      /* keep polling; roster refresh surfaces hard errors elsewhere */
+    }
+  }, [applyTerminalHarvest]);
+
+  const startHarvestPoll = useCallback((harvestId: string) => {
+    clearHarvestPoll();
+    sessionStorage.setItem(PENDING_HARVEST_STORAGE_KEY, harvestId);
+    setHarvestBusy(true);
+    void pollHarvestOnce(harvestId);
+    harvestPollRef.current = window.setInterval(() => {
+      void pollHarvestOnce(harvestId);
+    }, HARVEST_POLL_INTERVAL_MS);
+  }, [clearHarvestPoll, pollHarvestOnce]);
+
+  useEffect(() => {
+    const stored = sessionStorage.getItem(PENDING_HARVEST_STORAGE_KEY);
+    if (stored && !harvestPollRef.current) {
+      setHarvestResult((prev: any) => prev ?? {
+        success: true,
+        status: 'in_progress',
+        harvest_id: stored,
+        message: 'Mining in progress — hold position while the laser works the field.',
+      });
+      startHarvestPoll(stored);
+    }
+    return () => clearHarvestPoll();
+  }, [clearHarvestPoll, startHarvestPoll]);
 
   // Special-formation investigation (WO-UI-ANOMALY): which discovered formations
   // this player has already investigated this session (the chip disables once
@@ -1339,6 +1438,13 @@ const GameDashboardInner: React.FC = () => {
   // second so the landed-console indicator counts down in real time, and bump
   // opsRefresh once the timer elapses so the finished level appears on its own.
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  // LEG-2731: live countdown while async harvest poll is in flight.
+  useEffect(() => {
+    if (harvestResult?.status !== 'in_progress') return;
+    setNowMs(Date.now());
+    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [harvestResult?.status]);
   // Any defense building still under construction this tick.
   const defenseBuildActive = defenseBuildings.some((b: any) => (b.queued_count ?? 0) > 0);
   useEffect(() => {
@@ -2069,7 +2175,7 @@ const GameDashboardInner: React.FC = () => {
   const harvestTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (harvestTimerRef.current) clearTimeout(harvestTimerRef.current);
-    if (harvestResult) {
+    if (harvestResult && harvestResult.status !== 'in_progress') {
       harvestTimerRef.current = setTimeout(() => dismissOverlay(setHarvestResult), 6000);
     }
     return () => { if (harvestTimerRef.current) clearTimeout(harvestTimerRef.current); };
@@ -2248,9 +2354,10 @@ const GameDashboardInner: React.FC = () => {
     }
     autopilot.abort('manual helm action');
     setHarvestBusy(true);
+    let keepBusyForPoll = false;
     try {
       const data = (await miningAPI.harvest(shipId)) || {};
-      if (data.status === 'in_progress') {
+      if (data.status === 'in_progress' && data.harvest_id) {
         setHarvestResult({
           success: true,
           status: 'in_progress',
@@ -2260,6 +2367,8 @@ const GameDashboardInner: React.FC = () => {
           remaining_turns: data.remaining_turns,
           message: 'Mining in progress — hold position while the laser works the field.',
         });
+        startHarvestPoll(String(data.harvest_id));
+        keepBusyForPoll = true;
       } else {
         setHarvestResult({ success: true, ...data });
       }
@@ -2274,7 +2383,7 @@ const GameDashboardInner: React.FC = () => {
         'Harvest failed. Please try again.';
       setHarvestResult({ success: false, message });
     } finally {
-      setHarvestBusy(false);
+      if (!keepBusyForPoll) setHarvestBusy(false);
     }
   };
 
@@ -2559,7 +2668,13 @@ const GameDashboardInner: React.FC = () => {
             }}
           >
             <div className="alert-header">
-              <span>{harvestResult.success ? '⛏️ HARVEST COMPLETE' : '⛏️ HARVEST FAILED'}</span>
+              <span>
+                {harvestResult.status === 'in_progress'
+                  ? '⛏️ MINING IN PROGRESS'
+                  : harvestResult.success
+                    ? '⛏️ HARVEST COMPLETE'
+                    : '⛏️ HARVEST FAILED'}
+              </span>
               <button
                 className="alert-dismiss"
                 onClick={(e) => { e.stopPropagation(); dismissOverlay(setHarvestResult); }}
@@ -2568,7 +2683,16 @@ const GameDashboardInner: React.FC = () => {
                 ×
               </button>
             </div>
-            {harvestResult.success ? (
+            {harvestResult.status === 'in_progress' ? (
+              <>
+                <div className="alert-message">{harvestResult.message}</div>
+                {formatHarvestCountdown(harvestResult.resolves_at, nowMs) && (
+                  <div className="alert-message">
+                    {formatHarvestCountdown(harvestResult.resolves_at, nowMs)}
+                  </div>
+                )}
+              </>
+            ) : harvestResult.success ? (
               <>
                 <div className="alert-message">
                   +{harvestResult.ore ?? 0} ORE
