@@ -79,6 +79,7 @@ class LeaderboardEntry(BaseModel):
     military_rank: str
     rank_points: int
     rank_level: int
+    rank_tier: str
     is_game_complete: bool = False
     is_suspect: bool = False
     is_wanted: bool = False
