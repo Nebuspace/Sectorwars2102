@@ -1,7 +1,8 @@
 import React from 'react';
 import { useGame } from '../../../contexts/GameContext';
-import { greyStatusAPI, type GreyStatus } from '../../../services/api';
+import { greyStatusAPI, armoryAPI, type ArmoryMineItem, type GreyStatus } from '../../../services/api';
 import { formatCredits } from '../../../utils/formatters';
+import LimpetTrackerReadout from '../LimpetTrackerReadout';
 
 /**
  * TacticalThreatPage — TACTICAL monitor's THREAT page (WO-UI2-DECK-
@@ -37,10 +38,13 @@ const formatCountdown = (totalSeconds: number): string => {
 const TacticalThreatPage: React.FC = () => {
   const { currentSector, playerState, deployMines, updatePlayerCredits } = useGame();
   const [mineQty, setMineQty] = React.useState(1);
+  const [mineItem, setMineItem] = React.useState<ArmoryMineItem>('armored_mine');
+  const [limpetCarried, setLimpetCarried] = React.useState(0);
   const [mineBusy, setMineBusy] = React.useState(false);
   const [mineMsg, setMineMsg] = React.useState<{ ok: boolean; text: string } | null>(null);
 
   const minesCarried = playerState?.mines ?? 0;
+  const carriedForItem = mineItem === 'limpet_mine' ? limpetCarried : minesCarried;
   const inOpenSpace = !!playerState && !playerState.is_docked && !playerState.is_landed;
 
   const [greyStatus, setGreyStatus] = React.useState<GreyStatus | null>(null);
@@ -64,6 +68,19 @@ const TacticalThreatPage: React.FC = () => {
   React.useEffect(() => {
     fetchGreyStatus();
   }, [fetchGreyStatus]);
+
+  React.useEffect(() => {
+    armoryAPI
+      .getCatalog()
+      .then((raw) => {
+        const loadout = raw && typeof raw === 'object' ? (raw as { loadout?: { limpet_mines?: number } }).loadout : undefined;
+        const n = loadout && typeof loadout.limpet_mines === 'number' ? loadout.limpet_mines : 0;
+        setLimpetCarried(n);
+      })
+      .catch(() => {
+        setLimpetCarried(0);
+      });
+  }, []);
 
   const [now, setNow] = React.useState<number>(() => Date.now());
   React.useEffect(() => {
@@ -110,14 +127,17 @@ const TacticalThreatPage: React.FC = () => {
   };
 
   const handleDeployMines = async () => {
-    if (mineBusy || minesCarried < 1) return;
+    if (mineBusy || carriedForItem < 1) return;
     setMineBusy(true);
     setMineMsg(null);
     try {
-      const qty = Math.max(1, Math.min(minesCarried, mineQty));
-      const res = await deployMines(qty);
-      setMineMsg({ ok: true, text: res?.message || `Deployed ${qty} mine(s).` });
+      const qty = Math.max(1, Math.min(carriedForItem, mineQty));
+      const res = await deployMines(qty, mineItem);
+      setMineMsg({ ok: true, text: res?.message || `Deployed ${qty} ${mineItem.replace('_', ' ')}(s).` });
       setMineQty(1);
+      if (mineItem === 'limpet_mine') {
+        setLimpetCarried((n) => Math.max(0, n - qty));
+      }
     } catch (e: any) {
       setMineMsg({ ok: false, text: e?.response?.data?.detail || 'Mine deployment failed' });
     } finally {
@@ -173,36 +193,55 @@ const TacticalThreatPage: React.FC = () => {
       </div>
 
       <div className="threat-section">
-        <div className="threat-section-title" role="heading" aria-level={3}>MINES ABOARD {playerState ? minesCarried : '—'}</div>
-        {minesCarried < 1 ? (
-          <div className="threat-hint">No mines aboard — buy armored mines at a spacedock armory.</div>
+        <div className="threat-section-title" role="heading" aria-level={3}>
+          MINES ABOARD armored {playerState ? minesCarried : '—'} · limpet {limpetCarried}
+        </div>
+        {minesCarried < 1 && limpetCarried < 1 ? (
+          <div className="threat-hint">No mines aboard — buy armored or limpet mines at a spacedock armory.</div>
         ) : !inOpenSpace ? (
           <div className="threat-hint">Undock / lift off to lay mines in open space.</div>
         ) : (
           <div className="threat-row">
+            <select
+              aria-label="Mine type"
+              className="threat-mine-input"
+              value={mineItem}
+              disabled={mineBusy}
+              onChange={(e) => setMineItem(e.target.value as ArmoryMineItem)}
+            >
+              <option value="armored_mine" disabled={minesCarried < 1}>
+                Armored ({minesCarried})
+              </option>
+              <option value="limpet_mine" disabled={limpetCarried < 1}>
+                Limpet ({limpetCarried})
+              </option>
+            </select>
             <input
               type="number"
               min={1}
-              max={minesCarried}
+              max={Math.max(1, carriedForItem)}
               value={mineQty}
-              onChange={(e) => setMineQty(Math.max(1, Math.min(minesCarried, parseInt(e.target.value, 10) || 1)))}
-              disabled={mineBusy}
+              onChange={(e) => setMineQty(Math.max(1, Math.min(carriedForItem, parseInt(e.target.value, 10) || 1)))}
+              disabled={mineBusy || carriedForItem < 1}
               className="threat-mine-input"
               aria-label="Mine quantity"
             />
             <button
               type="button"
               className="threat-btn"
+              data-testid="threat-lay-mines"
               onClick={handleDeployMines}
-              disabled={mineBusy}
+              disabled={mineBusy || carriedForItem < 1}
               aria-busy={mineBusy}
             >
-              {mineBusy ? '…' : `LAY 5 ▸ (carry ${minesCarried})`}
+              {mineBusy ? '…' : `LAY ${mineItem === 'limpet_mine' ? 'LIMPET' : 'ARMORED'} ▸`}
             </button>
           </div>
         )}
         {mineMsg && <div className={`threat-msg ${mineMsg.ok ? 'ok' : 'err'}`} role="status">{mineMsg.text}</div>}
       </div>
+
+      <LimpetTrackerReadout />
 
       <div className="threat-section">
         <div className="threat-section-title" role="heading" aria-level={3}>HAZARD READOUT</div>

@@ -13,9 +13,15 @@ import { createRoot } from 'react-dom/client';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const mockGetTeam = vi.fn();
+const mockFlagMessage = vi.fn();
+const mockGetConversations = vi.fn();
 vi.mock('../../../services/api', () => ({
   teamAPI: {
     getTeam: (...a: unknown[]) => mockGetTeam(...a),
+  },
+  messageAPI: {
+    flagMessage: (...a: unknown[]) => mockFlagMessage(...a),
+    getConversations: (...a: unknown[]) => mockGetConversations(...a),
   },
 }));
 
@@ -79,7 +85,7 @@ vi.mock('../../../contexts/AuthContext', () => ({
   useAuth: () => ({ user: { id: 'player-1' } }),
 }));
 
-import CommsCrewPage from './CommsCrewPage';
+import CommsCrewPage, { FLAG_REASON_BY_CATEGORY } from './CommsCrewPage';
 
 describe('CommsCrewPage — MFD-B COMM', () => {
   let container: HTMLElement;
@@ -87,6 +93,10 @@ describe('CommsCrewPage — MFD-B COMM', () => {
 
   beforeEach(() => {
     mockGetTeam.mockReset();
+    mockFlagMessage.mockReset();
+    mockGetConversations.mockReset();
+    mockGetConversations.mockResolvedValue({ conversations: [], total: 0, page: 1, limit: 20, pages: 0 });
+    mockFlagMessage.mockResolvedValue({ success: true });
     mockRefreshInbox.mockReset();
     mockSendPlayerMessage.mockReset();
     mockMarkMessageRead.mockReset();
@@ -172,6 +182,36 @@ describe('CommsCrewPage — MFD-B COMM', () => {
     expect(mockDeletePlayerMessage).toHaveBeenCalledWith('msg-1');
   });
 
+  it('FLAG category calls messageAPI.flagMessage with tip-length reason', async () => {
+    mockInboxMessages = [makeMessage()];
+    await mount();
+    await click(container.querySelector('.mfd-page-comms-hail-summary')!);
+    await click(container.querySelector('[data-testid="comms-flag-hail"]')!);
+    expect(container.querySelector('[data-testid="comms-flag-categories"]')).not.toBeNull();
+    await click(container.querySelector('[data-testid="comms-flag-cat-spam"]')!);
+    await flush();
+    expect(mockFlagMessage).toHaveBeenCalledWith('msg-1', FLAG_REASON_BY_CATEGORY.spam);
+    expect(FLAG_REASON_BY_CATEGORY.spam.length).toBeGreaterThanOrEqual(10);
+    expect(container.querySelector('.mfd-page-comms-flag-notice')?.textContent).toBe(
+      'FLAGGED FOR MODERATION',
+    );
+  });
+
+  it('FLAG error path surfaces honesty without crashing', async () => {
+    mockFlagMessage.mockRejectedValueOnce(new Error('Message not found'));
+    mockInboxMessages = [makeMessage()];
+    await mount();
+    await click(container.querySelector('.mfd-page-comms-hail-summary')!);
+    await click(container.querySelector('[data-testid="comms-flag-hail"]')!);
+    await click(container.querySelector('[data-testid="comms-flag-cat-harassment"]')!);
+    await flush();
+    expect(mockFlagMessage).toHaveBeenCalledWith('msg-1', FLAG_REASON_BY_CATEGORY.harassment);
+    expect(container.querySelector('.mfd-page-comms-flag-error')?.textContent).toBe(
+      'Message not found',
+    );
+    expect(container.querySelector('.mfd-page-comms-hail-content')).not.toBeNull();
+  });
+
   it('shows the honest empty state with no transmissions', async () => {
     await mount();
 
@@ -231,6 +271,122 @@ describe('CommsCrewPage — MFD-B COMM', () => {
     // this asserts the page itself never conditions on player mode.
     await mount();
     expect(container.querySelector('.mfd-page-ops')).not.toBeNull();
+  });
+
+  it('THREADS tab fetches conversations and renders thread rows', async () => {
+    mockGetConversations.mockResolvedValueOnce({
+      conversations: [
+        makeMessage({
+          id: 'conv-1',
+          thread_id: 'thread-a',
+          sender_name: 'Echo',
+          subject: 'Docking coords',
+        }),
+      ],
+      total: 1,
+      page: 1,
+      limit: 20,
+      pages: 1,
+    });
+    await mount();
+    await click(container.querySelectorAll('.mfd-page-comms-mode-tab')[1]!);
+    await flush();
+    expect(mockGetConversations).toHaveBeenCalledWith(1);
+    expect(container.querySelector('[data-testid="comms-threads-list"]')).not.toBeNull();
+    expect(container.querySelector('.mfd-page-comms-hail-sender')?.textContent).toBe('ECHO');
+    expect(container.querySelector('.mfd-page-comms-hail-subject')?.textContent).toBe('Docking coords');
+  });
+
+  it('THREADS tab shows empty state when conversations=[]', async () => {
+    mockGetConversations.mockResolvedValueOnce({
+      conversations: [],
+      total: 0,
+      page: 1,
+      limit: 20,
+      pages: 0,
+    });
+    await mount();
+    await click(container.querySelectorAll('.mfd-page-comms-mode-tab')[1]!);
+    await flush();
+    expect(container.querySelector('[data-testid="comms-threads-list"] .mfd-empty')?.textContent).toBe(
+      'NO THREADS'
+    );
+  });
+
+  it('THREADS tab surfaces fetch error without crashing', async () => {
+    mockGetConversations.mockRejectedValueOnce(new Error('Uplink timeout'));
+    await mount();
+    await click(container.querySelectorAll('.mfd-page-comms-mode-tab')[1]!);
+    await flush();
+    expect(container.querySelector('.mfd-page-warnline')?.textContent).toBe('Uplink timeout');
+    expect(container.querySelector('.mfd-page-ops')).not.toBeNull();
+  });
+
+  it('THREADS tab selecting a thread shows merged messages in the detail pane', async () => {
+    mockGetConversations.mockResolvedValueOnce({
+      conversations: [
+        makeMessage({
+          id: 'conv-preview',
+          thread_id: 'thread-a',
+          sender_name: 'Echo',
+          subject: 'Docking coords',
+          content: 'Meet at bay 7.',
+        }),
+      ],
+      total: 1,
+      page: 1,
+      limit: 20,
+      pages: 1,
+    });
+    mockInboxMessages = [
+      makeMessage({
+        id: 'inbox-1',
+        thread_id: 'thread-a',
+        sender_name: 'Nova',
+        subject: 'Docking coords',
+        content: 'Copy that, en route.',
+        sent_at: '2026-07-10T12:01:00+00:00',
+      }),
+      makeMessage({
+        id: 'inbox-2',
+        thread_id: 'thread-a',
+        sender_name: 'Drift',
+        subject: 'Docking coords',
+        content: 'Standing by at the airlock.',
+        sent_at: '2026-07-10T12:02:00+00:00',
+      }),
+    ];
+
+    await mount();
+    await click(container.querySelectorAll('.mfd-page-comms-mode-tab')[1]!);
+    await flush();
+
+    expect(container.querySelector('[data-testid="comms-thread-detail"]')).toBeNull();
+
+    const threadSummary = container.querySelector(
+      '[data-testid="comms-threads-list"] .mfd-page-comms-hail-summary'
+    )!;
+    expect(threadSummary).not.toBeNull();
+    expect(container.querySelector('.mfd-page-comms-hail-subject')?.textContent).toBe('Docking coords');
+
+    await click(threadSummary);
+    await flush();
+
+    const detail = container.querySelector('[data-testid="comms-thread-detail"]');
+    expect(detail).not.toBeNull();
+
+    const detailSenders = Array.from(
+      detail!.querySelectorAll('.mfd-page-comms-hail-sender')
+    ).map((el) => el.textContent);
+    expect(detailSenders).toContain('NOVA');
+    expect(detailSenders).toContain('DRIFT');
+    expect(detailSenders).toContain('ECHO');
+
+    const firstDetailSummary = detail!.querySelector('.mfd-page-comms-hail-summary')!;
+    await click(firstDetailSummary);
+    await flush();
+
+    expect(detail!.querySelector('.mfd-page-comms-hail-content')?.textContent).toBeTruthy();
   });
 });
 
