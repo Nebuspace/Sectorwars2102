@@ -108,4 +108,44 @@ describe('MiningVenue', () => {
     expect(buttons.every((b) => b.disabled)).toBe(true);
     expect(buttons[0].title).toBe('No active ship');
   });
+
+  it('renders active and recently expired license rows from tip GET props', () => {
+    renderVenue({
+      licenses: [
+        {
+          id: 'lic-a',
+          region_id: 'reg-1',
+          sector_number: 42,
+          expires_at: '2099-06-01T00:00:00Z',
+          purchased_at: '2099-05-31T00:00:00Z',
+          cost_paid_cr: 500,
+          is_active: true,
+        },
+        {
+          id: 'lic-e',
+          region_id: 'reg-1',
+          sector_number: 7,
+          expires_at: '2020-01-01T00:00:00Z',
+          purchased_at: '2019-12-31T00:00:00Z',
+          cost_paid_cr: 400,
+          is_active: false,
+        },
+      ],
+    });
+    const list = container.querySelector('[data-testid="mining-license-list"]');
+    expect(list?.textContent).toContain('42');
+    expect(list?.textContent).toContain('Active');
+    expect(list?.textContent).toContain('7');
+    expect(list?.textContent).toContain('Recently expired');
+  });
+
+  it('shows empty state when the tip list has no items', () => {
+    renderVenue({ licenses: [] });
+    expect(container.textContent).toContain('No active or recently expired licenses.');
+  });
+
+  it('shows loading state while licenses fetch', () => {
+    renderVenue({ licensesLoading: true });
+    expect(container.textContent).toContain('Loading licenses');
+  });
 });

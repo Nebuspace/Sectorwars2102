@@ -10,6 +10,17 @@ import './spacedock.css';
 // ModuleGrid mining-family ladder UI remains Design-only.
 // =====================================================================
 
+/** Tip GET /mining/licenses row — keys match list_player_licenses (LEG-435). */
+export interface ClaimLicenseRow {
+  id: string;
+  region_id: string | null;
+  sector_number: number;
+  expires_at: string | null;
+  purchased_at: string | null;
+  cost_paid_cr: number;
+  is_active: boolean;
+}
+
 /** Canon catalog cost for first Mining Laser fit (equipment_slots, not module grid). */
 export const MINING_LASER_INSTALL_COST_CR = 35_000;
 
@@ -21,6 +32,9 @@ interface MiningVenueProps {
   licenseError: string | null;
   licenseSuccess: string | null;
   purchaseClaimLicense: () => void;
+  licenses?: ClaimLicenseRow[];
+  licensesLoading?: boolean;
+  licensesError?: string | null;
   laserBusy: boolean;
   laserError: string | null;
   laserSuccess: string | null;
@@ -37,6 +51,9 @@ const MiningVenue: React.FC<MiningVenueProps> = ({
   licenseError,
   licenseSuccess,
   purchaseClaimLicense,
+  licenses = [],
+  licensesLoading = false,
+  licensesError = null,
   laserBusy,
   laserError,
   laserSuccess,
@@ -80,6 +97,47 @@ const MiningVenue: React.FC<MiningVenueProps> = ({
                 {licenseError}
               </div>
             )}
+            <div className="license-list" data-testid="mining-license-list">
+              {licensesLoading && (
+                <div className="license-list-empty">Loading licenses…</div>
+              )}
+              {!licensesLoading && licensesError && (
+                <div className="genesis-error-message">
+                  <span className="error-icon">❌</span>
+                  {licensesError}
+                </div>
+              )}
+              {!licensesLoading && !licensesError && licenses.length === 0 && (
+                <div className="license-list-empty">
+                  No active or recently expired licenses.
+                </div>
+              )}
+              {!licensesLoading && !licensesError && licenses.length > 0 && (
+                <table className="license-list-table">
+                  <caption>Active and recently expired claim licenses</caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">Sector</th>
+                      <th scope="col">Expires</th>
+                      <th scope="col">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {licenses.map((row) => (
+                      <tr key={row.id} data-license-id={row.id}>
+                        <td>{row.sector_number}</td>
+                        <td>
+                          {row.expires_at
+                            ? new Date(row.expires_at).toLocaleString()
+                            : '—'}
+                        </td>
+                        <td>{row.is_active ? 'Active' : 'Recently expired'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
             <div className="service-action">
               <button
                 className="service-btn"
