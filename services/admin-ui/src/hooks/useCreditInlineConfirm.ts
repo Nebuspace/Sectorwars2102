@@ -20,7 +20,7 @@ export const creditConfirmLabel = (creditConsequence: number, context?: string):
 
 export function useCreditInlineConfirm() {
   const [armedKey, setArmedKey] = useState<string | null>(null);
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const timeoutRef = useRef<number | null>(null);
 
   const clearArmTimeout = useCallback(() => {
     if (timeoutRef.current !== null) {
