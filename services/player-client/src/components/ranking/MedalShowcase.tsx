@@ -18,6 +18,7 @@ interface Medal {
 interface MedalData {
   earned: Medal[];
   available: Medal[];
+  pinned_medal_id?: string | null;
 }
 
 const CATEGORY_ICONS: Record<string, string> = {
@@ -71,9 +72,7 @@ const MedalShowcase: React.FC = () => {
       if (showInitialSpinner) setLoading(true);
       const data = await medalsAPI.getMe();
       setMedalData(data);
-      setPinnedMedalId(
-        (data as MedalData | null | undefined)?.pinned_medal_id ?? null,
-      );
+      setPinnedMedalId(data.pinned_medal_id ?? null);
       setError(null);
     } catch (err: any) {
       // Only surface the error overlay on the initial load; a failed live
