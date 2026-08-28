@@ -49,6 +49,38 @@ function killLogCount(row: AvailableBountyRow): number {
   return Array.isArray(row.recent_kills) ? row.recent_kills.length : 0;
 }
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+/** apiRequest throws Error with `.status`; mirror admin formatAdminApiError honesty on LIST. */
+export function formatBountyBoardLoadError(err: unknown): string {
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'Access denied — you cannot view the Federation bounty board right now.';
+  }
+
+  if (status === 429) {
+    return 'Bounty board rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (hasServerDetail) return message!;
+  return 'Failed to load bounty board';
+}
+
 export interface BountyBoardProps {
   /** Override fetch for tests; defaults to bountyAPI.getAvailable. */
   fetchAvailable?: (limit?: number) => Promise<AvailableBountiesResponse>;
@@ -90,7 +122,7 @@ const BountyBoard: React.FC<BountyBoardProps> = ({
       );
     } catch (err) {
       if (id !== requestId.current) return;
-      setError(err instanceof Error ? err.message : 'Failed to load bounty board');
+      setError(formatBountyBoardLoadError(err));
       setRows([]);
       setTotalTargets(null);
     } finally {
