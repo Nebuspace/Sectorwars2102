@@ -10,10 +10,13 @@ vi.mock('../../utils/auth', () => ({
   },
 }));
 
+const toastSuccess = vi.fn();
+const toastError = vi.fn();
+
 vi.mock('../../contexts/ToastContext', () => ({
   useToast: () => ({
-    success: vi.fn(),
-    error: vi.fn(),
+    success: toastSuccess,
+    error: toastError,
     warning: vi.fn(),
     info: vi.fn(),
   }),
@@ -24,6 +27,8 @@ describe('BountyAdminPanel', () => {
   beforeEach(() => {
     vi.mocked(api.get).mockReset();
     vi.mocked(api.post).mockReset();
+    toastSuccess.mockReset();
+    toastError.mockReset();
   });
 
   it('loads player bounties and force-cancels an entry', async () => {
@@ -130,6 +135,101 @@ describe('BountyAdminPanel', () => {
     await waitFor(() => {
       expect(api.post).toHaveBeenCalledWith('/api/v1/admin/players/t1/bounties/collapse');
     });
+  });
+
+  async function loadTargetWithBounty() {
+    vi.mocked(api.get).mockResolvedValue({
+      data: {
+        success: true,
+        target_id: 't1',
+        target_name: 'Wanted',
+        player_bounties: [
+          {
+            id: 'b1',
+            placed_by: 'p2',
+            placed_by_name: 'Placer',
+            amount: 5000,
+            type: 'player',
+          },
+        ],
+        system_bounties: [],
+        total_value: 5000,
+      },
+    });
+
+    render(<BountyAdminPanel />);
+
+    const targetInput = screen.getByLabelText('Target player UUID');
+    fireEvent.change(targetInput, { target: { value: 't1' } });
+    await waitFor(() => {
+      expect((targetInput as HTMLInputElement).value).toBe('t1');
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Load' }));
+
+    await waitFor(() => {
+      expect(api.get).toHaveBeenCalledWith('/api/v1/admin/players/t1/bounties');
+    });
+    expect(await screen.findByRole('button', { name: 'Force-cancel' })).toBeTruthy();
+  }
+
+  it('surfaces formatAdminApiError on collapse POST 403 (LEG-2650)', async () => {
+    await loadTargetWithBounty();
+    vi.mocked(api.post).mockRejectedValue(axiosError(403));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse excess' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith('/api/v1/admin/players/t1/bounties/collapse');
+    });
+    expect(String(toastError.mock.calls[0][0])).toMatch(/ECONOMY_INTERVENE|Access denied/i);
+    expect(toastError).not.toHaveBeenCalledWith('Collapse failed');
+  });
+
+  it('surfaces rate-limit copy on collapse POST 429 (LEG-2650)', async () => {
+    await loadTargetWithBounty();
+    vi.mocked(api.post).mockRejectedValue(axiosError(429));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse excess' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith('/api/v1/admin/players/t1/bounties/collapse');
+    });
+    expect(toastError).toHaveBeenCalledWith(
+      expect.stringMatching(/rate limit/i),
+    );
+    expect(toastError).not.toHaveBeenCalledWith('Collapse failed');
+  });
+
+  it('surfaces formatAdminApiError on force-cancel POST 403 (LEG-2651)', async () => {
+    await loadTargetWithBounty();
+    vi.mocked(api.post).mockRejectedValue(axiosError(403));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Force-cancel' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/players/t1/bounties/b1/force-cancel',
+      );
+    });
+    expect(String(toastError.mock.calls[0][0])).toMatch(/ECONOMY_INTERVENE|Access denied/i);
+    expect(toastError).not.toHaveBeenCalledWith('Force-cancel failed');
+  });
+
+  it('surfaces rate-limit copy on force-cancel POST 429 (LEG-2651)', async () => {
+    await loadTargetWithBounty();
+    vi.mocked(api.post).mockRejectedValue(axiosError(429));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Force-cancel' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/players/t1/bounties/b1/force-cancel',
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(
+      expect.stringMatching(/rate limit/i),
+    );
+    expect(toastError).not.toHaveBeenCalledWith('Force-cancel failed');
   });
 
   const axiosError = (status: number) =>
