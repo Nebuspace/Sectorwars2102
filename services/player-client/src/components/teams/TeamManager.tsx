@@ -116,7 +116,9 @@ const mapMember = (raw: TeamMemberApiResponse): TeamMember => {
     },
     // Canon gap: member ship type is not exposed by the teams API
     shipType: '',
-    combatRating: raw.combat_rating
+    combatRating: raw.combat_rating,
+    pinnedMedalId: raw.pinned_medal_id ?? null,
+    medalCount: raw.medal_count ?? null
   };
 };
 
@@ -178,8 +180,8 @@ export const TeamManager: React.FC = () => {
   const [confirmingLeave, setConfirmingLeave] = useState(false);
   const [confirmingKickId, setConfirmingKickId] = useState<string | null>(null);
 
-  // LEG-357 / LEG-33 — self pin from GET /medals/me.pinned_medal_id (GS #613).
-  // Teams roster has no per-member medal fields; only the local player row pins.
+  // LEG-357 / LEG-33 — optional self enrichment from GET /medals/me (icon/name).
+  // Roster rows also carry pinned_medal_id + medal_count from the teams API.
   const [selfMedalCount, setSelfMedalCount] = useState<number | null>(null);
   const [selfPinnedIcon, setSelfPinnedIcon] = useState<string | null>(null);
   const [selfPinnedId, setSelfPinnedId] = useState<string | null>(null);
@@ -651,7 +653,9 @@ export const TeamManager: React.FC = () => {
                         name={member.playerName}
                         size="sm"
                         pinnedMedalId={
-                          member.playerId === playerState.id ? selfPinnedId : null
+                          member.playerId === playerState.id
+                            ? (selfPinnedId ?? member.pinnedMedalId)
+                            : member.pinnedMedalId
                         }
                         pinnedMedalIcon={
                           member.playerId === playerState.id ? selfPinnedIcon : null
@@ -660,7 +664,9 @@ export const TeamManager: React.FC = () => {
                           member.playerId === playerState.id ? selfPinnedName : null
                         }
                         medalCount={
-                          member.playerId === playerState.id ? selfMedalCount : null
+                          member.playerId === playerState.id
+                            ? (selfMedalCount ?? member.medalCount)
+                            : member.medalCount
                         }
                       />
                     </div>
