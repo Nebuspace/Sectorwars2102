@@ -97,6 +97,32 @@ function mockTradeDockGets() {
   });
 }
 
+function httpErr(status: number, detail?: string) {
+  return Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: detail ? { detail } : {} },
+  });
+}
+
+function mockTradeDockListOnly() {
+  vi.mocked(api.get).mockImplementation(async (url: string) => {
+    if (url.endsWith('/admin/construction/tradedocks')) {
+      return {
+        data: {
+          tradedocks: [
+            {
+              station_id: 'st1',
+              name: 'TradeDock Prime',
+              tradedock_tier: 'A',
+              sector_id: 50,
+            },
+          ],
+        },
+      };
+    }
+    return { data: {} };
+  });
+}
+
 async function openReservationDetail() {
   mockTradeDockGets();
   render(<TradeDockAdmin />);
@@ -496,5 +522,199 @@ describe('TradeDockAdmin', () => {
       expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/rate limit/i));
     });
     expect(String(toastError.mock.calls[0][0])).not.toMatch(/^Failed to load reservation detail$/);
+  });
+});
+
+describe('TradeDockAdmin overview + reservation detail GET errors (LEG-2683)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    toastSuccess.mockReset();
+    toastError.mockReset();
+    confirmMock.mockReset();
+    confirmMock.mockResolvedValue(true);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('overview GET 403 surfaces detailError scope copy (not generic Failed to load)', async () => {
+    mockTradeDockListOnly();
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.endsWith('/admin/construction/tradedocks')) {
+        return {
+          data: {
+            tradedocks: [
+              {
+                station_id: 'st1',
+                name: 'TradeDock Prime',
+                tradedock_tier: 'A',
+                sector_id: 50,
+              },
+            ],
+          },
+        };
+      }
+      if (url.includes('/admin/construction/tradedocks/st1')) {
+        throw httpErr(403);
+      }
+      return { data: {} };
+    });
+
+    render(<TradeDockAdmin />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/Access denied|PLAYERS_VIEW/i);
+    });
+    expect(screen.getByRole('alert').textContent).not.toMatch(
+      /^Failed to load TradeDock overview$/i
+    );
+  });
+
+  it('overview GET 429 surfaces detailError rate-limit copy (not generic Failed to load)', async () => {
+    mockTradeDockListOnly();
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.endsWith('/admin/construction/tradedocks')) {
+        return {
+          data: {
+            tradedocks: [
+              {
+                station_id: 'st1',
+                name: 'TradeDock Prime',
+                tradedock_tier: 'A',
+                sector_id: 50,
+              },
+            ],
+          },
+        };
+      }
+      if (url.includes('/admin/construction/tradedocks/st1')) {
+        throw httpErr(429);
+      }
+      return { data: {} };
+    });
+
+    render(<TradeDockAdmin />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
+    });
+    expect(screen.getByRole('alert').textContent).not.toMatch(
+      /^Failed to load TradeDock overview$/i
+    );
+  });
+
+  it('reservation detail GET 403 toast uses formatAdminApiError scope copy', async () => {
+    mockTradeDockGets();
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.endsWith('/admin/construction/tradedocks')) {
+        return {
+          data: {
+            tradedocks: [
+              {
+                station_id: 'st1',
+                name: 'TradeDock Prime',
+                tradedock_tier: 'A',
+                sector_id: 50,
+              },
+            ],
+          },
+        };
+      }
+      if (url.includes('/admin/construction/tradedocks/st1')) {
+        return {
+          data: {
+            station_id: 'st1',
+            station_name: 'TradeDock Prime',
+            tradedock_tier: 'A',
+            slips: {
+              standard: { capacity: 10, in_use: 1 },
+              specialized: { capacity: 2, in_use: 0 },
+            },
+            queue_length: 0,
+            queue: [],
+            reservations: [
+              {
+                id: 'r1',
+                ship_type: 'WARP_JUMPER',
+                state: 'frame_assembly',
+                uses_specialized_slip: false,
+                overall_progress_percent: 12.5,
+              },
+            ],
+          },
+        };
+      }
+      if (url.includes('/admin/construction/reservations/r1')) {
+        throw httpErr(403);
+      }
+      return { data: {} };
+    });
+
+    render(<TradeDockAdmin />);
+
+    fireEvent.click(await screen.findByLabelText('Open reservation r1'));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalled();
+    });
+    expect(String(toastError.mock.calls[0][0])).toMatch(/PLAYERS_VIEW|Access denied/i);
+    expect(String(toastError.mock.calls[0][0])).not.toMatch(
+      /^Failed to load reservation detail$/i
+    );
+  });
+
+  it('reservation detail GET 429 toast uses admin rate-limit helper copy', async () => {
+    mockTradeDockGets();
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.endsWith('/admin/construction/tradedocks')) {
+        return {
+          data: {
+            tradedocks: [
+              {
+                station_id: 'st1',
+                name: 'TradeDock Prime',
+                tradedock_tier: 'A',
+                sector_id: 50,
+              },
+            ],
+          },
+        };
+      }
+      if (url.includes('/admin/construction/tradedocks/st1')) {
+        return {
+          data: {
+            station_id: 'st1',
+            station_name: 'TradeDock Prime',
+            tradedock_tier: 'A',
+            slips: {
+              standard: { capacity: 10, in_use: 1 },
+              specialized: { capacity: 2, in_use: 0 },
+            },
+            queue_length: 0,
+            queue: [],
+            reservations: [
+              {
+                id: 'r1',
+                ship_type: 'WARP_JUMPER',
+                state: 'frame_assembly',
+                uses_specialized_slip: false,
+                overall_progress_percent: 12.5,
+              },
+            ],
+          },
+        };
+      }
+      if (url.includes('/admin/construction/reservations/r1')) {
+        throw httpErr(429);
+      }
+      return { data: {} };
+    });
+
+    render(<TradeDockAdmin />);
+
+    fireEvent.click(await screen.findByLabelText('Open reservation r1'));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/rate limit/i));
+    });
   });
 });
