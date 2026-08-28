@@ -13,12 +13,14 @@ import { createRoot } from 'react-dom/client';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const mockGetTeam = vi.fn();
+const mockGetConversations = vi.fn();
 const mockFlagMessage = vi.fn();
 vi.mock('../../../services/api', () => ({
   teamAPI: {
     getTeam: (...a: unknown[]) => mockGetTeam(...a),
   },
   messageAPI: {
+    getConversations: (...a: unknown[]) => mockGetConversations(...a),
     flagMessage: (...a: unknown[]) => mockFlagMessage(...a),
   },
 }));
@@ -91,6 +93,8 @@ describe('CommsCrewPage — MFD-B COMM', () => {
 
   beforeEach(() => {
     mockGetTeam.mockReset();
+    mockGetConversations.mockReset();
+    mockGetConversations.mockResolvedValue({ conversations: [], total: 0, page: 1, limit: 20, pages: 0 });
     mockFlagMessage.mockReset();
     mockFlagMessage.mockResolvedValue({ success: true });
     mockRefreshInbox.mockReset();
@@ -148,6 +152,11 @@ describe('CommsCrewPage — MFD-B COMM', () => {
       root.render(<CommsCrewPage />);
     });
     await flush();
+    // Conversations fetch resolves in a microtask after mount effect.
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
   };
 
   it('renders the working inbox: unread dot, sender, subject, and expands the body on click', async () => {
@@ -156,15 +165,16 @@ describe('CommsCrewPage — MFD-B COMM', () => {
 
     await mount();
 
-    expect(container.querySelector('.mfd-page-comms-hail-item')).not.toBeNull();
-    expect(container.querySelector('.mfd-page-comms-unread-dot.off')).toBeNull();
-    expect(container.querySelector('.mfd-page-comms-hail-sender')?.textContent).toBe('NOVA');
-    expect(container.querySelector('.mfd-page-comms-hail-subject')?.textContent).toBe('Hello');
-    expect(container.querySelector('.mfd-page-comms-hail-content')).toBeNull();
+    const inbox = container.querySelector('.mfd-page-comms-inbox');
+    expect(inbox?.querySelector('.mfd-page-comms-hail-item')).not.toBeNull();
+    expect(inbox?.querySelector('.mfd-page-comms-unread-dot.off')).toBeNull();
+    expect(inbox?.querySelector('.mfd-page-comms-hail-sender')?.textContent).toBe('NOVA');
+    expect(inbox?.querySelector('.mfd-page-comms-hail-subject')?.textContent).toBe('Hello');
+    expect(inbox?.querySelector('.mfd-page-comms-hail-content')).toBeNull();
 
-    await click(container.querySelector('.mfd-page-comms-hail-summary')!);
+    await click(inbox!.querySelector('.mfd-page-comms-hail-summary')!);
 
-    expect(container.querySelector('.mfd-page-comms-hail-content')?.textContent).toBe(
+    expect(inbox?.querySelector('.mfd-page-comms-hail-content')?.textContent).toBe(
       'Rendezvous at Sector 5.'
     );
     expect(mockMarkMessageRead).toHaveBeenCalledWith('msg-1');
@@ -173,7 +183,8 @@ describe('CommsCrewPage — MFD-B COMM', () => {
   it('PURGE on an expanded hail calls deletePlayerMessage', async () => {
     mockInboxMessages = [makeMessage()];
     await mount();
-    await click(container.querySelector('.mfd-page-comms-hail-summary')!);
+    const inbox = container.querySelector('.mfd-page-comms-inbox')!;
+    await click(inbox.querySelector('.mfd-page-comms-hail-summary')!);
     await click(container.querySelector('[data-testid="comms-purge-hail"]')!);
     expect(mockDeletePlayerMessage).toHaveBeenCalledWith('msg-1');
   });
@@ -181,7 +192,8 @@ describe('CommsCrewPage — MFD-B COMM', () => {
   it('FLAG category calls messageAPI.flagMessage with tip-length reason', async () => {
     mockInboxMessages = [makeMessage()];
     await mount();
-    await click(container.querySelector('.mfd-page-comms-hail-summary')!);
+    const inbox = container.querySelector('.mfd-page-comms-inbox')!;
+    await click(inbox.querySelector('.mfd-page-comms-hail-summary')!);
     await click(container.querySelector('[data-testid="comms-flag-hail"]')!);
     expect(container.querySelector('[data-testid="comms-flag-categories"]')).not.toBeNull();
     await click(container.querySelector('[data-testid="comms-flag-cat-spam"]')!);
@@ -197,7 +209,8 @@ describe('CommsCrewPage — MFD-B COMM', () => {
     mockFlagMessage.mockRejectedValueOnce(new Error('Message not found'));
     mockInboxMessages = [makeMessage()];
     await mount();
-    await click(container.querySelector('.mfd-page-comms-hail-summary')!);
+    const inbox = container.querySelector('.mfd-page-comms-inbox')!;
+    await click(inbox.querySelector('.mfd-page-comms-hail-summary')!);
     await click(container.querySelector('[data-testid="comms-flag-hail"]')!);
     await click(container.querySelector('[data-testid="comms-flag-cat-harassment"]')!);
     await flush();
@@ -219,7 +232,8 @@ describe('CommsCrewPage — MFD-B COMM', () => {
   it('opens the composer on REPLY, pre-filling RE: subject and recipient from the sender', async () => {
     mockInboxMessages = [makeMessage()];
     await mount();
-    await click(container.querySelector('.mfd-page-comms-hail-summary')!);
+    const inbox = container.querySelector('.mfd-page-comms-inbox')!;
+    await click(inbox.querySelector('.mfd-page-comms-hail-summary')!);
 
     await click(container.querySelector('.mfd-page-comms-reply-btn')!);
 
@@ -233,7 +247,8 @@ describe('CommsCrewPage — MFD-B COMM', () => {
     mockInboxMessages = [makeMessage({ id: 'msg-2', sender_id: 'sender-9', sender_name: 'Nova' })];
     mockSendPlayerMessage.mockResolvedValue({ message_id: 'sent-1', sent_at: '2026-07-10T12:05:00Z' });
     await mount();
-    await click(container.querySelector('.mfd-page-comms-hail-summary')!);
+    const inbox = container.querySelector('.mfd-page-comms-inbox')!;
+    await click(inbox.querySelector('.mfd-page-comms-hail-summary')!);
     await click(container.querySelector('.mfd-page-comms-reply-btn')!);
 
     const textarea = container.querySelector('.mfd-page-comms-compose-content') as HTMLTextAreaElement;
@@ -243,6 +258,80 @@ describe('CommsCrewPage — MFD-B COMM', () => {
 
     expect(mockSendPlayerMessage).toHaveBeenCalledWith('sender-9', 'On my way.', 'RE: Hello', 'msg-2');
     expect(container.querySelector('.mfd-page-comms-send-notice')?.textContent).toBe('TRANSMISSION SENT');
+  });
+
+  it('LEG-2603: fetches conversations and opens a thread body from tip payload', async () => {
+    mockGetConversations.mockResolvedValue({
+      conversations: [
+        {
+          id: 'msg-thread-latest',
+          sender_id: 'sender-9',
+          recipient_id: 'player-1',
+          subject: 'Convoy',
+          content: 'Meet at the gate.',
+          sent_at: '2026-08-17T12:00:00+00:00',
+          thread_id: 'thread-9',
+          is_read: true,
+          sender_name: 'Rex',
+        },
+      ],
+      total: 1,
+      page: 1,
+      limit: 20,
+      pages: 1,
+    });
+
+    await mount();
+
+    expect(mockGetConversations).toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="comms-thread-row"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="comms-thread-body"]')).toBeNull();
+
+    await click(container.querySelector('[data-testid="comms-thread-open"]')!);
+
+    const body = container.querySelector('[data-testid="comms-thread-body"]');
+    expect(body?.textContent).toContain('Meet at the gate.');
+    expect(body?.textContent).toMatch(/THREAD DEPTH CAP 50/);
+  });
+
+  it('shows NO THREADS empty state when conversations list is empty', async () => {
+    await mount();
+    const threads = container.querySelector('[data-testid="comms-threads"]');
+    expect(threads?.querySelector('.mfd-empty')?.textContent).toBe('NO THREADS');
+  });
+
+  it('surfaces 403 on getConversations in comms-threads-error', async () => {
+    mockGetConversations.mockRejectedValueOnce(new Error('Forbidden'));
+    await mount();
+    expect(container.querySelector('[data-testid="comms-threads-error"]')?.textContent).toBe(
+      'Forbidden',
+    );
+  });
+
+  it('surfaces 429 on getConversations in comms-threads-error', async () => {
+    mockGetConversations.mockRejectedValueOnce(new Error('API Error: 429'));
+    await mount();
+    expect(container.querySelector('[data-testid="comms-threads-error"]')?.textContent).toBe(
+      'API Error: 429',
+    );
+  });
+
+  it('surfaces thread_limit_exceeded canon copy on send refusal', async () => {
+    mockInboxMessages = [makeMessage({ id: 'msg-2', sender_id: 'sender-9', sender_name: 'Nova' })];
+    mockSendPlayerMessage.mockRejectedValueOnce({ data: { detail: 'thread_limit_exceeded' } });
+    await mount();
+    const inbox = container.querySelector('.mfd-page-comms-inbox')!;
+    await click(inbox.querySelector('.mfd-page-comms-hail-summary')!);
+    await click(container.querySelector('.mfd-page-comms-reply-btn')!);
+
+    const textarea = container.querySelector('.mfd-page-comms-compose-content') as HTMLTextAreaElement;
+    await typeInto(textarea, 'One more.');
+    await click(container.querySelector('.mfd-page-comms-transmit-btn')!);
+    await flush();
+
+    expect(container.querySelector('.mfd-page-warnline')?.textContent).toMatch(
+      /THREADS SUPPORT UP TO 50 MESSAGES/,
+    );
   });
 
   it('opens the composer via HAIL on a non-NPC sector contact (a source CommsMailbox also supports)', async () => {
