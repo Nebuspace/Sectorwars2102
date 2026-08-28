@@ -145,6 +145,42 @@
    retiring components/comms/CommsMailbox.tsx HAILS mode. Same visual
    language, .mfd-page-comms-* namespaced per this file's contract rule. ── */
 
+.mfd-page-comms-mode-tabs {
+  display: flex;
+  gap: 0.35rem;
+  margin: 0.35rem 0 0.25rem 0;
+}
+
+.mfd-page-comms-mode-tab {
+  flex: 1 1 0;
+  font-family: inherit;
+  font-size: 0.55rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  padding: 0.2rem 0.35rem;
+  border: 1px solid rgba(0, 255, 127, 0.25);
+  background: rgba(0, 0, 0, 0.25);
+  color: rgba(220, 235, 255, 0.55);
+  cursor: pointer;
+}
+
+.mfd-page-comms-mode-tab:hover {
+  color: rgba(220, 235, 255, 0.85);
+  border-color: rgba(0, 255, 127, 0.45);
+}
+
+.mfd-page-comms-mode-tab.active {
+  color: #00ff7f;
+  border-color: rgba(0, 255, 127, 0.65);
+  background: rgba(0, 255, 127, 0.08);
+}
+
+.mfd-page-comms-thread-detail {
+  margin-top: 0.35rem;
+  padding-top: 0.25rem;
+  border-top: 1px solid rgba(0, 255, 127, 0.15);
+}
+
 .mfd-page-comms-inbox {
   display: flex;
   flex-direction: column;
