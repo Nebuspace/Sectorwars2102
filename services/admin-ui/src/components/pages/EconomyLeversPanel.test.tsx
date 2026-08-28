@@ -147,4 +147,76 @@ describe('EconomyLeversPanel (LEG-30)', () => {
     });
     expect(String(toastError.mock.calls[0][0])).toMatch(/rate limit/i);
   });
+
+  const regionSnapshot = {
+    ...emptySnapshot,
+    regions: [
+      {
+        id: 'reg-1',
+        name: 'core',
+        display_name: 'Core Region',
+        tax_rate: 0.1,
+        starting_credits: 1000,
+        status: 'active',
+      },
+    ],
+  };
+
+  it('reports ECONOMY_MANAGE on saveRegion PATCH 403 via toast (LEG-2638)', async () => {
+    vi.mocked(api.get).mockResolvedValue({ data: regionSnapshot });
+    vi.mocked(api.patch).mockRejectedValue({ response: { status: 403 } });
+
+    render(<EconomyLeversPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Tax rate for core')).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByLabelText('Tax rate for core'), {
+      target: { value: '12' },
+    });
+    const regionRow = screen.getByLabelText('Tax rate for core').closest('tr');
+    expect(regionRow).toBeTruthy();
+    fireEvent.click(regionRow!.querySelector('button')!);
+
+    await waitFor(() => {
+      expect(api.patch).toHaveBeenCalledWith('/api/v1/admin/economy/levers/regions/reg-1', {
+        tax_rate: 0.12,
+        starting_credits: 1000,
+      });
+    });
+    expect(toastError).toHaveBeenCalledWith(
+      expect.stringMatching(/ECONOMY_MANAGE/),
+    );
+    expect(toastError).not.toHaveBeenCalledWith('Failed to save region levers');
+  });
+
+  it('reports rate-limit copy on saveRegion PATCH 429 via toast (LEG-2638)', async () => {
+    vi.mocked(api.get).mockResolvedValue({ data: regionSnapshot });
+    vi.mocked(api.patch).mockRejectedValue({ response: { status: 429 } });
+
+    render(<EconomyLeversPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Tax rate for core')).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByLabelText('Tax rate for core'), {
+      target: { value: '12' },
+    });
+    const regionRow = screen.getByLabelText('Tax rate for core').closest('tr');
+    expect(regionRow).toBeTruthy();
+    fireEvent.click(regionRow!.querySelector('button')!);
+
+    await waitFor(() => {
+      expect(api.patch).toHaveBeenCalledWith('/api/v1/admin/economy/levers/regions/reg-1', {
+        tax_rate: 0.12,
+        starting_credits: 1000,
+      });
+    });
+    expect(toastError).toHaveBeenCalledWith(
+      expect.stringMatching(/rate limit/i),
+    );
+    expect(toastError).not.toHaveBeenCalledWith('Failed to save region levers');
+  });
 });
