@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { PlanetaryManagement } from './PlanetaryManagement';
 import { api } from '../../utils/auth';
 
@@ -127,5 +128,61 @@ describe('PlanetaryManagement (LEG-151)', () => {
     const alert = screen.getByRole('alert').textContent ?? '';
     expect(alert).toMatch(/rate limit/i);
     expect(alert).not.toMatch(/Failed to load planetary data \(HTTP 429\)/);
+  });
+});
+
+describe('PlanetaryManagement tick POST formatAdminApiError (LEG-2641)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(api.get).mockResolvedValue({ data: planetaryPayload });
+  });
+
+  async function forceTick(user: ReturnType<typeof userEvent.setup>) {
+    render(<PlanetaryManagement />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Kepler Prime')).toBeTruthy();
+    });
+
+    await user.click(screen.getByText('Kepler Prime'));
+    await user.click(screen.getByRole('button', { name: 'Force Production Tick' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith('/api/v1/admin/planets/pl-1/tick');
+    });
+  }
+
+  it('surfaces GALAXY_MANAGE scope copy on tick POST 403', async () => {
+    vi.mocked(api.post).mockRejectedValue(axiosError(403));
+    const user = userEvent.setup();
+    await forceTick(user);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/GALAXY_MANAGE|Access denied/i);
+    expect(alert).not.toContain(
+      'Gameserver unreachable — network error advancing production',
+    );
+  });
+
+  it('surfaces rate-limit copy on tick POST 429', async () => {
+    vi.mocked(api.post).mockRejectedValue(axiosError(429));
+    const user = userEvent.setup();
+    await forceTick(user);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/rate limit/i);
+    expect(alert).not.toContain(
+      'Gameserver unreachable — network error advancing production',
+    );
   });
 });
