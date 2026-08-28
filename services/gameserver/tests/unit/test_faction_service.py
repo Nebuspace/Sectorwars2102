@@ -39,7 +39,7 @@ Sections:
   TestUpdateFactionTerritory — territory reassignment + broadcast.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -50,24 +50,30 @@ from src.models.faction import Faction, FactionType
 from src.models.player import Player
 from src.models.reputation import Reputation, ReputationLevel
 from src.models.sector_faction_influence import SectorFactionInfluence
+from src.models.team import Team
 from src.services import faction_service
 from src.services.faction_service import (
     PIRATE_SPAWN_FLOOR,
-    TERRITORY_CONTESTED_MAX,
-    TERRITORY_CONTESTED_MIN,
     TERRITORY_CONTROLLED_MIN,
     TERRITORY_CORE_MIN,
     TERRITORY_SECONDARY_PRESENCE_MIN,
     TRADE_MODIFIER_PUBLIC_ENEMY,
     TRADE_MODIFIERS,
+    EffectiveFactionStanding,
     FactionService,
     _dispatch_faction_medals,
     adjust_sector_influence,
     apply_faction_rep_delta,
+    apply_sector_influence_daily_decay,
+    compute_patrol_spawn_weight,
     dominant_reputation_faction_id,
     get_sector_influence,
+    sector_influence_is_idle,
+    build_effective_faction_standing,
+    resolve_effective_faction_standing_value,
     sector_spawn_bias,
     sector_territory_tier,
+    trade_modifier_from_standing_value,
 )
 
 
@@ -300,6 +306,83 @@ class TestApplyFactionRepDelta:
         assert result.combat_response == "friendly"
         assert result.port_access_level == 3
 
+    def test_faction_name_scopes_to_named_row(self):
+        """LEG-97: optional faction_name must credit that roster row's id."""
+        fc = _faction(
+            id=uuid4(),
+            name="Frontier Coalition",
+            faction_type=FactionType.INDEPENDENTS,
+        )
+        db = _FakeDb(results={Faction: [fc], Reputation: [None]})
+        result = apply_faction_rep_delta(
+            db,
+            uuid4(),
+            FactionType.INDEPENDENTS,
+            5,
+            "mining_harvest_frontier_unclaimed",
+            faction_name="Frontier Coalition",
+        )
+        assert result is not None
+        assert result.faction_id == fc.id
+        assert result.current_value == 5
+
+    def test_faction_name_miss_returns_none_without_fallback(self):
+        """Named miss must not silently apply to another Independents row.
+
+        FakeDb ignores SQL predicates, so a miss is simulated by queuing
+        None for the Faction lookup — the production path adds
+        ``Faction.name == faction_name`` before ``.first()``.
+        """
+        db = _FakeDb(results={Faction: [None]})
+        result = apply_faction_rep_delta(
+            db,
+            uuid4(),
+            FactionType.INDEPENDENTS,
+            5,
+            "mining_harvest_frontier_unclaimed",
+            faction_name="Frontier Coalition",
+        )
+        assert result is None
+        assert db.added == []
+        assert db.flush_calls == 0
+
+    def test_faction_name_filter_is_applied_in_query_chain(self):
+        """Prove the name predicate is attached (FakeDb cannot eval SQL)."""
+        recorded = []
+        fc = _faction(
+            id=uuid4(),
+            name="Frontier Coalition",
+            faction_type=FactionType.INDEPENDENTS,
+        )
+
+        class _RecordingQuery(_FakeQuery):
+            def filter(self, *args, **kwargs):
+                recorded.extend(args)
+                return self
+
+        class _RecordingDb(_FakeDb):
+            def query(self, model):
+                queue = self._queues.get(model, [])
+                value = queue.pop(0) if queue else None
+                return _RecordingQuery(value)
+
+        db = _RecordingDb(results={Faction: [fc], Reputation: [None]})
+        apply_faction_rep_delta(
+            db,
+            uuid4(),
+            FactionType.INDEPENDENTS,
+            5,
+            "test",
+            faction_name="Frontier Coalition",
+        )
+        assert len(recorded) >= 2
+        # Second filter clause is the name equality (ColumnElement).
+        name_clause = recorded[1]
+        assert getattr(name_clause.left, "key", None) == "name" or "name" in str(
+            name_clause
+        )
+        assert "Frontier Coalition" in str(name_clause.right.value if hasattr(name_clause, "right") else name_clause)
+
 
 # ---------------------------------------------------------------------------
 # adjust_sector_influence
@@ -321,6 +404,7 @@ class TestAdjustSectorInfluence:
         result = adjust_sector_influence(db, row.sector_id, row.faction_id, 15.0)
         assert result is row
         assert result.influence_percentage == 55.0
+        assert result.patrol_spawn_weight == pytest.approx(0.55)
         assert db.flush_calls == 1
 
     def test_clamps_to_100_ceiling(self):
@@ -389,7 +473,7 @@ class TestSectorTerritoryTier:
     def test_zero_top_influence_is_uncontrolled(self):
         assert sector_territory_tier([_influence(influence_percentage=0.0)]) == "uncontrolled"
 
-    def test_100_percent_is_core(self):
+    def test_95_percent_is_core(self):
         assert sector_territory_tier([_influence(influence_percentage=TERRITORY_CORE_MIN)]) == "core"
 
     def test_at_controlled_threshold_is_controlled(self):
@@ -398,21 +482,77 @@ class TestSectorTerritoryTier:
 
     def test_contested_band_with_a_material_secondary_is_contested(self):
         rows = [
-            _influence(influence_percentage=(TERRITORY_CONTESTED_MIN + TERRITORY_CONTESTED_MAX) / 2),
+            _influence(influence_percentage=50.0),
             _influence(influence_percentage=TERRITORY_SECONDARY_PRESENCE_MIN),
         ]
         assert sector_territory_tier(rows) == "contested"
 
-    def test_contested_band_without_a_material_secondary_is_uncontrolled(self):
+    def test_mid_band_without_secondary_is_controlled(self):
+        # LEG-34: >=40 without rival>=25 → controlled (not uncontrolled)
         rows = [
-            _influence(influence_percentage=(TERRITORY_CONTESTED_MIN + TERRITORY_CONTESTED_MAX) / 2),
+            _influence(influence_percentage=50.0),
             _influence(influence_percentage=TERRITORY_SECONDARY_PRESENCE_MIN - 1),
         ]
+        assert sector_territory_tier(rows) == "controlled"
+
+    def test_single_holder_in_contested_band_is_controlled(self):
+        rows = [_influence(influence_percentage=50.0)]
+        assert sector_territory_tier(rows) == "controlled"
+
+    def test_below_contested_band_is_uncontrolled(self):
+        rows = [_influence(influence_percentage=39.0)]
         assert sector_territory_tier(rows) == "uncontrolled"
 
-    def test_single_weak_holder_below_controlled_is_uncontrolled(self):
-        rows = [_influence(influence_percentage=TERRITORY_CONTROLLED_MIN - 1)]
-        assert sector_territory_tier(rows) == "uncontrolled"
+
+# ---------------------------------------------------------------------------
+# compute_patrol_spawn_weight (LEG-INI-05)
+# ---------------------------------------------------------------------------
+
+
+class TestComputePatrolSpawnWeight:
+    def test_zero_influence_is_zero(self):
+        assert compute_patrol_spawn_weight(0.0) == 0.0
+
+    def test_full_influence_identity_defaults_is_one(self):
+        assert compute_patrol_spawn_weight(100.0) == 1.0
+
+    def test_clamps_to_two(self):
+        assert compute_patrol_spawn_weight(100.0, base_patrol_intensity=3.0) == 2.0
+
+    def test_midpoint(self):
+        assert compute_patrol_spawn_weight(50.0) == pytest.approx(0.5)
+
+
+# ---------------------------------------------------------------------------
+# apply_sector_influence_daily_decay (LEG-INI-05 / LEG-65)
+# ---------------------------------------------------------------------------
+
+
+class TestSectorInfluenceDailyDecay:
+    def test_fresh_row_is_not_idle(self):
+        now = datetime(2026, 8, 16, 12, 0, tzinfo=timezone.utc)
+        row = _influence(influence_percentage=50.0)
+        row.last_action_at = now
+        assert sector_influence_is_idle(row, now=now) is False
+        assert apply_sector_influence_daily_decay(row, now=now) is False
+        assert row.influence_percentage == 50.0
+
+    def test_idle_three_utc_days_decays_half_point(self):
+        now = datetime(2026, 8, 16, 12, 0, tzinfo=timezone.utc)
+        row = _influence(influence_percentage=50.0)
+        row.last_action_at = datetime(2026, 8, 13, 12, 0, tzinfo=timezone.utc)
+        assert sector_influence_is_idle(row, now=now) is True
+        assert apply_sector_influence_daily_decay(row, now=now) is True
+        assert row.influence_percentage == pytest.approx(49.5)
+        assert row.patrol_spawn_weight == pytest.approx(0.495)
+        # Decay must not rewrite the activity clock.
+        assert row.last_action_at == datetime(2026, 8, 13, 12, 0, tzinfo=timezone.utc)
+
+    def test_zero_influence_idle_is_noop(self):
+        now = datetime(2026, 8, 16, 12, 0, tzinfo=timezone.utc)
+        row = _influence(influence_percentage=0.0)
+        row.last_action_at = datetime(2026, 8, 1, tzinfo=timezone.utc)
+        assert apply_sector_influence_daily_decay(row, now=now) is False
 
 
 # ---------------------------------------------------------------------------
@@ -791,7 +931,7 @@ class TestApplyReputationDecay:
 class TestGetTradeModifier:
     @pytest.mark.asyncio
     async def test_no_reputation_record_returns_neutral(self):
-        db = _FakeDb(results={Reputation: [None]})
+        db = _FakeDb(results={Player: [None], Reputation: [None]})
         svc = FactionService(db)
         assert await svc.get_trade_modifier(uuid4(), uuid4()) == 1.0
 
@@ -813,7 +953,7 @@ class TestGetTradeModifier:
     @pytest.mark.asyncio
     async def test_threshold_ladder(self, value, expected):
         rep = _reputation(current_value=value)
-        db = _FakeDb(results={Reputation: [rep]})
+        db = _FakeDb(results={Player: [None], Reputation: [rep]})
         svc = FactionService(db)
         assert await svc.get_trade_modifier(uuid4(), uuid4()) == expected
 
@@ -1026,3 +1166,107 @@ class TestUpdateFactionTerritory:
         message, _exclude = _stub_manager.broadcasts[0]
         assert message["type"] == "faction_territory_changed"
         assert message["sectors"] == [str(sid) for sid in new_sectors]
+
+
+# ---------------------------------------------------------------------------
+# effective_faction_standing / team aggregate consumers (LEG-800)
+# ---------------------------------------------------------------------------
+
+
+class TestEffectiveFactionStanding:
+    def test_solo_player_uses_personal_reputation(self):
+        player_id = uuid4()
+        faction_id = uuid4()
+        rep = _reputation(player_id=player_id, faction_id=faction_id, current_value=100)
+        db = _FakeDb(results={Player: [None], Reputation: [rep]})
+        value, source = resolve_effective_faction_standing_value(
+            db, player_id, faction_id
+        )
+        assert source == "personal"
+        assert value == 100
+
+    def test_team_player_uses_team_aggregate(self, monkeypatch):
+        player_id = uuid4()
+        faction_id = uuid4()
+        team_id = uuid4()
+        player = Player(id=player_id, team_id=team_id)
+        team = Team(id=team_id, name="Test Team", leader_id=player_id)
+
+        def _fake_get_team_reputation(_db, _team, *, now=None):
+            assert _team.id == team_id
+            return {
+                "standings": {
+                    str(faction_id): {
+                        "faction_id": str(faction_id),
+                        "value": 700,
+                        "level": ReputationLevel.EXALTED.value,
+                    }
+                }
+            }
+
+        monkeypatch.setattr(
+            "src.services.team_reputation_service.get_team_reputation",
+            _fake_get_team_reputation,
+        )
+
+        db = _FakeDb(results={Player: [player], Team: [team]})
+        value, source = resolve_effective_faction_standing_value(
+            db, player_id, faction_id
+        )
+        assert source == "team"
+        assert value == 700
+
+    @pytest.mark.asyncio
+    async def test_get_trade_modifier_team_average_changes_pricing(self, monkeypatch):
+        player_id = uuid4()
+        faction_id = uuid4()
+        team_id = uuid4()
+        player = Player(id=player_id, team_id=team_id)
+        team = Team(id=team_id, name="Avg Team", leader_id=player_id)
+        personal_rep = _reputation(
+            player_id=player_id, faction_id=faction_id, current_value=0
+        )
+
+        def _fake_get_team_reputation(_db, _team, *, now=None):
+            return {
+                "standings": {
+                    str(faction_id): {
+                        "faction_id": str(faction_id),
+                        "value": 700,
+                        "level": ReputationLevel.EXALTED.value,
+                    }
+                }
+            }
+
+        monkeypatch.setattr(
+            "src.services.team_reputation_service.get_team_reputation",
+            _fake_get_team_reputation,
+        )
+
+        db = _FakeDb(results={Player: [player], Team: [team]})
+        svc = FactionService(db)
+        assert await svc.get_trade_modifier(player_id, faction_id) == 0.85
+        assert trade_modifier_from_standing_value(0) == 1.0
+
+    @pytest.mark.asyncio
+    async def test_get_trade_modifier_solo_unchanged(self):
+        player_id = uuid4()
+        faction_id = uuid4()
+        rep = _reputation(player_id=player_id, faction_id=faction_id, current_value=0)
+        db = _FakeDb(results={Player: [None], Reputation: [rep]})
+        svc = FactionService(db)
+        assert await svc.get_trade_modifier(player_id, faction_id) == 1.0
+
+    def test_build_effective_maps_helpers(self):
+        player_id = uuid4()
+        faction_id = uuid4()
+        rep = _reputation(player_id=player_id, faction_id=faction_id, current_value=600)
+        db = _FakeDb(results={Player: [None], Reputation: [rep]})
+        svc = FactionService(db)
+        standing = build_effective_faction_standing(db, player_id, faction_id, svc=svc)
+        assert isinstance(standing, EffectiveFactionStanding)
+        assert standing.source == "personal"
+        assert standing.value == 600
+        assert standing.port_access_level == svc._calculate_port_access_level(600)
+        assert standing.combat_response == svc._calculate_combat_response(600)
+        assert standing.trade_modifier == svc._calculate_trade_modifier(600)
