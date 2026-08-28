@@ -111,6 +111,20 @@ export function formatCommsFlagError(err: unknown): string {
   return 'Failed to flag transmission';
 }
 
+/** PURGE soft-delete — surface gameserver 404 detail (messages.py). */
+export function formatCommsPurgeError(err: unknown): string {
+  const status = httpStatus(err);
+  const detail = serverDetail(err);
+
+  if (status === 404) {
+    if (detail) return detail;
+    return 'Message not found';
+  }
+
+  if (detail) return detail;
+  return 'Failed to purge transmission';
+}
+
 const conversationPartyLabel = (msg: PlayerMessage, playerId: string | undefined): string => {
   if (!playerId) return (msg.sender_name || 'UNKNOWN').toUpperCase();
   if (msg.sender_id !== playerId) return (msg.sender_name || 'UNKNOWN').toUpperCase();
@@ -347,7 +361,7 @@ const CommsCrewPage: React.FC = () => {
       if (expandedId === msg.id) setExpandedId(null);
       if (compose?.replyToId === msg.id) clearCompose();
     } catch (err: unknown) {
-      setSendError(err instanceof Error ? err.message : 'Failed to purge transmission');
+      setSendError(formatCommsPurgeError(err));
     } finally {
       setDeletingId(null);
     }
@@ -659,6 +673,9 @@ const CommsCrewPage: React.FC = () => {
           <div className="mfd-page-comms-compose-hint">
             HAIL A CONTACT OR REPLY TO A TRANSMISSION TO OPEN A CHANNEL
           </div>
+        )}
+        {sendError && !compose && (
+          <div className="mfd-page-warnline" role="alert">{sendError}</div>
         )}
 
         <div className="mfd-page-section-label">CONTACTS IN SECTOR</div>
