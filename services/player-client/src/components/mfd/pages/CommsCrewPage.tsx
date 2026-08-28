@@ -30,6 +30,7 @@ import { useWebSocket } from '../../../contexts/WebSocketContext';
 import { useAuth } from '../../../contexts/AuthContext';
 import { messageAPI, teamAPI } from '../../../services/api';
 import { MFDPageHeader, MFDPageBody, MFDField, MFDEmpty } from '../atoms';
+import PlayerNamePlate from '../../common/PlayerNamePlate';
 import './pages-ops.css';
 
 const ACCENT = '#00FF7F';
@@ -130,6 +131,15 @@ const conversationPartyLabel = (msg: PlayerMessage, playerId: string | undefined
   if (msg.sender_id !== playerId) return (msg.sender_name || 'UNKNOWN').toUpperCase();
   return msg.subject ? `OUT: ${msg.subject}`.toUpperCase() : 'OUTBOUND';
 };
+
+const CommsInboxSenderPlate: React.FC<{ msg: PlayerMessage; label?: string }> = ({ msg, label }) => (
+  <PlayerNamePlate
+    name={(label ?? msg.sender_name ?? 'UNKNOWN').toUpperCase()}
+    size="sm"
+    pinnedMedalId={msg.sender_pinned_medal_id}
+    medalCount={msg.sender_medal_count}
+  />
+);
 
 const CommsCrewPage: React.FC = () => {
   const {
@@ -464,7 +474,7 @@ const CommsCrewPage: React.FC = () => {
                     aria-hidden="true"
                   />
                   <span className="mfd-page-comms-hail-sender">
-                    {(msg.sender_name || 'UNKNOWN').toUpperCase()}
+                    <CommsInboxSenderPlate msg={msg} />
                   </span>
                   <span className="mfd-page-comms-hail-subject">
                     {msg.subject || '(NO SUBJECT)'}
@@ -560,7 +570,10 @@ const CommsCrewPage: React.FC = () => {
                           aria-expanded={isSelected}
                         >
                           <span className="mfd-page-comms-hail-sender">
-                            {conversationPartyLabel(msg, playerState?.id)}
+                            <CommsInboxSenderPlate
+                              msg={msg}
+                              label={conversationPartyLabel(msg, playerState?.id)}
+                            />
                           </span>
                           <span className="mfd-page-comms-hail-subject">
                             {msg.subject || msg.content?.slice(0, 40) || '(NO SUBJECT)'}
@@ -603,7 +616,7 @@ const CommsCrewPage: React.FC = () => {
                       aria-expanded={expandedThreadMsgId === msg.id}
                     >
                       <span className="mfd-page-comms-hail-sender">
-                        {(msg.sender_name || 'UNKNOWN').toUpperCase()}
+                        <CommsInboxSenderPlate msg={msg} />
                       </span>
                       <span className="mfd-page-comms-hail-time">{timeAgo(msg.sent_at)}</span>
                     </button>

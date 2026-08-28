@@ -286,6 +286,9 @@ export interface PlayerMessage {
   flagged: boolean;
   is_read: boolean;
   sender_name?: string;
+  /** LEG-2755 / LEG-2756 — sender public medal identity on inbox rows */
+  sender_pinned_medal_id?: string | null;
+  sender_medal_count?: number | null;
 }
 
 export interface PlayerState {

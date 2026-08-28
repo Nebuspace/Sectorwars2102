@@ -180,6 +180,18 @@ describe('CommsCrewPage — MFD-B COMM', () => {
     expect(mockMarkMessageRead).toHaveBeenCalledWith('msg-1');
   });
 
+  it('renders sender medal pin when inbox row includes sender medal fields', async () => {
+    mockInboxMessages = [
+      makeMessage({
+        sender_pinned_medal_id: 'bronze_cluster',
+        sender_medal_count: 3,
+      }),
+    ];
+    await mount();
+    expect(container.querySelector('[data-testid="player-name-plate-medal"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="player-name-plate-count"]')?.textContent).toBe('3');
+  });
+
   it('PURGE on an expanded hail calls deletePlayerMessage', async () => {
     mockInboxMessages = [makeMessage()];
     await mount();
