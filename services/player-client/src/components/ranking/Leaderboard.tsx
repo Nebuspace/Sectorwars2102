@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { rankingAPI } from '../../services/api';
 import PlayerNamePlate from '../common/PlayerNamePlate';
+import { TIER_COLORS } from './RankDisplay';
 import './ranking.css';
 
 interface LeaderboardEntry {
@@ -9,6 +10,8 @@ interface LeaderboardEntry {
   nickname: string;
   military_rank: string;
   score: number;
+  rank_level?: number;
+  rank_tier?: string;
   pinned_medal_id?: string | null;
   medal_count?: number | null;
 }
@@ -81,6 +84,31 @@ const Leaderboard: React.FC<LeaderboardProps> = ({
 
   const meta = CATEGORY_LABELS[activeCategory];
 
+  const renderRankCell = (entry: LeaderboardEntry) => {
+    if (
+      activeCategory === 'rank_points'
+      && entry.rank_tier != null
+      && entry.rank_level != null
+    ) {
+      const tierColor = TIER_COLORS[entry.rank_tier] || '#ffffff';
+      return (
+        <span className="leaderboard-rank-cell">
+          <span
+            className="rank-badge rank-badge--compact"
+            style={{ borderColor: tierColor }}
+            data-testid={`leaderboard-rank-badge-${entry.player_id}`}
+          >
+            <span className="rank-level">{entry.rank_level}</span>
+          </span>
+          <span className="leaderboard-rank-name" style={{ color: tierColor }}>
+            {entry.military_rank}
+          </span>
+        </span>
+      );
+    }
+    return entry.military_rank;
+  };
+
   return (
     <div className="leaderboard">
       <div className="leaderboard-header">
@@ -133,7 +161,7 @@ const Leaderboard: React.FC<LeaderboardProps> = ({
                 >
                   <td className="col-pos">{entry.position}</td>
                   <td className="col-name">{entry.nickname}</td>
-                  <td className="col-rank">{entry.military_rank}</td>
+                  <td className="col-rank">{renderRankCell(entry)}</td>
                   <td className="col-medals">
                     <PlayerNamePlate
                       name=""
