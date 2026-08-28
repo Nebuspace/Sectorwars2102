@@ -106,4 +106,25 @@ describe('RankProgress', () => {
 
     expect(container.querySelector('.rank-progress-error')?.textContent).toBe('Network down');
   });
+
+  it('renders compact rank insignia when rank_level and rank_tier are present', async () => {
+    mockGetProgress.mockResolvedValue(FULL_PROGRESS);
+    await mount();
+
+    const badge = container.querySelector('.rank-badge--compact');
+    expect(badge).not.toBeNull();
+    expect(badge?.querySelector('.rank-level')?.textContent).toBe('5');
+    expect(container.textContent).toContain('Commander');
+  });
+
+  it('omits compact insignia when rank_level is missing', async () => {
+    mockGetProgress.mockResolvedValue({
+      ...FULL_PROGRESS,
+      rank_level: undefined,
+    });
+    await mount();
+
+    expect(container.querySelector('.rank-badge--compact')).toBeNull();
+    expect(container.textContent).toContain('Commander');
+  });
 });
