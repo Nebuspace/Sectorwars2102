@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import EconomyDashboard from './EconomyDashboard';
 import { api } from '../../utils/auth';
 
@@ -11,10 +12,12 @@ vi.mock('../../utils/auth', () => ({
   },
 }));
 
+const toastError = vi.fn();
+
 vi.mock('../../contexts/ToastContext', () => ({
   useToast: () => ({
     success: vi.fn(),
-    error: vi.fn(),
+    error: toastError,
     warning: vi.fn(),
     info: vi.fn(),
   }),
@@ -45,7 +48,9 @@ vi.mock('./BountyAdminPanel', () => ({
 }));
 
 function d3Chain(): Record<string, unknown> {
-  const api: Record<string, unknown> = {};
+  const api: Record<string, unknown> = Object.assign(() => 0, {
+    bandwidth: () => 10,
+  });
   const ret = () => api;
   for (const m of [
     'select',
@@ -64,9 +69,13 @@ function d3Chain(): Record<string, unknown> {
     'duration',
     'domain',
     'range',
+    'rangeRound',
+    'paddingInner',
+    'padding',
     'nice',
     'ticks',
     'tickFormat',
+    'tickSize',
     'x',
     'y',
     'curve',
@@ -76,15 +85,31 @@ function d3Chain(): Record<string, unknown> {
   return api;
 }
 
+function scaleMock() {
+  const scale = Object.assign(() => 0, d3Chain()) as (() => number) & Record<string, unknown>;
+  scale.bandwidth = () => 10;
+  return scale;
+}
+
 vi.mock('d3', () => ({
   select: () => d3Chain(),
   selectAll: () => d3Chain(),
-  scaleLinear: () => d3Chain(),
-  scaleBand: () => d3Chain(),
-  axisBottom: () => () => undefined,
-  axisLeft: () => () => undefined,
+  scaleLinear: () => scaleMock(),
+  scaleBand: () => scaleMock(),
+  axisBottom: () => d3Chain(),
+  axisLeft: () => d3Chain(),
   line: () => d3Chain(),
-  max: () => 1,
+  format: () => () => '0',
+  max: (_data: unknown, fn?: (d: { avgBuy?: number; avgSell?: number; volume?: number }) => number) => {
+    if (fn && Array.isArray(_data) && _data.length > 0) {
+      return Math.max(
+        ..._data.map((d) =>
+          fn(d as { avgBuy: number; avgSell: number; volume: number }),
+        ),
+      );
+    }
+    return 100;
+  },
   min: () => 0,
 }));
 
@@ -125,8 +150,33 @@ const okSummary = {
   },
 };
 
-function httpErr(status: number) {
-  return Object.assign(new Error(`HTTP ${status}`), { response: { status } });
+function httpErr(status: number, detail?: string) {
+  return Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: detail ? { detail } : {} },
+  });
+}
+
+const okMarketRow = [
+  {
+    station_id: 'st1',
+    port_name: 'Port Alpha',
+    sector_name: 'S1',
+    commodity: 'ore',
+    buy_price: 100,
+    sell_price: 120,
+    quantity: 50,
+    last_updated: '2026-08-20T00:00:00Z',
+  },
+];
+
+function mockSuccessfulLoads(marketData: unknown[] = okMarketRow) {
+  vi.mocked(api.get).mockImplementation(async (url: string) => {
+    if (url.includes('/economy/market-data')) return { data: marketData };
+    if (url.includes('/economy/metrics')) return okMetrics;
+    if (url.includes('/economy/price-alerts')) return { data: [] };
+    if (url.includes('/economy/dashboard-summary')) return okSummary;
+    return { data: {} };
+  });
 }
 
 describe('EconomyDashboard alerts/summary honesty (LEG-1372)', () => {
@@ -206,5 +256,134 @@ describe('EconomyDashboard alerts/summary honesty (LEG-1372)', () => {
       expect(screen.getByRole('alert').textContent).toMatch(/Access denied/i);
     });
     expect(screen.getByRole('alert').textContent).toMatch(/summary scope/i);
+  });
+});
+
+describe('EconomyDashboard mutation errors (LEG-2600)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    vi.mocked(api.delete).mockReset();
+    toastError.mockReset();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    mockSuccessfulLoads();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('surfaces formatAdminApiError on price intervention POST 403', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(window, 'prompt').mockReturnValue('150');
+    vi.mocked(api.post).mockRejectedValue(
+      httpErr(403, 'Missing scope admin.economy.intervene'),
+    );
+
+    render(<EconomyDashboard />);
+    await waitFor(() => expect(screen.getByText('Port Alpha')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: /Intervene/i }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/economy/intervention',
+        expect.objectContaining({ intervention_type: 'price_adjustment' }),
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith('Missing scope admin.economy.intervene');
+    expect(toastError).not.toHaveBeenCalledWith('Price intervention failed.');
+  });
+
+  it('surfaces rate-limit copy on price intervention POST 429', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(window, 'prompt').mockReturnValue('150');
+    vi.mocked(api.post).mockRejectedValue(httpErr(429));
+
+    render(<EconomyDashboard />);
+    await waitFor(() => expect(screen.getByText('Port Alpha')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: /Intervene/i }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalled();
+    });
+    expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/rate limit/i));
+    expect(toastError).not.toHaveBeenCalledWith('Price intervention failed.');
+  });
+
+  it('surfaces formatAdminApiError on create-alert POST 403', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.post).mockRejectedValue(
+      httpErr(403, 'Missing scope admin.economy.alerts'),
+    );
+
+    render(<EconomyDashboard />);
+    await waitFor(() => expect(screen.getByLabelText(/^Station$/)).toBeTruthy());
+
+    await user.selectOptions(screen.getByLabelText(/^Station$/), 'st1');
+    await user.selectOptions(screen.getByLabelText(/^Commodity$/), 'ore');
+    await user.type(screen.getByLabelText(/Threshold Value/i), '15');
+    await user.click(screen.getByRole('button', { name: /Create Alert/i }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/economy/create-alert',
+        expect.objectContaining({ station_id: 'st1', commodity: 'ore' }),
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith('Missing scope admin.economy.alerts');
+    expect(toastError).not.toHaveBeenCalledWith('Failed to create price alert');
+  });
+
+  it('surfaces rate-limit copy on create-alert POST 429', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.post).mockRejectedValue(httpErr(429));
+
+    render(<EconomyDashboard />);
+    await waitFor(() => expect(screen.getByLabelText(/^Station$/)).toBeTruthy());
+
+    await user.selectOptions(screen.getByLabelText(/^Station$/), 'st1');
+    await user.selectOptions(screen.getByLabelText(/^Commodity$/), 'ore');
+    await user.type(screen.getByLabelText(/Threshold Value/i), '15');
+    await user.click(screen.getByRole('button', { name: /Create Alert/i }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalled();
+    });
+    expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/rate limit/i));
+    expect(toastError).not.toHaveBeenCalledWith('Failed to create price alert');
+  });
+
+  it('surfaces formatAdminApiError on delete-alert DELETE 403', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.post).mockResolvedValueOnce({
+      data: { alert_id: 'alert-1' },
+      status: 200,
+    });
+    vi.mocked(api.delete).mockRejectedValue(
+      httpErr(403, 'Missing scope admin.economy.alerts'),
+    );
+
+    render(<EconomyDashboard />);
+    await waitFor(() => expect(screen.getByLabelText(/^Station$/)).toBeTruthy());
+
+    await user.selectOptions(screen.getByLabelText(/^Station$/), 'st1');
+    await user.selectOptions(screen.getByLabelText(/^Commodity$/), 'ore');
+    await user.type(screen.getByLabelText(/Threshold Value/i), '15');
+    await user.click(screen.getByRole('button', { name: /Create Alert/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /Delete/i })).toBeTruthy();
+    });
+
+    await user.click(screen.getByRole('button', { name: /Delete/i }));
+
+    await waitFor(() => {
+      expect(api.delete).toHaveBeenCalledWith('/api/v1/admin/economy/alerts/alert-1');
+    });
+    expect(toastError).toHaveBeenCalledWith('Missing scope admin.economy.alerts');
+    expect(toastError).not.toHaveBeenCalledWith('Failed to delete price alert');
   });
 });
