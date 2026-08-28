@@ -507,6 +507,21 @@ export const planetaryAPI = {
     apiRequest(`/api/v1/planets/${planetId}/ownership-transfer/cancel`, {
       method: 'POST',
     }),
+
+  // Colonist profession training (LEG-2253 kernel / professions.md). Owner-only;
+  // citadel L3+ server gate. Costs remain DECISION-NEEDED — queue without charge.
+  getPlanetProfessions: (planetId: string) =>
+    apiRequest(`/api/v1/planets/${planetId}/professions`),
+
+  trainPlanetProfession: (
+    planetId: string,
+    profession: string,
+    traineeCount: number,
+  ) =>
+    apiRequest(`/api/v1/planets/${planetId}/professions/train`, {
+      method: 'POST',
+      body: JSON.stringify({ profession, trainee_count: traineeCount }),
+    }),
 };
 
 /** Station-protection tractor lock (Guarantee #2) — player responses. */
