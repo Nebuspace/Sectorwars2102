@@ -169,4 +169,52 @@ describe('renderTableauPopupContent', () => {
     expect(onBeaconRemoved).toHaveBeenCalledWith('beacon-visitor-1');
     expect(onClosePopup).toHaveBeenCalled();
   });
+
+  it('visitor Read 404 surfaces server detail in beacon-popup-error', async () => {
+    mockRead.mockRejectedValueOnce(
+      Object.assign(new Error('Beacon beacon-visitor-1 not found'), { status: 404 }),
+    );
+
+    await act(async () => {
+      root.render(
+        <>{renderTableauPopupContent({ ...baseParams, popup: visitorBeaconPopup })}</>,
+      );
+    });
+
+    const readBtn = container.querySelector('[data-testid="beacon-popup-read"]') as HTMLButtonElement;
+    await act(async () => {
+      readBtn.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[data-testid="beacon-popup-error"]')?.textContent).toBe(
+      'Beacon beacon-visitor-1 not found',
+    );
+  });
+
+  it('visitor Salvage ERR_PERSONAL_REP_TOO_LOW surfaces server detail', async () => {
+    const repDetail =
+      'ERR_PERSONAL_REP_TOO_LOW: personal reputation must be Neutral or better to deploy a beacon';
+    mockSalvage.mockRejectedValueOnce(
+      Object.assign(new Error(repDetail), { status: 400 }),
+    );
+
+    await act(async () => {
+      root.render(
+        <>{renderTableauPopupContent({ ...baseParams, popup: visitorBeaconPopup })}</>,
+      );
+    });
+
+    const salvageBtn = container.querySelector('[data-testid="beacon-popup-salvage"]') as HTMLButtonElement;
+    await act(async () => {
+      salvageBtn.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[data-testid="beacon-popup-error"]')?.textContent).toBe(
+      repDetail,
+    );
+  });
 });

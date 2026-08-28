@@ -234,6 +234,51 @@ export function renderTableauPopupContent(params: TableauPopupContentParams): Re
   }
 }
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+function serverDetail(err: unknown): string | undefined {
+  if (err && typeof err === 'object') {
+    const rawDetail = (err as { response?: { data?: { detail?: unknown } } }).response?.data
+      ?.detail;
+    if (typeof rawDetail === 'string' && rawDetail.trim()) return rawDetail.trim();
+  }
+  const message = err instanceof Error ? err.message : undefined;
+  if (
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim())
+  ) {
+    return message.trim();
+  }
+  return undefined;
+}
+
+/** apiRequest throws Error with `.status`; beacons.py surfaces 400/404 detail strings. */
+export function formatBeaconPopupError(err: unknown): string {
+  const status = httpStatus(err);
+  const detail = serverDetail(err);
+
+  if (detail?.includes('ERR_PERSONAL_REP_TOO_LOW')) {
+    return detail;
+  }
+
+  if (status === 404) {
+    if (detail) return detail;
+    return 'Beacon not found';
+  }
+
+  if (detail) return detail;
+  return 'Action failed';
+}
+
 /** Sector-view Read/Salvage (message-beacons.md:42-47, :136-137). Visitor-capable. */
 function BeaconPopupActions({
   beaconId,
@@ -278,7 +323,7 @@ function BeaconPopupActions({
         onClosePopup();
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Action failed');
+      setError(formatBeaconPopupError(err));
     } finally {
       setBusy(null);
     }
