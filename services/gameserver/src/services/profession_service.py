@@ -29,6 +29,8 @@ from src.models.profession_training_queue import (
 
 # Citadel L3+ (Colony phase) required to operate training (professions.md).
 MIN_CITADEL_FOR_TRAINING = 3
+# Research Scientists require Research Lab L3 (Planet.research_level; professions.md L40).
+MIN_RESEARCH_LAB_FOR_RESEARCH_SCIENTISTS = 3
 
 # Numeric bonus multipliers from professions.md (non-TBD cells only).
 PRODUCTION_BONUS: dict[ProfessionType, dict[str, float]] = {
@@ -202,6 +204,26 @@ class ProfessionService:
         if (planet.citadel_level or 0) < MIN_CITADEL_FOR_TRAINING:
             raise ValueError("citadel_level_too_low")
 
+    def _assert_profession_training_gate(self, planet: Planet, prof: ProfessionType) -> None:
+        self._assert_training_gate(planet)
+        if prof == ProfessionType.RESEARCH_SCIENTISTS:
+            if (planet.research_level or 0) < MIN_RESEARCH_LAB_FOR_RESEARCH_SCIENTISTS:
+                raise ValueError("research_lab_level_too_low")
+
+    def training_eligibility(self, planet: Planet) -> Dict[str, bool]:
+        """Per-profession eligibility for GET /planets/{id}/professions (building gates partial)."""
+        citadel_ok = (planet.citadel_level or 0) >= MIN_CITADEL_FOR_TRAINING
+        research_lab_ok = (
+            (planet.research_level or 0) >= MIN_RESEARCH_LAB_FOR_RESEARCH_SCIENTISTS
+        )
+        out: Dict[str, bool] = {}
+        for prof in ProfessionType:
+            if prof == ProfessionType.RESEARCH_SCIENTISTS:
+                out[prof.value] = citadel_ok and research_lab_ok
+            else:
+                out[prof.value] = citadel_ok
+        return out
+
     def advance_queue(self, planet: Planet, *, now: Optional[datetime] = None) -> bool:
         """Lazy-complete due training rows. Returns True if planet state changed."""
         now = now or datetime.now(UTC)
@@ -283,6 +305,7 @@ class ProfessionService:
             "training_durations_days": {
                 prof.value: days for prof, days in PROFESSION_TRAINING_DAYS.items()
             },
+            "training_eligibility": self.training_eligibility(planet),
         }
 
     def queue_training(
@@ -297,8 +320,8 @@ class ProfessionService:
         if trainee_count <= 0:
             raise ValueError("invalid_trainee_count")
         self._assert_owner(planet, player_id)
-        self._assert_training_gate(planet)
         prof = _parse_profession(profession)
+        self._assert_profession_training_gate(planet, prof)
         self.advance_queue(planet, now=now)
         if (planet.colonists or 0) < trainee_count:
             raise ValueError("insufficient_generic_colonists")

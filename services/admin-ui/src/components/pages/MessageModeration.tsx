@@ -48,6 +48,10 @@ interface FlaggedMessage {
   flagged: boolean;
   is_read: boolean;
   sender_name?: string;
+  /** LEG-2690 — prior canon `block` actions in rolling 30d (GS flagged list enrich). */
+  sender_block_count_30d?: number;
+  /** LEG-2690 — audit escalation marker already logged for sender (no account_review invent). */
+  sender_escalation_logged?: boolean;
 }
 
 interface FlaggedBeacon {
@@ -143,6 +147,40 @@ const recipientLabel = (message: FlaggedMessage): string => {
   if (message.team_id) return `Team ${message.team_id}`;
   if (message.recipient_id) return message.recipient_id;
   return '—';
+};
+
+/** LEG-2690 — honest empty when GS omits field (rollout) or count is 0. */
+const SenderBlockCountBadge: React.FC<{
+  count?: number;
+  escalationLogged?: boolean;
+}> = ({ count, escalationLogged }) => {
+  if (count === undefined || count < 1) return null;
+
+  const escalated = count >= 2 || escalationLogged === true;
+  const label =
+    count === 1 ? '1 block in the last 30 days' : `${count} blocks in the last 30 days`;
+
+  return (
+    <span
+      className={
+        escalated
+          ? 'msgmod-block-badge msgmod-block-badge--escalation'
+          : 'msgmod-block-badge'
+      }
+      aria-label={
+        escalated
+          ? `Sender escalation risk: ${label}`
+          : `Sender block history: ${label}`
+      }
+      title={
+        escalated
+          ? '2+ blocks in 30 days — escalation threshold (LEG-DEC-157)'
+          : label
+      }
+    >
+      {count === 1 ? '1 block/30d' : `${count} blocks/30d`}
+    </span>
+  );
 };
 
 // NO-CANON (flagged to DECISIONS): fallback display when a sender's nickname
@@ -697,7 +735,13 @@ const MessageModeration: React.FC = () => {
                       />
                     </td>
                     <td className="msgmod-sender">
-                      {message.sender_name ?? message.sender_id}
+                      <span className="msgmod-sender-label">
+                        {message.sender_name ?? message.sender_id}
+                      </span>
+                      <SenderBlockCountBadge
+                        count={message.sender_block_count_30d}
+                        escalationLogged={message.sender_escalation_logged}
+                      />
                     </td>
                     <td className="msgmod-recipient">
                       {recipientLabel(message)}
