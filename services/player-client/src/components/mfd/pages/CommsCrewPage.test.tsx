@@ -223,6 +223,36 @@ describe('CommsCrewPage — MFD-B COMM', () => {
     expect(container.querySelector('.mfd-page-comms-hail-content')).not.toBeNull();
   });
 
+  it('FLAG 403 surfaces permission copy in flag-error alert', async () => {
+    mockFlagMessage.mockRejectedValueOnce(
+      apiRequestError(403, 'You cannot flag a message you cannot see.'),
+    );
+    mockInboxMessages = [makeMessage()];
+    await mount();
+    await click(container.querySelector('.mfd-page-comms-hail-summary')!);
+    await click(container.querySelector('[data-testid="comms-flag-hail"]')!);
+    await click(container.querySelector('[data-testid="comms-flag-cat-spam"]')!);
+    await flush();
+    const flagError = container.querySelector('.mfd-page-comms-flag-error');
+    expect(flagError?.getAttribute('role')).toBe('alert');
+    expect(flagError?.textContent).toContain('You cannot flag a message you cannot see');
+    expect(container.querySelector('.mfd-page-comms-hail-content')).not.toBeNull();
+  });
+
+  it('FLAG 429 surfaces rate-limit copy in flag-error alert', async () => {
+    mockFlagMessage.mockRejectedValueOnce(apiRequestError(429));
+    mockInboxMessages = [makeMessage()];
+    await mount();
+    await click(container.querySelector('.mfd-page-comms-hail-summary')!);
+    await click(container.querySelector('[data-testid="comms-flag-hail"]')!);
+    await click(container.querySelector('[data-testid="comms-flag-cat-rule_break"]')!);
+    await flush();
+    const flagError = container.querySelector('.mfd-page-comms-flag-error');
+    expect(flagError?.getAttribute('role')).toBe('alert');
+    expect(flagError?.textContent).toMatch(/rate limit exceeded/i);
+    expect(container.querySelector('.mfd-page-comms-hail-content')).not.toBeNull();
+  });
+
   it('shows the honest empty state with no transmissions', async () => {
     await mount();
 

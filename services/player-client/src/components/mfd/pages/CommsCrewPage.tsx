@@ -119,6 +119,25 @@ export function formatCommsSendError(err: unknown): string {
   return 'TRANSMISSION FAILED';
 }
 
+/** apiRequest throws Error with `.status`; mirror formatCommsSendError on FLAG. */
+export function formatCommsFlagError(err: unknown): string {
+  const status = httpStatus(err);
+  const detail = serverDetail(err);
+
+  if (status === 403) {
+    if (detail) return detail;
+    return 'Access denied — you cannot flag this message right now.';
+  }
+
+  if (status === 429) {
+    if (detail) return detail;
+    return 'Message flag rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (detail) return detail;
+  return 'Failed to flag transmission';
+}
+
 const conversationPartyLabel = (msg: PlayerMessage, playerId: string | undefined): string => {
   if (!playerId) return (msg.sender_name || 'UNKNOWN').toUpperCase();
   if (msg.sender_id !== playerId) return (msg.sender_name || 'UNKNOWN').toUpperCase();
@@ -372,7 +391,7 @@ const CommsCrewPage: React.FC = () => {
       setFlagMenuId(null);
       setFlagNotice('FLAGGED FOR MODERATION');
     } catch (err: unknown) {
-      setFlagError(err instanceof Error ? err.message : 'Failed to flag transmission');
+      setFlagError(formatCommsFlagError(err));
     } finally {
       setFlaggingId(null);
     }
