@@ -170,6 +170,31 @@ type SlotAction =
   | { kind: 'install'; slot: ModuleSlot }
   | { kind: 'remove'; slotIndex: number; installed: InstalledModule };
 
+/** GS `_MODULE_PREVIEW_EFFECT_KEYS` labels — display only; values come from preview API. */
+const PREVIEW_EFFECT_LABELS: Record<string, string> = {
+  speed_bonus: 'Speed',
+  cargo_bonus_percent: 'Cargo %',
+  shield_bonus: 'Shield',
+  hull_bonus: 'Hull',
+  evasion_bonus_percent: 'Evasion %',
+  scanner_range_bonus: 'Scanner range',
+  drone_capacity_bonus: 'Drone capacity',
+  genesis_capacity_bonus: 'Genesis capacity',
+  failure_rate_reduction: 'Failure rate ↓',
+  landing_bonus: 'Landing',
+  passive_income: 'Passive income',
+  mining_efficiency: 'Mining efficiency',
+};
+
+type ModulePreviewPayload = {
+  success?: boolean;
+  candidate?: { class?: string; tier?: number; name?: string };
+  current?: Record<string, number>;
+  projected?: Record<string, number>;
+  delta?: Record<string, number>;
+  message?: string;
+};
+
 const ModuleGridInterface: React.FC<ModuleGridInterfaceProps> = ({ ship, playerCredits, onChanged }) => {
   const [data, setData] = useState<ModulesResponse | null>(null);
   const [cosmeticCatalog, setCosmeticCatalog] = useState<CosmeticCatalogEntry[]>([]);
@@ -180,6 +205,11 @@ const ModuleGridInterface: React.FC<ModuleGridInterfaceProps> = ({ ship, playerC
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [action, setAction] = useState<SlotAction | null>(null);
   const [lastAction, setLastAction] = useState<number>(0);
+  const [preview, setPreview] = useState<ModulePreviewPayload | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [previewKey, setPreviewKey] = useState<string | null>(null);
+  const previewReqRef = React.useRef(0);
 
   const RATE_LIMIT_MS = 1000;
   const canPerformAction = useCallback(() => {
@@ -233,6 +263,53 @@ const ModuleGridInterface: React.FC<ModuleGridInterfaceProps> = ({ ship, playerC
     [shipType],
   );
 
+  const clearPreview = useCallback(() => {
+    previewReqRef.current += 1;
+    setPreview(null);
+    setPreviewError(null);
+    setPreviewLoading(false);
+    setPreviewKey(null);
+  }, []);
+
+  const closeAction = useCallback(() => {
+    clearPreview();
+    setAction(null);
+  }, [clearPreview]);
+
+  /** LEG-1095: GS dry-run before/after — invent=0 (no client MODULE_DEFINITIONS bake). */
+  const requestPreview = useCallback(
+    async (slotIndex: number, cls: string, tier: number) => {
+      if (!ship?.id) return;
+      const key = `${slotIndex}:${cls}:${tier}`;
+      const reqId = ++previewReqRef.current;
+      setPreviewKey(key);
+      setPreviewLoading(true);
+      setPreviewError(null);
+      try {
+        const result = (await shipUpgradeAPI.previewModule(
+          ship.id,
+          slotIndex,
+          cls,
+          tier,
+        )) as ModulePreviewPayload;
+        if (reqId !== previewReqRef.current) return;
+        if (result?.success === false) {
+          setPreview(null);
+          setPreviewError(result.message || 'Preview unavailable');
+          return;
+        }
+        setPreview(result);
+      } catch (err: any) {
+        if (reqId !== previewReqRef.current) return;
+        setPreview(null);
+        setPreviewError(err?.message || 'Preview failed');
+      } finally {
+        if (reqId === previewReqRef.current) setPreviewLoading(false);
+      }
+    },
+    [ship?.id],
+  );
+
   const handleInstall = async (slotIndex: number, cls: string, tier: number) => {
     if (!canPerformAction() || actionLoading || !ship?.id) return;
     try {
@@ -242,6 +319,7 @@ const ModuleGridInterface: React.FC<ModuleGridInterfaceProps> = ({ ship, playerC
       if (result.success) {
         setActionMessage(result.message || `${familyName(cls)} ${TIER_LABEL[tier]} installed.`);
         if (typeof result.remaining_credits === 'number') setCredits(result.remaining_credits);
+        clearPreview();
         setAction(null);
         await fetchModules();
         onChanged?.();
@@ -481,7 +559,7 @@ const ModuleGridInterface: React.FC<ModuleGridInterfaceProps> = ({ ship, playerC
 
       {/* --- catalog drawer (install) --- */}
       {action?.kind === 'install' && (
-        <div className="mgi-drawer-overlay" onClick={() => setAction(null)}>
+        <div className="mgi-drawer-overlay" onClick={closeAction}>
           <div className="mgi-drawer" onClick={(e) => e.stopPropagation()}>
             <div className="mgi-drawer-header">
               <h4>
@@ -489,7 +567,7 @@ const ModuleGridInterface: React.FC<ModuleGridInterfaceProps> = ({ ship, playerC
                 {action.slot.super && <span className="mgi-badge mgi-badge-super"> SUPER</span>}
                 {action.slot.class && <span className="mgi-badge mgi-badge-class"> {action.slot.class}</span>}
               </h4>
-              <button className="mgi-drawer-close" onClick={() => setAction(null)} aria-label="Close catalog">✕</button>
+              <button className="mgi-drawer-close" onClick={closeAction} aria-label="Close catalog">✕</button>
             </div>
             {action.slot.super && (
               <p className="mgi-drawer-note">⚡ This is a supercharged slot — a fitted module's effects are boosted.</p>
@@ -514,12 +592,17 @@ const ModuleGridInterface: React.FC<ModuleGridInterfaceProps> = ({ ship, playerC
                         {Array.from({ length: MODULE_MAX_TIER }, (_, k) => k + 1).map((tier) => {
                           const cost = tierCost(fam.baseCost, tier);
                           const tooPoor = credits < cost;
+                          const key = `${action.slot.i}:${fam.cls}:${tier}`;
+                          const isPreviewing = previewKey === key;
                           return (
                             <button
                               key={tier}
-                              className="mgi-tier-btn"
+                              type="button"
+                              className={`mgi-tier-btn${isPreviewing ? ' is-previewing' : ''}`}
                               disabled={actionLoading || tooPoor}
                               title={tooPoor ? `Need ${formatCredits(cost)}` : undefined}
+                              onMouseEnter={() => requestPreview(action.slot.i, fam.cls, tier)}
+                              onFocus={() => requestPreview(action.slot.i, fam.cls, tier)}
                               onClick={() => handleInstall(action.slot.i, fam.cls, tier)}
                             >
                               <span className="mgi-tier-label">{TIER_LABEL[tier]}</span>
@@ -536,6 +619,67 @@ const ModuleGridInterface: React.FC<ModuleGridInterfaceProps> = ({ ship, playerC
                 <div className="mgi-cat-empty">No modules are compatible with this slot on this hull.</div>
               )}
             </div>
+            <div className="mgi-preview" data-testid="mgi-stat-preview" aria-live="polite">
+              <h5 className="mgi-preview-title">Before / after preview</h5>
+              {previewLoading && <p className="mgi-preview-status">Loading preview…</p>}
+              {!previewLoading && previewError && (
+                <p className="mgi-preview-status mgi-preview-error" role="alert">{previewError}</p>
+              )}
+              {!previewLoading && !previewError && !preview && (
+                <p className="mgi-preview-status">Hover or focus a tier to preview shipyard stats.</p>
+              )}
+              {!previewLoading && preview && (
+                <>
+                  {preview.candidate?.name && (
+                    <p className="mgi-preview-candidate">
+                      {preview.candidate.name}
+                      {preview.candidate.tier != null ? ` Mk${preview.candidate.tier}` : ''}
+                    </p>
+                  )}
+                  <table className="mgi-preview-table">
+                    <thead>
+                      <tr>
+                        <th scope="col">Stat</th>
+                        <th scope="col">Now</th>
+                        <th scope="col">After</th>
+                        <th scope="col">Δ</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {Array.from(
+                        new Set([
+                          ...Object.keys(preview.current || {}),
+                          ...Object.keys(preview.projected || {}),
+                          ...Object.keys(preview.delta || {}),
+                        ]),
+                      ).map((statKey) => {
+                        const cur = Number(preview.current?.[statKey] ?? 0);
+                        const proj = Number(preview.projected?.[statKey] ?? 0);
+                        const delta = Number(
+                          preview.delta?.[statKey] ?? proj - cur,
+                        );
+                        if (cur === 0 && proj === 0 && delta === 0) return null;
+                        const label = PREVIEW_EFFECT_LABELS[statKey] ?? statKey;
+                        const deltaCls =
+                          delta > 0 ? 'is-up' : delta < 0 ? 'is-down' : 'is-flat';
+                        const deltaSign = delta > 0 ? '+' : '';
+                        return (
+                          <tr key={statKey}>
+                            <td>{label}</td>
+                            <td>{cur}</td>
+                            <td>{proj}</td>
+                            <td className={deltaCls}>
+                              {deltaSign}
+                              {delta}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -546,7 +690,7 @@ const ModuleGridInterface: React.FC<ModuleGridInterfaceProps> = ({ ship, playerC
         const fullCost = fam ? tierCost(fam.baseCost, action.installed.tier) : null;
         const estRefund = fullCost !== null ? Math.floor(fullCost * 0.25) : null;
         return (
-          <div className="mgi-drawer-overlay" onClick={() => setAction(null)}>
+          <div className="mgi-drawer-overlay" onClick={closeAction}>
             <div className="mgi-confirm" onClick={(e) => e.stopPropagation()}>
               <h4>Strip {familyName(action.installed.class)} {TIER_LABEL[action.installed.tier] ?? ''}?</h4>
               <p className="mgi-confirm-body">
@@ -557,7 +701,7 @@ const ModuleGridInterface: React.FC<ModuleGridInterfaceProps> = ({ ship, playerC
                 )}
               </p>
               <div className="mgi-confirm-actions">
-                <button className="mgi-cancel-btn" disabled={actionLoading} onClick={() => setAction(null)}>
+                <button className="mgi-cancel-btn" disabled={actionLoading} onClick={closeAction}>
                   Keep module
                 </button>
                 <button

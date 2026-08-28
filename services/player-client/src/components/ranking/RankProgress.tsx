@@ -72,6 +72,8 @@ const RankProgress: React.FC = () => {
   }
 
   const tierColor = TIER_COLORS[data.rank_tier] || '#ffffff';
+  const showCompactBadge =
+    data.rank_tier != null && data.rank_level != null;
   // Defensive: RankProgressData's shape is enforced by the TS type, not at
   // runtime -- a malformed/incomplete 200 must not crash the panel. Missing
   // numeric fields render as 0 (the same "nothing yet" reading a brand-new
@@ -96,9 +98,20 @@ const RankProgress: React.FC = () => {
       <div className="rank-progress-ranks">
         <div className="rank-progress-current">
           <span className="rank-progress-label">Current</span>
-          <span className="rank-progress-value" style={{ color: tierColor }}>
-            {data.current_rank}
-          </span>
+          <div className="rank-progress-current-row">
+            {showCompactBadge && (
+              <span
+                className="rank-badge rank-badge--compact"
+                style={{ borderColor: tierColor }}
+                data-testid="rank-progress-compact-badge"
+              >
+                <span className="rank-level">{data.rank_level}</span>
+              </span>
+            )}
+            <span className="rank-progress-value" style={{ color: tierColor }}>
+              {data.current_rank}
+            </span>
+          </div>
           <span className="rank-progress-tier">{data.rank_tier}</span>
         </div>
         {!data.is_max_rank && data.next_rank && (

@@ -119,4 +119,111 @@ describe('Leaderboard', () => {
     expect(container.textContent).toContain('Ace');
     expect(container.textContent).toContain('Victories');
   });
+
+  it('renders Medals column with pinned icon and count when API provides medal fields', async () => {
+    getPublicLeaderboard.mockResolvedValue({
+      category: 'rank_points',
+      total_players: 1,
+      player_position: 1,
+      entries: [
+        {
+          position: 1,
+          player_id: 'p1',
+          nickname: 'Ace',
+          military_rank: 'Captain',
+          score: 500,
+          pinned_medal_id: 'bronze_cluster',
+          medal_count: 7,
+        },
+      ],
+    });
+
+    await act(async () => {
+      root.render(<Leaderboard />);
+    });
+
+    expect(container.textContent).toContain('Medals');
+    expect(container.querySelector('[data-testid="player-name-plate-medal"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="player-name-plate-count"]')?.textContent).toBe(
+      '7',
+    );
+  });
+
+  it('renders compact rank insignia with tier color on rank_points when API returns rank_tier', async () => {
+    getPublicLeaderboard.mockResolvedValue({
+      category: 'rank_points',
+      total_players: 1,
+      player_position: 1,
+      entries: [
+        {
+          position: 1,
+          player_id: 'p1',
+          nickname: 'Ace',
+          military_rank: 'Petty Officer',
+          score: 500,
+          rank_level: 7,
+          rank_tier: 'NCO',
+        },
+      ],
+    });
+
+    await act(async () => {
+      root.render(<Leaderboard />);
+    });
+
+    const badge = container.querySelector('.rank-badge--compact');
+    expect(badge).not.toBeNull();
+    expect(badge?.querySelector('.rank-level')?.textContent).toBe('7');
+    expect((badge as HTMLElement).style.borderColor).toBe('rgb(74, 158, 255)');
+    expect(container.textContent).toContain('Petty Officer');
+  });
+
+  it('falls back to text-only rank when rank_tier fields are missing', async () => {
+    getPublicLeaderboard.mockResolvedValue({
+      category: 'rank_points',
+      total_players: 1,
+      player_position: 1,
+      entries: [
+        {
+          position: 1,
+          player_id: 'p1',
+          nickname: 'Ace',
+          military_rank: 'Captain',
+          score: 500,
+        },
+      ],
+    });
+
+    await act(async () => {
+      root.render(<Leaderboard />);
+    });
+
+    expect(container.querySelector('.rank-badge--compact')).toBeNull();
+    expect(container.textContent).toContain('Captain');
+  });
+
+  it('omits medal count badge when API omits medal_count', async () => {
+    getPublicLeaderboard.mockResolvedValue({
+      category: 'rank_points',
+      total_players: 1,
+      player_position: 1,
+      entries: [
+        {
+          position: 1,
+          player_id: 'p1',
+          nickname: 'Ace',
+          military_rank: 'Captain',
+          score: 500,
+          pinned_medal_id: 'bronze_cluster',
+        },
+      ],
+    });
+
+    await act(async () => {
+      root.render(<Leaderboard />);
+    });
+
+    expect(container.querySelector('[data-testid="player-name-plate-medal"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="player-name-plate-count"]')).toBeNull();
+  });
 });
