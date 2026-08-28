@@ -70,6 +70,9 @@ type ChartNode = {
   knowledge: SectorKnowledge;
   clickable: boolean;
   special_formations?: Sector['special_formations'];
+  nebula_type?: string;
+  quantum_field_strength?: number;
+  color_hex?: string;
 };
 
 const hasCoords = (
@@ -254,6 +257,9 @@ function GalaxyScene({
         // Charted remote sectors are clickable for multi-hop plot; current
         // is not. Frontier stubs (separate list) stay non-clickable.
         clickable: !s.current,
+        nebula_type: s.nebula_type,
+        quantum_field_strength: s.quantum_field_strength,
+        color_hex: s.color_hex,
       });
     });
 
@@ -270,6 +276,12 @@ function GalaxyScene({
       if (existing) {
         existing.clickable = true;
         existing.special_formations = formations ?? existing.special_formations;
+        const fromChart = chartById.get(sector_id);
+        if (fromChart?.nebula_type) existing.nebula_type = fromChart.nebula_type;
+        if (fromChart?.quantum_field_strength != null) {
+          existing.quantum_field_strength = fromChart.quantum_field_strength;
+        }
+        if (fromChart?.color_hex) existing.color_hex = fromChart.color_hex;
         // Warpability is the dominant signal: an exit you can jump to RIGHT
         // NOW reads as 'reachable' even if you've also visited it before —
         // that's the distinction the pilot cares about (warp-now vs been-there).
@@ -287,6 +299,9 @@ function GalaxyScene({
         knowledge: 'reachable',
         clickable: true,
         special_formations: formations,
+        nebula_type: fromChart?.nebula_type,
+        quantum_field_strength: fromChart?.quantum_field_strength,
+        color_hex: fromChart?.color_hex,
       });
     };
 
@@ -606,6 +621,9 @@ function GalaxyScene({
           x_coord: node.x,
           y_coord: node.y,
           z_coord: node.z,
+          nebula_type: node.nebula_type,
+          quantum_field_strength: node.quantum_field_strength,
+          color_hex: node.color_hex,
         };
 
         return (

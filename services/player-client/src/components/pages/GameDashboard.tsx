@@ -621,6 +621,7 @@ const GameDashboardInner: React.FC = () => {
     withdrawFromSafe,
     depositCommodityToSafe,
     withdrawCommodityFromSafe,
+    withdrawStockpileToCargo,
     setCitadelAutoDeposit,
     getPlanetDefenseInfo,
     upgradeShields,
@@ -1589,6 +1590,7 @@ const GameDashboardInner: React.FC = () => {
   // --- Commodity safe storage (move planet stockpile <-> protected safe) ---
   const [commodityBusy, setCommodityBusy] = useState<string | null>(null);
   const [autoDepositBusy, setAutoDepositBusy] = useState(false);
+  const [stockpileWithdrawBusy, setStockpileWithdrawBusy] = useState<string | null>(null);
 
   // Toggle "auto-deposit production into safe" (opt-in, default OFF). The server
   // is authoritative on the resulting flag — merge it back into citadelInfo so
@@ -1654,6 +1656,41 @@ const GameDashboardInner: React.FC = () => {
     const safeKey = SAFE_COMMODITIES.find((c) => c.stock === key)?.safe;
     if (!safeKey || amount < 1) return;
     moveCommoditySafe('store', safeKey, amount);
+  };
+
+  // Stockpile → ship cargo (LEG-546). Distinct from Store→Safe. GS enforces
+  // landed-on-planet, owner/team ACL, cargo space, and teammate tax skim.
+  const apiErrorDetail = (error: any, fallback: string): string => {
+    const detail = error?.response?.data?.detail ?? error?.message;
+    return typeof detail === 'string' && detail.trim() ? detail : fallback;
+  };
+  const withdrawStockpileByGsKey = async (
+    commodity: 'fuel_ore' | 'organics' | 'equipment',
+    amount: number,
+  ) => {
+    if (!landedPlanet || stockpileWithdrawBusy || amount < 1) return;
+    setStockpileWithdrawBusy(commodity);
+    try {
+      const result = await withdrawStockpileToCargo(landedPlanet.id, commodity, amount);
+      const detail = await getPlanetDetails(landedPlanet.id).catch(() => null);
+      if (detail) setLandedPlanetDetail(detail);
+      void refreshPlayerState();
+      setOpsNotice({ type: 'success', message: result?.message || 'Stockpile loaded to cargo.' });
+      setOpsRefresh((n) => n + 1);
+    } catch (error: any) {
+      setOpsNotice({ type: 'error', message: apiErrorDetail(error, 'Stockpile withdraw failed') });
+    } finally {
+      setStockpileWithdrawBusy(null);
+    }
+  };
+  const withdrawStockToCargo = (key: 'fuel' | 'organics' | 'equipment', amount: number) => {
+    const commodity = SAFE_COMMODITIES.find((c) => c.stock === key)?.safe as
+      | 'fuel_ore'
+      | 'organics'
+      | 'equipment'
+      | undefined;
+    if (!commodity) return;
+    void withdrawStockpileByGsKey(commodity, amount);
   };
 
   // --- Colonist transfer modal (quantity pattern mirrors the trading modal) ---
@@ -3412,6 +3449,7 @@ const GameDashboardInner: React.FC = () => {
                                 allocSyncing={allocSyncing}
                                 allocError={allocError}
                                 onStoreToSafe={storeStockToSafe}
+                                onWithdrawToCargo={withdrawStockToCargo}
                                 onOpsChange={() => setOpsRefresh(n => n + 1)}
                                 defenseTab={defenseTabBody}
                                 safeTab={safeTabBody}
