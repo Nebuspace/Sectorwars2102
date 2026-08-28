@@ -102,6 +102,10 @@ export function formatCitadelLoadError(err: unknown): string {
     return 'You do not own this planet.';
   }
 
+  if (status === 429) {
+    return 'Citadel lookup rate limit exceeded — wait a moment and try again.';
+  }
+
   if (hasServerDetail) return message!;
   return 'Failed to load citadel info';
 }
