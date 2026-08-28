@@ -296,6 +296,33 @@ describe('MessageModeration', () => {
     );
   });
 
+  it('surfaces rate-limit copy on block POST 429 (LEG-2637)', async () => {
+    const user = userEvent.setup();
+    mockLoad({ messages: { ...emptyMessages, messages: [message], total: 1 } });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockRejectedValue(
+      Object.assign(new Error('HTTP 429'), {
+        response: { status: 429 },
+      }),
+    );
+
+    render(<MessageModeration />);
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: 'Block' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/moderation/messages/m1/block',
+        {},
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(
+      expect.stringMatching(/rate limit/i),
+    );
+    expect(toastError).not.toHaveBeenCalledWith('Failed to block the message');
+  });
+
   it('does not call the API when the delete confirm is dismissed', async () => {
     const user = userEvent.setup();
     mockLoad({ messages: { ...emptyMessages, messages: [message], total: 1 } });
