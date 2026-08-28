@@ -181,6 +181,48 @@ describe('AdminContext / AdminProvider', () => {
     );
   });
 
+  it('surfaces loadGalaxyInfo 403 as admin.galaxy.manage denial (LEG-2790)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    vi.mocked(api.get).mockRejectedValue(httpErr(403));
+    const user = userEvent.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>
+    );
+
+    await user.click(screen.getByText('load-galaxy-info'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/admin\.galaxy\.manage/),
+    );
+    expect(screen.getByTestId('error').textContent).not.toMatch(
+      /Failed to load galaxy information/,
+    );
+    expect(api.get).toHaveBeenCalledWith('/api/v1/admin/galaxy');
+  });
+
+  it('surfaces loadGalaxyInfo 429 as admin rate-limit (LEG-2790)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    vi.mocked(api.get).mockRejectedValue(httpErr(429));
+    const user = userEvent.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>
+    );
+
+    await user.click(screen.getByText('load-galaxy-info'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/rate limit/i),
+    );
+    expect(screen.getByTestId('error').textContent).not.toMatch(
+      /Failed to load galaxy information/,
+    );
+    expect(api.get).toHaveBeenCalledWith('/api/v1/admin/galaxy');
+  });
+
   it('loads user accounts for an admin user', async () => {
     mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
     vi.mocked(api.get).mockResolvedValue({ data: { users: [{ id: 'u1' }, { id: 'u2' }] } });
