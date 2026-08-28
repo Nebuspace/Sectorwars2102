@@ -42,3 +42,32 @@
   font-weight: 600;
   opacity: 0.85;
 }
+
+/* Compact rank insignia — mirrors player-client RankDisplay .rank-badge */
+.ranking-leaderboard-rank-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.admin-rank-badge {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid #888;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.06);
+  flex-shrink: 0;
+}
+
+.admin-rank-level {
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.admin-rank-name {
+  font-weight: 500;
+}
