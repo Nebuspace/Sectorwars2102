@@ -16,6 +16,10 @@ import RefiningVenue from './RefiningVenue';
 import { getStationClassInfo } from '../common/stationIdentity';
 import { shipAPI, registryAPI, ariaMarketAPI, shipUpgradeAPI, miningAPI, type AriaMarketIntelList } from '../../services/api';
 import { formatCredits } from '../../utils/formatters';
+import {
+  getLatestSpacedockVenueRequest,
+  subscribeSpacedockVenueRequest,
+} from '../../services/spacedockVenueBus';
 import './spacedock.css';
 
 // Use same API URL logic as GameContext for Codespaces compatibility
@@ -209,6 +213,18 @@ interface SpaceDockProps {
 const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = false }) => {
   const { playerState, stationsInSector, updatePlayerCredits, updateShipGenesis, refreshPlayerState, loadShips, getStationSlips } = useGame();
   const [activeVenue, setActiveVenue] = useState<VenueType>('hub');
+
+  React.useEffect(() => {
+    const latched = getLatestSpacedockVenueRequest();
+    if (latched?.venue === 'mining') {
+      setActiveVenue('mining');
+    }
+    return subscribeSpacedockVenueRequest((request) => {
+      if (request.venue === 'mining') {
+        setActiveVenue('mining');
+      }
+    });
+  }, []);
 
   // Transient slips gauge for the hub header (fetched when docked)
   const [slipsGauge, setSlipsGauge] = useState<{ occupied: number; capacity: number } | null>(null);
