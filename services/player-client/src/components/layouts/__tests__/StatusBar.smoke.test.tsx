@@ -312,7 +312,7 @@ describe('StatusBar — live-mount smoke', () => {
     const tabpanel = container.querySelector('[role="tabpanel"]');
     expect(tabpanel).not.toBeNull();
     const tabs = container.querySelectorAll('[role="tab"]');
-    expect(tabs.length).toBe(9);
+    expect(tabs.length).toBe(10);
     // exactly one tab starts selected (Identity, the default active tab)
     expect(Array.from(tabs).filter((t) => t.getAttribute('aria-selected') === 'true').length).toBe(1);
 
@@ -392,7 +392,7 @@ describe('StatusBar — live-mount smoke', () => {
 
     const tablist = container.querySelector('[role="tablist"]') as HTMLElement;
     const tabs = Array.from(container.querySelectorAll('[role="tab"]')) as HTMLButtonElement[];
-    expect(tabs.length).toBe(9);
+    expect(tabs.length).toBe(10);
 
     const pressKey = async (key: string) => {
       await act(async () => {
@@ -413,10 +413,10 @@ describe('StatusBar — live-mount smoke', () => {
     expect(tabs[1].tabIndex).toBe(0);
     expect(tabs[0].tabIndex).toBe(-1);
 
-    // End: jump straight to the last tab (Settings, index 8).
+    // End: jump straight to the last tab (Settings, index 9).
     await pressKey('End');
-    expect(tabs[8].getAttribute('aria-selected')).toBe('true');
-    expect(document.activeElement).toBe(tabs[8]);
+    expect(tabs[9].getAttribute('aria-selected')).toBe('true');
+    expect(document.activeElement).toBe(tabs[9]);
 
     // ArrowRight wraps from the last tab back to the first.
     await pressKey('ArrowRight');
@@ -425,8 +425,8 @@ describe('StatusBar — live-mount smoke', () => {
 
     // ArrowLeft wraps from the first tab back to the last.
     await pressKey('ArrowLeft');
-    expect(tabs[8].getAttribute('aria-selected')).toBe('true');
-    expect(document.activeElement).toBe(tabs[8]);
+    expect(tabs[9].getAttribute('aria-selected')).toBe('true');
+    expect(document.activeElement).toBe(tabs[9]);
 
     // Home: jump straight back to the first tab.
     await pressKey('Home');
