@@ -92,6 +92,39 @@ const formatCompletesAt = (iso: string | null | undefined): string => {
 const isNotOwnerError = (message: string): boolean =>
   /not_owner|only the planet owner/i.test(message);
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+/** Surface gameserver detail when profession state load fails. */
+export function formatProfessionsLoadError(err: unknown): string {
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not own this planet.';
+  }
+
+  if (status === 404) {
+    if (hasServerDetail) return message!;
+    return 'Planet not found.';
+  }
+
+  if (hasServerDetail) return message!;
+  return 'Failed to load professions';
+}
+
 const ProfessionsPanel: React.FC<ProfessionsPanelProps> = ({
   planetId,
   citadelLevel,
@@ -117,7 +150,7 @@ const ProfessionsPanel: React.FC<ProfessionsPanelProps> = ({
       setState(data);
       setHidden(false);
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to load professions';
+      const message = formatProfessionsLoadError(err);
       if (isNotOwnerError(message)) {
         setHidden(true);
         setState(null);
