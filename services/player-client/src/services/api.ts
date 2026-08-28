@@ -759,6 +759,13 @@ export const fleetAPI = {
       method: 'POST'
     }),
 
+  /** Relocate fleet + member ships (LEG-49 / LEG-133). Destination is Sector row UUID. */
+  move: (fleetId: string, sectorId: string) =>
+    apiRequest(`/api/v1/fleets/${fleetId}/move`, {
+      method: 'POST',
+      body: JSON.stringify({ sector_id: sectorId }),
+    }),
+
   initiateBattle: (fleetId: string, defenderFleetId: string) =>
     apiRequest(`/api/v1/fleets/${fleetId}/initiate-battle`, {
       method: 'POST',
