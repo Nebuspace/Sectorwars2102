@@ -6,6 +6,10 @@ import {
   formatAdminApiError,
 } from '../../utils/adminApiError';
 import { useToast, useConfirm } from '../../contexts/ToastContext';
+import {
+  creditConfirmLabel,
+  useCreditInlineConfirm,
+} from '../../hooks/useCreditInlineConfirm';
 
 interface PlayerBountyEntry {
   id: string;
@@ -52,6 +56,7 @@ export interface PlayerBountyPanelProps {
 const PlayerBountyPanel: React.FC<PlayerBountyPanelProps> = ({ targetId, targetName }) => {
   const toast = useToast();
   const confirm = useConfirm();
+  const { isArmed, gateCreditAction } = useCreditInlineConfirm();
 
   const [list, setList] = useState<BountyListResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -80,16 +85,9 @@ const PlayerBountyPanel: React.FC<PlayerBountyPanelProps> = ({ targetId, targetN
     void loadBounties();
   }, [loadBounties]);
 
-  const forceCancel = async (bountyId: string) => {
+  const runForceCancel = async (bountyId: string) => {
     const id = targetId.trim();
     if (!id) return;
-    const ok = await confirm({
-      title: 'Force-cancel bounty',
-      message: `Refund placer principal (fee non-refundable) and remove bounty ${bountyId}?`,
-      confirmLabel: 'Force-cancel',
-      danger: true,
-    });
-    if (!ok) return;
     setMutating(bountyId);
     try {
       await api.post(
@@ -102,6 +100,12 @@ const PlayerBountyPanel: React.FC<PlayerBountyPanelProps> = ({ targetId, targetN
     } finally {
       setMutating(null);
     }
+  };
+
+  const onForceCancelClick = (bountyId: string, amount: number) => {
+    gateCreditAction(`force-cancel-${bountyId}`, amount, () => {
+      void runForceCancel(bountyId);
+    });
   };
 
   const collapse = async () => {
@@ -190,27 +194,34 @@ const PlayerBountyPanel: React.FC<PlayerBountyPanelProps> = ({ targetId, targetN
               </tr>
             </thead>
             <tbody>
-              {playerBounties.map((b) => (
-                <tr key={b.id}>
-                  <td className="font-mono text-xs">{b.id}</td>
-                  <td>
-                    {b.placed_by_name || '—'}
-                    <div className="font-mono text-xs text-muted">{b.placed_by}</div>
-                  </td>
-                  <td>{b.amount?.toLocaleString?.() ?? b.amount ?? '—'}</td>
-                  <td>{b.type || 'player'}</td>
-                  <td>
-                    <button
-                      type="button"
-                      className="btn btn-sm btn-danger"
-                      disabled={mutating === b.id || b.type === 'system'}
-                      onClick={() => void forceCancel(b.id)}
-                    >
-                      Force-cancel
-                    </button>
-                  </td>
-                </tr>
-              ))}
+              {playerBounties.map((b) => {
+                const amount = b.amount ?? 0;
+                const forceCancelKey = `force-cancel-${b.id}`;
+                const forceCancelArmed = isArmed(forceCancelKey);
+                return (
+                  <tr key={b.id}>
+                    <td className="font-mono text-xs">{b.id}</td>
+                    <td>
+                      {b.placed_by_name || '—'}
+                      <div className="font-mono text-xs text-muted">{b.placed_by}</div>
+                    </td>
+                    <td>{b.amount?.toLocaleString?.() ?? b.amount ?? '—'}</td>
+                    <td>{b.type || 'player'}</td>
+                    <td>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-danger"
+                        disabled={mutating === b.id || b.type === 'system'}
+                        onClick={() => onForceCancelClick(b.id, amount)}
+                      >
+                        {forceCancelArmed
+                          ? creditConfirmLabel(amount, 'refund')
+                          : 'Force-cancel'}
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
