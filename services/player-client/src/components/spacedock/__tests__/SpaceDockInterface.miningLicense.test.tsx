@@ -32,6 +32,14 @@ vi.mock('../../../services/api', async (importOriginal) => {
       ...actual.shipUpgradeAPI,
       installEquipment: (...args: unknown[]) => installEquipmentMock(...args),
     },
+    miningAPI: {
+      ...actual.miningAPI,
+      listLicenses: vi.fn(async () => ({
+        items: [],
+        total: 0,
+        recently_expired_window_hours: 24,
+      })),
+    },
   };
 });
 
@@ -86,6 +94,7 @@ vi.mock('../../../contexts/GameContext', () => ({
 }));
 
 import SpaceDockInterface from '../SpaceDockInterface';
+import { miningAPI } from '../../../services/api';
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -159,6 +168,7 @@ describe('SpaceDockInterface — mining license / laser', () => {
       return { ok: true, json: async () => ({}) };
     });
     vi.stubGlobal('fetch', fetchMock);
+    vi.mocked(miningAPI.listLicenses).mockClear();
   });
 
   afterEach(async () => {
@@ -191,6 +201,13 @@ describe('SpaceDockInterface — mining license / laser', () => {
       expect(container.textContent).toContain('Claim License');
     });
   };
+
+  it('fetches mining/licenses when the mining venue opens', async () => {
+    await openMining();
+    await vi.waitFor(() => {
+      expect(miningAPI.listLicenses).toHaveBeenCalled();
+    });
+  });
 
   it('posts mining/license when Purchase / Renew License is clicked', async () => {
     await openMining();

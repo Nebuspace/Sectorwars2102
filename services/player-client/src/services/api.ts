@@ -951,6 +951,9 @@ export const miningAPI = {
   /** LEG-2459 tip GET — yield band before committing harvest turns. */
   getYieldPreview: (shipId: string) =>
     apiRequest(`/api/v1/mining/yield-preview?ship_id=${encodeURIComponent(shipId)}`),
+
+  /** LEG-2574 tip GET — owner claim licenses (active + recently expired). */
+  listLicenses: () => apiRequest('/api/v1/mining/licenses'),
 };
 
 /** First-login gate / onboarding session (GameContext + FirstLoginContext). */

@@ -256,6 +256,17 @@ describe('apiRequest via trade/combat/grey wrappers', () => {
     );
   });
 
+  it('miningAPI.listLicenses GETs the tip claim-license list', async () => {
+    const payload = {
+      items: [],
+      total: 0,
+      recently_expired_window_hours: 24,
+    };
+    get.mockResolvedValue({ data: payload });
+    await expect(miningAPI.listLicenses()).resolves.toEqual(payload);
+    expect(get).toHaveBeenCalledWith('/api/v1/mining/licenses', jsonHeaders);
+  });
+
   it('miningAPI.harvest POSTs ship_id', async () => {
     post.mockResolvedValue({ data: { status: 'in_progress', harvest_id: 'h1' } });
     await expect(miningAPI.harvest('ship-9')).resolves.toEqual({
