@@ -228,6 +228,37 @@
   border: 1px solid var(--status-warning, var(--border-medium));
 }
 
+.msgmod-sender {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.25rem;
+}
+
+.msgmod-sender-label {
+  font-weight: 500;
+}
+
+.msgmod-block-badge {
+  display: inline-block;
+  padding: 0.12rem 0.45rem;
+  border-radius: 0.35rem;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-secondary, var(--text-tertiary));
+  background: color-mix(in srgb, var(--text-tertiary) 12%, transparent);
+  border: 1px solid var(--border-light);
+}
+
+.msgmod-block-badge--escalation {
+  color: var(--status-danger, #c53030);
+  background: color-mix(in srgb, var(--status-danger, #c53030) 14%, transparent);
+  border-color: var(--status-danger, #c53030);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
 /* Actions ----------------------------------------------------------------- */
 .msgmod-actions-col {
   text-align: right;
