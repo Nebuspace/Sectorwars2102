@@ -107,7 +107,7 @@ const pendingCluster = {
   flags: [],
 };
 
-describe('MultiAccountReview cluster detail GET formatAdminApiError (LEG-2677)', () => {
+describe('MultiAccountReview cluster detail GET formatAdminApiError (LEG-2679)', () => {
   beforeEach(() => {
     vi.mocked(api.get).mockReset();
     vi.spyOn(console, 'error').mockImplementation(() => {});

@@ -95,7 +95,7 @@ const sampleConversation: ConversationSummary = {
   total_cost_usd: 0.0123,
 };
 
-describe('FirstLoginConversations detail GET formatAdminApiError (LEG-2678)', () => {
+describe('FirstLoginConversations detail GET formatAdminApiError (LEG-2680)', () => {
   beforeEach(() => {
     vi.mocked(api.get).mockReset();
     vi.spyOn(console, 'error').mockImplementation(() => {});
