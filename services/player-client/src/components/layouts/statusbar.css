@@ -944,6 +944,22 @@
   }
 }
 
+/* LEG-2606 — compact rank insignia beside REP badge (reuses ranking.css). */
+.vit.rank-badge-compact {
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+}
+
+.vit .rank-badge.rank-badge--compact {
+  width: 1.75rem;
+  height: 1.75rem;
+}
+
+.vit .rank-badge--compact .rank-level {
+  font-size: 0.75rem;
+}
+
 /* REP badge (DECISIONS #9) — WO-UI5-RETIREMENT+GLASS rep-lane: RESTORES
    per-tier color-grading. WO-UI0-SHELL-TRANSPLANT Leaf L1 nit (a) had
    re-classed this onto plain `.vit.repb` (cockpit-shell.css: fixed
