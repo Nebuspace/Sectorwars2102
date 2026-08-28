@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import MultiAccountReview from './MultiAccountReview';
 import { api } from '../../utils/auth';
 
@@ -88,5 +89,85 @@ describe('MultiAccountReview scope errors (LEG-968)', () => {
     await waitFor(() => {
       expect(screen.getByText(/rate limit/i)).toBeTruthy();
     });
+  });
+});
+
+const pendingCluster = {
+  id: 'cluster-1',
+  signal_summary: { shared_ip: true },
+  severity: 'soft' as const,
+  all_paid_subscribers: false,
+  admin_decision: 'pending' as const,
+  admin_decision_reason: null,
+  admin_decision_at: null,
+  admin_decision_by: null,
+  created_at: '2026-01-01T00:00:00Z',
+  updated_at: '2026-01-01T00:00:00Z',
+  member_count: 2,
+  flags: [],
+};
+
+describe('MultiAccountReview cluster detail GET formatAdminApiError (LEG-2748)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url.includes('/clusters/cluster-1')) {
+        return Promise.resolve({ data: pendingCluster });
+      }
+      return Promise.resolve({ data: [pendingCluster] });
+    });
+  });
+
+  async function selectCluster(user: ReturnType<typeof userEvent.setup>) {
+    render(<MultiAccountReview />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/2 members/i)).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByText(/2 members/i));
+
+    await waitFor(() => {
+      expect(api.get).toHaveBeenCalledWith(
+        '/api/v1/admin/multi-account/clusters/cluster-1',
+      );
+    });
+  }
+
+  it('surfaces scope detail on cluster detail GET 403', async () => {
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url.includes('/clusters/cluster-1')) {
+        return Promise.reject(
+          axiosError(403, 'Missing scope admin.multi_account.review'),
+        );
+      }
+      return Promise.resolve({ data: [pendingCluster] });
+    });
+    const user = userEvent.setup();
+    await selectCluster(user);
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Missing scope admin\.multi_account\.review/i),
+      ).toBeInTheDocument();
+    });
+    expect(screen.queryByText('Failed to load cluster detail')).not.toBeInTheDocument();
+  });
+
+  it('surfaces rate-limit copy on cluster detail GET 429', async () => {
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url.includes('/clusters/cluster-1')) {
+        return Promise.reject(axiosError(429));
+      }
+      return Promise.resolve({ data: [pendingCluster] });
+    });
+    const user = userEvent.setup();
+    await selectCluster(user);
+
+    await waitFor(() => {
+      expect(screen.getByText(/rate limit/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByText('Failed to load cluster detail')).not.toBeInTheDocument();
   });
 });
