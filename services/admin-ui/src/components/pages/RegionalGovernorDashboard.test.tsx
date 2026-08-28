@@ -119,6 +119,29 @@ describe('RegionalGovernorDashboard (LEG-213)', () => {
       expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
     });
   });
+
+  it('shows scope-aware copy on 403 economy save', async () => {
+    render(<RegionalGovernorDashboard />);
+    await waitFor(() => expect(screen.getByText('Sol Reach')).toBeTruthy());
+
+    vi.mocked(api.put).mockRejectedValueOnce(httpErr(403));
+
+    fireEvent.click(screen.getByRole('button', { name: /economy/i }));
+
+    const saveBtn = await waitFor(() => {
+      const buttons = screen.getAllByRole('button');
+      const match = buttons.find((b) => /save|update/i.test(b.textContent || ''));
+      if (!match) throw new Error('save button not found');
+      return match;
+    });
+    fireEvent.click(saveBtn);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(
+        /region owner or admin\.regions scope|Access denied/i,
+      );
+    });
+  });
 });
 
 describe('BeaconSectorCap (LEG-1014)', () => {
@@ -159,6 +182,43 @@ describe('BeaconSectorCap (LEG-1014)', () => {
         expect.stringContaining('/beacon-sector-cap'),
         expect.objectContaining({ beacon_sector_cap: expect.any(Number) })
       );
+    });
+  });
+
+  it('surfaces formatAdminApiError on beacon PATCH 403 (LEG-2601)', async () => {
+    vi.mocked(api.patch).mockRejectedValue(
+      httpErr(403, 'Missing scope admin.regions.manage'),
+    );
+    render(<RegionalGovernorDashboard />);
+    await waitFor(() => screen.getByText('Sol Reach'));
+    const econTab = screen.getAllByText('Economy').find(el => el.className.includes('tab-button'));
+    if (econTab) fireEvent.click(econTab);
+    fireEvent.click(await waitFor(() => screen.getByText('Save Cap')));
+
+    await waitFor(() => {
+      expect(vi.mocked(api.patch)).toHaveBeenCalledWith(
+        expect.stringContaining('/beacon-sector-cap'),
+        expect.objectContaining({ beacon_sector_cap: expect.any(Number) }),
+      );
+    });
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/Missing scope admin\.regions\.manage/i);
+    });
+  });
+
+  it('surfaces rate-limit copy on beacon PATCH 429 (LEG-2601)', async () => {
+    vi.mocked(api.patch).mockRejectedValue(httpErr(429));
+    render(<RegionalGovernorDashboard />);
+    await waitFor(() => screen.getByText('Sol Reach'));
+    const econTab = screen.getAllByText('Economy').find(el => el.className.includes('tab-button'));
+    if (econTab) fireEvent.click(econTab);
+    fireEvent.click(await waitFor(() => screen.getByText('Save Cap')));
+
+    await waitFor(() => {
+      expect(vi.mocked(api.patch)).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
     });
   });
 });

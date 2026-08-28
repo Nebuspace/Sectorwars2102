@@ -17,6 +17,12 @@ vi.mock('../../hooks/useResourceCatalog', () => ({
   }),
 }));
 
+function httpErr(status: number, detail?: string) {
+  return Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: detail ? { detail } : {} },
+  });
+}
+
 const basePlanet = {
   id: 'planet-1',
   name: 'Terra Nova',
@@ -172,5 +178,63 @@ describe('PlanetDetail Soft-ORDER non-PATCHABLE honesty', () => {
 
     const lastBodies = vi.mocked(api.patch).mock.calls.map((c) => JSON.stringify(c[1]));
     expect(lastBodies.join('|')).not.toMatch(/owner_name|drones|colonists/);
+  });
+});
+
+describe('PlanetDetail PATCH errors (LEG-2616)', () => {
+  beforeEach(() => {
+    vi.mocked(api.patch).mockReset();
+  });
+
+  it('surfaces formatAdminApiError on name PATCH 403', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.patch).mockRejectedValue(
+      httpErr(403, 'Missing scope admin.universe.manage'),
+    );
+
+    render(<PlanetDetail planet={basePlanet} onBack={() => undefined} />);
+
+    const nameLabel = screen.getByText('Name:');
+    const row = nameLabel.closest('.info-item');
+    await user.click(row!.querySelector('.editable-field.clickable') as HTMLElement);
+
+    const input = screen.getByRole('textbox');
+    await user.clear(input);
+    await user.type(input, 'Forbidden Rename');
+    await user.click(screen.getByRole('button', { name: '✓' }));
+
+    await waitFor(() => {
+      expect(api.patch).toHaveBeenCalledWith('/api/v1/admin/planets/planet-1', {
+        name: 'Forbidden Rename',
+      });
+    });
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(
+        /Missing scope admin\.universe\.manage/i,
+      );
+    });
+  });
+
+  it('surfaces rate-limit copy on name PATCH 429', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.patch).mockRejectedValue(httpErr(429));
+
+    render(<PlanetDetail planet={basePlanet} onBack={() => undefined} />);
+
+    const nameLabel = screen.getByText('Name:');
+    const row = nameLabel.closest('.info-item');
+    await user.click(row!.querySelector('.editable-field.clickable') as HTMLElement);
+
+    const input = screen.getByRole('textbox');
+    await user.clear(input);
+    await user.type(input, 'Rate Limited');
+    await user.click(screen.getByRole('button', { name: '✓' }));
+
+    await waitFor(() => {
+      expect(api.patch).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
+    });
   });
 });

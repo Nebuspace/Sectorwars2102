@@ -14,12 +14,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const mockGetTeam = vi.fn();
 const mockFlagMessage = vi.fn();
+const mockGetConversations = vi.fn();
 vi.mock('../../../services/api', () => ({
   teamAPI: {
     getTeam: (...a: unknown[]) => mockGetTeam(...a),
   },
   messageAPI: {
     flagMessage: (...a: unknown[]) => mockFlagMessage(...a),
+    getConversations: (...a: unknown[]) => mockGetConversations(...a),
   },
 }));
 
@@ -92,6 +94,8 @@ describe('CommsCrewPage — MFD-B COMM', () => {
   beforeEach(() => {
     mockGetTeam.mockReset();
     mockFlagMessage.mockReset();
+    mockGetConversations.mockReset();
+    mockGetConversations.mockResolvedValue({ conversations: [], total: 0, page: 1, limit: 20, pages: 0 });
     mockFlagMessage.mockResolvedValue({ success: true });
     mockRefreshInbox.mockReset();
     mockSendPlayerMessage.mockReset();
@@ -266,6 +270,55 @@ describe('CommsCrewPage — MFD-B COMM', () => {
     // CommsCrewPage reads no is_docked/is_landed flag anywhere in its body;
     // this asserts the page itself never conditions on player mode.
     await mount();
+    expect(container.querySelector('.mfd-page-ops')).not.toBeNull();
+  });
+
+  it('THREADS tab fetches conversations and renders thread rows', async () => {
+    mockGetConversations.mockResolvedValueOnce({
+      conversations: [
+        makeMessage({
+          id: 'conv-1',
+          thread_id: 'thread-a',
+          sender_name: 'Echo',
+          subject: 'Docking coords',
+        }),
+      ],
+      total: 1,
+      page: 1,
+      limit: 20,
+      pages: 1,
+    });
+    await mount();
+    await click(container.querySelectorAll('.mfd-page-comms-mode-tab')[1]!);
+    await flush();
+    expect(mockGetConversations).toHaveBeenCalledWith(1);
+    expect(container.querySelector('[data-testid="comms-threads-list"]')).not.toBeNull();
+    expect(container.querySelector('.mfd-page-comms-hail-sender')?.textContent).toBe('ECHO');
+    expect(container.querySelector('.mfd-page-comms-hail-subject')?.textContent).toBe('Docking coords');
+  });
+
+  it('THREADS tab shows empty state when conversations=[]', async () => {
+    mockGetConversations.mockResolvedValueOnce({
+      conversations: [],
+      total: 0,
+      page: 1,
+      limit: 20,
+      pages: 0,
+    });
+    await mount();
+    await click(container.querySelectorAll('.mfd-page-comms-mode-tab')[1]!);
+    await flush();
+    expect(container.querySelector('[data-testid="comms-threads-list"] .mfd-empty')?.textContent).toBe(
+      'NO THREADS'
+    );
+  });
+
+  it('THREADS tab surfaces fetch error without crashing', async () => {
+    mockGetConversations.mockRejectedValueOnce(new Error('Uplink timeout'));
+    await mount();
+    await click(container.querySelectorAll('.mfd-page-comms-mode-tab')[1]!);
+    await flush();
+    expect(container.querySelector('.mfd-page-warnline')?.textContent).toBe('Uplink timeout');
     expect(container.querySelector('.mfd-page-ops')).not.toBeNull();
   });
 });

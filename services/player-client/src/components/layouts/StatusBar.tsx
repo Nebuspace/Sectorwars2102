@@ -21,6 +21,9 @@ import GovSummaryTab from './GovSummaryTab';
 import MyBeaconsTab from './MyBeaconsTab';
 import LocationDropdown from './LocationDropdown';
 import RegionOwnerControls from '../governance/RegionOwnerControls';
+import { rankingAPI } from '../../services/api';
+import { TIER_COLORS } from '../ranking/RankDisplay';
+import '../ranking/ranking.css';
 import './statusbar.css';
 
 /**
@@ -270,6 +273,30 @@ const StatusBar: React.FC = () => {
   const settingsTriggerRef = useRef<HTMLButtonElement>(null);
   const settingsPanelRef = useRef<HTMLDivElement>(null);
 
+  // LEG-2606 — compact rank insignia beside REP badge (ranking.md:230).
+  const [rankLevel, setRankLevel] = useState<number | null>(null);
+  const [rankTier, setRankTier] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await rankingAPI.getRank();
+        if (cancelled) return;
+        setRankLevel(typeof data.rank_level === 'number' ? data.rank_level : null);
+        setRankTier(data.rank_tier ?? null);
+      } catch {
+        if (!cancelled) {
+          setRankLevel(null);
+          setRankTier(null);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Dismiss on outside click / Escape — this panel sits over the
   // click-through windshield, so a stray click elsewhere must close it
   // rather than leaving a panel stuck open over the scene.
@@ -420,6 +447,9 @@ const StatusBar: React.FC = () => {
   const personalRep = playerState?.personal_reputation ?? 0;
   const repSign = personalRep >= 0 ? '+' : '';
   const repColor = repTierColor(repTier);
+  const rankTierColor = rankTier ? (TIER_COLORS[rankTier] || '#ffffff') : '#888888';
+  const rankBadgeLabel =
+    rankLevel != null ? `Military rank level ${rankLevel}` : 'Military rank unavailable';
 
   // WO-HUD-SHIPTYPE: dynamic ship-type readout beside the name -- whatever
   // hull the player is currently flying, formatted via the shared
@@ -587,6 +617,18 @@ const StatusBar: React.FC = () => {
             <span className="sb-v">{formatCredits(bounty)}</span>
           </span>
         )}
+        <span
+          className="vit rank-badge-compact"
+          title={rankTier ? `Military rank tier: ${rankTier}` : 'Military rank'}
+          aria-label={rankBadgeLabel}
+        >
+          <span
+            className="rank-badge rank-badge--compact"
+            style={{ borderColor: rankTierColor }}
+          >
+            <span className="rank-level">{rankLevel != null ? rankLevel : '—'}</span>
+          </span>
+        </span>
         <span
           className="vit repb"
           style={{ '--rep-color': repColor } as React.CSSProperties}
