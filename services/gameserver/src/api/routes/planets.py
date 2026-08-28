@@ -1744,6 +1744,25 @@ async def land_on_planet(
     db.commit()
     db.refresh(player)
 
+    # LEG-338: planet_land activity
+    try:
+        from src.services.player_activity_service import (
+            ActivityEventType,
+            get_player_activity_service,
+        )
+        activity_service = await get_player_activity_service()
+        await activity_service.track_activity(
+            str(player.id),
+            ActivityEventType.PLANET_LAND,
+            {
+                "sector_id": player.current_sector_id,
+                "planet_id": str(planet.id),
+            },
+            db=db,
+        )
+    except Exception:
+        logger.warning("activity tracking failed (planet_land)", exc_info=True)
+
     # Determine if player owns this planet
     is_owned_by_player = planet.owner_id == player.id if planet.owner_id else False
 

@@ -193,6 +193,27 @@ describe('TacticalTargetPage', () => {
     teardown();
   });
 
+  it('renders pinned medal pin and count on a sector contact row (LEG-2666)', () => {
+    const contacts: TacticalContact[] = [
+      {
+        id: 'c1',
+        player_id: 'p1',
+        username: 'Medalist',
+        pinned_medal_id: 'star_bronze',
+        medal_count: 4,
+      },
+    ];
+    render(<TacticalTargetPage contacts={contacts} />);
+    const plate = container.querySelector(
+      '[role="listitem"] [data-testid="player-name-plate"]',
+    ) as HTMLElement;
+    expect(plate).not.toBeNull();
+    expect(plate.getAttribute('data-pinned-medal')).toBe('star_bronze');
+    expect(plate.querySelector('[data-testid="player-name-plate-medal"]')?.textContent).toBe('🏅');
+    expect(plate.querySelector('[data-testid="player-name-plate-count"]')?.textContent).toBe('4');
+    teardown();
+  });
+
   it('buckets a red-tier player contact and carries the record into the name title', () => {
     const contacts: TacticalContact[] = [
       { id: 'c1', user_id: 'u1', username: 'Villainous', reputation_tier: 'Villain', personal_reputation: -40, player_id: 'u1' },
