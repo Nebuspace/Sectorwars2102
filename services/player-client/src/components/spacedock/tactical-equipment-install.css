@@ -1,0 +1,77 @@
+.tactical-equip-cta {
+  margin: 0.6rem 0 0;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid rgba(140, 170, 200, 0.35);
+  background: rgba(18, 28, 42, 0.55);
+  color: #c8d6e8;
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.tactical-equip-cta.compact {
+  margin-top: 0.5rem;
+  margin-bottom: 0.25rem;
+}
+
+.tactical-equip-cta.fitted {
+  border-color: rgba(120, 160, 200, 0.45);
+}
+
+.tactical-equip-cta-copy {
+  margin: 0 0 0.45rem;
+}
+
+.tactical-equip-cta-status {
+  display: block;
+  opacity: 0.9;
+}
+
+.tactical-equip-cta-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.4rem 0.65rem;
+  border: 1px solid rgba(150, 190, 230, 0.55);
+  background: rgba(40, 70, 100, 0.85);
+  color: #e8f4ff;
+  font: inherit;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.tactical-equip-cta-btn:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.tactical-equip-cta-btn:not(:disabled):hover {
+  background: rgba(55, 95, 135, 0.95);
+}
+
+.tactical-equip-cta-err {
+  display: block;
+  margin-top: 0.35rem;
+  color: #ff8a8a;
+}
+
+.tactical-equip-cta-ok {
+  display: block;
+  margin-top: 0.35rem;
+  color: #9dc8ff;
+}
+
+.armory-tactical-equipment {
+  margin: 1rem 0 1.25rem;
+}
+
+.armory-tactical-equipment h4 {
+  margin: 0 0 0.5rem;
+  font-size: 0.9rem;
+}
+
+.armory-tactical-equipment-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}

@@ -1194,6 +1194,20 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
     }
   }, [armoryBuying, displayCredits, updatePlayerCredits, refreshPlayerState]);
 
+  const handleTacticalEquipmentInstalled = useCallback(
+    async (result: { remainingCredits?: number }) => {
+      if (typeof result.remainingCredits === 'number') {
+        updatePlayerCredits(result.remainingCredits);
+      }
+      try {
+        await refreshPlayerState();
+      } catch {
+        /* non-fatal */
+      }
+    },
+    [updatePlayerCredits, refreshPlayerState],
+  );
+
   // --- Ship Services: real repair flow ---
   const [repairBusy, setRepairBusy] = useState(false);
   const [repairError, setRepairError] = useState<string | null>(null);
@@ -2098,6 +2112,9 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
             playerDefenseDrones={playerState?.defense_drones}
             onBack={() => setActiveVenue('hub')}
             blackMarketButton={<BlackMarketButton />}
+            shipId={shipData?.id}
+            shipType={shipData?.type}
+            onTacticalEquipmentInstalled={handleTacticalEquipmentInstalled}
           />
         );
       case 'services':
