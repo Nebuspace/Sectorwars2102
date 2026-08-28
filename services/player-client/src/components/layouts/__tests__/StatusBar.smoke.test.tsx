@@ -266,9 +266,10 @@ describe('StatusBar — live-mount smoke', () => {
     expect(container.querySelector('.grow')).not.toBeNull();
     expect(container.querySelector('.sb-vitals')).not.toBeNull();
 
-    // credits, turns, drones (combined ⚔/🛡), mines, LINK, REP -- bounty_total
-    // is 0 in this mock so the conditional BOUNTY chip doesn't render.
-    expect(container.querySelectorAll('.vit').length).toBe(6);
+    // credits, turns, drones (combined ⚔/🛡), mines, LINK, rank insignia, REP
+    // -- bounty_total is 0 in this mock so the conditional BOUNTY chip doesn't render.
+    expect(container.querySelectorAll('.vit').length).toBe(7);
+    expect(container.querySelector('.rank-badge-compact')).not.toBeNull();
 
     // No shield vital anywhere -- there is no such player vital (nit b).
     expect(container.textContent).not.toMatch(/shield/i);
