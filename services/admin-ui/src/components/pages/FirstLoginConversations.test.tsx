@@ -107,14 +107,14 @@ describe('FirstLoginConversations detail GET formatAdminApiError (LEG-2678)', ()
     });
   });
 
-  async function selectConversation() {
+  async function selectConversation(user: ReturnType<typeof userEvent.setup>) {
     render(<FirstLoginConversations />);
 
     await waitFor(() => {
       expect(screen.getByRole('button', { name: 'testplayer' })).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'testplayer' }));
+    await user.click(screen.getByRole('button', { name: 'testplayer' }));
 
     await waitFor(() => {
       expect(api.get).toHaveBeenCalledWith(
@@ -132,7 +132,8 @@ describe('FirstLoginConversations detail GET formatAdminApiError (LEG-2678)', ()
       }
       return Promise.resolve({ data: [sampleConversation] });
     });
-    await selectConversation();
+    const user = userEvent.setup();
+    await selectConversation(user);
 
     await waitFor(() => {
       expect(
@@ -151,7 +152,8 @@ describe('FirstLoginConversations detail GET formatAdminApiError (LEG-2678)', ()
       }
       return Promise.resolve({ data: [sampleConversation] });
     });
-    await selectConversation();
+    const user = userEvent.setup();
+    await selectConversation(user);
 
     await waitFor(() => {
       expect(screen.getByText(/rate limit/i)).toBeInTheDocument();
