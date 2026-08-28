@@ -82,4 +82,37 @@ describe('HarvestYieldPreview', () => {
     expect(container.querySelector('[data-testid="harvest-yield-preview"]')?.textContent)
       .toContain('No active ship to preview yield.');
   });
+
+  it('calls onGateChange with blocked gate on preview failure', async () => {
+    const onGateChange = vi.fn();
+    mockPreview.mockRejectedValue(new Error('no_mining_laser'));
+    await act(async () => {
+      root.render(<HarvestYieldPreview shipId="ship-9" onGateChange={onGateChange} />);
+    });
+    await flush();
+    expect(onGateChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        blocked: true,
+        message: expect.stringContaining('No mining laser equipped'),
+      }),
+    );
+  });
+
+  it('calls onGateChange with unblocked gate on preview success', async () => {
+    const onGateChange = vi.fn();
+    mockPreview.mockResolvedValue({
+      success: true,
+      reason: null,
+      ore_lo: 8,
+      ore_hi: 12,
+      richness_tier: 3,
+      laser_level: 2,
+      turns_cost: 5,
+    });
+    await act(async () => {
+      root.render(<HarvestYieldPreview shipId="ship-9" onGateChange={onGateChange} />);
+    });
+    await flush();
+    expect(onGateChange).toHaveBeenCalledWith({ blocked: false, message: null });
+  });
 });

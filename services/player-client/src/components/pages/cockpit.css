@@ -5218,6 +5218,15 @@
   cursor: not-allowed;
 }
 
+.planetary-harvest-gate-reason {
+  display: block;
+  margin-top: 0.25em;
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  line-height: 1.35;
+  color: #f66;
+}
+
 /* ============================================
    ADR-0072 AUTOPILOT — COURSE STRIP
    Rendered below the warp graph inside NAV's

@@ -38,8 +38,15 @@ type PreviewPayload = {
   turns_cost?: number;
 };
 
+/** Lifted to GameDashboard so HARVEST greys out before click (mining.md:251). */
+export type HarvestPreviewGate = {
+  blocked: boolean;
+  message: string | null;
+};
+
 type Props = {
   shipId: string | undefined;
+  onGateChange?: (gate: HarvestPreviewGate) => void;
 };
 
 const asRecord = (value: unknown): Record<string, unknown> | null =>
@@ -47,10 +54,29 @@ const asRecord = (value: unknown): Record<string, unknown> | null =>
     ? (value as Record<string, unknown>)
     : null;
 
-export const HarvestYieldPreview: React.FC<Props> = ({ shipId }) => {
+export const HarvestYieldPreview: React.FC<Props> = ({ shipId, onGateChange }) => {
   const [payload, setPayload] = useState<PreviewPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!onGateChange) return;
+    if (!shipId) {
+      onGateChange({ blocked: false, message: null });
+      return;
+    }
+    if (loading) {
+      onGateChange({ blocked: false, message: null });
+      return;
+    }
+    if (error) {
+      onGateChange({ blocked: true, message: error });
+      return;
+    }
+    if (payload) {
+      onGateChange({ blocked: false, message: null });
+    }
+  }, [shipId, loading, error, payload, onGateChange]);
 
   useEffect(() => {
     if (!shipId) {
