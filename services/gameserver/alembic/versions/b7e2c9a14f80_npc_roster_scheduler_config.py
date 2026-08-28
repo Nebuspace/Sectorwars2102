@@ -5,7 +5,7 @@ keys from SYSTEMS/npc-scheduler.md § Configuration when operators set
 per-faction/role overrides.
 
 Revision ID: b7e2c9a14f80
-Revises: e8c4a1f29b70
+Revises: f3a9c2e81d40
 Create Date: 2026-08-16 14:53:00.000000
 """
 import sqlalchemy as sa
@@ -14,7 +14,7 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 revision = "b7e2c9a14f80"
-down_revision = "e8c4a1f29b70"
+down_revision = "f3a9c2e81d40"
 branch_labels = None
 depends_on = None
 
