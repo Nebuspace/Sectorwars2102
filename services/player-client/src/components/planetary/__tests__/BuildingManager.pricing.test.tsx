@@ -35,7 +35,7 @@ vi.mock('../../../contexts/GameContext', () => ({
   useGame: () => ({ playerState: mockPlayerState }),
 }));
 
-import { BuildingManager } from '../BuildingManager';
+import { BuildingManager, formatBuildingUpgradeError } from '../BuildingManager';
 
 const basePlanet = (buildings: Planet['buildings']): Planet => ({
   id: 'planet-1',
@@ -119,5 +119,49 @@ describe('BuildingManager — server-authoritative nextUpgradeCost', () => {
       upgradeBtn!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     expect(mockUpgradeBuilding).not.toHaveBeenCalled();
+  });
+
+  it('surfaces upgrade 400 server detail in error banner', async () => {
+    mockUpgradeBuilding.mockRejectedValue(
+      Object.assign(new Error('Factory upgrade already in progress'), { status: 400 }),
+    );
+    const planet = basePlanet([
+      { type: 'factory', level: 1, upgrading: false, nextUpgradeCost: { credits: 3000, resources: { equipment: 30 } } },
+    ]);
+    await act(async () => {
+      root.render(<BuildingManager planet={planet} />);
+    });
+
+    const upgradeBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Upgrade');
+    await act(async () => {
+      upgradeBtn!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('Factory upgrade already in progress');
+  });
+
+  it('surfaces upgrade 403 server detail in error banner', async () => {
+    mockUpgradeBuilding.mockRejectedValue(
+      Object.assign(new Error('You do not own this planet'), { status: 403 }),
+    );
+    const planet = basePlanet([
+      { type: 'factory', level: 1, upgrading: false, nextUpgradeCost: { credits: 3000, resources: { equipment: 30 } } },
+    ]);
+    await act(async () => {
+      root.render(<BuildingManager planet={planet} />);
+    });
+
+    const upgradeBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Upgrade');
+    await act(async () => {
+      upgradeBtn!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('You do not own this planet');
+  });
+
+  it('formatBuildingUpgradeError falls back when message is generic API Error', () => {
+    expect(formatBuildingUpgradeError(new Error('API Error: 400'))).toBe('Failed to upgrade building');
   });
 });

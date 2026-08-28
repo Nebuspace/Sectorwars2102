@@ -122,6 +122,34 @@ const BUILDING_INFO: Record<BuildingType, BuildingInfo> = {
   }
 };
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+/** Surface gameserver 400/403 detail on building upgrade refusal. */
+export function formatBuildingUpgradeError(err: unknown): string {
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not own this planet.';
+  }
+
+  if (hasServerDetail) return message!;
+  return 'Failed to upgrade building';
+}
+
 export const BuildingManager: React.FC<BuildingManagerProps> = ({ 
   planet, 
   onUpdate,
@@ -212,7 +240,7 @@ export const BuildingManager: React.FC<BuildingManagerProps> = ({
         setTimeout(() => setSuccessMessage(null), 3000);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to upgrade building');
+      setError(formatBuildingUpgradeError(err));
     } finally {
       setUpgrading(null);
     }

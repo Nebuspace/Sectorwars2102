@@ -36,6 +36,33 @@ const getTypeEfficiency = (planetType: string, role: RoleKey): number => {
   return overrides?.[role] ?? 1.0;
 };
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+/** Surface gameserver 400 detail on colonist allocation save refusal. */
+export function formatColonistAllocateError(err: unknown): string {
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (httpStatus(err) === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not own this planet.';
+  }
+
+  if (hasServerDetail) return message!;
+  return 'Failed to update allocations';
+}
+
 const ROLE_META: Array<{ key: RoleKey; icon: string; label: string; cssClass: string; color: string }> = [
   { key: 'fuel', icon: resourceIcon('fuel'), label: 'Fuel Production', cssClass: 'fuel', color: resourceColor('fuel') },
   { key: 'organics', icon: resourceIcon('organics'), label: 'Organics Production', cssClass: 'organics', color: resourceColor('organics') },
@@ -138,7 +165,7 @@ export const ColonistAllocator: React.FC<ColonistAllocatorProps> = ({
         setTimeout(() => setSuccessMessage(null), 3000);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update allocations');
+      setError(formatColonistAllocateError(err));
     } finally {
       setSaving(false);
     }

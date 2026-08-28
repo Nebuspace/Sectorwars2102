@@ -949,6 +949,57 @@ def list_station(
     return listing
 
 
+def apply_governance_sale_listing(
+    db: Session,
+    station: Station,
+    now: Optional[datetime] = None,
+) -> Optional[StationListing]:
+    """Passed syndicate sale vote: release ownership and list at canon price.
+
+    Treasury conveys with the listing per standard port-ownership rules.
+    Reuses ``list_station`` — no insolvency reputation penalty."""
+    now = now or datetime.now(UTC)
+    station = _lock_station(db, station.id)
+
+    if station.owner_id is not None:
+        db.execute(
+            player_stations.delete().where(player_stations.c.station_id == station.id)
+        )
+        station.owner_id = None
+        ownership = dict(station.ownership or {})
+        ownership.pop("player_id", None)
+        ownership.pop(SYNDICATE_MODE_KEY, None)
+        ownership.pop(SYNDICATE_SHARES_KEY, None)
+        ownership.pop(SYNDICATE_INVITES_KEY, None)
+        station.ownership = ownership
+        flag_modified(station, "ownership")
+        db.flush()
+
+    if not is_listable(station):
+        logger.warning(
+            "Governance sale vote passed but station %s is not listable", station.id
+        )
+        return None
+
+    try:
+        listing = list_station(db, station, now=now)
+    except PortOwnershipError as exc:
+        logger.warning(
+            "Governance sale vote passed but station %s could not be listed: %s",
+            station.id,
+            exc.detail,
+        )
+        return None
+
+    logger.info(
+        "Governance sale listing applied station=%s listing=%s price=%s",
+        station.id,
+        listing.id,
+        listing.price,
+    )
+    return listing
+
+
 def place_offer(
     db: Session,
     listing: StationListing,
