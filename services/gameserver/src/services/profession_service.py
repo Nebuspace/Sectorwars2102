@@ -133,6 +133,14 @@ def trade_specialist_credit_multiplier(db: Session, planet_id: UUID) -> float:
     return 1.0
 
 
+def mining_engineer_ore_multiplier(db: Session, planet_id: UUID) -> float:
+    """Planet-local ore/fuel production bonus (mining.md:83, professions.md L34)."""
+    counts = profession_counts(db, planet_id)
+    if counts.get(ProfessionType.MINING_ENGINEERS, 0) <= 0:
+        return 1.0
+    return production_multipliers(counts)["fuel"]
+
+
 def _max_profession_multiplier_for_station(
     db: Session,
     player_id: UUID,
@@ -171,6 +179,39 @@ def trade_specialist_credit_multiplier_for_station(
 ) -> float:
     return _max_profession_multiplier_for_station(
         db, player_id, station, planet_multiplier=trade_specialist_credit_multiplier,
+    )
+
+
+def _max_profession_multiplier_for_region(
+    db: Session,
+    player_id: UUID,
+    region_id: Optional[UUID],
+    *,
+    planet_multiplier,
+) -> float:
+    """Best planet-local bonus among player-owned worlds in the harvest region."""
+    if region_id is None:
+        return 1.0
+    planets = (
+        db.query(Planet)
+        .join(player_planets, Planet.id == player_planets.c.planet_id)
+        .filter(
+            player_planets.c.player_id == player_id,
+            Planet.region_id == region_id,
+        )
+        .all()
+    )
+    best = 1.0
+    for planet in planets:
+        best = max(best, planet_multiplier(db, planet.id))
+    return best
+
+
+def mining_engineer_harvest_multiplier_for_region(
+    db: Session, player_id: UUID, region_id: Optional[UUID],
+) -> float:
+    return _max_profession_multiplier_for_region(
+        db, player_id, region_id, planet_multiplier=mining_engineer_ore_multiplier,
     )
 
 
