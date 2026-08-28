@@ -18,6 +18,7 @@ import pytest
 from src.api.routes.trading import TradeRequest, sell_resource
 from src.models.colonist_profession import ColonistProfession, ProfessionType
 from src.models.market_transaction import MarketPrice
+from src.models.planet import Planet
 from src.models.player import Player
 from src.models.ship import Ship
 from src.models.station import Station
