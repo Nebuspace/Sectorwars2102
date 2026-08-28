@@ -312,7 +312,7 @@ describe('StatusBar — live-mount smoke', () => {
     const tabpanel = container.querySelector('[role="tabpanel"]');
     expect(tabpanel).not.toBeNull();
     const tabs = container.querySelectorAll('[role="tab"]');
-    expect(tabs.length).toBe(9);
+    expect(tabs.length).toBe(10);
     // exactly one tab starts selected (Identity, the default active tab)
     expect(Array.from(tabs).filter((t) => t.getAttribute('aria-selected') === 'true').length).toBe(1);
 
@@ -392,7 +392,7 @@ describe('StatusBar — live-mount smoke', () => {
 
     const tablist = container.querySelector('[role="tablist"]') as HTMLElement;
     const tabs = Array.from(container.querySelectorAll('[role="tab"]')) as HTMLButtonElement[];
-    expect(tabs.length).toBe(9);
+    expect(tabs.length).toBe(10);
 
     const pressKey = async (key: string) => {
       await act(async () => {
