@@ -218,4 +218,52 @@ describe('ProfessionsPanel', () => {
     expect(options.some((t) => t?.includes('Research Scientists'))).toBe(true);
     expect(container.querySelector('[data-testid="professions-research-lab-gate"]')).toBeNull();
   });
+
+  it('shows generic gate notice when an unknown profession is ineligible', async () => {
+    getPlanetProfessions.mockResolvedValueOnce({
+      ...OWNER_STATE,
+      training_eligibility: {
+        ...OWNER_STATE.training_eligibility,
+        COMBAT_PILOTS: false,
+      },
+    });
+
+    await act(async () => {
+      root.render(<ProfessionsPanel planetId="planet-1" citadelLevel={3} />);
+    });
+    await act(async () => {
+      await flush();
+    });
+
+    const gate = container.querySelector('[data-testid="professions-training-gate-combat_pilots"]');
+    expect(gate?.textContent).toContain('Combat Pilots');
+    expect(gate?.textContent).toContain('not available yet');
+    const options = Array.from(container.querySelectorAll('select option')).map((o) =>
+      o.textContent?.trim(),
+    );
+    expect(options.some((t) => t?.includes('Combat Pilots'))).toBe(false);
+  });
+
+  it('shows no gate notice when a profession is eligible', async () => {
+    getPlanetProfessions.mockResolvedValueOnce({
+      ...OWNER_STATE,
+      training_eligibility: {
+        ...OWNER_STATE.training_eligibility,
+        COMBAT_PILOTS: true,
+      },
+    });
+
+    await act(async () => {
+      root.render(<ProfessionsPanel planetId="planet-1" citadelLevel={3} />);
+    });
+    await act(async () => {
+      await flush();
+    });
+
+    expect(container.querySelector('[data-testid="professions-training-gate-combat_pilots"]')).toBeNull();
+    const options = Array.from(container.querySelectorAll('select option')).map((o) =>
+      o.textContent?.trim(),
+    );
+    expect(options.some((t) => t?.includes('Combat Pilots'))).toBe(true);
+  });
 });

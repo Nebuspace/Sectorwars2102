@@ -68,6 +68,20 @@ export interface ProfessionsPanelProps {
 const formatProfessionLabel = (key: string): string =>
   PROFESSION_LABELS[key] ?? key.replace(/_/g, ' ');
 
+/** Static gate copy for known training_eligibility=false keys (GS sends booleans only). */
+const TRAINING_ELIGIBILITY_GATE_MESSAGES: Partial<Record<string, string>> = {
+  RESEARCH_SCIENTISTS: 'Research Lab level 3 required to train Research Scientists.',
+};
+
+const trainingEligibilityGateTestId = (professionKey: string): string =>
+  professionKey === 'RESEARCH_SCIENTISTS'
+    ? 'professions-research-lab-gate'
+    : `professions-training-gate-${professionKey.toLowerCase()}`;
+
+const trainingEligibilityGateMessage = (professionKey: string): string =>
+  TRAINING_ELIGIBILITY_GATE_MESSAGES[professionKey] ??
+  `${formatProfessionLabel(professionKey)} training is not available yet — prerequisite buildings may be required.`;
+
 const formatCompletesAt = (iso: string | null | undefined): string => {
   if (!iso) return '—';
   const ms = Date.parse(iso);
@@ -139,8 +153,13 @@ const ProfessionsPanel: React.FC<ProfessionsPanelProps> = ({
     }
   }, [eligibleProfessions, selectedProfession]);
 
-  const researchScientistsIneligible =
-    citadelGateOpen && eligibility?.RESEARCH_SCIENTISTS === false;
+  const ineligibleProfessions = useMemo(
+    () =>
+      citadelGateOpen && eligibility != null
+        ? PROFESSION_ORDER.filter((key) => eligibility[key] === false)
+        : [],
+    [citadelGateOpen, eligibility],
+  );
 
   const handleTrain = async () => {
     if (!citadelGateOpen) {
@@ -229,14 +248,15 @@ const ProfessionsPanel: React.FC<ProfessionsPanelProps> = ({
         </p>
       )}
 
-      {researchScientistsIneligible && (
+      {ineligibleProfessions.map((professionKey) => (
         <p
+          key={professionKey}
           className="professions-panel__notice"
-          data-testid="professions-research-lab-gate"
+          data-testid={trainingEligibilityGateTestId(professionKey)}
         >
-          Research Lab level 3 required to train Research Scientists.
+          {trainingEligibilityGateMessage(professionKey)}
         </p>
-      )}
+      ))}
 
       <div className="professions-panel__grid">
         {PROFESSION_ORDER.map((key) => (
