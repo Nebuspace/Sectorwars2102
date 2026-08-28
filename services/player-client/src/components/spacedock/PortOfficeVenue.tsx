@@ -433,6 +433,7 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
     activateCounterTrade,
     activateFriendlyTrade,
     setFeeDistribution,
+    militaryTakeover,
   } = useGame();
 
   const [activeTab, setActiveTab] = useState<PortOfficeTab>('registry');
@@ -950,6 +951,34 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
       await fetchTakeover();
     }
   }, [runAction, launchTakeover, stationId, fetchTakeover]);
+
+  const runMilitaryAction = useCallback(
+    async (action: 'declare' | 'siege' | 'occupy') => {
+      setWarSuccess(null);
+      const successLabels: Record<typeof action, string> = {
+        declare:
+          'Declaration filed — 24-hour galaxy-wide notice before the siege may begin.',
+        siege: 'Siege round resolved — check defenders remaining before occupying.',
+        occupy:
+          'Occupation complete — deed transferred; prior treasury forfeited as war-tax; severe reputation cost applies.',
+      };
+      const result = await runAction(
+        `military-${action}`,
+        () => militaryTakeover(stationId, action),
+        setWarError,
+        'Military takeover action rejected.',
+      );
+      if (result !== null) {
+        setWarSuccess(successLabels[action]);
+        if (action === 'occupy') {
+          await fetchAll();
+        } else {
+          await fetchTakeover();
+        }
+      }
+    },
+    [runAction, militaryTakeover, stationId, fetchTakeover, fetchAll],
+  );
 
   const counter = useCallback(async (action: 'accept' | 'match' | 'dispute') => {
     setWarSuccess(null);
@@ -1890,6 +1919,50 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
               <li><strong>Match</strong> — if your own volume this month meets the challenger&apos;s, their clock resets to zero.</li>
               <li><strong>Dispute</strong> — the arbiter audits the challenger&apos;s books for self-dealing wash trades.</li>
             </ul>
+          </div>
+        )}
+
+        {/* Military takeover — challenger only on owned foreign stations (LEG-368).
+            GS enforces notice window, Military Contract immunity, drones, region
+            rules; UI surfaces returned detail via warError. */}
+        {!isMine && listing?.ownerId && (
+          <div className="po-section" data-testid="po-military-takeover">
+            <h3 className="po-section-title">🎖️ Military Takeover</h3>
+            <p className="section-description">
+              Hostile path: declare intent (24-hour galaxy-wide notice), siege defenders
+              with attack drones, then occupy. Severe reputation cost; prior treasury is
+              forfeited to the controlling faction as war-tax — not paid to you. Stations
+              with a Military Contract are immune. Restricted regions reject at the server.
+            </p>
+            <div className="po-counter-actions">
+              <button
+                className="action-button primary"
+                type="button"
+                data-testid="po-military-declare"
+                onClick={() => void runMilitaryAction('declare')}
+                disabled={Boolean(busyAction)}
+              >
+                {busyAction === 'military-declare' ? 'Filing...' : '📜 Declare Intent'}
+              </button>
+              <button
+                className="action-button"
+                type="button"
+                data-testid="po-military-siege"
+                onClick={() => void runMilitaryAction('siege')}
+                disabled={Boolean(busyAction)}
+              >
+                {busyAction === 'military-siege' ? 'Engaging...' : '⚔️ Siege Round'}
+              </button>
+              <button
+                className="action-button"
+                type="button"
+                data-testid="po-military-occupy"
+                onClick={() => void runMilitaryAction('occupy')}
+                disabled={Boolean(busyAction)}
+              >
+                {busyAction === 'military-occupy' ? 'Occupying...' : '🏳️ Occupy'}
+              </button>
+            </div>
           </div>
         )}
 

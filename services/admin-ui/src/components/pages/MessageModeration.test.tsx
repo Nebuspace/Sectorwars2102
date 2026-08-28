@@ -612,4 +612,122 @@ describe('MessageModeration', () => {
     expect(toastWarning).not.toHaveBeenCalled();
     expect(toastSuccess).toHaveBeenCalledWith('Cleared flags on 2 messages.');
   });
+
+  it('surfaces formatAdminApiError on bulk delete 403 (LEG-2442)', async () => {
+    const user = userEvent.setup();
+    mockLoad({ messages: { ...emptyMessages, messages: [message], total: 1 } });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockRejectedValue(
+      Object.assign(new Error('HTTP 403'), {
+        response: {
+          status: 403,
+          data: { detail: 'Missing scope admin.messages.moderate' },
+        },
+      }),
+    );
+
+    render(<MessageModeration />);
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+
+    await user.click(screen.getByRole('checkbox', { name: 'Select message m1' }));
+    await user.click(screen.getByRole('button', { name: 'Bulk Delete' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/messages/bulk-moderate',
+        { message_ids: ['m1'], action: 'delete' },
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(
+      'Missing scope admin.messages.moderate',
+    );
+    expect(toastError).not.toHaveBeenCalledWith('Failed to bulk-delete messages.');
+  });
+
+  it('surfaces rate-limit copy on bulk delete 429 (LEG-2442)', async () => {
+    const user = userEvent.setup();
+    mockLoad({ messages: { ...emptyMessages, messages: [message], total: 1 } });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockRejectedValue(
+      Object.assign(new Error('HTTP 429'), {
+        response: { status: 429 },
+      }),
+    );
+
+    render(<MessageModeration />);
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+
+    await user.click(screen.getByRole('checkbox', { name: 'Select message m1' }));
+    await user.click(screen.getByRole('button', { name: 'Bulk Delete' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/messages/bulk-moderate',
+        { message_ids: ['m1'], action: 'delete' },
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(
+      expect.stringMatching(/rate limit/i),
+    );
+    expect(toastError).not.toHaveBeenCalledWith('Failed to bulk-delete messages.');
+  });
+
+  it('surfaces formatAdminApiError on bulk clear-flag 403 (LEG-2442)', async () => {
+    const user = userEvent.setup();
+    mockLoad({ messages: { ...emptyMessages, messages: [message], total: 1 } });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockRejectedValue(
+      Object.assign(new Error('HTTP 403'), {
+        response: {
+          status: 403,
+          data: { detail: 'Missing scope admin.messages.moderate' },
+        },
+      }),
+    );
+
+    render(<MessageModeration />);
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+
+    await user.click(screen.getByRole('checkbox', { name: 'Select message m1' }));
+    await user.click(screen.getByRole('button', { name: 'Bulk Clear Flag' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/messages/bulk-moderate',
+        { message_ids: ['m1'], action: 'unflag' },
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(
+      'Missing scope admin.messages.moderate',
+    );
+    expect(toastError).not.toHaveBeenCalledWith('Failed to bulk-clear flags.');
+  });
+
+  it('surfaces rate-limit copy on bulk clear-flag 429 (LEG-2442)', async () => {
+    const user = userEvent.setup();
+    mockLoad({ messages: { ...emptyMessages, messages: [message], total: 1 } });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockRejectedValue(
+      Object.assign(new Error('HTTP 429'), {
+        response: { status: 429 },
+      }),
+    );
+
+    render(<MessageModeration />);
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+
+    await user.click(screen.getByRole('checkbox', { name: 'Select message m1' }));
+    await user.click(screen.getByRole('button', { name: 'Bulk Clear Flag' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/messages/bulk-moderate',
+        { message_ids: ['m1'], action: 'unflag' },
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(
+      expect.stringMatching(/rate limit/i),
+    );
+    expect(toastError).not.toHaveBeenCalledWith('Failed to bulk-clear flags.');
+  });
 });

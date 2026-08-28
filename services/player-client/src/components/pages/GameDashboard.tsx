@@ -13,6 +13,7 @@ import ContractBoardVenue from '../spacedock/ContractBoardVenue';
 import PopulationCenterInterface from '../planetary/PopulationCenterInterface';
 import SurveyExpeditionPanel from '../survey/SurveyExpeditionPanel';
 import { LandingRightsControl } from '../planetary/LandingRightsControl';
+import { OwnershipTransferControl } from '../planetary/OwnershipTransferControl';
 import SolarSystemViewscreen from '../tactical/SolarSystemViewscreen';
 import WindshieldTableau from '../tactical/WindshieldTableau';
 import PlanetPortPair from '../tactical/PlanetPortPair';
@@ -24,7 +25,9 @@ import QuantumDriveConsole from '../quantum/QuantumDriveConsole';
 import GatewrightPanel from '../gatewright/GatewrightPanel';
 import TacticalMonitor from '../tactical/TacticalMonitor';
 import SolarSalvagePage from '../tactical/pages/SolarSalvagePage';
+import AnomalyInvestigateCta from '../tactical/AnomalyInvestigateCta';
 import CockpitColonyManagement from '../cockpit/CockpitColonyManagement';
+import StockpileWithdrawControl from '../cockpit/StockpileWithdrawControl';
 import DeckPageTabs from '../cockpit/DeckPageTabs';
 import type { ProductionLine } from '../cockpit/ProductionPanel';
 import type { PerColonistRates, ProdRole } from '../cockpit/CoupledColonistSliders';
@@ -32,6 +35,8 @@ import SafeVaultPanel from '../cockpit/SafeVaultPanel';
 import BankPanel, { isStarportPrimeStation, shipCargoFree } from '../cockpit/BankPanel';
 import { miningAPI, navAPI, playerAPI, type NavChartResponse, sectorAPI, type SectorWreck } from '../../services/api';
 import NearestAmRefineryOverlay from '../mining/NearestAmRefineryOverlay';
+import AsteroidDepletionOverlay from '../mining/AsteroidDepletionOverlay';
+import HarvestYieldPreview, { HARVEST_GATE_COPY } from '../mining/HarvestYieldPreview';
 import { projectedWarpBearing, subscribeWarpDepart, WARP_TURN_MS } from '../../services/warpCinematicBus';
 import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import { TurnsIcon } from '../icons/TurnsIcon';
@@ -625,6 +630,7 @@ const GameDashboardInner: React.FC = () => {
     withdrawFromSafe,
     depositCommodityToSafe,
     withdrawCommodityFromSafe,
+    withdrawStockpileToCargo,
     setCitadelAutoDeposit,
     getPlanetDefenseInfo,
     upgradeShields,
@@ -1597,6 +1603,7 @@ const GameDashboardInner: React.FC = () => {
   // --- Commodity safe storage (move planet stockpile <-> protected safe) ---
   const [commodityBusy, setCommodityBusy] = useState<string | null>(null);
   const [autoDepositBusy, setAutoDepositBusy] = useState(false);
+  const [stockpileWithdrawBusy, setStockpileWithdrawBusy] = useState<string | null>(null);
 
   // Toggle "auto-deposit production into safe" (opt-in, default OFF). The server
   // is authoritative on the resulting flag — merge it back into citadelInfo so
@@ -1662,6 +1669,41 @@ const GameDashboardInner: React.FC = () => {
     const safeKey = SAFE_COMMODITIES.find((c) => c.stock === key)?.safe;
     if (!safeKey || amount < 1) return;
     moveCommoditySafe('store', safeKey, amount);
+  };
+
+  // Stockpile → ship cargo (LEG-546). Distinct from Store→Safe. GS enforces
+  // landed-on-planet, owner/team ACL, cargo space, and teammate tax skim.
+  const apiErrorDetail = (error: any, fallback: string): string => {
+    const detail = error?.response?.data?.detail ?? error?.message;
+    return typeof detail === 'string' && detail.trim() ? detail : fallback;
+  };
+  const withdrawStockpileByGsKey = async (
+    commodity: 'fuel_ore' | 'organics' | 'equipment',
+    amount: number,
+  ) => {
+    if (!landedPlanet || stockpileWithdrawBusy || amount < 1) return;
+    setStockpileWithdrawBusy(commodity);
+    try {
+      const result = await withdrawStockpileToCargo(landedPlanet.id, commodity, amount);
+      const detail = await getPlanetDetails(landedPlanet.id).catch(() => null);
+      if (detail) setLandedPlanetDetail(detail);
+      void refreshPlayerState();
+      setOpsNotice({ type: 'success', message: result?.message || 'Stockpile loaded to cargo.' });
+      setOpsRefresh((n) => n + 1);
+    } catch (error: any) {
+      setOpsNotice({ type: 'error', message: apiErrorDetail(error, 'Stockpile withdraw failed') });
+    } finally {
+      setStockpileWithdrawBusy(null);
+    }
+  };
+  const withdrawStockToCargo = (key: 'fuel' | 'organics' | 'equipment', amount: number) => {
+    const commodity = SAFE_COMMODITIES.find((c) => c.stock === key)?.safe as
+      | 'fuel_ore'
+      | 'organics'
+      | 'equipment'
+      | undefined;
+    if (!commodity) return;
+    void withdrawStockpileByGsKey(commodity, amount);
   };
 
   // --- Colonist transfer modal (quantity pattern mirrors the trading modal) ---
@@ -2209,16 +2251,6 @@ const GameDashboardInner: React.FC = () => {
   // code in the HTTP detail, which we translate to player-facing copy. Refresh
   // player state after a successful harvest so the cockpit turns/cargo reflect
   // the spend immediately.
-  const HARVEST_GATE_COPY: Record<string, string> = {
-    no_mining_laser: 'No mining laser equipped — fit one at a TradeDock to extract ore.',
-    must_be_undocked: 'You must be undocked and in open space to deploy the mining laser.',
-    cargo_full: 'Cargo hold is full — no room for ore. Sell or jettison before mining.',
-    insufficient_turns: 'Not enough turns to run a harvest cycle.',
-    not_an_asteroid_field: 'No asteroids here — harvesting requires an asteroid field.',
-    ship_not_found: 'Active ship not found — re-select a ship and try again.',
-    already_mining: 'Mining laser already deployed — wait for the current harvest to finish.',
-  };
-
   const handleHarvest = async () => {
     if (harvestBusy) return;
     const shipId = currentShip?.id;
@@ -2885,6 +2917,7 @@ const GameDashboardInner: React.FC = () => {
         const consoleNode = (
         <div className="cockpit-console">
           <NearestAmRefineryOverlay />
+          <AsteroidDepletionOverlay readout={currentSector?.asteroid_depletion} />
           {/* DOCKED STATE: the station-face venue workspace (WO-UI3-STATION-
               MODE) — replaces the flight-monitor bezel wrapper
               (.console-monitor.trading-monitor.full-width + .monitor-bezel
@@ -3175,6 +3208,15 @@ const GameDashboardInner: React.FC = () => {
                             </span>
                           </span>
 
+                          {!isLandedPlanetMine && landedPlanet?.id && (
+                            <StockpileWithdrawControl
+                              busy={!!stockpileWithdrawBusy}
+                              onWithdraw={(commodity, amount) => {
+                                void withdrawStockpileByGsKey(commodity, amount);
+                              }}
+                            />
+                          )}
+
                           {isLandedPlanetMine && landedPlanet?.id && (
                             <LandingRightsControl
                               planetId={String(landedPlanet.id)}
@@ -3186,6 +3228,14 @@ const GameDashboardInner: React.FC = () => {
                                   ?.landingRights?.mode
                                 ?? null
                               }
+                              onChanged={() => setOpsRefresh((n) => n + 1)}
+                            />
+                          )}
+                          {landedPlanet?.id && playerState?.id && (
+                            <OwnershipTransferControl
+                              planetId={String(landedPlanet.id)}
+                              isOwned={isLandedPlanetMine}
+                              currentPlayerId={playerState.id}
                               onChanged={() => setOpsRefresh((n) => n + 1)}
                             />
                           )}
@@ -3233,6 +3283,9 @@ const GameDashboardInner: React.FC = () => {
                               const storeBusy = !!safeKey && commodityBusy === safeKey;
                               const rate = Number(landedPlanetDetail?.productionRates?.[key] ?? 0);
                               const allocation = Number(landedPlanetDetail?.allocations?.[key] ?? 0);
+                              const canWithdraw = onPlanet;
+                              const withdrawBusy = stockpileWithdrawBusy === safeKey || stockpileWithdrawBusy === key;
+                              const withdrawDisabledTitle = onPlanet < 1 ? 'No stockpile to load to cargo' : '';
                               const storeDisabledTitle =
                                 !citadelInfo || citadelInfo.citadel_level < 1
                                   ? 'No citadel safe — establish an Outpost (Citadel Level 1)'
@@ -3257,6 +3310,9 @@ const GameDashboardInner: React.FC = () => {
                                 canStore,
                                 storeBusy,
                                 storeDisabledTitle,
+                                canWithdraw,
+                                withdrawBusy,
+                                withdrawDisabledTitle,
                                 daysUntilFull: ss.daysUntilFull,
                               };
                             });
@@ -3466,6 +3522,7 @@ const GameDashboardInner: React.FC = () => {
                                 allocSyncing={allocSyncing}
                                 allocError={allocError}
                                 onStoreToSafe={storeStockToSafe}
+                                onWithdrawToCargo={withdrawStockToCargo}
                                 onOpsChange={() => setOpsRefresh(n => n + 1)}
                                 defenseTab={defenseTabBody}
                                 safeTab={safeTabBody}
@@ -3866,9 +3923,16 @@ const GameDashboardInner: React.FC = () => {
                           Asteroid fields get a HARVEST trigger; all other empty
                           sectors get the generic "nothing detected" label. */}
                       {planetsInSector.length === 0 && stationsInSector.length === 0 && (
-                        currentSector?.type?.toUpperCase() === 'ASTEROID_FIELD' ? (
+                        currentSector?.type?.toUpperCase() === 'ANOMALY' ? (
+                          <AnomalyInvestigateCta
+                            sectorId={currentSector.sector_id}
+                            sectorType={currentSector.type}
+                            anomalyInvestigated={Boolean(currentSector.anomaly_investigated)}
+                          />
+                        ) : currentSector?.type?.toUpperCase() === 'ASTEROID_FIELD' ? (
                           <div className="planetary-asteroid-state">
                             <b className="planetary-asteroid-label">⚫ ASTEROID FIELD</b>
+                            <HarvestYieldPreview shipId={currentShip?.id} />
                             {flying ? (
                               // Demo L1352 field-row branch: here?HARVEST:(flying?HALT:APPROACH) —
                               // under burn, the row offers HALT instead of HARVEST (same
@@ -3976,10 +4040,19 @@ const GameDashboardInner: React.FC = () => {
                        RETIREMENT+GLASS — this is now its one call site. */
                     !currentSector ? (
                       <div className="empty-state">No sector telemetry</div>
-                    ) : currentSector.special_formations && currentSector.special_formations.length > 0 ? (
-                      renderFormationList(currentSector.special_formations)
                     ) : (
-                      <div className="empty-state">No signals or formations charted in this sector</div>
+                      <>
+                        <AnomalyInvestigateCta
+                          sectorId={currentSector.sector_id}
+                          sectorType={currentSector.type}
+                          anomalyInvestigated={Boolean(currentSector.anomaly_investigated)}
+                        />
+                        {currentSector.special_formations && currentSector.special_formations.length > 0
+                          ? renderFormationList(currentSector.special_formations)
+                          : (currentSector.type || '').toUpperCase() !== 'ANOMALY' && (
+                              <div className="empty-state">No signals or formations charted in this sector</div>
+                            )}
+                      </>
                     )
                   ) : (
                     /* HAZARD — the numeric deep-dive (WO-UI-MAX-BATCH-1 human

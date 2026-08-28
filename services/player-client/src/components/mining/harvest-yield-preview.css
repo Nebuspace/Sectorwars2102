@@ -1,0 +1,12 @@
+.harvest-yield-preview {
+  font-family: inherit;
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  line-height: 1.35;
+  color: #9f9;
+  margin: 0.15em 0 0.25em;
+}
+
+.harvest-yield-preview-err {
+  color: #f66;
+}

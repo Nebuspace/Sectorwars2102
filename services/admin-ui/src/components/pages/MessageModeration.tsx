@@ -478,9 +478,13 @@ const MessageModeration: React.FC = () => {
       } catch (err) {
         console.error(`Failed to bulk ${action} messages:`, err);
         toast.error(
-          isDestructive
-            ? 'Failed to bulk-delete messages.'
-            : 'Failed to bulk-clear flags.',
+          formatAdminApiError(err, {
+            fallback: isDestructive
+              ? 'Failed to bulk-delete messages.'
+              : 'Failed to bulk-clear flags.',
+            scopeHint:
+              'admin.messages.moderate scope required for message moderation',
+          }),
         );
       } finally {
         setBulkActing(false);

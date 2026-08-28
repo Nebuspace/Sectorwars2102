@@ -230,6 +230,24 @@ export const droneFleetAPI = {
       method: 'POST',
       body: JSON.stringify({ sectorId, droneCount }),
     }),
+
+  /** Per-drone deploy (LEG-1811). GS body is snake_case; idle drones only. */
+  deployOne: (
+    droneId: string,
+    body: { sector_id: string; deployment_type?: string; target_id?: string },
+  ) =>
+    apiRequest(`/api/v1/drones/${droneId}/deploy`, {
+      method: 'POST',
+      body: JSON.stringify({
+        sector_id: body.sector_id,
+        deployment_type: body.deployment_type ?? 'defense',
+        ...(body.target_id ? { target_id: body.target_id } : {}),
+      }),
+    }),
+
+  /** Recall a deployed drone by drone id (POST /drones/{id}/recall). */
+  recall: (droneId: string) =>
+    apiRequest(`/api/v1/drones/${droneId}/recall`, { method: 'POST' }),
 };
 
 // Armory — sector mine laying (open space). Distinct from combatAPI.deployDrones.
@@ -395,6 +413,19 @@ export const planetaryAPI = {
   getSiegeStatus: (planetId: string) =>
     apiRequest(`/api/v1/planets/${planetId}/siege-status`),
 
+  // Move production stockpile into the caller's ship cargo. GS
+  // StockpileWithdrawRequest: commodity fuel_ore|organics|equipment, amount>0.
+  // Owner tax-free; teammates skimmed server-side. Do not invent keys.
+  withdrawStockpileToCargo: (
+    planetId: string,
+    commodity: 'fuel_ore' | 'organics' | 'equipment',
+    amount: number,
+  ) =>
+    apiRequest(`/api/v1/planets/${planetId}/stockpile/withdraw`, {
+      method: 'POST',
+      body: JSON.stringify({ commodity, amount }),
+    }),
+
   // Owner-only landing-rights ACL (colonization.md five modes; WO LEG-155).
   // Body matches gameserver LandingRightsRequest — lists always accepted so
   // mode flips stay lossless server-side even when the UI omits list editing.
@@ -420,6 +451,80 @@ export const planetaryAPI = {
         whitelist: body.whitelist ?? [],
         denylist: body.denylist ?? [],
       }),
+    }),
+
+  // Voluntary ownership transfer (colonization.md Ownership controls; LEG-514).
+  // Fee lives on the tip payload (offer.fee_credits / accept.fee_credits) —
+  // do not compute a client-side percentage.
+  getOwnershipTransfer: (
+    planetId: string,
+  ): Promise<{
+    planet_id: string;
+    pending: boolean;
+    offer?: {
+      from_player_id: string;
+      to_player_id: string;
+      fee_credits: number;
+      fee_base?: number;
+      offered_at?: string;
+      expires_at?: string;
+    } | null;
+  }> => apiRequest(`/api/v1/planets/${planetId}/ownership-transfer`),
+
+  offerOwnershipTransfer: (
+    planetId: string,
+    recipientPlayerId: string,
+  ): Promise<{
+    success: boolean;
+    planet_id: string;
+    offer: {
+      from_player_id: string;
+      to_player_id: string;
+      fee_credits: number;
+      fee_base?: number;
+      offered_at?: string;
+      expires_at?: string;
+    };
+  }> =>
+    apiRequest(`/api/v1/planets/${planetId}/ownership-transfer`, {
+      method: 'POST',
+      body: JSON.stringify({ recipient_player_id: recipientPlayerId }),
+    }),
+
+  acceptOwnershipTransfer: (
+    planetId: string,
+  ): Promise<{
+    success: boolean;
+    planet_id: string;
+    from_player_id: string;
+    to_player_id: string;
+    fee_credits: number;
+    owner_credits_remaining: number;
+  }> =>
+    apiRequest(`/api/v1/planets/${planetId}/ownership-transfer/accept`, {
+      method: 'POST',
+    }),
+
+  cancelOwnershipTransfer: (
+    planetId: string,
+  ): Promise<{ success: boolean; planet_id: string; cancelled: boolean }> =>
+    apiRequest(`/api/v1/planets/${planetId}/ownership-transfer/cancel`, {
+      method: 'POST',
+    }),
+
+  // Colonist profession training (LEG-2253 kernel / professions.md). Owner-only;
+  // citadel L3+ server gate. Costs remain DECISION-NEEDED — queue without charge.
+  getPlanetProfessions: (planetId: string) =>
+    apiRequest(`/api/v1/planets/${planetId}/professions`),
+
+  trainPlanetProfession: (
+    planetId: string,
+    profession: string,
+    traineeCount: number,
+  ) =>
+    apiRequest(`/api/v1/planets/${planetId}/professions/train`, {
+      method: 'POST',
+      body: JSON.stringify({ profession, trainee_count: traineeCount }),
     }),
 };
 
@@ -637,13 +742,21 @@ export const fleetAPI = {
     }),
 
   updateFormation: (fleetId: string, formation: string) =>
-    apiRequest(`/api/v1/fleets/${fleetId}/formation?formation=${formation}`, {
+    apiRequest(`/api/v1/fleets/${fleetId}/formation?formation=${encodeURIComponent(formation)}`, {
       method: 'PATCH'
     }),
 
   disbandFleet: (fleetId: string) =>
     apiRequest(`/api/v1/fleets/${fleetId}`, {
       method: 'DELETE'
+    }),
+
+  getFleetMembers: (fleetId: string) =>
+    apiRequest(`/api/v1/fleets/${fleetId}/members`),
+
+  resupplyFleet: (fleetId: string) =>
+    apiRequest(`/api/v1/fleets/${fleetId}/resupply`, {
+      method: 'POST'
     }),
 
   initiateBattle: (fleetId: string, defenderFleetId: string) =>
@@ -660,7 +773,11 @@ export const fleetAPI = {
   getBattles: (activeOnly?: boolean) => {
     const params = activeOnly ? '?active_only=true' : '';
     return apiRequest(`/api/v1/fleets/battles${params}`);
-  }
+  },
+
+  /** Tip GET /fleets/battles/{id} — status/casualties; battle_log may be absent (LEG-400). */
+  getBattle: (battleId: string) =>
+    apiRequest(`/api/v1/fleets/battles/${battleId}`),
 };
 
 // Faction APIs
@@ -815,6 +932,12 @@ export const playerAPI = {
     apiRequest(`/api/v1/player/formations/${formationId}/investigate`, {
       method: 'POST',
     }),
+
+  /** Occupying SectorType.ANOMALY — distinct from formation investigate (LEG-478). */
+  investigateAnomaly: (sectorId: number) =>
+    apiRequest(`/api/v1/player/sectors/${sectorId}/investigate-anomaly`, {
+      method: 'POST',
+    }),
 };
 
 /** Asteroid-field mining harvest (WO-UI-MINING). */
@@ -828,6 +951,13 @@ export const miningAPI = {
   /** LEG-430 tip GET — nearest AM-flagged refinery + ore buy_price. */
   getNearestAmRefinery: () =>
     apiRequest('/api/v1/mining/nearest-am-refinery'),
+
+  /** LEG-2459 tip GET — yield band before committing harvest turns. */
+  getYieldPreview: (shipId: string) =>
+    apiRequest(`/api/v1/mining/yield-preview?ship_id=${encodeURIComponent(shipId)}`),
+
+  /** LEG-2574 tip GET — owner claim licenses (active + recently expired). */
+  listLicenses: () => apiRequest('/api/v1/mining/licenses'),
 };
 
 /** First-login gate / onboarding session (GameContext + FirstLoginContext). */
@@ -951,12 +1081,20 @@ export const medalsAPI = {
     apiRequest('/api/v1/medals/unviewed'),
 };
 
-// Bounty APIs
+// Bounty APIs — place / getOnTarget / getAvailable tip-PRESENT; cancel binds
+// tip GS POST /ranking/bounties/{bounty_id}/cancel (ranking.py CancelBountyRequest).
 export const bountyAPI = {
   place: (targetId: string, amount: number) =>
     apiRequest('/api/v1/ranking/bounties/place', {
       method: 'POST',
       body: JSON.stringify({ target_id: targetId, amount }),
+    }),
+
+  /** Placer-only cancel; body requires target_id (GS CancelBountyRequest). */
+  cancel: (bountyId: string, targetId: string) =>
+    apiRequest(`/api/v1/ranking/bounties/${encodeURIComponent(bountyId)}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({ target_id: targetId }),
     }),
 
   getOnTarget: (playerId: string) =>
@@ -1210,8 +1348,23 @@ export const shipUpgradeAPI = {
       body: JSON.stringify({ upgrade_type: upgradeType }),
     }),
 
-  // Legacy equipment install/uninstall retired (WO-RETIRE-SHIP-LEGACY-EQUIPMENT-API):
-  // superseded by module-grid installModule/removeModule below.
+  // Equipment-slot install/uninstall (LEG-1226 / LEG-109 / LEG-126). Still live for
+  // equipment_slots keys (mining_laser, planetary_lander, tractor_beam, ecm_suite,
+  // stealth_module, …). Distinct from module-grid installModule/removeModule below —
+  // the deferred lattice `mining` family stays consumer_inert / Design-only; do not
+  // route Mining Laser through it. Quantum Field Harvester CTA stays on installModule
+  // (LEG-2484).
+  installEquipment: (shipId: string, equipmentKey: string) =>
+    apiRequest(`/api/v1/ships/${shipId}/equipment/install`, {
+      method: 'POST',
+      body: JSON.stringify({ equipment_key: equipmentKey }),
+    }),
+
+  uninstallEquipment: (shipId: string, equipmentKey: string) =>
+    apiRequest(`/api/v1/ships/${shipId}/equipment/uninstall`, {
+      method: 'POST',
+      body: JSON.stringify({ equipment_key: equipmentKey }),
+    }),
 
   // SHIP-MODS (WO-SM-5): module slot-grid lattice + install/remove.
   //
@@ -1968,6 +2121,20 @@ export const tradeAPI = {
     apiRequest(`/api/v1/trade/${sessionId}/cancel`, { method: 'POST' }),
   get: (sessionId: string) => apiRequest(`/api/v1/trade/${sessionId}`),
   getOpen: () => apiRequest('/api/v1/trade/open'),
+  /** Same-sector fuel-for-credits primitive (POST /trade/deliver-fuel). Not escrow. */
+  deliverFuel: (args: {
+    recipientPlayerId: string;
+    fuelAmount: number;
+    paymentCredits: number;
+  }) =>
+    apiRequest('/api/v1/trade/deliver-fuel', {
+      method: 'POST',
+      body: JSON.stringify({
+        recipient_player_id: args.recipientPlayerId,
+        fuel_amount: args.fuelAmount,
+        payment_credits: args.paymentCredits,
+      }),
+    }),
 };
 
 // Quantum drive (Warp Jumper) — status / scan / jump / refine / harvest.
@@ -2241,6 +2408,14 @@ export const portOwnershipAPI = {
       method: 'POST',
       body: JSON.stringify({ defense_pct: defensePct, owner_pct: ownerPct }),
     }),
+
+  // Military takeover (port-ownership.md § Military takeover) — tip GS
+  // MilitaryActionRequest.action ∈ {declare, siege, occupy}.
+  militaryTakeover: (stationId: string, action: 'declare' | 'siege' | 'occupy') =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/military`, {
+      method: 'POST',
+      body: JSON.stringify({ action }),
+    }),
 };
 
 // Message beacons (message-beacons.md) -- deploy/read/salvage/recharge/
@@ -2489,5 +2664,25 @@ export const ariaMemoryAPI = {
   },
   getDataIndex: (): Promise<AriaDataStream[]> =>
     apiRequest('/api/v1/ai/data-index'),
+};
+
+/** LEG-1937 — docked ARIA market-intelligence GET (owner JWT; 403 if not docked / cannot trade). */
+export type AriaMarketIntelItem = {
+  commodity: string;
+  observation_count: number;
+  average_price: number | null;
+  price_band: number | null;
+  next_prediction: number | null;
+  prediction_confidence: number | null;
+};
+
+export type AriaMarketIntelList = {
+  station_id: string;
+  items: AriaMarketIntelItem[];
+};
+
+export const ariaMarketAPI = {
+  getMarketIntelligence: (stationId: string): Promise<AriaMarketIntelList> =>
+    apiRequest(`/api/v1/ai/market-intelligence/${encodeURIComponent(stationId)}`),
 };
 
