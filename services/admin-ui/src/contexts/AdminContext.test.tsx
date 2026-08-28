@@ -32,7 +32,18 @@ function httpErr(status: number, detail?: string) {
 }
 
 function Probe() {
-  const { adminStats, loadAdminStats, users, loadUsers, error, wipeGalaxy } = useAdmin();
+  const {
+    adminStats,
+    loadAdminStats,
+    users,
+    loadUsers,
+    error,
+    wipeGalaxy,
+    loadGalaxyInfo,
+    clearGalaxyData,
+    addSectors,
+    createWarpTunnel,
+  } = useAdmin();
   return (
     <div>
       <span data-testid="total-users">{adminStats?.totalUsers ?? 'none'}</span>
@@ -40,12 +51,34 @@ function Probe() {
       <span data-testid="error">{error ?? 'none'}</span>
       <button onClick={() => loadAdminStats()}>load-stats</button>
       <button onClick={() => loadUsers()}>load-users</button>
+      <button onClick={() => loadGalaxyInfo()}>load-galaxy-info</button>
       <button
         onClick={() => {
           void wipeGalaxy('g1', 'CONFIRM').catch(() => undefined);
         }}
       >
         wipe-galaxy
+      </button>
+      <button
+        onClick={() => {
+          void clearGalaxyData().catch(() => undefined);
+        }}
+      >
+        clear-galaxy-data
+      </button>
+      <button
+        onClick={() => {
+          void addSectors('g1', 1).catch(() => undefined);
+        }}
+      >
+        add-sectors
+      </button>
+      <button
+        onClick={() => {
+          void createWarpTunnel(1, 2, 0.75).catch(() => undefined);
+        }}
+      >
+        create-warp-tunnel
       </button>
     </div>
   );
@@ -148,6 +181,48 @@ describe('AdminContext / AdminProvider', () => {
     );
   });
 
+  it('surfaces loadGalaxyInfo 403 as admin.galaxy.manage denial (LEG-2790)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    vi.mocked(api.get).mockRejectedValue(httpErr(403));
+    const user = userEvent.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>
+    );
+
+    await user.click(screen.getByText('load-galaxy-info'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/admin\.galaxy\.manage/),
+    );
+    expect(screen.getByTestId('error').textContent).not.toMatch(
+      /Failed to load galaxy information/,
+    );
+    expect(api.get).toHaveBeenCalledWith('/api/v1/admin/galaxy');
+  });
+
+  it('surfaces loadGalaxyInfo 429 as admin rate-limit (LEG-2790)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    vi.mocked(api.get).mockRejectedValue(httpErr(429));
+    const user = userEvent.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>
+    );
+
+    await user.click(screen.getByText('load-galaxy-info'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/rate limit/i),
+    );
+    expect(screen.getByTestId('error').textContent).not.toMatch(
+      /Failed to load galaxy information/,
+    );
+    expect(api.get).toHaveBeenCalledWith('/api/v1/admin/galaxy');
+  });
+
   it('loads user accounts for an admin user', async () => {
     mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
     vi.mocked(api.get).mockResolvedValue({ data: { users: [{ id: 'u1' }, { id: 'u2' }] } });
@@ -198,5 +273,123 @@ describe('AdminContext / AdminProvider', () => {
       expect(screen.getByTestId('error').textContent).toMatch(/rate limit/i),
     );
     expect(screen.getByTestId('error')).not.toHaveTextContent('Failed to wipe galaxy');
+  });
+
+  it('surfaces clearGalaxyData 403 as admin.galaxy.manage denial (LEG-2780)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    vi.mocked(api.delete).mockRejectedValueOnce(httpErr(403));
+    const user = userEvent.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>
+    );
+
+    await user.click(screen.getByText('clear-galaxy-data'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/admin\.galaxy\.manage|Access denied/i),
+    );
+    expect(screen.getByTestId('error')).not.toHaveTextContent('Failed to clear galaxy data');
+    expect(api.delete).toHaveBeenCalledWith('/api/v1/admin/galaxy/clear');
+  });
+
+  it('surfaces clearGalaxyData 429 as admin rate-limit (LEG-2780)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    vi.mocked(api.delete).mockRejectedValueOnce(httpErr(429));
+    const user = userEvent.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>
+    );
+
+    await user.click(screen.getByText('clear-galaxy-data'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/rate limit/i),
+    );
+    expect(screen.getByTestId('error')).not.toHaveTextContent('Failed to clear galaxy data');
+  });
+
+  it('surfaces addSectors 403 as admin.galaxy.manage denial (LEG-2781)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    vi.mocked(api.post).mockRejectedValueOnce(httpErr(403));
+    const user = userEvent.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>
+    );
+
+    await user.click(screen.getByText('add-sectors'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/admin\.galaxy\.manage|Access denied/i),
+    );
+    expect(screen.getByTestId('error')).not.toHaveTextContent('Failed to add sectors to galaxy');
+    expect(api.post).toHaveBeenCalledWith('/api/v1/admin/galaxy/g1/sectors/add', {
+      num_sectors: 1,
+      config: undefined,
+    });
+  });
+
+  it('surfaces addSectors 429 as admin rate-limit (LEG-2781)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    vi.mocked(api.post).mockRejectedValueOnce(httpErr(429));
+    const user = userEvent.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>
+    );
+
+    await user.click(screen.getByText('add-sectors'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/rate limit/i),
+    );
+    expect(screen.getByTestId('error')).not.toHaveTextContent('Failed to add sectors to galaxy');
+  });
+
+  it('surfaces createWarpTunnel 403 as admin.galaxy.manage denial (LEG-2782)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    vi.mocked(api.post).mockRejectedValueOnce(httpErr(403));
+    const user = userEvent.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>
+    );
+
+    await user.click(screen.getByText('create-warp-tunnel'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/admin\.galaxy\.manage|Access denied/i),
+    );
+    expect(screen.getByTestId('error')).not.toHaveTextContent('Failed to create warp tunnel');
+    expect(api.post).toHaveBeenCalledWith('/api/v1/admin/warp-tunnels/create', {
+      source_sector_id: 1,
+      target_sector_id: 2,
+      stability: 0.75,
+    });
+  });
+
+  it('surfaces createWarpTunnel 429 as admin rate-limit (LEG-2782)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    vi.mocked(api.post).mockRejectedValueOnce(httpErr(429));
+    const user = userEvent.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>
+    );
+
+    await user.click(screen.getByText('create-warp-tunnel'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/rate limit/i),
+    );
+    expect(screen.getByTestId('error')).not.toHaveTextContent('Failed to create warp tunnel');
   });
 });
