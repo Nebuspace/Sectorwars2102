@@ -38,8 +38,9 @@ from typing import Dict, List, Optional, Set, Tuple
 from sqlalchemy.orm import Session
 
 from src.models.aria_personal_intelligence import ARIAExplorationMap
+from src.models.cluster import Cluster
 from src.models.player import Player
-from src.models.sector import Sector, sector_warps
+from src.models.sector import Sector, SectorType, sector_warps
 from src.models.warp_tunnel import WarpTunnel, WarpTunnelStatus
 
 logger = logging.getLogger(__name__)
@@ -285,7 +286,12 @@ class NavService:
 
         Returns:
           {"sectors": [{"sector_id", "name", "type", "x", "y", "z",
-                        "visited", "current"}, ...],
+                        "visited", "current",
+                        # NEBULA sectors only (LEG-INI-16): parent Cluster's
+                        # persisted nebula_type / quantum_field_strength /
+                        # color_hex — omitted for non-nebula sectors.
+                        "nebula_type"?, "quantum_field_strength"?, "color_hex"?},
+                       ...],
            "edges": [{"from", "to", "kind": "warp"|"tunnel"}, ...],
            "frontier": [{"id": sector_id, "from": known_sector_id}, ...]}
         """
@@ -308,17 +314,20 @@ class NavService:
         # counts here).
         own_visited_ids = set(self._build_safety_by_sid(player).keys())
 
+        nebula_cluster_ids = {
+            s.cluster_id
+            for s in known_sectors
+            if self._sector_type_str(s) == SectorType.NEBULA.value
+        }
+        cluster_by_id: Dict[object, Cluster] = {}
+        if nebula_cluster_ids:
+            clusters = (
+                self.db.query(Cluster).filter(Cluster.id.in_(nebula_cluster_ids)).all()
+            )
+            cluster_by_id = {c.id: c for c in clusters}
+
         sectors_payload = [
-            {
-                "sector_id": s.sector_id,
-                "name": s.name,
-                "type": s.type.value if hasattr(s.type, "value") else str(s.type),
-                "x": s.x_coord,
-                "y": s.y_coord,
-                "z": s.z_coord,
-                "visited": s.sector_id in own_visited_ids,
-                "current": s.sector_id == player.current_sector_id,
-            }
+            self._chart_sector_payload(s, own_visited_ids, player, cluster_by_id)
             for s in known_sectors
         ]
 
@@ -356,6 +365,37 @@ class NavService:
             "edges": edges,
             "frontier": frontier,
         }
+
+    @staticmethod
+    def _sector_type_str(sector: Sector) -> str:
+        return sector.type.value if hasattr(sector.type, "value") else str(sector.type)
+
+    def _chart_sector_payload(
+        self,
+        sector: Sector,
+        own_visited_ids: Set[int],
+        player: Player,
+        cluster_by_id: Dict[object, Cluster],
+    ) -> Dict:
+        payload = {
+            "sector_id": sector.sector_id,
+            "name": sector.name,
+            "type": self._sector_type_str(sector),
+            "x": sector.x_coord,
+            "y": sector.y_coord,
+            "z": sector.z_coord,
+            "visited": sector.sector_id in own_visited_ids,
+            "current": sector.sector_id == player.current_sector_id,
+        }
+        if self._sector_type_str(sector) != SectorType.NEBULA.value:
+            return payload
+        cluster = cluster_by_id.get(sector.cluster_id)
+        if cluster is None:
+            return payload
+        payload["nebula_type"] = cluster.nebula_type
+        payload["quantum_field_strength"] = cluster.quantum_field_strength
+        payload["color_hex"] = cluster.color_hex
+        return payload
 
     def _bound_known_ids(self, player: Player, known_ids: Set[int]) -> Set[int]:
         """
