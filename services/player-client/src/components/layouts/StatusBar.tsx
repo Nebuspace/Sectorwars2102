@@ -15,6 +15,7 @@ import { FleetManagerPanel } from '../fleet/FleetManagerPanel';
 import { EmbeddedContext } from '../cockpit/EmbeddedContext';
 import ServiceRecordTab from './ServiceRecordTab';
 import ColoniesRosterTab from './ColoniesRosterTab';
+import EmpireProductionDashboard from './EmpireProductionDashboard';
 import TeamSummaryTab from './TeamSummaryTab';
 import GovSummaryTab from './GovSummaryTab';
 import MyBeaconsTab from './MyBeaconsTab';
@@ -67,7 +68,7 @@ import './statusbar.css';
  * is built for UserProfile.tsx's sidebar context, not a chip-sized icon
  * button; LogoutButton.tsx itself is untouched and still owns that use.
  */
-type DossierTab = 'identity' | 'reputation' | 'service' | 'fleet' | 'colonies' | 'crew' | 'governance' | 'beacons' | 'settings';
+type DossierTab = 'identity' | 'reputation' | 'service' | 'fleet' | 'colonies' | 'production' | 'crew' | 'governance' | 'beacons' | 'settings';
 
 // REP badge color-grading (canon §05 L614: "reputation visible at all
 // times, color-graded (blue/gray/red grammar)") — the artifact's OWN
@@ -101,6 +102,7 @@ const DOSSIER_TABS: Array<{ id: DossierTab; label: string }> = [
   { id: 'service', label: 'SERVICE RECORD' },
   { id: 'fleet', label: 'FLEET' },
   { id: 'colonies', label: 'COLONIES' },
+  { id: 'production', label: 'PRODUCTION' },
   { id: 'crew', label: 'CREW' },
   { id: 'governance', label: 'GOVERNANCE' },
   { id: 'beacons', label: 'BEACONS' },
@@ -501,6 +503,7 @@ const StatusBar: React.FC = () => {
                 </EmbeddedContext.Provider>
               )}
               {activeTab === 'colonies' && <ColoniesRosterTab />}
+              {activeTab === 'production' && <EmpireProductionDashboard />}
               {activeTab === 'crew' && <TeamSummaryTab />}
               {activeTab === 'governance' && <GovSummaryTab />}
               {activeTab === 'beacons' && <MyBeaconsTab />}
