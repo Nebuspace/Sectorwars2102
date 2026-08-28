@@ -125,6 +125,25 @@ export function formatCommsPurgeError(err: unknown): string {
   return 'Failed to purge transmission';
 }
 
+/** THREADS tab load — surface gameserver detail on GET /messages/conversations failure. */
+export function formatCommsThreadsLoadError(err: unknown): string {
+  const status = httpStatus(err);
+  const detail = serverDetail(err);
+
+  if (status === 403) {
+    if (detail) return detail;
+    return 'Access denied — you cannot view threads right now.';
+  }
+
+  if (status === 429) {
+    if (detail) return detail;
+    return 'Thread lookup rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (detail) return detail;
+  return 'Failed to load threads';
+}
+
 const conversationPartyLabel = (msg: PlayerMessage, playerId: string | undefined): string => {
   if (!playerId) return (msg.sender_name || 'UNKNOWN').toUpperCase();
   if (msg.sender_id !== playerId) return (msg.sender_name || 'UNKNOWN').toUpperCase();
@@ -256,9 +275,7 @@ const CommsCrewPage: React.FC = () => {
       .catch((err: unknown) => {
         if (cancelled) return;
         setConversations([]);
-        setConversationsError(
-          err instanceof Error ? err.message : 'FAILED TO LOAD THREADS'
-        );
+        setConversationsError(formatCommsThreadsLoadError(err));
       })
       .finally(() => {
         if (!cancelled) setConversationsLoading(false);

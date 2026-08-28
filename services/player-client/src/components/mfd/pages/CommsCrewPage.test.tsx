@@ -85,7 +85,10 @@ vi.mock('../../../contexts/AuthContext', () => ({
   useAuth: () => ({ user: { id: 'player-1' } }),
 }));
 
-import CommsCrewPage, { FLAG_REASON_BY_CATEGORY } from './CommsCrewPage';
+import CommsCrewPage, {
+  FLAG_REASON_BY_CATEGORY,
+  formatCommsThreadsLoadError,
+} from './CommsCrewPage';
 
 const apiRequestError = (status: number, message?: string) => {
   const err = new Error(message ?? `API Error: ${status}`);
@@ -340,6 +343,46 @@ describe('CommsCrewPage — MFD-B COMM', () => {
     await flush();
     expect(container.querySelector('.mfd-page-warnline')?.textContent).toBe('Uplink timeout');
     expect(container.querySelector('.mfd-page-ops')).not.toBeNull();
+  });
+
+  it('THREADS tab surfaces 403 server detail in warnline', async () => {
+    mockGetConversations.mockRejectedValueOnce(
+      apiRequestError(403, 'Messaging access suspended pending review.'),
+    );
+    await mount();
+    await click(container.querySelectorAll('.mfd-page-comms-mode-tab')[1]!);
+    await flush();
+    expect(container.querySelector('.mfd-page-warnline')?.textContent).toBe(
+      'Messaging access suspended pending review.',
+    );
+  });
+
+  it('THREADS tab surfaces 429 honest copy in warnline', async () => {
+    mockGetConversations.mockRejectedValueOnce(apiRequestError(429));
+    await mount();
+    await click(container.querySelectorAll('.mfd-page-comms-mode-tab')[1]!);
+    await flush();
+    expect(container.querySelector('.mfd-page-warnline')?.textContent).toBe(
+      'Thread lookup rate limit exceeded — wait a moment and try again.',
+    );
+  });
+
+  it('formatCommsThreadsLoadError covers 403/429 refusal paths', () => {
+    expect(
+      formatCommsThreadsLoadError(
+        apiRequestError(403, 'Messaging access suspended pending review.'),
+      ),
+    ).toBe('Messaging access suspended pending review.');
+    expect(formatCommsThreadsLoadError(apiRequestError(403))).toBe(
+      'Access denied — you cannot view threads right now.',
+    );
+    expect(formatCommsThreadsLoadError(apiRequestError(429))).toBe(
+      'Thread lookup rate limit exceeded — wait a moment and try again.',
+    );
+    expect(formatCommsThreadsLoadError(apiRequestError(429, 'Too many requests'))).toBe(
+      'Too many requests',
+    );
+    expect(formatCommsThreadsLoadError(apiRequestError(500))).toBe('Failed to load threads');
   });
 
   it('THREADS tab selecting a thread shows merged messages in the detail pane', async () => {
