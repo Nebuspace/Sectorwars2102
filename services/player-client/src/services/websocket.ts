@@ -134,6 +134,41 @@ export interface BountyUpdatedMessage {
   system_bounties_collected?: number;
 }
 
+// Mining harvest push (mining_service.build_harvest_notification_events —
+// LEG-2607 / mining.md:258). Separate frames for base yield, precious_metals,
+// and quantum_shards drops; `delivery` gates toast surfacing.
+export interface MiningHarvestNotificationMessage {
+  type: 'mining_harvest_notification';
+  subtype: 'harvest_success' | 'precious_metals' | 'quantum_shards' | string;
+  timestamp?: string;
+  user_id?: string;
+  delivery?: string[];
+  priority?: string;
+  payload?: {
+    harvest_id?: string;
+    ore?: number;
+    precious_metals?: number;
+    quantum_shards?: number;
+    drop_type?: string;
+    amount?: number;
+  };
+}
+
+// AM claim-license expiry warning (mining_service.collect_license_expiry_warning_events).
+export interface MiningLicenseExpiryWarningMessage {
+  type: 'mining_license_expiry_warning';
+  timestamp?: string;
+  user_id?: string;
+  delivery?: string[];
+  priority?: string;
+  payload?: {
+    license_id?: string;
+    region_id?: string | null;
+    sector_number?: number;
+    expires_at?: string | null;
+  };
+}
+
 // Authoritative turn-pool snapshot (WO-WIRE-WS-TURN-POOL-UNCONSUMED).
 // turn_service._emit_turn_pool_update → connection_manager.send_turn_pool_update
 // (player-scoped). Canon SYSTEMS/turn-regeneration.md: {player_id, turns,

@@ -745,6 +745,68 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           break;
         }
 
+        case 'mining_harvest_notification': {
+          // LEG-2607 / mining.md:258 — harvest yield + rare/trace drop toasts.
+          const delivery: string[] = Array.isArray(message.delivery)
+            ? message.delivery.map((s: any) => String(s))
+            : ['inbox', 'toast'];
+          if (!delivery.includes('toast')) {
+            break;
+          }
+          const payload =
+            message.payload && typeof message.payload === 'object'
+              ? message.payload
+              : {};
+          const subtype = String(message.subtype || '');
+          if (subtype === 'harvest_success') {
+            const ore = typeof payload.ore === 'number' ? payload.ore : 0;
+            addNotification({
+              title: 'Harvest Complete',
+              content: `Mined ${ore} ore`,
+              level: 'success'
+            });
+          } else if (subtype === 'precious_metals') {
+            const amount = typeof payload.amount === 'number' ? payload.amount : 0;
+            addNotification({
+              title: 'Rare Drop',
+              content: `Found ${amount} precious metals`,
+              level: 'success'
+            });
+          } else if (subtype === 'quantum_shards') {
+            const amount = typeof payload.amount === 'number' ? payload.amount : 0;
+            addNotification({
+              title: 'Trace Drop',
+              content: `Found ${amount} quantum shards`,
+              level: 'success'
+            });
+          }
+          break;
+        }
+
+        case 'mining_license_expiry_warning': {
+          // LEG-2607 — 1h-before expiry sweep (collect_license_expiry_warning_events).
+          const delivery: string[] = Array.isArray(message.delivery)
+            ? message.delivery.map((s: any) => String(s))
+            : ['inbox', 'toast'];
+          if (!delivery.includes('toast')) {
+            break;
+          }
+          const payload =
+            message.payload && typeof message.payload === 'object'
+              ? message.payload
+              : {};
+          const sectorNumber =
+            typeof payload.sector_number === 'number' ? payload.sector_number : null;
+          const sectorPart =
+            sectorNumber != null ? ` in sector ${sectorNumber}` : '';
+          addNotification({
+            title: 'Mining License Expiring',
+            content: `Your AM claim license${sectorPart} expires within one hour.`,
+            level: 'warning'
+          });
+          break;
+        }
+
         case 'new_message': {
           // Player-to-player hail (message_service → notification_service).
           // The backend resolves the canon delivery surfaces by priority
@@ -1066,7 +1128,7 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           // send_failed is consumed by sendFailedHandler above — it's a
           // client-local synthetic event (websocket.ts's own send()), not
           // an unhandled server frame.)
-          if (!['sector_players', 'connection_status', 'chat_message', 'player_entered_sector', 'player_left_sector', 'notification', 'aria_response', 'aria_narration', 'medal_awarded', 'genesis_progress', 'planetary_update', 'contract_offer', 'contract_settled', 'rp_governor_status', 'reputation_changed', 'team_reputation_changed', 'npc_combat_initiated', 'bounty_updated', 'turn_pool_updated', 'send_failed', 'docking_slip_bumped', 'ship_recovered_impounded'].includes(message.type)) {
+          if (!['sector_players', 'connection_status', 'chat_message', 'player_entered_sector', 'player_left_sector', 'notification', 'aria_response', 'aria_narration', 'medal_awarded', 'genesis_progress', 'planetary_update', 'contract_offer', 'contract_settled', 'rp_governor_status', 'reputation_changed', 'team_reputation_changed', 'npc_combat_initiated', 'bounty_updated', 'turn_pool_updated', 'send_failed', 'docking_slip_bumped', 'ship_recovered_impounded', 'mining_harvest_notification', 'mining_license_expiry_warning'].includes(message.type)) {
             console.warn('WebSocket: Unhandled message type:', message.type);
           }
       }
