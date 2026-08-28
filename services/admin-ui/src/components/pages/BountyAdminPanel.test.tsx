@@ -10,10 +10,12 @@ vi.mock('../../utils/auth', () => ({
   },
 }));
 
+const toastError = vi.fn();
+
 vi.mock('../../contexts/ToastContext', () => ({
   useToast: () => ({
     success: vi.fn(),
-    error: vi.fn(),
+    error: toastError,
     warning: vi.fn(),
     info: vi.fn(),
   }),
@@ -159,5 +161,147 @@ describe('BountyAdminPanel', () => {
     const alert = screen.getByRole('alert').textContent ?? '';
     expect(alert).toMatch(/rate limit/i);
     expect(alert).not.toMatch(/Failed to load bounties/);
+  });
+});
+
+describe('BountyAdminPanel mutation errors (LEG-2617)', () => {
+  const axiosError = (status: number) =>
+    Object.assign(new Error(`HTTP ${status}`), { response: { status } });
+
+  const loadedBounties = {
+    success: true,
+    target_id: 't1',
+    target_name: 'Wanted',
+    player_bounties: [
+      {
+        id: 'b1',
+        placed_by: 'p2',
+        placed_by_name: 'Placer',
+        amount: 5000,
+        type: 'player',
+      },
+    ],
+    system_bounties: [],
+    total_value: 5000,
+  };
+
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    toastError.mockReset();
+    vi.mocked(api.get).mockResolvedValue({ data: loadedBounties });
+  });
+
+  async function loadTargetBounties() {
+    render(<BountyAdminPanel />);
+    fireEvent.change(screen.getByLabelText('Target player UUID'), {
+      target: { value: 't1' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Load' }));
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Force-cancel' })).toBeTruthy();
+    });
+  }
+
+  it('surfaces formatAdminApiError on force-cancel POST 403', async () => {
+    vi.mocked(api.post).mockRejectedValue(axiosError(403));
+    await loadTargetBounties();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Force-cancel' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/players/t1/bounties/b1/force-cancel',
+      );
+    });
+    expect(String(toastError.mock.calls[0][0])).toMatch(/ECONOMY_INTERVENE|Access denied/i);
+    expect(toastError).not.toHaveBeenCalledWith('Force-cancel failed');
+  });
+
+  it('surfaces rate-limit copy on force-cancel POST 429', async () => {
+    vi.mocked(api.post).mockRejectedValue(axiosError(429));
+    await loadTargetBounties();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Force-cancel' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalled();
+    });
+    expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/rate limit/i));
+    expect(toastError).not.toHaveBeenCalledWith('Force-cancel failed');
+  });
+
+  it('surfaces formatAdminApiError on collapse POST 403', async () => {
+    vi.mocked(api.post).mockRejectedValue(axiosError(403));
+    await loadTargetBounties();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse excess' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith('/api/v1/admin/players/t1/bounties/collapse');
+    });
+    expect(String(toastError.mock.calls[0][0])).toMatch(/ECONOMY_INTERVENE|Access denied/i);
+    expect(toastError).not.toHaveBeenCalledWith('Collapse failed');
+  });
+
+  it('surfaces rate-limit copy on collapse POST 429', async () => {
+    vi.mocked(api.post).mockRejectedValue(axiosError(429));
+    await loadTargetBounties();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse excess' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalled();
+    });
+    expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/rate limit/i));
+    expect(toastError).not.toHaveBeenCalledWith('Collapse failed');
+  });
+
+  it('surfaces formatAdminApiError on faction-bounty POST 403', async () => {
+    vi.mocked(api.post).mockRejectedValue(axiosError(403));
+    render(<BountyAdminPanel />);
+
+    fireEvent.change(screen.getByLabelText('NPC UUID'), {
+      target: { value: 'npc-1' },
+    });
+    fireEvent.change(screen.getByLabelText('Amount (≥ 1000)'), {
+      target: { value: '2000' },
+    });
+    fireEvent.change(screen.getByLabelText('Reason'), {
+      target: { value: 'Pirate captain' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Place faction bounty' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith('/api/v1/admin/npcs/npc-1/faction-bounty', {
+        faction_type: 'Federation',
+        amount: 2000,
+        reason: 'Pirate captain',
+      });
+    });
+    expect(String(toastError.mock.calls[0][0])).toMatch(/ECONOMY_INTERVENE|Access denied/i);
+    expect(toastError).not.toHaveBeenCalledWith('Faction bounty failed');
+  });
+
+  it('surfaces rate-limit copy on faction-bounty POST 429', async () => {
+    vi.mocked(api.post).mockRejectedValue(axiosError(429));
+    render(<BountyAdminPanel />);
+
+    fireEvent.change(screen.getByLabelText('NPC UUID'), {
+      target: { value: 'npc-1' },
+    });
+    fireEvent.change(screen.getByLabelText('Amount (≥ 1000)'), {
+      target: { value: '2000' },
+    });
+    fireEvent.change(screen.getByLabelText('Reason'), {
+      target: { value: 'Pirate captain' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Place faction bounty' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalled();
+    });
+    expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/rate limit/i));
+    expect(toastError).not.toHaveBeenCalledWith('Faction bounty failed');
   });
 });
