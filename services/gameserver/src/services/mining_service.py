@@ -37,6 +37,7 @@ from src.models.claim_license import ClaimLicense
 from src.models.mining_harvest import MiningHarvest, MiningHarvestStatus
 from src.models.zone import Zone, ZoneType
 from src.services.faction_service import apply_faction_rep_delta
+from src.services.profession_service import mining_engineer_harvest_multiplier
 from src.services.turn_service import regenerate_turns, spend_turns
 
 logger = logging.getLogger(__name__)
@@ -982,7 +983,10 @@ class MiningService:
         consumed_fraction = (consumed / pool_size) if pool_size > 0 else 0.0
         depletion_mod = _depletion_yield_modifier(consumed_fraction)
 
-        ore = int(base_ore * efficiency * depletion_mod)
+        me_mult = mining_engineer_harvest_multiplier(
+            self.db, row.player_id, row.region_id
+        )
+        ore = int(base_ore * efficiency * depletion_mod * me_mult)
         floor_fired = False
         if ore < 1:
             ore = 1

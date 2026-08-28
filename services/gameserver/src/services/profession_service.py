@@ -31,6 +31,8 @@ from src.models.profession_training_queue import (
 MIN_CITADEL_FOR_TRAINING = 3
 
 # Numeric bonus multipliers from professions.md (non-TBD cells only).
+# Mining Engineers ``fuel`` covers planetary fuel_ore; harvest ``ore`` is wired
+# via ``mining_engineer_harvest_multiplier`` (mining.md:83).
 PRODUCTION_BONUS: dict[ProfessionType, dict[str, float]] = {
     ProfessionType.MINING_ENGINEERS: {"fuel": 1.30},
     ProfessionType.INDUSTRIAL_MANAGERS: {"equipment": 1.35},
@@ -46,6 +48,7 @@ TERRAFORM_ENGINEER_RATE_PER_1K = 0.5  # habitability / month per 1k engineers
 TERRAFORM_ENGINEER_MONTHLY_CAP = 5.0  # at 10k engineers
 SPACE_ENGINEER_REPAIR_MULTIPLIER = 1.25  # professions.md L32
 TRADE_SPECIALIST_CREDIT_MULTIPLIER = 1.25  # professions.md L57
+MINING_ENGINEER_HARVEST_MULTIPLIER = 1.30  # professions.md L34 / mining.md:83
 
 
 def _parse_profession(value: str) -> ProfessionType:
@@ -131,6 +134,34 @@ def trade_specialist_credit_multiplier(db: Session, planet_id: UUID) -> float:
     if counts.get(ProfessionType.TRADE_SPECIALISTS, 0) > 0:
         return TRADE_SPECIALIST_CREDIT_MULTIPLIER
     return 1.0
+
+
+def mining_engineer_multiplier(db: Session, planet_id: UUID) -> float:
+    counts = profession_counts(db, planet_id)
+    if counts.get(ProfessionType.MINING_ENGINEERS, 0) > 0:
+        return MINING_ENGINEER_HARVEST_MULTIPLIER
+    return 1.0
+
+
+def mining_engineer_harvest_multiplier(
+    db: Session, player_id: UUID, region_id: Optional[UUID]
+) -> float:
+    """Best planet-local Mining Engineers bonus in ``region_id`` (mining.md:83)."""
+    if region_id is None:
+        return 1.0
+    planets = (
+        db.query(Planet)
+        .join(player_planets, Planet.id == player_planets.c.planet_id)
+        .filter(
+            player_planets.c.player_id == player_id,
+            Planet.region_id == region_id,
+        )
+        .all()
+    )
+    best = 1.0
+    for planet in planets:
+        best = max(best, mining_engineer_multiplier(db, planet.id))
+    return best
 
 
 def _max_profession_multiplier_for_station(
