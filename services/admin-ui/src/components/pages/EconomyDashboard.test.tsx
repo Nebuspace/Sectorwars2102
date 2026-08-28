@@ -386,4 +386,33 @@ describe('EconomyDashboard mutation errors (LEG-2600)', () => {
     expect(toastError).toHaveBeenCalledWith('Missing scope admin.economy.alerts');
     expect(toastError).not.toHaveBeenCalledWith('Failed to delete price alert');
   });
+
+  it('surfaces rate-limit copy on delete-alert DELETE 429', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.post).mockResolvedValueOnce({
+      data: { alert_id: 'alert-1' },
+      status: 200,
+    });
+    vi.mocked(api.delete).mockRejectedValue(httpErr(429));
+
+    render(<EconomyDashboard />);
+    await waitFor(() => expect(screen.getByLabelText(/^Station$/)).toBeTruthy());
+
+    await user.selectOptions(screen.getByLabelText(/^Station$/), 'st1');
+    await user.selectOptions(screen.getByLabelText(/^Commodity$/), 'ore');
+    await user.type(screen.getByLabelText(/Threshold Value/i), '15');
+    await user.click(screen.getByRole('button', { name: /Create Alert/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /Delete/i })).toBeTruthy();
+    });
+
+    await user.click(screen.getByRole('button', { name: /Delete/i }));
+
+    await waitFor(() => {
+      expect(api.delete).toHaveBeenCalledWith('/api/v1/admin/economy/alerts/alert-1');
+    });
+    expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/rate limit/i));
+    expect(toastError).not.toHaveBeenCalledWith('Failed to delete price alert');
+  });
 });
