@@ -28,6 +28,22 @@ ENTRY_WITHDRAW_CREDITS = "withdraw_credits"
 ENTRY_WITHDRAW_COMMODITY = "withdraw_commodity"
 
 
+class CentralBankError(Exception):
+    """Recoverable Bank withdrawal/deposit failure for HTTP mapping."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int = 400,
+        payload: Optional[Dict[str, Any]] = None,
+    ):
+        super().__init__(message)
+        self.message = message
+        self.status_code = status_code
+        self.payload = payload or {}
+
+
 def get_or_create_account(
     db: Session, player_id: uuid.UUID,
 ) -> PlayerCentralBankAccount:
@@ -140,6 +156,191 @@ def deposit_commodities(
     )
     db.flush()
     return account
+
+
+def _override_credit_balance(account: PlayerCentralBankAccount) -> int:
+    """Credits withdrawable at a non-Starport-Prime dock (ADR-0054 X-I3)."""
+    total = 0
+    for entry in account.ledger or []:
+        if not entry.get("access_override") or entry.get("consumed"):
+            continue
+        remaining = entry.get("remaining_amount", entry.get("amount", 0))
+        try:
+            remaining = int(remaining)
+        except (TypeError, ValueError):
+            continue
+        if remaining > 0:
+            total += remaining
+    return total
+
+
+def available_withdraw_credits(
+    account: PlayerCentralBankAccount, *, at_starport_prime: bool
+) -> int:
+    balance = int(account.credits or 0)
+    if at_starport_prime:
+        return balance
+    return min(balance, _override_credit_balance(account))
+
+
+def _consume_override_entries(
+    account: PlayerCentralBankAccount, amount: int
+) -> None:
+    remaining = int(amount)
+    ledger = list(account.ledger or [])
+    for entry in ledger:
+        if remaining <= 0:
+            break
+        if not entry.get("access_override") or entry.get("consumed"):
+            continue
+        avail = entry.get("remaining_amount", entry.get("amount", 0))
+        try:
+            avail = int(avail)
+        except (TypeError, ValueError):
+            continue
+        if avail <= 0:
+            continue
+        if avail <= remaining:
+            remaining -= avail
+            entry["consumed"] = True
+            entry["remaining_amount"] = 0
+        else:
+            entry["remaining_amount"] = avail - remaining
+            remaining = 0
+    account.ledger = ledger
+    flag_modified(account, "ledger")
+
+
+def _require_docked_at(player: Player, station) -> None:
+    if not player.is_docked or player.current_port_id != station.id:
+        raise CentralBankError(
+            "You must be docked at a station to withdraw from the Bank"
+        )
+
+
+def withdraw_credits(
+    db: Session,
+    player: Player,
+    station,
+    amount: int,
+) -> PlayerCentralBankAccount:
+    """Move liquid credits from the Bank to the player's wallet."""
+    if amount <= 0:
+        raise CentralBankError("Withdrawal amount must be positive")
+    _require_docked_at(player, station)
+    at_starport_prime = bool(getattr(station, "is_starport_prime", False))
+    account = get_or_create_account(db, player.id)
+    available = available_withdraw_credits(
+        account, at_starport_prime=at_starport_prime
+    )
+    if amount > available:
+        if not at_starport_prime:
+            raise CentralBankError(
+                "Withdrawal exceeds access-override balance; dock at "
+                "Starport Prime to access full account",
+                payload={"available_at_this_port": available},
+            )
+        raise CentralBankError(
+            "INSUFFICIENT_BANK_BALANCE",
+            payload={"available": available, "requested": amount},
+        )
+    if not at_starport_prime:
+        _consume_override_entries(account, amount)
+    account.credits = int(account.credits or 0) - int(amount)
+    player.credits = int(player.credits or 0) + int(amount)
+    _append_ledger(
+        account,
+        entry_type=ENTRY_WITHDRAW_CREDITS,
+        amount=int(amount),
+        source=f"station:{station.id}",
+        notes="bank_withdraw_credits",
+        access_override=False,
+    )
+    db.flush()
+    return account
+
+
+def withdraw_commodity(
+    db: Session,
+    player: Player,
+    ship,
+    station,
+    commodity: str,
+    quantity: int,
+) -> Dict[str, Any]:
+    """Move commodity stacks from the Bank into the player's ship cargo."""
+    from src.models.ship import effective_cargo_capacity
+    from src.services.turn_service import spend_turns
+
+    if quantity <= 0:
+        raise CentralBankError("Withdrawal quantity must be positive")
+    _require_docked_at(player, station)
+    if not getattr(station, "is_starport_prime", False):
+        raise CentralBankError(
+            "Commodity withdrawals require docking at Starport Prime"
+        )
+
+    account = get_or_create_account(db, player.id)
+    holdings = dict(account.commodities or {})
+    key = str(commodity)
+    available = int(holdings.get(key, 0))
+    if quantity > available:
+        raise CentralBankError(
+            "INSUFFICIENT_BANK_BALANCE",
+            payload={
+                "commodity": key,
+                "available": available,
+                "requested": quantity,
+            },
+        )
+
+    cargo = dict(ship.cargo or {})
+    contents: Dict[str, int] = dict(cargo.get("contents") or {})
+    capacity = effective_cargo_capacity(ship)
+    used = sum(int(q) for q in contents.values() if isinstance(q, (int, float)))
+    free_cargo = max(0, int(capacity) - int(used))
+    if quantity > free_cargo:
+        raise CentralBankError(
+            "Insufficient cargo space",
+            payload={"free_cargo": free_cargo, "requested": quantity},
+        )
+
+    turn_cost = (int(quantity) + 99) // 100
+    if int(player.turns or 0) < turn_cost:
+        raise CentralBankError(
+            "Not enough turns for commodity withdrawal",
+            payload={"turns_required": turn_cost, "turns_available": int(player.turns or 0)},
+        )
+
+    spend_turns(player, turn_cost)
+    holdings[key] = available - int(quantity)
+    if holdings[key] <= 0:
+        holdings.pop(key, None)
+    account.commodities = holdings
+    flag_modified(account, "commodities")
+
+    contents[key] = int(contents.get(key, 0)) + int(quantity)
+    cargo["contents"] = contents
+    cargo["used"] = sum(int(q) for q in contents.values())
+    ship.cargo = cargo
+    flag_modified(ship, "cargo")
+
+    _append_ledger(
+        account,
+        entry_type=ENTRY_WITHDRAW_COMMODITY,
+        amount=int(quantity),
+        source=f"station:{station.id}",
+        notes="bank_withdraw_commodity",
+        access_override=False,
+        extra={"commodity": key, "turn_cost": turn_cost},
+    )
+    db.flush()
+    return {
+        "commodity": key,
+        "quantity": int(quantity),
+        "turn_cost": turn_cost,
+        "bank_commodities_remaining": dict(account.commodities or {}),
+    }
 
 
 def is_player_online_sync(player_id: uuid.UUID) -> Optional[bool]:

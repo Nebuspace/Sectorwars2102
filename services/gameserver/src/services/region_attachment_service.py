@@ -257,7 +257,21 @@ class RegionAttachmentService:
         ``True`` iff a row was actually inserted (``False`` on a duplicate
         no-op — the caller treats that as "already attached", not a
         failure).
+
+        LEG-88: persists canonical hop-unit length + banded turn_cost from
+        endpoint Sector 3D coordinates when both rows resolve.
         """
+        from src.services.warp_tunnel_length import natural_tunnel_cost_fields
+
+        origin = self.db.get(Sector, origin_sector_id)
+        dest = self.db.get(Sector, destination_sector_id)
+        if origin is None or dest is None:
+            raise ValueError(
+                f"LEG-88: Phase-14 retry missing Sector rows "
+                f"(spoke={origin_sector_id}, nexus={destination_sector_id})"
+            )
+        _length, turn_cost, properties = natural_tunnel_cost_fields(origin, dest)
+
         key = make_idempotency_key(region_id, attempt_n)
         stmt = (
             pg_insert(WarpTunnel)
@@ -268,6 +282,8 @@ class RegionAttachmentService:
                 type=WarpTunnelType.NATURAL,
                 is_bidirectional=True,
                 is_latent=False,
+                turn_cost=turn_cost,
+                properties=properties,
                 description=description,
                 idempotency_key=key,
             )

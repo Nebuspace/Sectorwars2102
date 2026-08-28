@@ -122,12 +122,11 @@ class FleetService:
 
         # Derive fleet.sector_id from the flagship's live ship position
         # (fleet-tactics.md:71,81 — the flagship is the fleet's single
-        # position anchor; fleets have no travel-as-a-unit mechanic of their
-        # own). Ship.sector_id is the Integer sector_number; Fleet.sector_id
-        # is the Sector UUID — same resolution move_fleet used before it was
-        # retired as dead/superseded code. Best-effort: no flagship or an
-        # unresolvable sector leaves the prior value untouched rather than
-        # clobbering a known-good position with an unknown one.
+        # position anchor). Explicit travel-as-a-unit still goes through
+        # move_fleet (fleet-coordination.md Inputs/Outputs). Ship.sector_id
+        # is the Integer sector_number; Fleet.sector_id is the Sector UUID.
+        # Best-effort: no flagship or an unresolvable sector leaves the prior
+        # value untouched rather than clobbering a known-good position.
         flagship = next(
             (m for m in fleet.members if (m.role or "") == FleetRole.FLAGSHIP.value and m.ship),
             None,
@@ -315,7 +314,8 @@ class FleetService:
         member"). This is the single shared removal path for BOTH a manual
         removal (fleets.py route) and a combat KIA (_record_ship_casualty),
         so hooking succession here covers both triggers without duplication.
-        See _promote_flagship_successor for the NO-CANON seniority kernel.
+        See _promote_flagship_successor for the seniority kernel
+        (DECISIONS.md fleet-flagship-seniority-definition).
 
         commit (WO-FLEET-ROUND-INTEGRITY sub-part (b)): True (default) issues
         an immediate self.db.commit() here — the manual-removal route
@@ -377,12 +377,11 @@ class FleetService:
         the prior flagship's FleetMember row was removed (destroyed OR
         manually removed — see remove_ship_from_fleet, the single caller).
 
-        NO-CANON KERNEL (flagged for a DECISIONS.md ruling): fleet-tactics.md
-        only says "leadership transitions to the next-most-senior member"
-        (target spec) without defining "seniority". This kernel treats
-        seniority as earliest FleetMember.joined_at, ties broken by the
-        lowest member id (str-compared UUID — a stable, deterministic
-        tie-break, not a canon ruling). Swapping the definition later is a
+        CANON (ratified 2026-08-10, DECISIONS.md fleet-flagship-seniority-definition)
+        — seniority is earliest FleetMember.joined_at, ties broken by the
+        lowest member id (str-compared UUID). fleet-tactics.md only says
+        "leadership transitions to the next-most-senior member"; this is the
+        ratified definition of seniority. Swapping the definition later is a
         one-line change to the sort key below.
 
         If the fallen flagship's pilot (fallen_pilot_id — the removed
@@ -461,6 +460,60 @@ class FleetService:
 
         return fleet
 
+    def move_fleet(self, fleet_id: UUID, sector_id: UUID) -> Dict[str, Any]:
+        """Move an entire fleet to a new sector (fleet-coordination.md).
+
+        Updates ``Fleet.sector_id`` and every member ship's integer
+        ``Ship.sector_id`` (sector_number) to match. Rejects while
+        ``IN_BATTLE`` (invariant 4). Returns the refreshed fleet plus a
+        ``fleet_moved`` event payload (origin + destination) for the route
+        to publish on the realtime bus.
+        """
+        locked = self._lock_fleets_ascending({fleet_id})
+        fleet = locked.get(fleet_id)
+        if not fleet:
+            raise ValueError(f"Fleet {fleet_id} not found")
+
+        if fleet.status == FleetStatus.IN_BATTLE.value:
+            raise ValueError("Cannot move fleet during battle")
+
+        if fleet.status == FleetStatus.DISBANDED.value:
+            raise ValueError("Cannot move a disbanded fleet")
+
+        sector = self.db.query(Sector).filter(Sector.id == sector_id).first()
+        if not sector:
+            raise ValueError(f"Sector {sector_id} not found")
+
+        origin_uuid = fleet.sector_id
+        origin_number: Optional[int] = None
+        if origin_uuid is not None:
+            origin_row = self.db.query(Sector).filter(Sector.id == origin_uuid).first()
+            if origin_row is not None:
+                origin_number = origin_row.sector_id
+
+        # Move all member ships — Ship.sector_id is an Integer (sector_number)
+        for member in fleet.members:
+            if member.ship:
+                member.ship.sector_id = sector.sector_id
+
+        fleet.sector_id = sector_id
+        self.db.commit()
+        self.db.refresh(fleet)
+
+        event = {
+            "type": "fleet_moved",
+            "fleet_id": str(fleet.id),
+            "origin_sector_id": str(origin_uuid) if origin_uuid else None,
+            "destination_sector_id": str(sector_id),
+            "origin_sector_number": origin_number,
+            "destination_sector_number": sector.sector_id,
+        }
+        logger.info(
+            "Moved fleet %s to sector %s (number %s)",
+            fleet_id, sector_id, sector.sector_id,
+        )
+        return {"fleet": fleet, "event": event}
+
     def disband_fleet(self, fleet_id: UUID) -> bool:
         """Disband a fleet."""
         # Lock the fleet row before checking status (WO-FLEET-ROUND-INTEGRITY
@@ -489,15 +542,14 @@ class FleetService:
 
     # Fleet Supply Methods
 
-    # ---- Resupply kernel constants (NO-CANON — FLAGGED for DECISIONS Pending) ----
+    # ---- Resupply kernel constants (ratified 2026-08-10, DECISIONS.md
+    # fleet-station-resupply-cost-rate) ----
     #
-    # fleet-tactics.md "Supply" states only: "Supply replenishes when the fleet
+    # fleet-tactics.md "Supply" states: "Supply replenishes when the fleet
     # is docked at a friendly station, at a rate proportional to station class."
-    # It is explicitly marked 📐 design-only and gives NO credit cost and NO
-    # per-class numbers. The values below are a SENSIBLE KERNEL, not canon, and
-    # must be reconciled with a human ruling (see report → DECISIONS Pending
-    # "fleet-station-resupply cost+rate"). They are intentionally named so a
-    # future canon swap is a one-line change.
+    # Credit cost + per-class restore ceiling were unstated; option (a) ratified
+    # the shipped 50 / 20 / 8 / 100 constants as-is. Named so a future canon
+    # swap is a one-line change.
     SUPPLY_MAX = 100                      # Fleet.supply_level upper bound (model: 0-100)
     RESUPPLY_COST_PER_POINT = 50         # credits charged per supply POINT restored
     # "rate proportional to station class": a single resupply visit can raise
@@ -511,7 +563,7 @@ class FleetService:
     def _max_restore_for_station(self, station: "Station") -> int:
         """Per-visit restore CEILING for a station, scaling with its class.
 
-        NO-CANON kernel (see RESUPPLY_* constants). station_class is a
+        See RESUPPLY_* (fleet-station-resupply-cost-rate). station_class is a
         StationClass enum whose .value is the 0-11 integer class.
         """
         try:
@@ -543,7 +595,7 @@ class FleetService:
             and that station is in the fleet's sector (the fleet is at the dock).
           - The player has enough credits for the restore being purchased.
 
-        Cost + restore-rate numbers are a NO-CANON kernel (see RESUPPLY_*).
+        Cost + restore-rate numbers: DECISIONS.md fleet-station-resupply-cost-rate.
 
         Returns: {fleet_id, supply_level (new), supply_restored, credits_spent,
                   station_id, station_class, credits_remaining}.

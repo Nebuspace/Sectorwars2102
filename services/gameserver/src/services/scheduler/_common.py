@@ -347,6 +347,13 @@ _PASSIVE_INCOME_ANCHOR_KEY = "_passive_income_last_utc_date"
 DAILY_STIPEND_CHECK_SECONDS = int(
     os.environ.get("DAILY_STIPEND_CHECK_SECONDS", str(35 * 60))
 )
+# SectorFactionInfluence daily idle decay (LEG-INI-05 / LEG-65). Coarse
+# pre-filter so we don't take the advisory lock every 60s; once-per-UTC-day
+# guarantee comes from Galaxy.state[_SFI_DECAY_STATE_KEY]. Offset to 42m.
+SFI_DECAY_CHECK_SECONDS = int(
+    os.environ.get("SFI_DECAY_CHECK_SECONDS", str(42 * 60))
+)
+_SFI_DECAY_STATE_KEY = "sfi_decay_last_utc_date"
 
 # System-bounty pot accrual pre-filter (WO-BN). The SYSTEM bounty is now a STORED
 # pot per criminal (Player.settings JSONB) that GROWS over time and RESETS to 0
@@ -786,6 +793,7 @@ _CONSTRUCTION_ADVANCE_LOCK_KEY = _mnemonic_lock_key("CNAD")
 _ECONOMIC_METRICS_LOCK_KEY = _mnemonic_lock_key("ECMT")
 _IDLE_INCOME_LOCK_KEY = _mnemonic_lock_key("IDLI")
 _DAILY_STIPEND_LOCK_KEY = _mnemonic_lock_key("STIP")
+_SFI_DECAY_LOCK_KEY = _mnemonic_lock_key("SFID")
 _BOUNTY_ACCRUAL_LOCK_KEY = _mnemonic_lock_key("BNTY")
 _STOLEN_SHIP_REP_PENALTY_LOCK_KEY = _mnemonic_lock_key("STLN")
 # Contested registration-transfer 24h auto-complete sweep (ship-registry.md
@@ -808,11 +816,13 @@ _PRICE_HISTORY_LOCK_KEY = _mnemonic_lock_key("PXHS")
 _ROUTE_RUNS_RETENTION_LOCK_KEY = _mnemonic_lock_key("RTRT")
 _ORPHAN_SCHEDULE_REPAIR_LOCK_KEY = _mnemonic_lock_key("ORPH")
 _SEED_TRADER_ROSTERS_LOCK_KEY = _mnemonic_lock_key("SEED")
+_SEED_RESEARCHER_ROSTERS_LOCK_KEY = _mnemonic_lock_key("RSED")
 _LAW_PATROL_DISPERSAL_LOCK_KEY = _mnemonic_lock_key("LAWP")
 _STRANDED_RELOCATE_LOCK_KEY = _mnemonic_lock_key("STRN")
 _TRADER_NOTORIETY_LOCK_KEY = _mnemonic_lock_key("NTRY")
 _TRADER_MISSION_LOCK_KEY = _mnemonic_lock_key("TMSN")
 _BULK_FILL_TRADERS_LOCK_KEY = _mnemonic_lock_key("BFIL")
+_BULK_FILL_RESEARCHERS_LOCK_KEY = _mnemonic_lock_key("RBFL")
 # P9-realtime-npc-crash-watermark: startup catch-up, own key -- NOT the
 # global _ADVISORY_LOCK_KEY (that stays reserved for _run_due_ticks_sync
 # alone, per the house convention documented above). Prevents two
@@ -879,6 +889,9 @@ _PHASE14_ATTACHMENT_RETRY_LOCK_KEY = _mnemonic_lock_key("PH14")
 # two gameserver instances don't double-complete the same PENDING row.
 # 'MHRV' = Mining HaRVest.
 _MINING_HARVEST_LOCK_KEY = _mnemonic_lock_key("MHRV")
+# LEG-2607: ClaimLicense 1h-before expiry warnings (mining.md:258).
+# 'MINL' = MINing License expiry warn.
+_MINING_LICENSE_EXPIRY_LOCK_KEY = _mnemonic_lock_key("MINL")
 
 # ADR-0063: recruit lifecycle stage lasts 7 canonical days, then ACTIVE.
 RECRUIT_STAGE_HOURS = 7 * 24
@@ -1200,6 +1213,36 @@ async def _broadcast_events(events: List[Dict[str, Any]]) -> None:
                 )
             continue
 
+        # LEG-157 / SYSTEMS/anchor-repair-service.md: lifecycle ops alerts for
+        # missing / repaired / repair_failed anchors. Same region+admin fan-out
+        # as coordinated_genocide — NOT sector rooms (sector_id may be null and
+        # the operator dashboard is the intended audience). Best-effort only;
+        # never raise into the governance sweep / repair commit path.
+        if event.get("type") in (
+            "region_anchor_missing",
+            "region_anchor_repaired",
+            "region_anchor_repair_failed",
+        ):
+            region_id = event.get("region_id")
+            if region_id is not None:
+                try:
+                    await connection_manager.broadcast_to_region(
+                        str(region_id), dict(event)
+                    )
+                except Exception:
+                    logger.exception(
+                        "NPC scheduler: region broadcast failed for %s",
+                        event.get("type"),
+                    )
+            try:
+                await connection_manager.broadcast_to_admins(dict(event))
+            except Exception:
+                logger.exception(
+                    "NPC scheduler: admin broadcast failed for %s",
+                    event.get("type"),
+                )
+            continue
+
         # WO-G4: genesis_progress is a PERSONAL frame to the planet owner — not a
         # sector room broadcast. Route it via the per-user primitive
         # (connection_manager.send_personal_message(user_id: str, message)).
@@ -1262,6 +1305,24 @@ async def _broadcast_events(events: List[Dict[str, Any]]) -> None:
                     logger.exception(
                         "NPC scheduler: mining_harvest_completed send failed for %s",
                         player_id,
+                    )
+            continue
+
+        if event.get("type") in (
+            "mining_harvest_notification",
+            "mining_license_expiry_warning",
+        ):
+            user_id = event.get("user_id")
+            if user_id is not None:
+                try:
+                    await connection_manager.send_personal_message(
+                        str(user_id), dict(event)
+                    )
+                except Exception:
+                    logger.exception(
+                        "NPC scheduler: %s send failed for %s",
+                        event.get("type"),
+                        user_id,
                     )
             continue
 
