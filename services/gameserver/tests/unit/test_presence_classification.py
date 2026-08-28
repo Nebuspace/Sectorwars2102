@@ -30,6 +30,9 @@ class _FakeQuery:
     def filter(self, *a, **kw):
         return self
 
+    def group_by(self, *a, **kw):
+        return self
+
     def all(self):
         return list(self._rows)
 
@@ -39,7 +42,12 @@ class _FakeSession:
         self._npcs = npcs or []
         self._players = players or []
 
-    def query(self, model):
+    def query(self, *entities):
+        # LEG-59+ enrich issues multi-column aggregates
+        # (PlayerMedal.player_id, count(...)); return empty for those.
+        if len(entities) != 1:
+            return _FakeQuery([])
+        model = entities[0]
         name = getattr(model, "__name__", "")
         if name == "NPCCharacter":
             return _FakeQuery(self._npcs)
