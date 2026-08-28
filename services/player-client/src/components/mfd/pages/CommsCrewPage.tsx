@@ -70,6 +70,47 @@ const contactDisplayName = (contact: any): string =>
 
 type CommsMode = 'hails' | 'threads';
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+function serverDetail(err: unknown): string | undefined {
+  if (err && typeof err === 'object') {
+    const rawDetail = (err as { response?: { data?: { detail?: unknown } } }).response?.data
+      ?.detail;
+    if (typeof rawDetail === 'string' && rawDetail.trim()) return rawDetail.trim();
+  }
+  const message = err instanceof Error ? err.message : undefined;
+  if (
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim())
+  ) {
+    return message.trim();
+  }
+  return undefined;
+}
+
+/** apiRequest throws Error with `.status`; legacy axios callers may use `.response.data.detail`. */
+export function formatCommsFlagError(err: unknown): string {
+  const status = httpStatus(err);
+  const detail = serverDetail(err);
+
+  if (status === 404) {
+    if (detail) return detail;
+    return 'Message not found';
+  }
+
+  if (detail) return detail;
+  return 'Failed to flag transmission';
+}
+
 const conversationPartyLabel = (msg: PlayerMessage, playerId: string | undefined): string => {
   if (!playerId) return (msg.sender_name || 'UNKNOWN').toUpperCase();
   if (msg.sender_id !== playerId) return (msg.sender_name || 'UNKNOWN').toUpperCase();
@@ -323,7 +364,7 @@ const CommsCrewPage: React.FC = () => {
       setFlagMenuId(null);
       setFlagNotice('FLAGGED FOR MODERATION');
     } catch (err: unknown) {
-      setFlagError(err instanceof Error ? err.message : 'Failed to flag transmission');
+      setFlagError(formatCommsFlagError(err));
     } finally {
       setFlaggingId(null);
     }
