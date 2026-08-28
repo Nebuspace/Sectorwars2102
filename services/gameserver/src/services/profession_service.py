@@ -29,6 +29,8 @@ from src.models.profession_training_queue import (
 
 # Citadel L3+ (Colony phase) required to operate training (professions.md).
 MIN_CITADEL_FOR_TRAINING = 3
+# Research Scientists require Research Lab L3 (Planet.research_level; professions.md L40).
+MIN_RESEARCH_LAB_FOR_RESEARCH_SCIENTISTS = 3
 
 # Numeric bonus multipliers from professions.md (non-TBD cells only).
 PRODUCTION_BONUS: dict[ProfessionType, dict[str, float]] = {
@@ -46,6 +48,7 @@ TERRAFORM_ENGINEER_RATE_PER_1K = 0.5  # habitability / month per 1k engineers
 TERRAFORM_ENGINEER_MONTHLY_CAP = 5.0  # at 10k engineers
 SPACE_ENGINEER_REPAIR_MULTIPLIER = 1.25  # professions.md L32
 TRADE_SPECIALIST_CREDIT_MULTIPLIER = 1.25  # professions.md L57
+MINING_ENGINEER_ORE_MULTIPLIER = 1.30  # professions.md L34; mining.md step 5 (ore)
 
 
 def _parse_profession(value: str) -> ProfessionType:
@@ -133,6 +136,13 @@ def trade_specialist_credit_multiplier(db: Session, planet_id: UUID) -> float:
     return 1.0
 
 
+def mining_engineer_ore_multiplier(db: Session, planet_id: UUID) -> float:
+    counts = profession_counts(db, planet_id)
+    if counts.get(ProfessionType.MINING_ENGINEERS, 0) > 0:
+        return MINING_ENGINEER_ORE_MULTIPLIER
+    return 1.0
+
+
 def _max_profession_multiplier_for_station(
     db: Session,
     player_id: UUID,
@@ -174,6 +184,42 @@ def trade_specialist_credit_multiplier_for_station(
     )
 
 
+def _max_profession_multiplier_for_region(
+    db: Session,
+    player_id: UUID,
+    region_id: Optional[UUID],
+    *,
+    planet_multiplier,
+) -> float:
+    """Best planet-local bonus among player-owned worlds in ``region_id``."""
+    if region_id is None:
+        return 1.0
+    planets = (
+        db.query(Planet)
+        .join(player_planets, Planet.id == player_planets.c.planet_id)
+        .filter(
+            player_planets.c.player_id == player_id,
+            Planet.region_id == region_id,
+        )
+        .all()
+    )
+    best = 1.0
+    for planet in planets:
+        best = max(best, planet_multiplier(db, planet.id))
+    return best
+
+
+def mining_engineer_ore_multiplier_for_region(
+    db: Session, player_id: UUID, region_id: Optional[UUID],
+) -> float:
+    return _max_profession_multiplier_for_region(
+        db,
+        player_id,
+        region_id,
+        planet_multiplier=mining_engineer_ore_multiplier,
+    )
+
+
 def terraform_engineer_monthly_habitability(engineer_count: int) -> float:
     if engineer_count <= 0:
         return 0.0
@@ -201,6 +247,26 @@ class ProfessionService:
     def _assert_training_gate(self, planet: Planet) -> None:
         if (planet.citadel_level or 0) < MIN_CITADEL_FOR_TRAINING:
             raise ValueError("citadel_level_too_low")
+
+    def _assert_profession_training_gate(self, planet: Planet, prof: ProfessionType) -> None:
+        self._assert_training_gate(planet)
+        if prof == ProfessionType.RESEARCH_SCIENTISTS:
+            if (planet.research_level or 0) < MIN_RESEARCH_LAB_FOR_RESEARCH_SCIENTISTS:
+                raise ValueError("research_lab_level_too_low")
+
+    def training_eligibility(self, planet: Planet) -> Dict[str, bool]:
+        """Per-profession eligibility for GET /planets/{id}/professions (building gates partial)."""
+        citadel_ok = (planet.citadel_level or 0) >= MIN_CITADEL_FOR_TRAINING
+        research_lab_ok = (
+            (planet.research_level or 0) >= MIN_RESEARCH_LAB_FOR_RESEARCH_SCIENTISTS
+        )
+        out: Dict[str, bool] = {}
+        for prof in ProfessionType:
+            if prof == ProfessionType.RESEARCH_SCIENTISTS:
+                out[prof.value] = citadel_ok and research_lab_ok
+            else:
+                out[prof.value] = citadel_ok
+        return out
 
     def advance_queue(self, planet: Planet, *, now: Optional[datetime] = None) -> bool:
         """Lazy-complete due training rows. Returns True if planet state changed."""
@@ -283,6 +349,7 @@ class ProfessionService:
             "training_durations_days": {
                 prof.value: days for prof, days in PROFESSION_TRAINING_DAYS.items()
             },
+            "training_eligibility": self.training_eligibility(planet),
         }
 
     def queue_training(
@@ -297,8 +364,8 @@ class ProfessionService:
         if trainee_count <= 0:
             raise ValueError("invalid_trainee_count")
         self._assert_owner(planet, player_id)
-        self._assert_training_gate(planet)
         prof = _parse_profession(profession)
+        self._assert_profession_training_gate(planet, prof)
         self.advance_queue(planet, now=now)
         if (planet.colonists or 0) < trainee_count:
             raise ValueError("insufficient_generic_colonists")

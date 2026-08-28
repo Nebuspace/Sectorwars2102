@@ -26,6 +26,12 @@ import BountyBoard from '../BountyBoard';
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
+
 const SAMPLE = {
   player_id: 'p1',
   player_name: 'Rogue',
@@ -102,6 +108,36 @@ describe('BountyBoard', () => {
     });
     expect(container.querySelector('[data-testid="bounty-board-error"]')?.textContent)
       .toContain('board offline');
+  });
+
+  it('surfaces LIST 403 permission error in the alert (not empty board)', async () => {
+    getAvailable.mockRejectedValue(
+      apiRequestError(403, 'Galactic Citizen membership required to browse bounties.'),
+    );
+    await act(async () => {
+      root.render(<BountyBoard />);
+    });
+    await act(async () => {
+      await flush();
+    });
+    const alert = container.querySelector('[data-testid="bounty-board-error"]');
+    expect(alert?.getAttribute('role')).toBe('alert');
+    expect(alert?.textContent).toContain('Galactic Citizen membership required');
+    expect(container.querySelector('[data-testid="bounty-board-empty"]')).toBeNull();
+  });
+
+  it('surfaces LIST 429 rate-limit error in the alert (not empty board)', async () => {
+    getAvailable.mockRejectedValue(apiRequestError(429));
+    await act(async () => {
+      root.render(<BountyBoard />);
+    });
+    await act(async () => {
+      await flush();
+    });
+    const alert = container.querySelector('[data-testid="bounty-board-error"]');
+    expect(alert?.getAttribute('role')).toBe('alert');
+    expect(alert?.textContent).toMatch(/rate limit exceeded/i);
+    expect(container.querySelector('[data-testid="bounty-board-empty"]')).toBeNull();
   });
 
   it('marks missing sector as unavailable without inventing a value', async () => {

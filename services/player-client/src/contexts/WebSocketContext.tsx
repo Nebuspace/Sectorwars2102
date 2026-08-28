@@ -10,6 +10,11 @@ import websocketService, {
   LinkStatus
 } from '../services/websocket';
 import { parsePendingEngagementSummary } from '../services/pendingEngagementApi';
+import {
+  miningHarvestNotificationToast,
+  miningLicenseExpiryWarningToast,
+} from '../services/miningWsNotifications';
+import { requestSpacedockVenue } from '../services/spacedockVenueBus';
 import { useAuth } from './AuthContext';
 
 interface WebSocketContextType {
@@ -1034,6 +1039,23 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           break;
         }
 
+        case 'mining_harvest_notification': {
+          const toast = miningHarvestNotificationToast(message as Record<string, unknown>);
+          if (toast) {
+            addNotification(toast);
+          }
+          break;
+        }
+
+        case 'mining_license_expiry_warning': {
+          const toast = miningLicenseExpiryWarningToast(message as Record<string, unknown>);
+          if (toast) {
+            addNotification(toast);
+            requestSpacedockVenue('mining');
+          }
+          break;
+        }
+
         case 'admin_broadcast':
           addNotification({
             title: message.title || 'System Message',
@@ -1066,7 +1088,7 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           // send_failed is consumed by sendFailedHandler above — it's a
           // client-local synthetic event (websocket.ts's own send()), not
           // an unhandled server frame.)
-          if (!['sector_players', 'connection_status', 'chat_message', 'player_entered_sector', 'player_left_sector', 'notification', 'aria_response', 'aria_narration', 'medal_awarded', 'genesis_progress', 'planetary_update', 'contract_offer', 'contract_settled', 'rp_governor_status', 'reputation_changed', 'team_reputation_changed', 'npc_combat_initiated', 'bounty_updated', 'turn_pool_updated', 'send_failed', 'docking_slip_bumped', 'ship_recovered_impounded'].includes(message.type)) {
+          if (!['sector_players', 'connection_status', 'chat_message', 'player_entered_sector', 'player_left_sector', 'notification', 'aria_response', 'aria_narration', 'medal_awarded', 'genesis_progress', 'planetary_update', 'contract_offer', 'contract_settled', 'rp_governor_status', 'reputation_changed', 'team_reputation_changed', 'npc_combat_initiated', 'bounty_updated', 'turn_pool_updated', 'send_failed', 'docking_slip_bumped', 'ship_recovered_impounded', 'mining_harvest_notification', 'mining_license_expiry_warning'].includes(message.type)) {
             console.warn('WebSocket: Unhandled message type:', message.type);
           }
       }

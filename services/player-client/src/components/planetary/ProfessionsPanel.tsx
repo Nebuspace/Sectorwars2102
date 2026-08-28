@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { planetaryAPI } from '../../services/api';
 import './professions-panel.css';
 
@@ -54,6 +54,8 @@ interface PlanetProfessionsState {
   professions: Record<string, number>;
   training_queue: TrainingQueueRow[];
   training_durations_days?: Record<string, number>;
+  /** Per-profession training gates from gameserver (LEG-2697 / LEG-2698). */
+  training_eligibility?: Record<string, boolean>;
 }
 
 export interface ProfessionsPanelProps {
@@ -65,6 +67,20 @@ export interface ProfessionsPanelProps {
 
 const formatProfessionLabel = (key: string): string =>
   PROFESSION_LABELS[key] ?? key.replace(/_/g, ' ');
+
+/** Static gate copy for known training_eligibility=false keys (GS sends booleans only). */
+const TRAINING_ELIGIBILITY_GATE_MESSAGES: Partial<Record<string, string>> = {
+  RESEARCH_SCIENTISTS: 'Research Lab level 3 required to train Research Scientists.',
+};
+
+const trainingEligibilityGateTestId = (professionKey: string): string =>
+  professionKey === 'RESEARCH_SCIENTISTS'
+    ? 'professions-research-lab-gate'
+    : `professions-training-gate-${professionKey.toLowerCase()}`;
+
+const trainingEligibilityGateMessage = (professionKey: string): string =>
+  TRAINING_ELIGIBILITY_GATE_MESSAGES[professionKey] ??
+  `${formatProfessionLabel(professionKey)} training is not available yet — prerequisite buildings may be required.`;
 
 const formatCompletesAt = (iso: string | null | undefined): string => {
   if (!iso) return '—';
@@ -119,6 +135,32 @@ const ProfessionsPanel: React.FC<ProfessionsPanelProps> = ({
     fetchState();
   }, [fetchState]);
 
+  const eligibility = state?.training_eligibility;
+  const eligibleProfessions = useMemo(
+    () =>
+      eligibility != null
+        ? PROFESSION_ORDER.filter((key) => eligibility[key] !== false)
+        : [...PROFESSION_ORDER],
+    [eligibility],
+  );
+
+  useEffect(() => {
+    if (eligibleProfessions.length === 0) {
+      return;
+    }
+    if (!eligibleProfessions.includes(selectedProfession as (typeof PROFESSION_ORDER)[number])) {
+      setSelectedProfession(eligibleProfessions[0]);
+    }
+  }, [eligibleProfessions, selectedProfession]);
+
+  const ineligibleProfessions = useMemo(
+    () =>
+      citadelGateOpen && eligibility != null
+        ? PROFESSION_ORDER.filter((key) => eligibility[key] === false)
+        : [],
+    [citadelGateOpen, eligibility],
+  );
+
   const handleTrain = async () => {
     if (!citadelGateOpen) {
       setActionMessage('Citadel level 3+ required to queue profession training.');
@@ -143,6 +185,8 @@ const ProfessionsPanel: React.FC<ProfessionsPanelProps> = ({
       const message = err instanceof Error ? err.message : 'Training failed';
       if (message.includes('citadel_level_too_low')) {
         setActionMessage('Citadel level 3+ required to queue profession training.');
+      } else if (message.includes('research_lab_level_too_low')) {
+        setActionMessage('Research Lab level 3 required to train Research Scientists.');
       } else if (message.includes('insufficient_generic_colonists')) {
         setActionMessage('Not enough generic colonists available for this training run.');
       } else if (isNotOwnerError(message)) {
@@ -204,6 +248,16 @@ const ProfessionsPanel: React.FC<ProfessionsPanelProps> = ({
         </p>
       )}
 
+      {ineligibleProfessions.map((professionKey) => (
+        <p
+          key={professionKey}
+          className="professions-panel__notice"
+          data-testid={trainingEligibilityGateTestId(professionKey)}
+        >
+          {trainingEligibilityGateMessage(professionKey)}
+        </p>
+      ))}
+
       <div className="professions-panel__grid">
         {PROFESSION_ORDER.map((key) => (
           <div key={key} className="professions-panel__row">
@@ -234,7 +288,7 @@ const ProfessionsPanel: React.FC<ProfessionsPanelProps> = ({
             onChange={(e) => setSelectedProfession(e.target.value)}
             disabled={!citadelGateOpen || actionLoading}
           >
-            {PROFESSION_ORDER.map((key) => (
+            {eligibleProfessions.map((key) => (
               <option key={key} value={key}>
                 {formatProfessionLabel(key)}
                 {durations[key] != null ? ` (${durations[key]}d)` : ''}
