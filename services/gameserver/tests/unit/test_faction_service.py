@@ -1083,12 +1083,62 @@ class TestGetFactionPricingModifier:
 
     @pytest.mark.asyncio
     async def test_delegates_to_the_factions_get_pricing_modifier(self):
+        player_id = uuid4()
         faction = _faction(base_pricing_modifier=1.0)
-        rep = _reputation(current_value=650)
-        db = _FakeDb(results={Faction: [faction], Reputation: [rep]})
+        rep = _reputation(
+            player_id=player_id, faction_id=faction.id, current_value=650
+        )
+        db = _FakeDb(
+            results={
+                Faction: [faction],
+                Player: [None],
+                Reputation: [rep, rep],
+            }
+        )
         svc = FactionService(db)
-        result = await svc.get_faction_pricing_modifier(uuid4(), faction.id)
+        result = await svc.get_faction_pricing_modifier(player_id, faction.id)
         assert result == faction.get_pricing_modifier(650)
+
+    @pytest.mark.asyncio
+    async def test_team_aggregate_honored_when_personal_rep_is_low(self, monkeypatch):
+        player_id = uuid4()
+        faction_id = uuid4()
+        team_id = uuid4()
+        player = Player(id=player_id, team_id=team_id)
+        team = Team(id=team_id, name="Pricing Team", leader_id=player_id)
+        faction = _faction(id=faction_id, base_pricing_modifier=1.0)
+        personal_rep = _reputation(
+            player_id=player_id, faction_id=faction_id, current_value=0
+        )
+
+        def _fake_get_team_reputation(_db, _team, *, now=None):
+            return {
+                "standings": {
+                    str(faction_id): {
+                        "faction_id": str(faction_id),
+                        "value": 650,
+                        "level": ReputationLevel.REVERED.value,
+                    }
+                }
+            }
+
+        monkeypatch.setattr(
+            "src.services.team_reputation_service.get_team_reputation",
+            _fake_get_team_reputation,
+        )
+
+        db = _FakeDb(
+            results={
+                Faction: [faction],
+                Player: [player],
+                Team: [team],
+                Reputation: [personal_rep],
+            }
+        )
+        svc = FactionService(db)
+        result = await svc.get_faction_pricing_modifier(player_id, faction_id)
+        assert result == faction.get_pricing_modifier(650)
+        assert result != faction.base_pricing_modifier
 
 
 # ---------------------------------------------------------------------------
@@ -1119,24 +1169,90 @@ class TestCheckTerritoryAccess:
 
     @pytest.mark.asyncio
     async def test_controlled_sector_with_sufficient_reputation_is_allowed(self):
+        player_id = uuid4()
         sector_id = uuid4()
         faction = _faction(faction_type=FactionType.MERCHANTS, territory_sectors=[sector_id])
-        rep = _reputation(current_value=0)
-        db = _FakeDb(results={Faction: [[faction]], Reputation: [rep]})
+        rep = _reputation(
+            player_id=player_id, faction_id=faction.id, current_value=0
+        )
+        db = _FakeDb(
+            results={
+                Faction: [[faction]],
+                Player: [None],
+                Reputation: [rep, rep],
+            }
+        )
         svc = FactionService(db)
-        result = await svc.check_territory_access(uuid4(), sector_id)
+        result = await svc.check_territory_access(player_id, sector_id)
         assert result["allowed"] is True
 
     @pytest.mark.asyncio
     async def test_controlled_sector_with_insufficient_reputation_is_denied(self):
+        player_id = uuid4()
         sector_id = uuid4()
         faction = _faction(faction_type=FactionType.PIRATES, territory_sectors=[sector_id])
-        rep = _reputation(current_value=-250)
-        db = _FakeDb(results={Faction: [[faction]], Reputation: [rep]})
+        rep = _reputation(
+            player_id=player_id, faction_id=faction.id, current_value=-250
+        )
+        db = _FakeDb(
+            results={
+                Faction: [[faction]],
+                Player: [None],
+                Reputation: [rep, rep],
+            }
+        )
         svc = FactionService(db)
-        result = await svc.check_territory_access(uuid4(), sector_id)
+        result = await svc.check_territory_access(player_id, sector_id)
         assert result["allowed"] is False
         assert "Insufficient reputation" in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_team_aggregate_grants_territory_when_personal_rep_denied(
+        self, monkeypatch
+    ):
+        player_id = uuid4()
+        sector_id = uuid4()
+        faction_id = uuid4()
+        team_id = uuid4()
+        player = Player(id=player_id, team_id=team_id)
+        team = Team(id=team_id, name="Territory Team", leader_id=player_id)
+        faction = _faction(
+            id=faction_id,
+            faction_type=FactionType.MERCHANTS,
+            territory_sectors=[sector_id],
+        )
+        personal_rep = _reputation(
+            player_id=player_id, faction_id=faction_id, current_value=-500
+        )
+
+        def _fake_get_team_reputation(_db, _team, *, now=None):
+            return {
+                "standings": {
+                    str(faction_id): {
+                        "faction_id": str(faction_id),
+                        "value": 100,
+                        "level": ReputationLevel.ACKNOWLEDGED.value,
+                    }
+                }
+            }
+
+        monkeypatch.setattr(
+            "src.services.team_reputation_service.get_team_reputation",
+            _fake_get_team_reputation,
+        )
+
+        db = _FakeDb(
+            results={
+                Faction: [[faction]],
+                Player: [player],
+                Team: [team],
+                Reputation: [personal_rep],
+            }
+        )
+        svc = FactionService(db)
+        result = await svc.check_territory_access(player_id, sector_id)
+        assert result["allowed"] is True
+        assert result["reason"] == "Good standing"
 
 
 # ---------------------------------------------------------------------------
