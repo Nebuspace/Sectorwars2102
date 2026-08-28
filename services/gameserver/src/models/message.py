@@ -48,8 +48,9 @@ class Message(Base):
     # removed it from player-facing reads but the row (and its moderator
     # stamps above) is kept for the audit log -- see messaging.md
     # "Moderated messages remain in the database ... even after content
-    # removal". Vocabulary NO-CANON beyond NULL|'deleted'; 'redacted' /
-    # 'blocked' are reserved for the separately-gated MOD-CANON-ACTIONS set.
+    # removal". 'blocked' hides from player reads (LEG-263 / messaging.md
+    # block action). Redact keeps NULL and replaces content with
+    # "[Moderated]" so both parties still see the redaction.
     moderation_status = Column(String(16))
     
     # Relationships
