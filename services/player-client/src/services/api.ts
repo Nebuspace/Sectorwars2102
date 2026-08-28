@@ -1450,6 +1450,10 @@ export interface NavChartSector {
   z: number;
   visited: boolean;
   current: boolean;
+  /** Parent cluster nebula fields — present on known NEBULA sectors only (LEG-INI-16). */
+  nebula_type?: string;
+  quantum_field_strength?: number;
+  color_hex?: string;
 }
 
 export interface NavChartEdge {
