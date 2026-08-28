@@ -29,7 +29,7 @@ scipy==1.17.1
 
 # LLM API Dependencies for First Login AI Dialogue
 anthropic==0.120.2
-openai==2.53.0
+openai==3.3.1
 
 # MFA Dependencies
 pyotp==2.10.0
