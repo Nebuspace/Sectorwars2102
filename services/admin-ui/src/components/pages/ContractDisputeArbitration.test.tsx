@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { ContractDisputeArbitration } from './ContractDisputeArbitration';
 import { api } from '../../utils/auth';
 
@@ -19,9 +19,40 @@ const axiosError = (status: number, detail?: string) =>
     response: { status, data: detail ? { detail } : {} },
   });
 
+const sampleDispute = {
+  id: 'contract-1',
+  payment: 1000,
+  penalty: 100,
+  dispute_notes: 'Late delivery',
+  dispute_filed_at: '2026-01-01T00:00:00Z',
+  deadline: '2026-02-01T00:00:00Z',
+  commodity_type: 'ore',
+  quantity: 10,
+  acceptor_player_id: 'player-1',
+  issuer_type: 'corp',
+  issuer_id: 'corp-1',
+  escalated_to_admin: true,
+  contract_type: 'escort',
+  status: 'disputed',
+};
+
+function mockDisputesLoaded() {
+  vi.mocked(api.get).mockResolvedValue({ data: [sampleDispute] });
+}
+
+async function openRulingForm() {
+  render(<ContractDisputeArbitration />);
+  await waitFor(() => {
+    expect(screen.getByText(/Escalated Queue \(1\)/i)).toBeTruthy();
+  });
+  fireEvent.click(screen.getByText(/ore x10/i));
+  fireEvent.click(screen.getByRole('button', { name: 'Full Payout' }));
+}
+
 describe('ContractDisputeArbitration scope errors (LEG-968)', () => {
   beforeEach(() => {
     vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
   });
 
   it('surfaces scope denial on 403 load', async () => {
@@ -44,5 +75,51 @@ describe('ContractDisputeArbitration scope errors (LEG-968)', () => {
     await waitFor(() => {
       expect(screen.getByText(/rate limit/i)).toBeTruthy();
     });
+  });
+});
+
+describe('ContractDisputeArbitration resolve mutation errors (LEG-2625)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    mockDisputesLoaded();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('surfaces formatAdminApiError on resolve POST 403', async () => {
+    vi.mocked(api.post).mockRejectedValue(
+      axiosError(403, 'Missing scope admin.contracts.disputes.resolve'),
+    );
+
+    await openRulingForm();
+    fireEvent.click(screen.getByRole('button', { name: 'Submit Ruling' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        `/api/v1/admin/contracts/${sampleDispute.id}/resolve-dispute`,
+        expect.objectContaining({ outcome: 'full_payout' }),
+      );
+    });
+
+    const resolveError = document.querySelector('.resolve-error');
+    expect(resolveError).toBeTruthy();
+    expect(resolveError?.textContent).toMatch(/Missing scope admin\.contracts\.disputes\.resolve/i);
+    expect(resolveError?.textContent).not.toMatch(/^Failed to resolve dispute$/);
+  });
+
+  it('shows rate-limit copy on resolve POST 429', async () => {
+    vi.mocked(api.post).mockRejectedValue(axiosError(429));
+
+    await openRulingForm();
+    fireEvent.click(screen.getByRole('button', { name: 'Submit Ruling' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalled();
+    });
+
+    const resolveError = document.querySelector('.resolve-error');
+    expect(resolveError).toBeTruthy();
+    expect(resolveError?.textContent).toMatch(/rate limit/i);
+    expect(resolveError?.textContent).not.toMatch(/^Failed to resolve dispute$/);
   });
 });
