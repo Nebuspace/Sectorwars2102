@@ -128,6 +128,28 @@ const INSURANCE_TIER_LABELS: Record<ContractInsuranceCoverageTier, string> = {
   hazard: 'Hazard (10%)',
 };
 
+// ADR-0093 item 9 / ui-flows.md § Confirmation standard — inline confirm when
+// visible credit consequence exceeds ₡1,000 (contracts.md:188 first venue).
+const CREDIT_CONFIRM_THRESHOLD = 1000;
+const CONFIRM_ARM_MS = 3000;
+
+/** Row-visible credit magnitude for abandon/cancel confirm gating. */
+const contractCreditConsequence = (
+  contract: ContractDTO,
+  action: 'abandon' | 'cancel',
+): number => {
+  if (action === 'abandon') {
+    return Math.max(0, contract.penalty ?? 0);
+  }
+  const payment = contract.payment ?? 0;
+  if (contract.status === 'accepted') {
+    const acceptFeePct = contract.acceptance_fee_pct ?? 0;
+    const acceptFee = (payment * acceptFeePct) / 100;
+    return acceptFee + payment * 0.1;
+  }
+  return contract.escrow_amount ?? payment;
+};
+
 // WO-CONTRACT-5-CLIENT-SURFACE P1. post_player_contract restricts a
 // player posting to these two types (contracts.py's PostContractRequest
 // validator) — the other 5 ContractType members carry NPC-generator-only
@@ -209,6 +231,9 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
 
   // Shared action-in-flight guard (one action at a time, mirrors PortOfficeVenue)
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  // Inline confirm for high-credit abandon/cancel (TeamManager / Gatewright idiom).
+  const [armedAbandonId, setArmedAbandonId] = useState<string | null>(null);
+  const [armedCancelId, setArmedCancelId] = useState<string | null>(null);
   // WO-WIRE-CONTRACTS-GET-BY-ID: live GET /contracts/{id} when a row is opened.
   const [detailBusyId, setDetailBusyId] = useState<string | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
@@ -580,6 +605,52 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
       }
     },
     [runAction, onCreditsSet, fetchMine]
+  );
+
+  const armInlineConfirm = useCallback(
+    (setter: React.Dispatch<React.SetStateAction<string | null>>, contractId: string) => {
+      setter(contractId);
+      window.setTimeout(() => {
+        setter((current) => (current === contractId ? null : current));
+      }, CONFIRM_ARM_MS);
+    },
+    [],
+  );
+
+  const onAbandonClick = useCallback(
+    (contract: ContractDTO) => {
+      const consequence = contractCreditConsequence(contract, 'abandon');
+      if (consequence > CREDIT_CONFIRM_THRESHOLD) {
+        if (armedAbandonId === contract.id) {
+          setArmedAbandonId(null);
+          void handleAbandon(contract);
+        } else {
+          setArmedCancelId(null);
+          armInlineConfirm(setArmedAbandonId, contract.id);
+        }
+        return;
+      }
+      void handleAbandon(contract);
+    },
+    [armedAbandonId, armInlineConfirm, handleAbandon],
+  );
+
+  const onCancelClick = useCallback(
+    (contract: ContractDTO) => {
+      const consequence = contractCreditConsequence(contract, 'cancel');
+      if (consequence > CREDIT_CONFIRM_THRESHOLD) {
+        if (armedCancelId === contract.id) {
+          setArmedCancelId(null);
+          void handleCancel(contract);
+        } else {
+          setArmedAbandonId(null);
+          armInlineConfirm(setArmedCancelId, contract.id);
+        }
+        return;
+      }
+      void handleCancel(contract);
+    },
+    [armedCancelId, armInlineConfirm, handleCancel],
   );
 
   // Retrieve cargo from a CLAIMABLE locker (WO-CONTRACT-5-CLIENT-SURFACE
@@ -970,16 +1041,28 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
             )}
             <button
               className="action-button danger"
-              onClick={() => handleAbandon(contract)}
+              onClick={() => onAbandonClick(contract)}
               disabled={Boolean(busyAction)}
             >
-              {busyAction === `abandon-${contract.id}` ? 'Abandoning...' : '🏳️ Abandon'}
+              {busyAction === `abandon-${contract.id}`
+                ? 'Abandoning...'
+                : armedAbandonId === contract.id
+                  ? `Confirm? · ${formatCredits(contractCreditConsequence(contract, 'abandon'))} penalty`
+                  : '🏳️ Abandon'}
             </button>
           </>
         )}
         {kind === 'posted' && (contract.status === 'posted' || contract.status === 'accepted') && (
-          <button className="action-button danger" onClick={() => handleCancel(contract)} disabled={Boolean(busyAction)}>
-            {busyAction === `cancel-${contract.id}` ? 'Cancelling...' : '✖ Cancel'}
+          <button
+            className="action-button danger"
+            onClick={() => onCancelClick(contract)}
+            disabled={Boolean(busyAction)}
+          >
+            {busyAction === `cancel-${contract.id}`
+              ? 'Cancelling...'
+              : armedCancelId === contract.id
+                ? `Confirm? · ${formatCredits(contractCreditConsequence(contract, 'cancel'))}`
+                : '✖ Cancel'}
           </button>
         )}
         {kind === 'accepted' && contract.status === 'expired' && renderDisputeForm(contract)}

@@ -755,4 +755,126 @@ describe('ContractBoardVenue', () => {
       expect(mockRetrieve).not.toHaveBeenCalled();
     });
   });
+
+  describe('inline confirm for high-credit abandon/cancel (LEG-2729)', () => {
+    it('abandon above ₡1,000 requires a second confirm click before POST /abandon', async () => {
+      const highPenalty = { ...CONTRACT_ACCEPTED, penalty: 1500 };
+      mockGetBoard.mockResolvedValueOnce([]);
+      mockGetMine.mockResolvedValueOnce({ posted: [], accepted: [highPenalty] });
+      mockAbandon.mockResolvedValueOnce({
+        id: highPenalty.id,
+        status: 'expired',
+        penalty_charged: 1500,
+        credits: 8500,
+      });
+      mockGetMine.mockResolvedValueOnce({ posted: [], accepted: [] });
+
+      await act(async () => {
+        root.render(<ContractBoardVenue {...VENUE_PROPS} />);
+      });
+      await flush();
+      await clickButton('My Contracts');
+      await flush();
+
+      await clickButton('Abandon');
+      await flush();
+      expect(mockAbandon).not.toHaveBeenCalled();
+      expect(findButton('Confirm?')).toBeTruthy();
+
+      await clickButton('Confirm?');
+      await flush();
+      expect(mockAbandon).toHaveBeenCalledWith(highPenalty.id);
+    });
+
+    it('abandon at or below ₡1,000 stays one-click', async () => {
+      const lowPenalty = { ...CONTRACT_ACCEPTED, penalty: 500 };
+      mockGetBoard.mockResolvedValueOnce([]);
+      mockGetMine.mockResolvedValueOnce({ posted: [], accepted: [lowPenalty] });
+      mockAbandon.mockResolvedValueOnce({
+        id: lowPenalty.id,
+        status: 'expired',
+        penalty_charged: 500,
+        credits: 9500,
+      });
+      mockGetMine.mockResolvedValueOnce({ posted: [], accepted: [] });
+
+      await act(async () => {
+        root.render(<ContractBoardVenue {...VENUE_PROPS} />);
+      });
+      await flush();
+      await clickButton('My Contracts');
+      await flush();
+
+      await clickButton('Abandon');
+      await flush();
+      expect(mockAbandon).toHaveBeenCalledWith(lowPenalty.id);
+      expect(findButton('Confirm?')).toBeFalsy();
+    });
+
+    it('cancel above ₡1,000 escrow requires a second confirm click before POST /cancel', async () => {
+      const highEscrow = {
+        ...CONTRACT_POSTED,
+        escrow_amount: 2500,
+        payment: 2500,
+      };
+      mockGetBoard.mockResolvedValueOnce([]);
+      mockGetMine.mockResolvedValueOnce({ posted: [highEscrow], accepted: [] });
+      mockCancel.mockResolvedValueOnce({
+        id: highEscrow.id,
+        status: 'cancelled',
+        refund: 2475,
+        credits: 12475,
+      });
+      mockGetMine.mockResolvedValueOnce({ posted: [], accepted: [] });
+
+      await act(async () => {
+        root.render(<ContractBoardVenue {...VENUE_PROPS} />);
+      });
+      await flush();
+      await clickButton('My Contracts');
+      await flush();
+      await clickButton('Posted');
+      await flush();
+
+      await clickButton('Cancel');
+      await flush();
+      expect(mockCancel).not.toHaveBeenCalled();
+      expect(findButton('Confirm?')).toBeTruthy();
+
+      await clickButton('Confirm?');
+      await flush();
+      expect(mockCancel).toHaveBeenCalledWith(highEscrow.id);
+    });
+
+    it('cancel at or below ₡1,000 stays one-click', async () => {
+      const lowEscrow = {
+        ...CONTRACT_POSTED,
+        escrow_amount: 800,
+        payment: 800,
+      };
+      mockGetBoard.mockResolvedValueOnce([]);
+      mockGetMine.mockResolvedValueOnce({ posted: [lowEscrow], accepted: [] });
+      mockCancel.mockResolvedValueOnce({
+        id: lowEscrow.id,
+        status: 'cancelled',
+        refund: 792,
+        credits: 10792,
+      });
+      mockGetMine.mockResolvedValueOnce({ posted: [], accepted: [] });
+
+      await act(async () => {
+        root.render(<ContractBoardVenue {...VENUE_PROPS} />);
+      });
+      await flush();
+      await clickButton('My Contracts');
+      await flush();
+      await clickButton('Posted');
+      await flush();
+
+      await clickButton('Cancel');
+      await flush();
+      expect(mockCancel).toHaveBeenCalledWith(lowEscrow.id);
+      expect(findButton('Confirm?')).toBeFalsy();
+    });
+  });
 });

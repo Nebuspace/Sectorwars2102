@@ -1,15 +1,15 @@
 // @vitest-environment jsdom
 /**
- * GameContext — armoryAPI.deploy (WO-WIRE-ARMORY-DEPLOY).
+ * GameContext — planetaryAPI.withdrawStockpileToCargo (LEG-546).
  */
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const { mockGet, mockPost, mockDeploy } = vi.hoisted(() => ({
+const { mockGet, mockPost, mockWithdrawStockpile } = vi.hoisted(() => ({
   mockGet: vi.fn(),
   mockPost: vi.fn(),
-  mockDeploy: vi.fn(),
+  mockWithdrawStockpile: vi.fn(),
 }));
 
 vi.mock('../../services/apiClient', () => ({
@@ -22,8 +22,9 @@ vi.mock('../../services/api', async () => {
   const actual = await vi.importActual<typeof import('../../services/api')>('../../services/api');
   return {
     ...actual,
-    armoryAPI: {
-      deploy: (...a: unknown[]) => mockDeploy(...a),
+    planetaryAPI: {
+      ...actual.planetaryAPI,
+      withdrawStockpileToCargo: (...a: unknown[]) => mockWithdrawStockpile(...a),
     },
     sectorAPI: {
       ...actual.sectorAPI,
@@ -57,10 +58,10 @@ function defaultGet(url: string) {
         max_turns: 500,
         current_sector_id: 1,
         is_docked: false,
-        is_landed: false,
+        is_landed: true,
         defense_drones: 0,
         attack_drones: 0,
-        mines: 5,
+        mines: 0,
         personal_reputation: 0,
         reputation_tier: 'unknown',
         name_color: '#fff',
@@ -95,14 +96,19 @@ function Consumer() {
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-describe('GameContext armoryAPI.deploy', () => {
+describe('GameContext planetaryAPI stockpile withdraw', () => {
   let container: HTMLElement;
   let root: ReturnType<typeof createRoot>;
 
   beforeEach(async () => {
     mockGet.mockImplementation(defaultGet);
     mockPost.mockResolvedValue({ data: {} });
-    mockDeploy.mockResolvedValue({ success: true, deployed: 3 });
+    mockWithdrawStockpile.mockResolvedValue({
+      success: true,
+      message: 'Withdrew 10 fuel ore to cargo.',
+      amount_to_cargo: 10,
+      tax_skimmed: 0,
+    });
     captured = null;
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -126,25 +132,27 @@ describe('GameContext armoryAPI.deploy', () => {
     vi.clearAllMocks();
   });
 
-  it('deployMines routes through armoryAPI.deploy', async () => {
+  it('withdrawStockpileToCargo routes through planetaryAPI', async () => {
     let result: unknown;
     await act(async () => {
-      result = await captured!.deployMines(3);
+      result = await captured!.withdrawStockpileToCargo('planet-9', 'fuel_ore', 10);
       await flush();
     });
-    expect(mockDeploy).toHaveBeenCalledWith(3, 'armored_mine');
-    expect(result).toEqual({ success: true, deployed: 3 });
-    const rawPosts = mockPost.mock.calls.filter((c) =>
-      String(c[0]).includes('/armory/deploy'),
-    );
-    expect(rawPosts).toHaveLength(0);
+    expect(mockWithdrawStockpile).toHaveBeenCalledWith('planet-9', 'fuel_ore', 10);
+    expect(result).toEqual({
+      success: true,
+      message: 'Withdrew 10 fuel ore to cargo.',
+      amount_to_cargo: 10,
+      tax_skimmed: 0,
+    });
   });
 
-  it('deployMines passes limpet_mine through to armoryAPI.deploy', async () => {
-    await act(async () => {
-      await captured!.deployMines(2, 'limpet_mine');
-      await flush();
-    });
-    expect(mockDeploy).toHaveBeenCalledWith(2, 'limpet_mine');
+  it('rethrows 403 non-owner detail from planetaryAPI', async () => {
+    mockWithdrawStockpile.mockRejectedValueOnce(
+      new Error('You do not own this planet and are not on the owner\'s team'),
+    );
+    await expect(
+      captured!.withdrawStockpileToCargo('planet-9', 'organics', 5),
+    ).rejects.toThrow('You do not own this planet and are not on the owner\'s team');
   });
 });

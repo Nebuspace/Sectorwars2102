@@ -148,6 +148,38 @@
   cursor: not-allowed;
 }
 
+.qd-install-harvester-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  width: 100%;
+  margin-top: 0.3rem;
+  padding: 0.35rem 0.5rem;
+  font-family: inherit;
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: none;
+  background: rgba(123, 47, 255, 0.18);
+  border: 1px solid rgba(123, 47, 255, 0.5);
+  border-radius: 3px;
+  color: #e4d4ff;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.qd-install-harvester-btn:hover:not(:disabled) {
+  background: rgba(123, 47, 255, 0.32);
+  border-color: rgba(123, 47, 255, 0.8);
+  box-shadow: 0 0 10px rgba(123, 47, 255, 0.35);
+}
+
+.qd-install-harvester-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* --- Sections --- */
 .qd-section {
   flex-shrink: 0;
@@ -915,4 +947,32 @@
   height: calc(100vh - 6rem);
   overflow-y: auto;
   border-radius: 6px;
+}
+
+/* LEG-42 crystal refining (distinct from charge refine) */
+.qd-crystal-refinery {
+  border-top: 1px solid rgba(123, 47, 255, 0.35);
+  padding: 0.5rem 0.35rem 0.25rem;
+}
+.qd-crystal-row {
+  display: flex;
+  gap: 1rem;
+  font-size: 0.65rem;
+  margin-bottom: 0.35rem;
+}
+.qd-crystal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+}
+.qd-lumen-countdown {
+  font-size: 0.65rem;
+  letter-spacing: 0.08em;
+  color: #b8a0ff;
+}
+.qd-hint {
+  font-size: 0.55rem;
+  opacity: 0.75;
+  margin: 0.2rem 0 0.4rem;
 }
