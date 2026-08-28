@@ -824,6 +824,9 @@ export const messageAPI = {
     return apiRequest(`/api/v1/messages/inbox?${params}`);
   },
 
+  getConversations: (page: number = 1) =>
+    apiRequest(`/api/v1/messages/conversations?page=${page}`),
+
   markAsRead: (messageId: string) =>
     apiRequest(`/api/v1/messages/${messageId}/read`, {
       method: 'PUT'
