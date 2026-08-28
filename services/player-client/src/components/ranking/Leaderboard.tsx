@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { rankingAPI } from '../../services/api';
+import PlayerNamePlate from '../common/PlayerNamePlate';
 import './ranking.css';
 
 interface LeaderboardEntry {
@@ -8,6 +9,8 @@ interface LeaderboardEntry {
   nickname: string;
   military_rank: string;
   score: number;
+  pinned_medal_id?: string | null;
+  medal_count?: number | null;
 }
 
 interface LeaderboardData {
@@ -118,6 +121,7 @@ const Leaderboard: React.FC<LeaderboardProps> = ({
                 <th className="col-pos">#</th>
                 <th className="col-name">Player</th>
                 <th className="col-rank">Rank</th>
+                <th className="col-medals">Medals</th>
                 <th className="col-score">{meta.scoreLabel}</th>
               </tr>
             </thead>
@@ -130,12 +134,21 @@ const Leaderboard: React.FC<LeaderboardProps> = ({
                   <td className="col-pos">{entry.position}</td>
                   <td className="col-name">{entry.nickname}</td>
                   <td className="col-rank">{entry.military_rank}</td>
+                  <td className="col-medals">
+                    <PlayerNamePlate
+                      name=""
+                      size="sm"
+                      pinnedMedalId={entry.pinned_medal_id}
+                      medalCount={entry.medal_count}
+                      className="leaderboard-medal-plate"
+                    />
+                  </td>
                   <td className="col-score">{entry.score.toLocaleString()}</td>
                 </tr>
               ))}
               {data.entries.length === 0 && (
                 <tr>
-                  <td colSpan={4} className="leaderboard-empty">No entries yet</td>
+                  <td colSpan={5} className="leaderboard-empty">No entries yet</td>
                 </tr>
               )}
             </tbody>
