@@ -11,6 +11,8 @@ from src.models.team import Team, TeamReputationHandling, TeamRecruitmentStatus
 from src.models.team_member import TeamMember, TeamRole
 from src.models.treasury_transaction import TreasuryTransaction
 from src.models.planet import Planet, player_planets
+from src.models.colonist_profession import ColonistProfession, ProfessionType
+from src.models.profession_training_queue import ProfessionTrainingQueue, ProfessionTrainingStatus
 from src.models.station import Station, StationClass, StationType, StationStatus, player_stations
 
 # New models
@@ -82,7 +84,7 @@ from src.models.npc_character import (
 from src.models.npc_barracks import NPCBarracks, NPCLodgingLocationType
 from src.models.outlaw_base import OutlawBase
 from src.models.construction import ConstructionReservation
-from src.models.port_ownership import StationListing, PurchaseOffer, TakeoverCampaign
+from src.models.port_ownership import StationListing, PurchaseOffer, TakeoverCampaign, StationGovernanceVote
 from src.models.warp_gate import WarpGate, WarpGateBeacon, WarpGateStatus, WarpGateBeaconStatus
 from src.models.gate_construction_site import GateConstructionSite, GateConstructionSiteStatus
 from src.models.sector_celestial import SectorCelestial, SectorFeatureDiscovery
