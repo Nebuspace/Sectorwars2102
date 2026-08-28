@@ -308,3 +308,46 @@ def test_trade_specialist_credit_multiplier_for_station_no_owned_planet():
     station = SimpleNamespace(sector_id=99)
     db = _StationProfessionDBStub(planets=[])
     assert ps.trade_specialist_credit_multiplier_for_station(db, owner, station) == 1.0
+
+
+def test_mining_engineer_ore_multiplier_without_engineers():
+    planet_id = uuid4()
+    db = _DBStub()
+    assert ps.mining_engineer_ore_multiplier(db, planet_id) == 1.0
+
+
+def test_mining_engineer_ore_multiplier_with_engineers():
+    planet_id = uuid4()
+    prof_row = SimpleNamespace(
+        planet_id=planet_id,
+        profession=ProfessionType.MINING_ENGINEERS.value,
+        count=10,
+    )
+    db = _DBStub(professions=[prof_row])
+    assert ps.mining_engineer_ore_multiplier(db, planet_id) == pytest.approx(1.30)
+
+
+def test_mining_engineer_ore_multiplier_for_region_none():
+    owner = uuid4()
+    db = _StationProfessionDBStub(planets=[])
+    assert ps.mining_engineer_ore_multiplier_for_region(db, owner, None) == 1.0
+
+
+def test_mining_engineer_ore_multiplier_for_region_match():
+    owner = uuid4()
+    region_id = uuid4()
+    planet_id = uuid4()
+    planet = SimpleNamespace(id=planet_id, region_id=region_id)
+    prof_row = SimpleNamespace(
+        planet_id=planet_id,
+        profession=ProfessionType.MINING_ENGINEERS.value,
+        count=5,
+    )
+    db = _StationProfessionDBStub(planets=[planet], professions=[prof_row])
+    assert ps.mining_engineer_ore_multiplier_for_region(db, owner, region_id) == pytest.approx(1.30)
+
+
+def test_mining_engineer_ore_multiplier_for_region_no_owned_planet():
+    owner = uuid4()
+    db = _StationProfessionDBStub(planets=[])
+    assert ps.mining_engineer_ore_multiplier_for_region(db, owner, uuid4()) == 1.0
