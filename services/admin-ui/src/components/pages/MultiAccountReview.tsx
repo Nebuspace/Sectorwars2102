@@ -175,6 +175,12 @@ export const MultiAccountReview: React.FC = () => {
         layer are fully wired.
       </p>
 
+      {decideError && !selected && (
+        <div className="mar-decide-error" role="alert">
+          {decideError}
+        </div>
+      )}
+
       <div className="mar-content">
         {/* Queue panel */}
         <div className="mar-queue">
