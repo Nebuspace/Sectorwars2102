@@ -70,6 +70,7 @@ _VOTE_ALIASES = {
 
 POSITIONS = frozenset({"for", "against", "absent", "veto", "against_veto"})
 INACTIVE_DAYS = 30
+INACTIVE_FORFEIT_DAYS = 90
 QUORUM_FRAC = 0.50
 VETO_HOLDER_FRAC = 0.25
 VETO_OVERRIDE_FRAC = 0.75
@@ -203,13 +204,25 @@ def resolve_governance_ballots(
     return result
 
 
-def _player_inactive(player: Player, now: datetime) -> bool:
-    login = getattr(player, "last_game_login", None) or getattr(
+def _player_last_login(player: Player) -> Optional[datetime]:
+    return getattr(player, "last_game_login", None) or getattr(
         player, "last_activity_at", None
     )
+
+
+def _player_inactive(player: Player, now: datetime) -> bool:
+    login = _player_last_login(player)
     if login is None:
         return True
     return game_time.scaled_elapsed(login, now) >= timedelta(days=INACTIVE_DAYS)
+
+
+def player_forfeit_eligible(player: Player, now: datetime) -> bool:
+    """True when owner has been inactive long enough to forfeit syndicate stake."""
+    login = _player_last_login(player)
+    if login is None:
+        return True
+    return game_time.scaled_elapsed(login, now) >= timedelta(days=INACTIVE_FORFEIT_DAYS)
 
 
 def _require_syndicate_share(station: Station, player: Player) -> Tuple[str, List[Dict[str, Any]]]:
