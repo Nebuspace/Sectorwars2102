@@ -5413,6 +5413,23 @@ class CombatService:
             drone_damage_bonus = 0.15
         else:
             drone_damage_bonus = 0.0
+
+        try:
+            from src.services.profession_service import (
+                combat_pilot_drone_multiplier,
+                defense_coordinator_multiplier,
+            )
+            pilot_mult = combat_pilot_drone_multiplier(self.db, planet.id)
+            if pilot_mult != 1.0:
+                drone_damage_bonus *= pilot_mult
+            coord_mult = defense_coordinator_multiplier(self.db, planet.id)
+            if coord_mult != 1.0:
+                turret_reduction *= coord_mult
+                gen_reduction *= coord_mult
+                shield_hp_base = int(shield_hp_base * coord_mult)
+                orbital_shield_hp = int(orbital_shield_hp * coord_mult)
+        except Exception:
+            pass
         # ----------------------------------------------------------------------
 
         # WO-FIX-DEFENSE-TURRETS-FIGHTERS-NO-COMBAT-EFFECT: defense_turrets and
