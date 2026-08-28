@@ -87,6 +87,17 @@ vi.mock('../../../contexts/AuthContext', () => ({
 
 import CommsCrewPage, { FLAG_REASON_BY_CATEGORY } from './CommsCrewPage';
 
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
+
+const axiosStyleError = (status: number, detail: string) => ({
+  response: { status, data: { detail } },
+  message: detail,
+});
+
 describe('CommsCrewPage — MFD-B COMM', () => {
   let container: HTMLElement;
   let root: ReturnType<typeof createRoot>;
@@ -247,6 +258,46 @@ describe('CommsCrewPage — MFD-B COMM', () => {
 
     expect(mockSendPlayerMessage).toHaveBeenCalledWith('sender-9', 'On my way.', 'RE: Hello', 'msg-2');
     expect(container.querySelector('.mfd-page-comms-send-notice')?.textContent).toBe('TRANSMISSION SENT');
+  });
+
+  it('send 429 surfaces rate-limit copy with server retry hint in warnline', async () => {
+    mockInboxMessages = [makeMessage({ id: 'msg-2', sender_id: 'sender-9', sender_name: 'Nova' })];
+    mockSendPlayerMessage.mockRejectedValueOnce(
+      apiRequestError(
+        429,
+        'Too many messages — limit is 5 per 60s. Try again in 42s.',
+      ),
+    );
+    await mount();
+    await click(container.querySelector('.mfd-page-comms-hail-summary')!);
+    await click(container.querySelector('.mfd-page-comms-reply-btn')!);
+
+    const textarea = container.querySelector('.mfd-page-comms-compose-content') as HTMLTextAreaElement;
+    await typeInto(textarea, 'On my way.');
+    await click(container.querySelector('.mfd-page-comms-transmit-btn')!);
+    await flush();
+
+    const warnline = container.querySelector('.mfd-page-warnline');
+    expect(warnline?.textContent).toContain('Too many messages');
+    expect(warnline?.textContent).toMatch(/Try again in \d+s/i);
+    expect(container.querySelector('.mfd-page-comms-send-notice')).toBeNull();
+  });
+
+  it('send 409 thread_limit_exceeded surfaces archive/start-new-thread copy', async () => {
+    mockInboxMessages = [makeMessage({ id: 'msg-2', sender_id: 'sender-9', sender_name: 'Nova' })];
+    mockSendPlayerMessage.mockRejectedValueOnce(axiosStyleError(409, 'thread_limit_exceeded'));
+    await mount();
+    await click(container.querySelector('.mfd-page-comms-hail-summary')!);
+    await click(container.querySelector('.mfd-page-comms-reply-btn')!);
+
+    const textarea = container.querySelector('.mfd-page-comms-compose-content') as HTMLTextAreaElement;
+    await typeInto(textarea, 'One more ping.');
+    await click(container.querySelector('.mfd-page-comms-transmit-btn')!);
+    await flush();
+
+    const warnline = container.querySelector('.mfd-page-warnline');
+    expect(warnline?.textContent).toMatch(/archive this thread or start a new one/i);
+    expect(warnline?.textContent).not.toBe('thread_limit_exceeded');
   });
 
   it('opens the composer via HAIL on a non-NPC sector contact (a source CommsMailbox also supports)', async () => {

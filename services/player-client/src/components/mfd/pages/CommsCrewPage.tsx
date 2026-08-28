@@ -70,6 +70,55 @@ const contactDisplayName = (contact: any): string =>
 
 type CommsMode = 'hails' | 'threads';
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+function serverDetail(err: unknown): string | undefined {
+  if (err && typeof err === 'object') {
+    const rawDetail = (err as { response?: { data?: { detail?: unknown } } }).response?.data
+      ?.detail;
+    if (typeof rawDetail === 'string' && rawDetail.trim()) return rawDetail.trim();
+  }
+  const message = err instanceof Error ? err.message : undefined;
+  if (
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim())
+  ) {
+    return message.trim();
+  }
+  return undefined;
+}
+
+/** apiRequest throws Error with `.status`; legacy axios callers may use `.response.data.detail`. */
+export function formatCommsSendError(err: unknown): string {
+  const status = httpStatus(err);
+  const detail = serverDetail(err);
+
+  if (status === 429) {
+    if (detail) return detail;
+    return 'Too many messages — wait a moment and try again.';
+  }
+
+  if (status === 409) {
+    if (detail === 'thread_limit_exceeded') {
+      return 'Thread message limit reached (50) — archive this thread or start a new one to continue.';
+    }
+    if (detail) return detail;
+    return 'TRANSMISSION FAILED';
+  }
+
+  if (detail) return detail;
+  return 'TRANSMISSION FAILED';
+}
+
 const conversationPartyLabel = (msg: PlayerMessage, playerId: string | undefined): string => {
   if (!playerId) return (msg.sender_name || 'UNKNOWN').toUpperCase();
   if (msg.sender_id !== playerId) return (msg.sender_name || 'UNKNOWN').toUpperCase();
@@ -345,16 +394,8 @@ const CommsCrewPage: React.FC = () => {
       );
       setComposeContent('');
       setSendNotice('TRANSMISSION SENT');
-    } catch (error: any) {
-      // FastAPI 422s return `detail` as an array of validation objects, and a
-      // raw object would render as "[object Object]" / crash the CRT line.
-      // Only a plain string is safe to surface; anything else → generic.
-      const rawDetail = error?.response?.data?.detail;
-      const message =
-        (typeof rawDetail === 'string' && rawDetail) ||
-        (typeof error?.message === 'string' && error.message) ||
-        'TRANSMISSION FAILED';
-      setSendError(message);
+    } catch (error: unknown) {
+      setSendError(formatCommsSendError(error));
     } finally {
       setIsSending(false);
     }
