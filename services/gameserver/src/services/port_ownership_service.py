@@ -2180,6 +2180,93 @@ def decline_share_invite(
     }
 
 
+def execute_syndicate_buyout(
+    db: Session,
+    station: Station,
+    buyer: Player,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """One shareholder buys out all others at fair value; mode reverts to solo.
+
+    Fair value reuses forced_sale_price (canon port-ownership.md buyout path).
+    Each non-buying shareholder receives int(fair_value * pct / 100) credits.
+    """
+    now = now or datetime.now(UTC)
+    station = _lock_station(db, station.id)
+    _expire_syndicate_invites(station, now)
+
+    mode = (station.ownership or {}).get(SYNDICATE_MODE_KEY) or "solo"
+    if mode != "syndicate":
+        raise PortOwnershipError(
+            400, "Buyout is only available for syndicate co-ownership"
+        )
+    if station.owner_id is None:
+        raise PortOwnershipError(400, "Station has no primary owner")
+
+    shares = _ensure_primary_share(station)
+    buyer_id = str(buyer.id)
+    buyer_share = next(
+        (s for s in shares if str(s.get("player_id")) == buyer_id), None
+    )
+    if buyer_share is None:
+        raise PortOwnershipError(403, "Only a syndicate shareholder can buy out")
+
+    others = [
+        {"player_id": str(s["player_id"]), "pct": int(s["pct"])}
+        for s in shares
+        if str(s.get("player_id")) != buyer_id and int(s.get("pct", 0)) > 0
+    ]
+    if not others:
+        raise PortOwnershipError(400, "No other shareholders to buy out")
+
+    fair_value = forced_sale_price(db, station, now)
+    payouts: List[Dict[str, Any]] = []
+    total_payout = 0
+    for s in others:
+        payout = int(fair_value * int(s["pct"]) / 100)
+        payouts.append(
+            {"player_id": s["player_id"], "pct": s["pct"], "payout": payout}
+        )
+        total_payout += payout
+
+    player_ids = [buyer.id] + [p["player_id"] for p in payouts]
+    players = _lock_players_ascending(db, player_ids)
+    buyer_locked = players[buyer.id]
+    if buyer_locked.credits < total_payout:
+        raise PortOwnershipError(
+            400,
+            f"Insufficient credits: need {total_payout:,} for buyout "
+            f"(have {buyer_locked.credits:,})",
+        )
+
+    buyer_locked.credits -= total_payout
+    for row in payouts:
+        pid = uuid.UUID(row["player_id"])
+        players[pid].credits += row["payout"]
+
+    if station.owner_id != buyer.id:
+        station.owner_id = buyer.id
+
+    solo_shares = [{"player_id": buyer_id, "pct": 100}]
+    _set_syndicate_state(
+        station, mode="solo", shares=solo_shares, invites=[]
+    )
+    db.flush()
+    logger.info(
+        "Station %s syndicate buyout by %s: fair_value=%s total=%s",
+        station.id, buyer.id, fair_value, total_payout,
+    )
+    return {
+        "station_id": str(station.id),
+        "mode": "solo",
+        "owner_id": buyer_id,
+        "fair_value": fair_value,
+        "total_payout": total_payout,
+        "payouts": payouts,
+        "shares": solo_shares,
+    }
+
+
 def set_service_charge(
     db: Session, station: Station, owner: Player, multiplier: float
 ) -> Dict[str, Any]:
