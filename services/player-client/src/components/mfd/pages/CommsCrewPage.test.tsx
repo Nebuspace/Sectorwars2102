@@ -188,6 +188,20 @@ describe('CommsCrewPage — MFD-B COMM', () => {
     expect(mockDeletePlayerMessage).toHaveBeenCalledWith('msg-1');
   });
 
+  it('PURGE 404 surfaces server detail in warnline', async () => {
+    mockDeletePlayerMessage.mockRejectedValueOnce(
+      apiRequestError(404, 'Message not found'),
+    );
+    mockInboxMessages = [makeMessage()];
+    await mount();
+    await click(container.querySelector('.mfd-page-comms-hail-summary')!);
+    await click(container.querySelector('[data-testid="comms-purge-hail"]')!);
+    await flush();
+    expect(container.querySelector('.mfd-page-warnline')?.textContent).toBe(
+      'Message not found',
+    );
+  });
+
   it('FLAG category calls messageAPI.flagMessage with tip-length reason', async () => {
     mockInboxMessages = [makeMessage()];
     await mount();
