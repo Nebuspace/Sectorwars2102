@@ -3,7 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { AdminProvider, useAdmin } from './AdminContext';
 import { api } from '../utils/auth';
-import { listBangJobs, wipeBangGalaxy } from '../services/bangGalaxyApi';
+import { listBangJobs, createBangJob, wipeBangGalaxy } from '../services/bangGalaxyApi';
 
 const mockUseAuth = vi.fn();
 vi.mock('./AuthContext', () => ({
@@ -30,6 +30,12 @@ function httpErr(status: number, detail?: string) {
     response: { status, data: detail ? { detail } : {} },
   });
 }
+
+const minimalBangConfig = {
+  seed: 1,
+  sectors: 100,
+  region_type: 'player_owned' as const,
+};
 
 type ApiGetResult = ReturnType<typeof api.get>;
 
@@ -81,6 +87,7 @@ function Probe() {
     clearGalaxyData,
     addSectors,
     createWarpTunnel,
+    bangGalaxy,
   } = useAdmin();
   return (
     <div>
@@ -127,6 +134,13 @@ function Probe() {
       >
         create-warp-tunnel
       </button>
+      <button
+        onClick={() => {
+          void bangGalaxy(minimalBangConfig, 'Test Galaxy').catch(() => undefined);
+        }}
+      >
+        bang-galaxy
+      </button>
     </div>
   );
 }
@@ -139,6 +153,7 @@ describe('AdminContext / AdminProvider', () => {
     vi.mocked(api.delete).mockReset();
     vi.mocked(wipeBangGalaxy).mockReset();
     vi.mocked(listBangJobs).mockReset();
+    vi.mocked(createBangJob).mockReset();
   });
 
   it('does not fetch admin stats for a non-admin user (loadAdminStats is a no-op)', async () => {
@@ -524,6 +539,50 @@ describe('AdminContext / AdminProvider', () => {
     );
     expect(screen.getByTestId('error').textContent).not.toMatch(
       /Failed to load bang generation history/,
+    );
+  });
+
+  it('surfaces bangGalaxy 403 as BANG_REGENERATE denial (LEG-2806)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    vi.mocked(createBangJob).mockRejectedValue(httpErr(403));
+    const user = userEvent.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>,
+    );
+
+    await user.click(screen.getByText('bang-galaxy'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/BANG_REGENERATE/),
+    );
+    expect(screen.getByTestId('error').textContent).not.toMatch(
+      /Failed to start bang generation job/,
+    );
+    expect(createBangJob).toHaveBeenCalledWith(
+      { config: minimalBangConfig, galaxy_name: 'Test Galaxy' },
+      'tok',
+    );
+  });
+
+  it('surfaces bangGalaxy 429 as admin rate-limit (LEG-2806)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    vi.mocked(createBangJob).mockRejectedValue(httpErr(429));
+    const user = userEvent.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>,
+    );
+
+    await user.click(screen.getByText('bang-galaxy'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/rate limit/i),
+    );
+    expect(screen.getByTestId('error').textContent).not.toMatch(
+      /Failed to start bang generation job/,
     );
   });
 });
