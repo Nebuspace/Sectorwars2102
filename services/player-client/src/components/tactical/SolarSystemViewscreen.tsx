@@ -300,7 +300,7 @@ export interface ShipPresence {
   notoriety?: number | null;
   /** Live activity (COMMUTE | WORK_STATION | PATROL | …) — drives honest motion. */
   activity?: string | null;
-  /** Trader mission (commerce | colonist | science) — drives which dock type. */
+  /** Trader mission (commerce | colonist | science | supply_delivery) — dock type + haul cue. */
   mission?: string | null;
   /** WO-ISP: authoritative in-system pose / leg plan from the server. */
   pose?: {
@@ -353,6 +353,14 @@ export function shipFaction(s: ShipPresence): { key: string; color: string; labe
     if (isLaw) return { key: 'law', color: '#5b8dff', label: 'LAW ENFORCEMENT', lawful: false };
     const isRaider = nm.includes('MARAUDER') || tp.includes('PIRATE');
     if (isRaider) return { key: 'raider', color: '#ff5a5a', label: 'HOSTILE', lawful: true };
+  }
+
+  // Visible supply-delivery haul-in (GS daily_schedule.mission=supply_delivery) —
+  // distinct from ordinary commerce traders so players can spot a restock run.
+  // Does not change fair-game / notoriety rules; label+tint only.
+  const mission = String(s.mission || '').toLowerCase();
+  if (mission === 'supply_delivery') {
+    return { key: 'supply_haul', color: '#4fd1c5', label: 'SUPPLY HAUL', lawful: false };
   }
 
   // Trader / neutral — grade by notoriety.

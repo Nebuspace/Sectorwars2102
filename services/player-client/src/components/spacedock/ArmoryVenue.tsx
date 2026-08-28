@@ -1,6 +1,9 @@
 import React from 'react';
 import { formatCredits } from '../../utils/formatters';
+import EcmSuiteInstallCta from './EcmSuiteInstallCta';
+import StealthModuleInstallCta from './StealthModuleInstallCta';
 import './spacedock.css';
+import './tactical-equipment-install.css';
 
 // =====================================================================
 // Armory — extracted verbatim from SpaceDockInterface's inline
@@ -75,6 +78,13 @@ interface ArmoryVenueProps {
   playerDefenseDrones: number | undefined;
   onBack: () => void;
   blackMarketButton: React.ReactNode;
+  /** Active ship for LEG-126 ECM / Stealth equipment-slot install CTAs. */
+  shipId?: string | null;
+  shipType?: string | null;
+  onTacticalEquipmentInstalled?: (result: {
+    remainingCredits?: number;
+    message?: string;
+  }) => void | Promise<void>;
 }
 
 const ArmoryVenue: React.FC<ArmoryVenueProps> = ({
@@ -96,6 +106,9 @@ const ArmoryVenue: React.FC<ArmoryVenueProps> = ({
   playerDefenseDrones,
   onBack,
   blackMarketButton,
+  shipId = null,
+  shipType = null,
+  onTacticalEquipmentInstalled,
 }) => {
   const renderArmoryItemCard = (item: ArmoryCatalogItem) => {
     const loadoutKey = loadoutKeyForItem(item.item);
@@ -256,6 +269,30 @@ const ArmoryVenue: React.FC<ArmoryVenueProps> = ({
                   : '—'}
               </span>
             </div>
+          </div>
+        </div>
+
+        {/* LEG-126 — ship tactical equipment slots (not drone/mine catalog). */}
+        <div
+          className="armory-tactical-equipment"
+          data-testid="armory-tactical-equipment"
+        >
+          <h4>📡 Ship Tactical Equipment</h4>
+          <p className="section-description">
+            ECM and Stealth are hull equipment slots — distinct from drones,
+            mines, and ModuleGrid combat ladders.
+          </p>
+          <div className="armory-tactical-equipment-stack">
+            <EcmSuiteInstallCta
+              shipId={shipId}
+              shipType={shipType}
+              onInstalled={onTacticalEquipmentInstalled}
+            />
+            <StealthModuleInstallCta
+              shipId={shipId}
+              shipType={shipType}
+              onInstalled={onTacticalEquipmentInstalled}
+            />
           </div>
         </div>
 

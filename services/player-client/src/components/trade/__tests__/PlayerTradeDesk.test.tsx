@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /**
- * PlayerTradeDesk — money-path coverage (WO-TESTCOV-PLAYER-TRADE-DESK).
- * Exercises initiate / accept / open staging / error prose against mocked tradeAPI.
+ * PlayerTradeDesk — money-path coverage (WO-TESTCOV-PLAYER-TRADE-DESK + LEG-1478).
+ * Exercises initiate / accept / open staging / commodity+ship offers / error prose.
  */
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -17,6 +17,7 @@ const { tradeAPI } = vi.hoisted(() => ({
     offer: vi.fn(),
     confirm: vi.fn(),
     cancel: vi.fn(),
+    deliverFuel: vi.fn(),
   },
 }));
 
@@ -26,6 +27,13 @@ import PlayerTradeDesk from '../PlayerTradeDesk';
 
 const ME = 'player-me';
 const THEM = 'player-them';
+const SHIP_A = 'ship-cargo-a';
+const SHIP_B = 'ship-offer-b';
+
+const TEST_SHIPS = [
+  { id: SHIP_A, name: 'Hauler', cargo: { ore: 40, fuel: 10 } },
+  { id: SHIP_B, name: 'Scout', cargo: {} },
+];
 
 function openSession(overrides: Record<string, unknown> = {}) {
   return {
@@ -34,8 +42,8 @@ function openSession(overrides: Record<string, unknown> = {}) {
     target_id: THEM,
     status: 'OPEN',
     version: 1,
-    initiator_offer: { credits: 0 },
-    target_offer: { credits: 0 },
+    initiator_offer: { credits: 0, commodities: {}, ships: [] },
+    target_offer: { credits: 0, commodities: {}, ships: [] },
     initiator_confirmed_version: null,
     target_confirmed_version: null,
     ...overrides,
@@ -72,10 +80,9 @@ describe('PlayerTradeDesk', () => {
 
     await act(async () => {
       root.render(
-        <PlayerTradeDesk targetPlayerId={THEM} myPlayerId={ME} onClose={onClose} />,
+        <PlayerTradeDesk targetPlayerId={THEM} myPlayerId={ME} onClose={onClose} ships={TEST_SHIPS} />,
       );
     });
-    // flush effect
     await act(async () => {
       await Promise.resolve();
     });
@@ -104,7 +111,7 @@ describe('PlayerTradeDesk', () => {
     });
 
     await act(async () => {
-      root.render(<PlayerTradeDesk myPlayerId={ME} onClose={onClose} />);
+      root.render(<PlayerTradeDesk myPlayerId={ME} onClose={onClose} ships={TEST_SHIPS} />);
     });
     await act(async () => {
       await Promise.resolve();
@@ -129,19 +136,19 @@ describe('PlayerTradeDesk', () => {
     tradeAPI.offer.mockResolvedValue({
       session: openSession({
         version: 2,
-        initiator_offer: { credits: 500 },
+        initiator_offer: { credits: 500, commodities: {}, ships: [] },
       }),
     });
 
     await act(async () => {
-      root.render(<PlayerTradeDesk myPlayerId={ME} onClose={onClose} />);
+      root.render(<PlayerTradeDesk myPlayerId={ME} onClose={onClose} ships={TEST_SHIPS} />);
     });
     await act(async () => {
       await Promise.resolve();
     });
 
     const input = document.body.querySelector(
-      'input[type="number"]',
+      '[data-testid="credits-offer"]',
     ) as HTMLInputElement;
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(
@@ -153,25 +160,150 @@ describe('PlayerTradeDesk', () => {
       input.dispatchEvent(new Event('change', { bubbles: true }));
     });
 
-    const stage = Array.from(document.body.querySelectorAll('button')).find(
-      (b) => b.textContent === 'Stage offer',
+    const stage = document.body.querySelector(
+      '[data-testid="stage-offer"]',
     ) as HTMLButtonElement;
     await act(async () => {
       stage.click();
       await Promise.resolve();
     });
 
-    expect(tradeAPI.offer).toHaveBeenCalledWith('sess-1', { credits: 500 });
+    expect(tradeAPI.offer).toHaveBeenCalledWith('sess-1', {
+      credits: 500,
+      commodities: {},
+      ship_id: null,
+      ships: [],
+    });
     expect(document.body.querySelector('.p2p-trade-desk')?.textContent).toContain(
       'Offer staged',
     );
+  });
+
+  it('stages commodities with ship_id via existing tradeAPI.offer', async () => {
+    tradeAPI.getOpen.mockResolvedValue({ session: openSession() });
+    tradeAPI.offer.mockResolvedValue({
+      session: openSession({
+        version: 2,
+        initiator_offer: {
+          credits: 0,
+          commodities: { ore: 5 },
+          ship_id: SHIP_A,
+          ships: [],
+        },
+      }),
+    });
+
+    await act(async () => {
+      root.render(<PlayerTradeDesk myPlayerId={ME} onClose={onClose} ships={TEST_SHIPS} />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const cargoSelect = document.body.querySelector(
+      '[data-testid="cargo-ship-select"]',
+    ) as HTMLSelectElement;
+    await act(async () => {
+      cargoSelect.value = SHIP_A;
+      cargoSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+
+    const commoditySelect = document.body.querySelector(
+      '[data-testid="commodity-key"]',
+    ) as HTMLSelectElement;
+    await act(async () => {
+      commoditySelect.value = 'ore';
+      commoditySelect.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+
+    const qty = document.body.querySelector(
+      '[data-testid="commodity-qty"]',
+    ) as HTMLInputElement;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        'value',
+      )?.set;
+      setter?.call(qty, '5');
+      qty.dispatchEvent(new Event('input', { bubbles: true }));
+      qty.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+
+    await act(async () => {
+      (document.body.querySelector('[data-testid="add-commodity"]') as HTMLButtonElement).click();
+    });
+
+    expect(document.body.querySelector('[data-testid="commodity-draft"]')?.textContent).toContain(
+      'ore × 5',
+    );
+
+    await act(async () => {
+      (document.body.querySelector('[data-testid="stage-offer"]') as HTMLButtonElement).click();
+      await Promise.resolve();
+    });
+
+    expect(tradeAPI.offer).toHaveBeenCalledWith('sess-1', {
+      credits: 0,
+      commodities: { ore: 5 },
+      ship_id: SHIP_A,
+      ships: [],
+    });
+  });
+
+  it('stages ships[] offer and renders ship lines in summaries', async () => {
+    tradeAPI.getOpen.mockResolvedValue({ session: openSession() });
+    tradeAPI.offer.mockResolvedValue({
+      session: openSession({
+        version: 2,
+        initiator_offer: {
+          credits: 0,
+          commodities: {},
+          ships: [SHIP_B],
+        },
+        target_offer: {
+          credits: 100,
+          commodities: { fuel: 2 },
+          ships: [],
+        },
+      }),
+    });
+
+    await act(async () => {
+      root.render(<PlayerTradeDesk myPlayerId={ME} onClose={onClose} ships={TEST_SHIPS} />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const scoutBox = document.body.querySelector(
+      'input[aria-label="Offer ship Scout"]',
+    ) as HTMLInputElement;
+    await act(async () => {
+      scoutBox.click();
+    });
+
+    await act(async () => {
+      (document.body.querySelector('[data-testid="stage-offer"]') as HTMLButtonElement).click();
+      await Promise.resolve();
+    });
+
+    expect(tradeAPI.offer).toHaveBeenCalledWith('sess-1', {
+      credits: 0,
+      commodities: {},
+      ship_id: null,
+      ships: [SHIP_B],
+    });
+
+    const desk = document.body.querySelector('.p2p-trade-desk');
+    expect(desk?.textContent).toContain('Ship: Scout');
+    expect(desk?.textContent).toContain('fuel × 2');
   });
 
   it('maps known server reason codes to cockpit prose', async () => {
     tradeAPI.getOpen.mockRejectedValue(new Error('not_co_located'));
 
     await act(async () => {
-      root.render(<PlayerTradeDesk myPlayerId={ME} onClose={onClose} />);
+      root.render(<PlayerTradeDesk myPlayerId={ME} onClose={onClose} ships={TEST_SHIPS} />);
     });
     await act(async () => {
       await Promise.resolve();
@@ -187,7 +319,7 @@ describe('PlayerTradeDesk', () => {
     });
 
     await act(async () => {
-      root.render(<PlayerTradeDesk myPlayerId={ME} onClose={onClose} />);
+      root.render(<PlayerTradeDesk myPlayerId={ME} onClose={onClose} ships={TEST_SHIPS} />);
     });
     await act(async () => {
       await Promise.resolve();
@@ -203,5 +335,79 @@ describe('PlayerTradeDesk', () => {
       close.click();
     });
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it('delivers fuel to the targeted peer via tradeAPI.deliverFuel', async () => {
+    tradeAPI.getOpen.mockResolvedValue({ session: null });
+    tradeAPI.initiate.mockResolvedValue({
+      session: openSession({ status: 'PENDING_ACCEPT' }),
+    });
+    tradeAPI.deliverFuel.mockResolvedValue({ ok: true });
+
+    await act(async () => {
+      root.render(
+        <PlayerTradeDesk targetPlayerId={THEM} myPlayerId={ME} onClose={onClose} ships={TEST_SHIPS} />,
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const amount = document.body.querySelector(
+      '[data-testid="fuel-amount"]',
+    ) as HTMLInputElement;
+    const payment = document.body.querySelector(
+      '[data-testid="fuel-payment"]',
+    ) as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+    await act(async () => {
+      setter?.call(amount, '12');
+      amount.dispatchEvent(new Event('input', { bubbles: true }));
+      amount.dispatchEvent(new Event('change', { bubbles: true }));
+      setter?.call(payment, '400');
+      payment.dispatchEvent(new Event('input', { bubbles: true }));
+      payment.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+
+    await act(async () => {
+      (document.body.querySelector('[data-testid="deliver-fuel-submit"]') as HTMLButtonElement).click();
+      await Promise.resolve();
+    });
+
+    expect(tradeAPI.deliverFuel).toHaveBeenCalledWith({
+      recipientPlayerId: THEM,
+      fuelAmount: 12,
+      paymentCredits: 400,
+    });
+    expect(document.body.querySelector('.p2p-trade-desk')?.textContent).toContain(
+      'Fuel delivered to their ship',
+    );
+  });
+
+  it('surfaces GS 400 detail when deliver-fuel is refused', async () => {
+    tradeAPI.getOpen.mockResolvedValue({ session: openSession() });
+    tradeAPI.deliverFuel.mockRejectedValue(
+      new Error('delivery_requires_same_sector: the deliverer and recipient must be in the same sector for a fuel hand-off'),
+    );
+
+    await act(async () => {
+      root.render(<PlayerTradeDesk myPlayerId={ME} onClose={onClose} ships={TEST_SHIPS} />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      (document.body.querySelector('[data-testid="deliver-fuel-submit"]') as HTMLButtonElement).click();
+      await Promise.resolve();
+    });
+
+    const alert = document.body.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain('delivery_requires_same_sector');
+    expect(tradeAPI.deliverFuel).toHaveBeenCalledWith({
+      recipientPlayerId: THEM,
+      fuelAmount: 1,
+      paymentCredits: 0,
+    });
   });
 });

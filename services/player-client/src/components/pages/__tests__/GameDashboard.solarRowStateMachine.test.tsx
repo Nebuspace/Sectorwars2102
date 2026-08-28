@@ -32,6 +32,9 @@ vi.mock('../../../services/api', () => ({
     getThreat: vi.fn().mockResolvedValue([]),
   },
   sectorAPI: { sectorWrecks: (...a: unknown[]) => mockSectorWrecks(...a), getContents: vi.fn().mockResolvedValue({ star: null, bodies: [] }), },
+  planetaryAPI: {
+    getOwnershipTransfer: vi.fn().mockResolvedValue({ planet_id: '', pending: false, offer: null }),
+  },
 }));
 
 vi.mock('react-router-dom', () => ({
@@ -52,6 +55,8 @@ vi.mock('../../tactical/SolarSystemViewscreen', () => ({ default: () => <div /> 
 // inert stub, this file's row-state-machine assertions are all on
 // PlanetPortPair below, not the windshield scene itself.
 vi.mock('../../tactical/WindshieldTableau', () => ({ default: () => <div /> }));
+vi.mock('../../mining/NearestAmRefineryOverlay', () => ({ default: () => null }));
+vi.mock('../../mining/HarvestYieldPreview', () => ({ default: () => null, HARVEST_GATE_COPY: {} }));
 
 // Prop-capturing stub — records every render's props keyed by planet/station
 // id so this file can assert the per-row flying/here wiring GameDashboard
