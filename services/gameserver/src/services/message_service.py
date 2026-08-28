@@ -3,7 +3,7 @@ Message Service for handling player communication
 """
 
 from collections import defaultdict, deque
-from typing import Optional, Dict, Any, Deque
+from typing import Optional, Dict, Any, Deque, Iterable, Set, Tuple
 from datetime import datetime
 from time import monotonic
 from uuid import UUID, uuid4
@@ -621,6 +621,58 @@ class MessageService:
             return False
 
     @staticmethod
+    def _audit_rows_sender_block_stats(
+        recent: Iterable[Any],
+        sender_ids: Set[str],
+    ) -> Dict[str, Tuple[int, bool]]:
+        """Tally per-sender block counts and escalation markers from audit rows."""
+        block_counts = {sid: 0 for sid in sender_ids}
+        escalation_logged = {sid: False for sid in sender_ids}
+        for row in recent:
+            body = row.request_body or {}
+            if not isinstance(body, dict):
+                continue
+            sender_key = body.get("sender_id")
+            if sender_key not in sender_ids:
+                continue
+            moderation_action = body.get("moderation_action")
+            if moderation_action == "block":
+                block_counts[sender_key] += 1
+            elif moderation_action == "block_escalation_threshold":
+                escalation_logged[sender_key] = True
+        return {
+            sid: (block_counts[sid], escalation_logged[sid]) for sid in sender_ids
+        }
+
+    @staticmethod
+    def batch_sender_block_stats_30d(
+        db: Session,
+        sender_ids: Iterable[UUID],
+    ) -> Dict[str, Tuple[int, bool]]:
+        """Batch block-count + escalation flag for flagged-queue enrichment."""
+        from datetime import timedelta
+
+        from src.models.audit_log import AuditLog
+
+        unique_sender_ids = {str(sid) for sid in sender_ids}
+        if not unique_sender_ids:
+            return {}
+
+        window_start = datetime.utcnow() - timedelta(
+            days=MessageService.BLOCK_ESCALATION_WINDOW_DAYS
+        )
+        recent = (
+            db.query(AuditLog)
+            .filter(
+                AuditLog.resource_type == "message",
+                AuditLog.action == "intervention",
+                AuditLog.timestamp >= window_start,
+            )
+            .all()
+        )
+        return MessageService._audit_rows_sender_block_stats(recent, unique_sender_ids)
+
+    @staticmethod
     def _record_block_and_maybe_escalate(
         db: Session,
         *,
@@ -659,19 +711,12 @@ class MessageService:
             )
             .all()
         )
-        block_count = 0
-        for row in recent:
-            body = row.request_body or {}
-            if not isinstance(body, dict):
-                continue
-            if (
-                body.get("moderation_action") == "block"
-                and body.get("sender_id") == str(sender_id)
-            ):
-                block_count += 1
+        sender_key = str(sender_id)
+        block_count, escalation_logged = MessageService._audit_rows_sender_block_stats(
+            recent, {sender_key}
+        )[sender_key]
 
-        escalation_logged = False
-        if block_count >= MessageService.BLOCK_ESCALATION_THRESHOLD:
+        if block_count >= MessageService.BLOCK_ESCALATION_THRESHOLD and not escalation_logged:
             AuditService(db).log_action(
                 user_id=moderator_id,
                 action=AuditAction.INTERVENTION,
