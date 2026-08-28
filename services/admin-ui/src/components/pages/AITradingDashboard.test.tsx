@@ -28,6 +28,11 @@ vi.mock('../ai/MarketPredictionInterface', () => ({ MarketPredictionInterface: (
 vi.mock('../ai/RouteOptimizationDisplay', () => ({ RouteOptimizationDisplay: () => null }));
 vi.mock('../ai/PlayerBehaviorAnalytics', () => ({ PlayerBehaviorAnalytics: () => null }));
 
+const axiosError = (status: number) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status },
+  });
+
 describe('AITradingDashboard scope errors (LEG-923)', () => {
   beforeEach(() => {
     vi.mocked(api.get).mockReset();
@@ -48,6 +53,18 @@ describe('AITradingDashboard scope errors (LEG-923)', () => {
 
     await waitFor(() => {
       expect(screen.getByText(/admin\.ai\.view|Missing scope/i)).toBeTruthy();
+    });
+  });
+
+  it('surfaces rate-limit copy on load 429', async () => {
+    vi.mocked(api.get).mockRejectedValue(axiosError(429));
+
+    render(<AITradingDashboard />);
+
+    await waitFor(() => {
+      const message = screen.getByText(/rate limit/i).textContent ?? '';
+      expect(message).toMatch(/rate limit/i);
+      expect(message).not.toMatch(/Failed to load AI trading data/);
     });
   });
 });
