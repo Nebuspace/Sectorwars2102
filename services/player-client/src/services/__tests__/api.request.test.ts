@@ -19,7 +19,7 @@ vi.mock('../apiClient', () => ({
 }));
 
 import apiClient from '../apiClient';
-import { combatAPI, greyStatusAPI, miningAPI, navAPI, playerAPI, sectorAPI, shipRegistryAPI, tradeAPI } from '../api';
+import { centralBankAPI, citadelAPI, combatAPI, greyStatusAPI, miningAPI, navAPI, planetaryAPI, playerAPI, portOwnershipAPI, sectorAPI, shipRegistryAPI, tradeAPI } from '../api';
 
 const get = apiClient.get as ReturnType<typeof vi.fn>;
 const post = apiClient.post as ReturnType<typeof vi.fn>;
@@ -84,6 +84,22 @@ describe('apiRequest via trade/combat/grey wrappers', () => {
     expect(post).toHaveBeenCalledWith(
       '/api/v1/combat/engage',
       JSON.stringify({ targetType: 'port', targetId: 'port-1' }),
+      jsonHeaders,
+    );
+  });
+
+  it('combatAPI.getHistory GETs limit/offset query (LEG-372)', async () => {
+    get.mockResolvedValue({
+      data: { items: [], total: 0, limit: 10, offset: 5 },
+    });
+    await expect(combatAPI.getHistory({ limit: 10, offset: 5 })).resolves.toEqual({
+      items: [],
+      total: 0,
+      limit: 10,
+      offset: 5,
+    });
+    expect(get).toHaveBeenCalledWith(
+      '/api/v1/combat/history?limit=10&offset=5',
       jsonHeaders,
     );
   });
@@ -209,6 +225,48 @@ describe('apiRequest via trade/combat/grey wrappers', () => {
     );
   });
 
+  it('miningAPI.getNearestAmRefinery GETs the tip overlay path', async () => {
+    const payload = {
+      found: true,
+      station: { id: 'st-1', name: 'AM 7', sector_id: 9 },
+      hop_distance: 2,
+      ore_buy_price: 11,
+      reason: null,
+    };
+    get.mockResolvedValue({ data: payload });
+    await expect(miningAPI.getNearestAmRefinery()).resolves.toEqual(payload);
+    expect(get).toHaveBeenCalledWith('/api/v1/mining/nearest-am-refinery', jsonHeaders);
+  });
+
+  it('miningAPI.getYieldPreview GETs the tip yield-preview path', async () => {
+    const payload = {
+      success: true,
+      ore_lo: 4,
+      ore_hi: 9,
+      richness_tier: 2,
+      laser_level: 1,
+      depletion_modifier: 1,
+      turns_cost: 5,
+    };
+    get.mockResolvedValue({ data: payload });
+    await expect(miningAPI.getYieldPreview('ship-9')).resolves.toEqual(payload);
+    expect(get).toHaveBeenCalledWith(
+      '/api/v1/mining/yield-preview?ship_id=ship-9',
+      jsonHeaders,
+    );
+  });
+
+  it('miningAPI.listLicenses GETs the tip claim-license list', async () => {
+    const payload = {
+      items: [],
+      total: 0,
+      recently_expired_window_hours: 24,
+    };
+    get.mockResolvedValue({ data: payload });
+    await expect(miningAPI.listLicenses()).resolves.toEqual(payload);
+    expect(get).toHaveBeenCalledWith('/api/v1/mining/licenses', jsonHeaders);
+  });
+
   it('miningAPI.harvest POSTs ship_id', async () => {
     post.mockResolvedValue({ data: { status: 'in_progress', harvest_id: 'h1' } });
     await expect(miningAPI.harvest('ship-9')).resolves.toEqual({
@@ -234,6 +292,18 @@ describe('apiRequest via trade/combat/grey wrappers', () => {
     );
   });
 
+  it('playerAPI.investigateAnomaly POSTs the sector ANOMALY route', async () => {
+    post.mockResolvedValue({ data: { reward: { credits: 250 } } });
+    await expect(playerAPI.investigateAnomaly(42)).resolves.toEqual({
+      reward: { credits: 250 },
+    });
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/player/sectors/42/investigate-anomaly',
+      undefined,
+      jsonHeaders,
+    );
+  });
+
   it('sectorAPI.getContents GETs the sector contents path', async () => {
     get.mockResolvedValue({ data: { star: { label: 'Sol' }, bodies: [] } });
     await expect(sectorAPI.getContents(100)).resolves.toEqual({
@@ -242,4 +312,143 @@ describe('apiRequest via trade/combat/grey wrappers', () => {
     });
     expect(get).toHaveBeenCalledWith('/api/v1/sectors/100/contents', jsonHeaders);
   });
+
+  it('citadelAPI.constructBuilding places via /grid/place not /buildings/construct', async () => {
+    get.mockResolvedValue({
+      data: {
+        plots: [
+          { x: 0, y: 0, cleared: false },
+          { x: 1, y: 0, cleared: true, building_id: 'b_1' },
+          { x: 2, y: 0, cleared: true, hazard: { kind: 'quake' } },
+          { x: 3, y: 1, cleared: true },
+        ],
+      },
+    });
+    post.mockResolvedValue({ data: { success: true, building: { kind: 'TURRET_NETWORK' } } });
+
+    const out = await citadelAPI.constructBuilding('planet-9', 'turret_network');
+    expect(out).toEqual({ success: true, building: { kind: 'TURRET_NETWORK' } });
+    expect(get).toHaveBeenCalledWith('/api/v1/planets/planet-9/grid', jsonHeaders);
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/planets/planet-9/grid/place',
+      JSON.stringify({ kind: 'TURRET_NETWORK', x: 3, y: 1, level: 1 }),
+      jsonHeaders,
+    );
+    expect(post.mock.calls.some((c) => String(c[0]).includes('/buildings/construct'))).toBe(false);
+  });
+
+  it('centralBankAPI.getBalance GETs /central-bank/balance', async () => {
+    get.mockResolvedValue({ data: { credits: 500, commodities: { fuel: 10 } } });
+    const out = await centralBankAPI.getBalance();
+    expect(out).toEqual({ credits: 500, commodities: { fuel: 10 } });
+    expect(get).toHaveBeenCalledWith('/api/v1/central-bank/balance', jsonHeaders);
+  });
+
+  it('centralBankAPI.withdrawCredits POSTs amount', async () => {
+    post.mockResolvedValue({ data: { withdrawn: 50, bank_credits_remaining: 450, wallet_credits: 1050 } });
+    const out = await centralBankAPI.withdrawCredits(50);
+    expect(out).toEqual({ withdrawn: 50, bank_credits_remaining: 450, wallet_credits: 1050 });
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/central-bank/withdraw/credits',
+      JSON.stringify({ amount: 50 }),
+      jsonHeaders,
+    );
+  });
+
+  it('centralBankAPI.withdrawCommodity POSTs commodity + quantity', async () => {
+    post.mockResolvedValue({ data: { commodity: 'fuel', quantity: 20, turn_cost: 1, bank_commodities_remaining: {} } });
+    const out = await centralBankAPI.withdrawCommodity('fuel', 20);
+    expect(out).toEqual({ commodity: 'fuel', quantity: 20, turn_cost: 1, bank_commodities_remaining: {} });
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/central-bank/withdraw/commodity',
+      JSON.stringify({ commodity: 'fuel', quantity: 20 }),
+      jsonHeaders,
+    );
+  });
+
+  it('citadelAPI.constructBuilding maps planet_minefield → PLANET_MINEFIELD', async () => {
+    get.mockResolvedValue({ data: { plots: [{ x: 0, y: 0, cleared: true }] } });
+    post.mockResolvedValue({ data: { success: true } });
+    await citadelAPI.constructBuilding('p1', 'planet_minefield');
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/planets/p1/grid/place',
+      JSON.stringify({ kind: 'PLANET_MINEFIELD', x: 0, y: 0, level: 1 }),
+      jsonHeaders,
+    );
+  });
+
+  it('planetaryAPI.withdrawStockpileToCargo POSTs tip path and payload', async () => {
+    post.mockResolvedValue({
+      data: { success: true, message: 'Withdrew 10 fuel ore to cargo.', amount_to_cargo: 10, tax_skimmed: 0 },
+    });
+    const out = await planetaryAPI.withdrawStockpileToCargo('planet-9', 'fuel_ore', 10);
+    expect(out.success).toBe(true);
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/planets/planet-9/stockpile/withdraw',
+      JSON.stringify({ commodity: 'fuel_ore', amount: 10 }),
+      jsonHeaders,
+    );
+  });
+
+  it('planetaryAPI.withdrawStockpileToCargo surfaces 403 non-owner detail', async () => {
+    post.mockRejectedValue(
+      axiosHttpError(403, {
+        detail: 'You do not own this planet and are not on the owner\'s team',
+      }),
+    );
+    await expect(
+      planetaryAPI.withdrawStockpileToCargo('planet-9', 'organics', 1),
+    ).rejects.toThrow('You do not own this planet and are not on the owner\'s team');
+  });
+
+  it('planetaryAPI.offerOwnershipTransfer POSTs recipient_player_id', async () => {
+    post.mockResolvedValue({
+      data: { success: true, planet_id: 'planet-1', offer: { fee_credits: 12 } },
+    });
+    const out = await planetaryAPI.offerOwnershipTransfer('planet-1', 'player-9');
+    expect(out).toEqual({
+      success: true,
+      planet_id: 'planet-1',
+      offer: { fee_credits: 12 },
+    });
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/planets/planet-1/ownership-transfer',
+      JSON.stringify({ recipient_player_id: 'player-9' }),
+      jsonHeaders,
+    );
+  });
+
+  it('planetaryAPI.acceptOwnershipTransfer POSTs /accept', async () => {
+    post.mockResolvedValue({
+      data: { success: true, planet_id: 'planet-1', fee_credits: 12 },
+    });
+    await planetaryAPI.acceptOwnershipTransfer('planet-1');
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/planets/planet-1/ownership-transfer/accept',
+      undefined,
+      jsonHeaders,
+    );
+  });
+
+  it('planetaryAPI.getOwnershipTransfer GETs status', async () => {
+    get.mockResolvedValue({ data: { planet_id: 'planet-1', pending: false, offer: null } });
+    const out = await planetaryAPI.getOwnershipTransfer('planet-1');
+    expect(out).toEqual({ planet_id: 'planet-1', pending: false, offer: null });
+    expect(get).toHaveBeenCalledWith(
+      '/api/v1/planets/planet-1/ownership-transfer',
+      jsonHeaders,
+    );
+  });
+
+  it('portOwnershipAPI.militaryTakeover POSTs action to /stations/{id}/military', async () => {
+    post.mockResolvedValue({ data: { campaign_type: 'military', status: 'building' } });
+    const out = await portOwnershipAPI.militaryTakeover('st-1', 'declare');
+    expect(out).toEqual({ campaign_type: 'military', status: 'building' });
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/port-ownership/stations/st-1/military',
+      JSON.stringify({ action: 'declare' }),
+      jsonHeaders,
+    );
+  });
+
 });

@@ -44,6 +44,9 @@ vi.mock('../../../services/api', () => ({
     getThreat: vi.fn().mockResolvedValue([]),
   },
   sectorAPI: { sectorWrecks: vi.fn().mockResolvedValue([]), getContents: vi.fn().mockResolvedValue({ star: null, bodies: [] }), },
+  planetaryAPI: {
+    getOwnershipTransfer: vi.fn().mockResolvedValue({ planet_id: '', pending: false, offer: null }),
+  },
 }));
 
 vi.mock('react-router-dom', () => ({
@@ -64,6 +67,10 @@ const populationCenterMock = vi.fn((_props?: unknown) => <div data-testid="pc-mo
 vi.mock('../../planetary/PopulationCenterInterface', () => ({
   default: (props: unknown) => populationCenterMock(props),
 }));
+const surveyExpeditionPanelMock = vi.fn((_props?: unknown) => <div data-testid="survey-panel-mock" />);
+vi.mock('../../survey/SurveyExpeditionPanel', () => ({
+  default: (props: unknown) => surveyExpeditionPanelMock(props),
+}));
 // Trackable (unlike dockedStationFace's plain stub) — the whole point of
 // this suite is proving landed NEVER stops mounting this (WINDSHIELD RULING).
 const solarSystemViewscreenMock = vi.fn((_props?: unknown) => <div data-testid="ssv-mock" />);
@@ -78,6 +85,8 @@ const windshieldTableauMock = vi.fn((_props?: unknown) => <div data-testid="wind
 vi.mock('../../tactical/WindshieldTableau', () => ({
   default: (props: unknown) => windshieldTableauMock(props),
 }));
+vi.mock('../../mining/NearestAmRefineryOverlay', () => ({ default: () => null }));
+vi.mock('../../mining/HarvestYieldPreview', () => ({ default: () => null, HARVEST_GATE_COPY: {} }));
 vi.mock('../../tactical/PlanetPortPair', () => ({ default: () => <div /> }));
 vi.mock('../../quantum/QuantumDriveConsole', () => ({ default: () => <div /> }));
 vi.mock('../../gatewright/GatewrightPanel', () => ({ default: () => <div /> }));
@@ -99,6 +108,11 @@ const SECTOR_100: any = {
 const PLANET_UNCLAIMED: any = {
   id: 'planet-1', name: 'Ceti Alpha', type: 'TERRAN', sector_id: 100,
   habitability_score: 42, is_population_hub: false, owner_id: null, owner_name: null,
+};
+
+const PLANET_OWNED: any = {
+  id: 'planet-1', name: 'Ceti Alpha', type: 'TERRAN', sector_id: 100,
+  habitability_score: 42, is_population_hub: false, owner_id: 'player-1', owner_name: 'tester',
 };
 
 const PLANET_HUB: any = {
@@ -187,6 +201,7 @@ describe('GameDashboard — landed keeps the vista, bezel-swaps the deck (WO-UI4
     };
     solarSystemViewscreenMock.mockClear();
     populationCenterMock.mockClear();
+    surveyExpeditionPanelMock.mockClear();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -208,7 +223,7 @@ describe('GameDashboard — landed keeps the vista, bezel-swaps the deck (WO-UI4
         is_landed: true,
         current_planet_id: 'planet-1',
       },
-      planetsInSector: [PLANET_UNCLAIMED],
+      planetsInSector: [PLANET_OWNED],
     });
     await act(async () => {
       root.render(<GameDashboard />);
@@ -240,9 +255,37 @@ describe('GameDashboard — landed keeps the vista, bezel-swaps the deck (WO-UI4
     expect(hudHeading?.getAttribute('aria-level')).toBe('2');
     expect(hudHeading?.textContent).toBe('PLANETARY OPERATIONS COMMAND');
 
-    // Correct branch — not the population-hub interface.
+    // Correct branch — not the population-hub interface or survey founding panel.
     expect(populationCenterMock).not.toHaveBeenCalled();
+    expect(surveyExpeditionPanelMock).not.toHaveBeenCalled();
     expect(container.querySelector('[data-testid="pc-mock"]')).toBeNull();
+
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  it('landed on unclaimed planet (founding surface): SurveyExpeditionPanel in surface face', async () => {
+    gameState = makeGameState({
+      playerState: {
+        ...makeGameState().playerState,
+        is_landed: true,
+        current_planet_id: 'planet-1',
+      },
+      planetsInSector: [PLANET_UNCLAIMED],
+    });
+    await act(async () => {
+      root.render(<GameDashboard />);
+    });
+
+    expect(surveyExpeditionPanelMock).toHaveBeenCalled();
+    const surveyCall = surveyExpeditionPanelMock.mock.calls[0][0] as any;
+    expect(surveyCall.planetId).toBe('planet-1');
+    expect(surveyCall.planetName).toBe('Ceti Alpha');
+    expect(surveyCall.shipId).toBe('ship-1');
+
+    expect(container.querySelector('.surface-face-workspace')).not.toBeNull();
+    expect(container.querySelector('[data-testid="survey-panel-mock"]')).not.toBeNull();
+    expect(container.textContent).not.toContain('PLANETARY OPERATIONS COMMAND');
+    expect(populationCenterMock).not.toHaveBeenCalled();
 
     expect(errorSpy).not.toHaveBeenCalled();
   });
