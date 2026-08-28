@@ -130,6 +130,75 @@ async function openDecideForm() {
   fireEvent.click(screen.getByRole('button', { name: 'Confirm (enforce limits)' }));
 }
 
+describe('MultiAccountReview cluster detail GET (LEG-2847)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('surfaces scope denial on cluster detail GET 403', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/clusters/cluster-1')) {
+        return Promise.reject(axiosError(403));
+      }
+      if (url.includes('/clusters')) {
+        return { data: [sampleCluster] };
+      }
+      return { data: [] };
+    });
+
+    render(<MultiAccountReview />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/2 members/i)).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByText(/2 members/i));
+
+    await waitFor(() => {
+      expect(api.get).toHaveBeenCalledWith(
+        '/api/v1/admin/multi-account/clusters/cluster-1',
+      );
+    });
+
+    const detailError = screen.getByRole('alert');
+    expect(detailError.textContent).toMatch(
+      /admin multi-account review scopes required|Access denied/i,
+    );
+    expect(detailError.textContent).not.toMatch(/^Failed to load cluster detail$/);
+  });
+
+  it('surfaces rate-limit copy on cluster detail GET 429', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/clusters/cluster-1')) {
+        return Promise.reject(axiosError(429));
+      }
+      if (url.includes('/clusters')) {
+        return { data: [sampleCluster] };
+      }
+      return { data: [] };
+    });
+
+    render(<MultiAccountReview />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/2 members/i)).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByText(/2 members/i));
+
+    await waitFor(() => {
+      expect(api.get).toHaveBeenCalledWith(
+        '/api/v1/admin/multi-account/clusters/cluster-1',
+      );
+    });
+
+    const detailError = screen.getByRole('alert');
+    expect(detailError.textContent).toMatch(/rate limit/i);
+    expect(detailError.textContent).not.toMatch(/^Failed to load cluster detail$/);
+  });
+});
+
 describe('MultiAccountReview decide POST (LEG-2765)', () => {
   beforeEach(() => {
     vi.mocked(api.get).mockReset();

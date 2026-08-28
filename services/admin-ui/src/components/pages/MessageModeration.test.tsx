@@ -327,6 +327,110 @@ describe('MessageModeration', () => {
     );
   });
 
+  it('accept surfaces formatAdminApiError on POST 403 (LEG-2845)', async () => {
+    const user = userEvent.setup();
+    mockLoad({ messages: { ...emptyMessages, messages: [message], total: 1 } });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockRejectedValue(
+      Object.assign(new Error('HTTP 403'), {
+        response: { status: 403, data: { detail: 'Missing scope admin.security.act' } },
+      }),
+    );
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: 'Accept' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/moderation/messages/m1/accept',
+        {},
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(
+      expect.stringMatching(/admin\.security\.act|Missing scope|Access denied/i),
+    );
+    expect(toastError).not.toHaveBeenCalledWith('Failed to accept the message');
+  });
+
+  it('accept surfaces rate-limit copy on POST 429 (LEG-2845)', async () => {
+    const user = userEvent.setup();
+    mockLoad({ messages: { ...emptyMessages, messages: [message], total: 1 } });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockRejectedValue(
+      Object.assign(new Error('HTTP 429'), {
+        response: { status: 429 },
+      }),
+    );
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: 'Accept' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/moderation/messages/m1/accept',
+        {},
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/rate limit/i));
+    expect(toastError).not.toHaveBeenCalledWith('Failed to accept the message');
+  });
+
+  it('redact surfaces formatAdminApiError on POST 403 (LEG-2845)', async () => {
+    const user = userEvent.setup();
+    mockLoad({ messages: { ...emptyMessages, messages: [message], total: 1 } });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockRejectedValue(
+      Object.assign(new Error('HTTP 403'), {
+        response: { status: 403, data: { detail: 'Missing scope admin.security.act' } },
+      }),
+    );
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: 'Redact' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/moderation/messages/m1/redact',
+        {},
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(
+      expect.stringMatching(/admin\.security\.act|Missing scope|Access denied/i),
+    );
+    expect(toastError).not.toHaveBeenCalledWith('Failed to redact the message');
+  });
+
+  it('redact surfaces rate-limit copy on POST 429 (LEG-2845)', async () => {
+    const user = userEvent.setup();
+    mockLoad({ messages: { ...emptyMessages, messages: [message], total: 1 } });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockRejectedValue(
+      Object.assign(new Error('HTTP 429'), {
+        response: { status: 429 },
+      }),
+    );
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: 'Redact' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/moderation/messages/m1/redact',
+        {},
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/rate limit/i));
+    expect(toastError).not.toHaveBeenCalledWith('Failed to redact the message');
+  });
+
   it('block posts tip canon path and surfaces formatAdminApiError on 403 (LEG-1579)', async () => {
     const user = userEvent.setup();
     mockLoad({ messages: { ...emptyMessages, messages: [message], total: 1 } });
@@ -351,6 +455,31 @@ describe('MessageModeration', () => {
     expect(toastError).toHaveBeenCalledWith(
       expect.stringMatching(/admin\.security\.act|Missing scope|Access denied/i),
     );
+  });
+
+  it('block surfaces rate-limit copy on POST 429 (LEG-2845)', async () => {
+    const user = userEvent.setup();
+    mockLoad({ messages: { ...emptyMessages, messages: [message], total: 1 } });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockRejectedValue(
+      Object.assign(new Error('HTTP 429'), {
+        response: { status: 429 },
+      }),
+    );
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: 'Block' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/moderation/messages/m1/block',
+        {},
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/rate limit/i));
+    expect(toastError).not.toHaveBeenCalledWith('Failed to block the message');
   });
 
   it('block escalation surfaces audit ledger deep link when flagged (LEG-2703)', async () => {
