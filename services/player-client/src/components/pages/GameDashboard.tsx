@@ -751,17 +751,10 @@ const GameDashboardInner: React.FC = () => {
   const [harvestBusy, setHarvestBusy] = useState(false);
   const [harvestPreviewBlocked, setHarvestPreviewBlocked] = useState(true);
   const [harvestPreviewGateMessage, setHarvestPreviewGateMessage] = useState<string | null>(null);
-  const handleHarvestPreviewGateChange = useCallback(({ blocked, message }: HarvestGateState) => {
+  const handleHarvestGateChange = useCallback(({ blocked, message }: HarvestGateState) => {
     setHarvestPreviewBlocked(blocked);
     setHarvestPreviewGateMessage(message);
   }, []);
-  const handleHarvestGateChange = useCallback(
-    ({ blocked, message }: { blocked: boolean; message: string | null }) => {
-      setHarvestPreviewBlocked(blocked);
-      setHarvestPreviewGateMessage(message);
-    },
-    [],
-  );
 
   // Special-formation investigation (WO-UI-ANOMALY): which discovered formations
   // this player has already investigated this session (the chip disables once
