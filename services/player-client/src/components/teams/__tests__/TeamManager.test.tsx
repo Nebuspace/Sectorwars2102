@@ -28,6 +28,11 @@ vi.mock('../ResourceSharing', () => ({
 vi.mock('../TeamChat', () => ({
   TeamChat: ({ teamId }: { teamId: string }) => <div data-testid="team-chat" data-team-id={teamId} />,
 }));
+vi.mock('../TeamWarPanel', () => ({
+  TeamWarPanel: ({ teamId, isLeader }: { teamId: string; isLeader: boolean }) => (
+    <div data-testid="team-war-panel" data-team-id={teamId} data-leader={String(isLeader)} />
+  ),
+}));
 
 const {
   mockGetTeam,
@@ -38,6 +43,7 @@ const {
   mockKickMember,
   mockLeaveTeam,
   mockCreateTeam,
+  mockMedalsGetMe,
 } = vi.hoisted(() => ({
   mockGetTeam: vi.fn<(id: string) => Promise<TeamApiResponse>>(),
   mockGetMembers: vi.fn<(id: string) => Promise<TeamMemberApiResponse[]>>(async () => []),
@@ -47,6 +53,11 @@ const {
   mockKickMember: vi.fn<(teamId: string, memberId: string) => Promise<unknown>>(async () => undefined),
   mockLeaveTeam: vi.fn<() => Promise<unknown>>(async () => undefined),
   mockCreateTeam: vi.fn<(data: unknown) => Promise<TeamApiResponse>>(),
+  mockMedalsGetMe: vi.fn<() => Promise<unknown>>(async () => ({
+    earned: [],
+    pinned_medal_id: null,
+    total_earned: 0,
+  })),
 }));
 
 vi.mock('../../../services/api', () => ({
@@ -59,6 +70,9 @@ vi.mock('../../../services/api', () => ({
     kickMember: mockKickMember,
     leaveTeam: mockLeaveTeam,
     createTeam: mockCreateTeam,
+  },
+  medalsAPI: {
+    getMe: mockMedalsGetMe,
   },
 }));
 
@@ -158,6 +172,8 @@ describe('TeamManager', () => {
     mockLeaveTeam.mockReset();
     mockLeaveTeam.mockResolvedValue(undefined);
     mockCreateTeam.mockReset();
+    mockMedalsGetMe.mockReset();
+    mockMedalsGetMe.mockResolvedValue({ earned: [], pinned_medal_id: null, total_earned: 0 });
     mockRefreshPlayerState.mockReset();
     mockRefreshPlayerState.mockResolvedValue(undefined);
     errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -360,6 +376,45 @@ describe('TeamManager', () => {
 
       expect(container.querySelector('.form-error')?.textContent).toBe('cannot kick the leader');
       expect(container.querySelector('.member-item')).not.toBeNull();
+    });
+
+    it('renders pinned medal pin and count for a non-self roster row from API fields', async () => {
+      mockGetMembers.mockResolvedValue([
+        rawMember({
+          player_id: 'p2',
+          nickname: 'Rho',
+          pinned_medal_id: 'star_bronze',
+          medal_count: 5,
+        }),
+      ]);
+      await mount();
+      await act(async () => {
+        tab('Members').click();
+      });
+
+      const plate = container.querySelector('.member-item [data-testid="player-name-plate"]') as HTMLElement;
+      expect(plate).not.toBeNull();
+      expect(plate.getAttribute('data-pinned-medal')).toBe('star_bronze');
+      expect(plate.querySelector('[data-testid="player-name-plate-medal"]')?.textContent).toBe('🏅');
+      expect(plate.querySelector('[data-testid="player-name-plate-count"]')?.textContent).toBe('5');
+    });
+
+    it('omits medal count badge when medal_count is null (privacy hidden)', async () => {
+      mockGetMembers.mockResolvedValue([
+        rawMember({
+          player_id: 'p2',
+          pinned_medal_id: 'star_bronze',
+          medal_count: null,
+        }),
+      ]);
+      await mount();
+      await act(async () => {
+        tab('Members').click();
+      });
+
+      const plate = container.querySelector('.member-item [data-testid="player-name-plate"]') as HTMLElement;
+      expect(plate.getAttribute('data-pinned-medal')).toBe('star_bronze');
+      expect(plate.querySelector('[data-testid="player-name-plate-count"]')).toBeNull();
     });
   });
 

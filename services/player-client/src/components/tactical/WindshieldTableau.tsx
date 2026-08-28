@@ -1139,6 +1139,13 @@ const WindshieldTableau: React.FC<WindshieldTableauProps> = ({
       onClosePopup: () => setPopup(null),
       onApproachPlanet: (pos, planetId) => travelTo(pos, planetId),
       onApproachStation: (station, pos) => approachStation(station, pos),
+      onBeaconRemoved: (beaconId) => {
+        setSystem((prev) =>
+          prev
+            ? { ...prev, messageBeacons: prev.messageBeacons.filter((b) => b.id !== beaconId) }
+            : prev
+        );
+      },
     });
   };
 

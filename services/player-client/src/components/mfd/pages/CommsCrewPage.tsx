@@ -28,11 +28,22 @@ import React from 'react';
 import { useGame, type PlayerMessage } from '../../../contexts/GameContext';
 import { useWebSocket } from '../../../contexts/WebSocketContext';
 import { useAuth } from '../../../contexts/AuthContext';
-import { teamAPI } from '../../../services/api';
+import { messageAPI, teamAPI } from '../../../services/api';
 import { MFDPageHeader, MFDPageBody, MFDField, MFDEmpty } from '../atoms';
 import './pages-ops.css';
 
 const ACCENT = '#00FF7F';
+
+/** Canon categories (messaging.md). Tip Query reason requires 10–255 chars —
+ *  bare `spam`/`other` are too short, so pad while keeping the category token. */
+export type FlagCategory = 'harassment' | 'spam' | 'rule_break' | 'other';
+export const FLAG_REASON_BY_CATEGORY: Record<FlagCategory, string> = {
+  harassment: 'harassment',
+  spam: 'spam report',
+  rule_break: 'rule_break',
+  other: 'other report',
+};
+const FLAG_CATEGORIES: FlagCategory[] = ['harassment', 'spam', 'rule_break', 'other'];
 
 interface ComposeTarget {
   recipientId: string;
@@ -56,6 +67,14 @@ const timeAgo = (iso: string | null): string => {
 
 const contactDisplayName = (contact: any): string =>
   contact.username || contact.name || 'UNKNOWN CONTACT';
+
+type CommsMode = 'hails' | 'threads';
+
+const conversationPartyLabel = (msg: PlayerMessage, playerId: string | undefined): string => {
+  if (!playerId) return (msg.sender_name || 'UNKNOWN').toUpperCase();
+  if (msg.sender_id !== playerId) return (msg.sender_name || 'UNKNOWN').toUpperCase();
+  return msg.subject ? `OUT: ${msg.subject}`.toUpperCase() : 'OUTBOUND';
+};
 
 const CommsCrewPage: React.FC = () => {
   const {
@@ -130,6 +149,17 @@ const CommsCrewPage: React.FC = () => {
   const [sendError, setSendError] = React.useState<string | null>(null);
   const [sendNotice, setSendNotice] = React.useState<string | null>(null);
   const [deletingId, setDeletingId] = React.useState<string | null>(null);
+  const [flagMenuId, setFlagMenuId] = React.useState<string | null>(null);
+  const [flaggingId, setFlaggingId] = React.useState<string | null>(null);
+  const [flagError, setFlagError] = React.useState<string | null>(null);
+  const [flagNotice, setFlagNotice] = React.useState<string | null>(null);
+
+  const [commsMode, setCommsMode] = React.useState<CommsMode>('hails');
+  const [conversations, setConversations] = React.useState<PlayerMessage[]>([]);
+  const [conversationsLoading, setConversationsLoading] = React.useState(false);
+  const [conversationsError, setConversationsError] = React.useState<string | null>(null);
+  const [selectedThreadId, setSelectedThreadId] = React.useState<string | null>(null);
+  const [expandedThreadMsgId, setExpandedThreadMsgId] = React.useState<string | null>(null);
 
   // Initial inbox fetch once auth has hydrated, then again on every live
   // new_message notification — the unread badge stays current without a
@@ -158,12 +188,74 @@ const CommsCrewPage: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [newMessageSignal, user?.id]);
 
+  React.useEffect(() => {
+    if (commsMode !== 'threads' || !user?.id) return;
+    let cancelled = false;
+    setConversationsLoading(true);
+    setConversationsError(null);
+    messageAPI.getConversations(1)
+      .then((res: { conversations?: PlayerMessage[] }) => {
+        if (cancelled) return;
+        setConversations(Array.isArray(res?.conversations) ? res.conversations : []);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setConversations([]);
+        setConversationsError(
+          err instanceof Error ? err.message : 'FAILED TO LOAD THREADS'
+        );
+      })
+      .finally(() => {
+        if (!cancelled) setConversationsLoading(false);
+      });
+    refreshInbox();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [commsMode, user?.id]);
+
+  const threadMessages = React.useMemo(() => {
+    if (!selectedThreadId) return [];
+    const fromInbox = inboxMessages.filter((m) => m.thread_id === selectedThreadId);
+    const preview = conversations.find((c) => c.thread_id === selectedThreadId);
+    const merged = new Map<string, PlayerMessage>();
+    fromInbox.forEach((m) => merged.set(m.id, m));
+    if (preview && !merged.has(preview.id)) merged.set(preview.id, preview);
+    return Array.from(merged.values()).sort((a, b) => {
+      const ta = a.sent_at ? new Date(a.sent_at).getTime() : 0;
+      const tb = b.sent_at ? new Date(b.sent_at).getTime() : 0;
+      return ta - tb;
+    });
+  }, [selectedThreadId, inboxMessages, conversations]);
+
+  const switchCommsMode = (mode: CommsMode) => {
+    setCommsMode(mode);
+    setExpandedId(null);
+    setSelectedThreadId(null);
+    setExpandedThreadMsgId(null);
+    setFlagMenuId(null);
+    setFlagError(null);
+    setFlagNotice(null);
+  };
+
+  const selectThread = (msg: PlayerMessage) => {
+    const tid = msg.thread_id || msg.id;
+    setSelectedThreadId(tid);
+    setExpandedThreadMsgId(null);
+    setFlagMenuId(null);
+    setFlagError(null);
+    setFlagNotice(null);
+  };
+
   const toggleExpand = (msg: PlayerMessage) => {
     if (expandedId === msg.id) {
       setExpandedId(null);
+      setFlagMenuId(null);
       return;
     }
     setExpandedId(msg.id);
+    setFlagMenuId(null);
+    setFlagError(null);
+    setFlagNotice(null);
     if (!msg.is_read) {
       // Reading IS the read receipt — but a failed flag write must not
       // block reading the transmission itself.
@@ -220,6 +312,23 @@ const CommsCrewPage: React.FC = () => {
     }
   };
 
+  const handleFlag = async (msg: PlayerMessage, category: FlagCategory) => {
+    if (flaggingId) return;
+    setFlaggingId(msg.id);
+    setFlagError(null);
+    setFlagNotice(null);
+    setSendError(null);
+    try {
+      await messageAPI.flagMessage(msg.id, FLAG_REASON_BY_CATEGORY[category]);
+      setFlagMenuId(null);
+      setFlagNotice('FLAGGED FOR MODERATION');
+    } catch (err: unknown) {
+      setFlagError(err instanceof Error ? err.message : 'Failed to flag transmission');
+    } finally {
+      setFlaggingId(null);
+    }
+  };
+
   const handleSend = async () => {
     if (!compose || !composeContent.trim() || isSending) return;
 
@@ -258,7 +367,31 @@ const CommsCrewPage: React.FC = () => {
         <MFDField label="UPLINK" value={isConnected ? 'LINK OK' : 'LINK DOWN'} accent={isConnected} />
         <MFDField label="UNREAD" value={unreadMessageCount ?? '—'} />
 
-        <div className="mfd-page-section-label">TRANSMISSIONS</div>
+        <div className="mfd-page-comms-mode-tabs" role="tablist" aria-label="Comms mode">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={commsMode === 'hails'}
+            className={`mfd-page-comms-mode-tab ${commsMode === 'hails' ? 'active' : ''}`}
+            onClick={() => switchCommsMode('hails')}
+          >
+            HAILS
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={commsMode === 'threads'}
+            className={`mfd-page-comms-mode-tab ${commsMode === 'threads' ? 'active' : ''}`}
+            onClick={() => switchCommsMode('threads')}
+          >
+            THREADS
+          </button>
+        </div>
+
+        <div className="mfd-page-section-label">
+          {commsMode === 'hails' ? 'TRANSMISSIONS' : 'THREADS'}
+        </div>
+        {commsMode === 'hails' ? (
         <div className="mfd-page-comms-inbox">
           {inboxMessages.length > 0 ? (
             inboxMessages.map((msg) => (
@@ -291,6 +424,17 @@ const CommsCrewPage: React.FC = () => {
                         ↩ REPLY
                       </button>
                       <button
+                        className="mfd-page-comms-flag-btn"
+                        data-testid="comms-flag-hail"
+                        disabled={flaggingId === msg.id || !!msg.flagged}
+                        onClick={() =>
+                          setFlagMenuId((cur) => (cur === msg.id ? null : msg.id))
+                        }
+                        title="Flag this transmission for moderation"
+                      >
+                        {msg.flagged ? 'FLAGGED' : flagMenuId === msg.id ? 'CANCEL FLAG' : '⚑ FLAG'}
+                      </button>
+                      <button
                         className="mfd-page-comms-delete-btn"
                         data-testid="comms-purge-hail"
                         disabled={deletingId === msg.id}
@@ -300,6 +444,35 @@ const CommsCrewPage: React.FC = () => {
                         {deletingId === msg.id ? 'PURGING…' : '✕ PURGE'}
                       </button>
                     </div>
+                    {flagMenuId === msg.id && !msg.flagged && (
+                      <div
+                        className="mfd-page-comms-flag-categories"
+                        data-testid="comms-flag-categories"
+                      >
+                        {FLAG_CATEGORIES.map((cat) => (
+                          <button
+                            key={cat}
+                            type="button"
+                            className="mfd-page-comms-flag-cat-btn"
+                            data-testid={`comms-flag-cat-${cat}`}
+                            disabled={flaggingId === msg.id}
+                            onClick={() => handleFlag(msg, cat)}
+                          >
+                            {flaggingId === msg.id ? 'FLAGGING…' : cat.replace('_', ' ').toUpperCase()}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    {flagNotice && expandedId === msg.id && (
+                      <div className="mfd-page-comms-flag-notice" role="status">
+                        {flagNotice}
+                      </div>
+                    )}
+                    {flagError && expandedId === msg.id && (
+                      <div className="mfd-page-comms-flag-error" role="alert">
+                        {flagError}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -308,6 +481,93 @@ const CommsCrewPage: React.FC = () => {
             <MFDEmpty text="NO TRANSMISSIONS" />
           )}
         </div>
+        ) : (
+          <>
+            {conversationsLoading && <MFDEmpty text="LOADING THREADS…" />}
+            {!conversationsLoading && conversationsError && (
+              <div className="mfd-page-warnline" role="alert">{conversationsError}</div>
+            )}
+            {!conversationsLoading && !conversationsError && (
+              <div className="mfd-page-comms-inbox" data-testid="comms-threads-list">
+                {conversations.length > 0 ? (
+                  conversations.map((msg) => {
+                    const tid = msg.thread_id || msg.id;
+                    const isSelected = selectedThreadId === tid;
+                    return (
+                      <div
+                        key={tid}
+                        className={`mfd-page-comms-hail-item ${isSelected ? 'unread' : 'read'}`}
+                      >
+                        <button
+                          type="button"
+                          className="mfd-page-comms-hail-summary"
+                          onClick={() => selectThread(msg)}
+                          aria-expanded={isSelected}
+                        >
+                          <span className="mfd-page-comms-hail-sender">
+                            {conversationPartyLabel(msg, playerState?.id)}
+                          </span>
+                          <span className="mfd-page-comms-hail-subject">
+                            {msg.subject || msg.content?.slice(0, 40) || '(NO SUBJECT)'}
+                          </span>
+                          <span className="mfd-page-comms-hail-time">{timeAgo(msg.sent_at)}</span>
+                        </button>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <MFDEmpty text="NO THREADS" />
+                )}
+              </div>
+            )}
+            {selectedThreadId && threadMessages.length > 0 && (
+              <div className="mfd-page-comms-thread-detail" data-testid="comms-thread-detail">
+                <div className="mfd-page-section-label">THREAD MESSAGES</div>
+                {threadMessages.map((msg) => (
+                  <div
+                    key={msg.id}
+                    className={`mfd-page-comms-hail-item ${msg.is_read ? 'read' : 'unread'}`}
+                  >
+                    <button
+                      type="button"
+                      className="mfd-page-comms-hail-summary"
+                      onClick={() => {
+                        if (expandedThreadMsgId === msg.id) {
+                          setExpandedThreadMsgId(null);
+                          setFlagMenuId(null);
+                          return;
+                        }
+                        setExpandedThreadMsgId(msg.id);
+                        setFlagMenuId(null);
+                        if (!msg.is_read) {
+                          markMessageRead(msg.id).catch(err =>
+                            console.warn('CommsCrewPage: failed to mark thread message read:', err)
+                          );
+                        }
+                      }}
+                      aria-expanded={expandedThreadMsgId === msg.id}
+                    >
+                      <span className="mfd-page-comms-hail-sender">
+                        {(msg.sender_name || 'UNKNOWN').toUpperCase()}
+                      </span>
+                      <span className="mfd-page-comms-hail-time">{timeAgo(msg.sent_at)}</span>
+                    </button>
+                    {expandedThreadMsgId === msg.id && (
+                      <div className="mfd-page-comms-hail-body">
+                        <p className="mfd-page-comms-hail-content">{msg.content}</p>
+                        <div className="mfd-page-comms-hail-actions">
+                          <button className="mfd-page-comms-reply-btn" onClick={() => startReply(msg)}>
+                            ↩ REPLY
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
 
         {compose ? (
           <div className="mfd-page-comms-compose">
