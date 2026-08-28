@@ -72,6 +72,8 @@ function Probe() {
     loadAdminStats,
     users,
     loadUsers,
+    players,
+    loadPlayers,
     error,
     wipeGalaxy,
     galaxyState,
@@ -86,10 +88,12 @@ function Probe() {
     <div>
       <span data-testid="total-users">{adminStats?.totalUsers ?? 'none'}</span>
       <span data-testid="user-count">{users.length}</span>
+      <span data-testid="player-count">{players.length}</span>
       <span data-testid="galaxy-loaded">{galaxyState ? 'yes' : 'no'}</span>
       <span data-testid="error">{error ?? 'none'}</span>
       <button onClick={() => loadAdminStats()}>load-stats</button>
       <button onClick={() => loadUsers()}>load-users</button>
+      <button onClick={() => loadPlayers()}>load-players</button>
       <button onClick={() => void loadGalaxyInfo()}>load-galaxy-info</button>
       <button onClick={() => void loadSectors()}>load-sectors</button>
       <button
@@ -285,6 +289,45 @@ describe('AdminContext / AdminProvider', () => {
     await user.click(screen.getByText('load-users'));
     await waitFor(() => expect(screen.getByTestId('user-count')).toHaveTextContent('2'));
     expect(api.get).toHaveBeenCalledWith('/api/v1/admin/users');
+  });
+
+  it('surfaces loadPlayers 403 as PLAYERS_VIEW denial (LEG-2805)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    vi.mocked(api.get).mockRejectedValue(httpErr(403));
+    const user = userEvent.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>
+    );
+
+    await user.click(screen.getByText('load-players'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/PLAYERS_VIEW/),
+    );
+    expect(screen.getByTestId('error').textContent).not.toMatch(
+      /Failed to load player accounts/,
+    );
+    expect(api.get).toHaveBeenCalledWith('/api/v1/admin/players');
+  });
+
+  it('surfaces loadPlayers 429 as admin rate-limit (LEG-2805)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    vi.mocked(api.get).mockRejectedValue(httpErr(429));
+    const user = userEvent.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>
+    );
+
+    await user.click(screen.getByText('load-players'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/rate limit/i),
+    );
+    expect(api.get).toHaveBeenCalledWith('/api/v1/admin/players');
   });
 
   it('surfaces wipeGalaxy 403 as admin.universe.manage denial (LEG-1315)', async () => {
