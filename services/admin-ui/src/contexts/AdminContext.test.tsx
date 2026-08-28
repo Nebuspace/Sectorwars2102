@@ -39,6 +39,7 @@ function Probe() {
     loadUsers,
     error,
     wipeGalaxy,
+    loadGalaxyInfo,
     clearGalaxyData,
     addSectors,
     createWarpTunnel,
@@ -50,6 +51,7 @@ function Probe() {
       <span data-testid="error">{error ?? 'none'}</span>
       <button onClick={() => loadAdminStats()}>load-stats</button>
       <button onClick={() => loadUsers()}>load-users</button>
+      <button onClick={() => loadGalaxyInfo()}>load-galaxy-info</button>
       <button
         onClick={() => {
           void wipeGalaxy('g1', 'CONFIRM').catch(() => undefined);
