@@ -78,6 +78,46 @@ const CITADEL_PREREQS: Record<number, string> = {
   5: 'Requires Defense Grid L2, Orbital Defense Platform, Rail Gun Battery, and Shield Generator L8',
 };
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+/** apiRequest throws Error with `.status`; surface gameserver detail on citadel load. */
+export function formatCitadelLoadError(err: unknown): string {
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not own this planet.';
+  }
+
+  if (hasServerDetail) return message!;
+  return 'Failed to load citadel info';
+}
+
+/** Surface gameserver 400 detail on citadel upgrade refusal (prereq, in-progress, etc.). */
+export function formatCitadelUpgradeError(err: unknown): string {
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (hasServerDetail) return message!;
+  return 'Upgrade failed';
+}
+
 const compact = (n: number): string => {
   if (n >= 1_000_000) return `${n % 1_000_000 === 0 ? n / 1_000_000 : (n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${n % 1_000 === 0 ? n / 1_000 : (n / 1_000).toFixed(1)}k`;
@@ -121,8 +161,8 @@ const CitadelManager: React.FC<CitadelManagerProps> = ({
       const data = await citadelAPI.getInfo(planetId);
       setCitadel(data);
       setError(null);
-    } catch (err: any) {
-      setError(err.message || 'Failed to load citadel info');
+    } catch (err: unknown) {
+      setError(formatCitadelLoadError(err));
     } finally {
       setLoading(false);
     }
@@ -157,8 +197,8 @@ const CitadelManager: React.FC<CitadelManagerProps> = ({
       setActionMessage('Citadel upgrade initiated!');
       await fetchCitadel();
       onUpdate?.();
-    } catch (err: any) {
-      setActionMessage(err.message || 'Upgrade failed');
+    } catch (err: unknown) {
+      setActionMessage(formatCitadelUpgradeError(err));
     } finally {
       setActionLoading(false);
     }
