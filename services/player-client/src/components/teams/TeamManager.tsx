@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { teamAPI } from '../../services/api';
+import { medalsAPI, teamAPI } from '../../services/api';
 import { useGame } from '../../contexts/GameContext';
 import type {
   Team,
@@ -12,8 +12,10 @@ import type {
 import CockpitInstrument from '../cockpit/CockpitInstrument';
 import EmptyState from '../common/EmptyState';
 import LoadingState from '../common/LoadingState';
+import PlayerNamePlate from '../common/PlayerNamePlate';
 import { ResourceSharing } from './ResourceSharing';
 import { TeamChat } from './TeamChat';
+import { TeamWarPanel } from './TeamWarPanel';
 import './team-manager.css';
 
 /**
@@ -114,7 +116,9 @@ const mapMember = (raw: TeamMemberApiResponse): TeamMember => {
     },
     // Canon gap: member ship type is not exposed by the teams API
     shipType: '',
-    combatRating: raw.combat_rating
+    combatRating: raw.combat_rating,
+    pinnedMedalId: raw.pinned_medal_id ?? null,
+    medalCount: raw.medal_count ?? null
   };
 };
 
@@ -156,7 +160,7 @@ export const TeamManager: React.FC = () => {
   const [permissions, setPermissions] = useState<TeamPermissions | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'overview' | 'members' | 'treasury' | 'chat' | 'settings'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'members' | 'treasury' | 'chat' | 'wars' | 'settings'>('overview');
   const [editingInfo, setEditingInfo] = useState(false);
   const [teamInfo, setTeamInfo] = useState<{ description: string; recruitmentStatus: Team['recruitmentStatus'] }>({
     description: '',
@@ -175,6 +179,43 @@ export const TeamManager: React.FC = () => {
   // Two-step inline confirmations (no native dialogs)
   const [confirmingLeave, setConfirmingLeave] = useState(false);
   const [confirmingKickId, setConfirmingKickId] = useState<string | null>(null);
+
+  // LEG-357 / LEG-33 — optional self enrichment from GET /medals/me (icon/name).
+  // Roster rows also carry pinned_medal_id + medal_count from the teams API.
+  const [selfMedalCount, setSelfMedalCount] = useState<number | null>(null);
+  const [selfPinnedIcon, setSelfPinnedIcon] = useState<string | null>(null);
+  const [selfPinnedId, setSelfPinnedId] = useState<string | null>(null);
+  const [selfPinnedName, setSelfPinnedName] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = (await medalsAPI.getMe()) as {
+          earned?: Array<{ key: string; name: string; icon?: string }>;
+          pinned_medal_id?: string | null;
+          total_earned?: number;
+        };
+        if (cancelled) return;
+        const earned = data.earned ?? [];
+        setSelfMedalCount(
+          typeof data.total_earned === 'number' ? data.total_earned : earned.length,
+        );
+        const pinId = data.pinned_medal_id ?? null;
+        if (pinId) {
+          const match = earned.find(m => m.key === pinId);
+          setSelfPinnedId(pinId);
+          setSelfPinnedName(match?.name ?? pinId);
+          setSelfPinnedIcon(match?.icon || '🏅');
+        }
+      } catch {
+        /* roster still renders without medals */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const loadTeamData = useCallback(async (id: string | null) => {
     if (!id) {
@@ -538,6 +579,13 @@ export const TeamManager: React.FC = () => {
             Chat
           </button>
           <button
+            className={activeTab === 'wars' ? 'active' : ''}
+            onClick={() => setActiveTab('wars')}
+            data-testid="team-tab-wars"
+          >
+            Wars
+          </button>
+          <button
             className={activeTab === 'settings' ? 'active' : ''}
             onClick={() => setActiveTab('settings')}
           >
@@ -601,7 +649,26 @@ export const TeamManager: React.FC = () => {
                   <div className="member-info">
                     <div className="member-name">
                       <span className={`role-badge ${member.role}`}>{member.role}</span>
-                      {member.playerName}
+                      <PlayerNamePlate
+                        name={member.playerName}
+                        size="sm"
+                        pinnedMedalId={
+                          member.playerId === playerState.id
+                            ? (selfPinnedId ?? member.pinnedMedalId)
+                            : member.pinnedMedalId
+                        }
+                        pinnedMedalIcon={
+                          member.playerId === playerState.id ? selfPinnedIcon : null
+                        }
+                        pinnedMedalName={
+                          member.playerId === playerState.id ? selfPinnedName : null
+                        }
+                        medalCount={
+                          member.playerId === playerState.id
+                            ? (selfMedalCount ?? member.medalCount)
+                            : member.medalCount
+                        }
+                      />
                     </div>
                     <div className="member-details">
                       <span>📍 {member.location.sectorName}</span>
@@ -667,6 +734,13 @@ export const TeamManager: React.FC = () => {
             teamId={team.id}
             playerId={playerState.id}
             members={members}
+          />
+        )}
+
+        {activeTab === 'wars' && (
+          <TeamWarPanel
+            teamId={team.id}
+            isLeader={permissions?.canPromote === true}
           />
         )}
 

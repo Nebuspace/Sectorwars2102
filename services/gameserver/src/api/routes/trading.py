@@ -1143,6 +1143,11 @@ async def sell_resource(
     region_tax_amount = int(total_earnings * region_tax_rate)
     net_earnings -= region_tax_amount
 
+    from src.services.profession_service import trade_specialist_credit_multiplier_for_station
+    trade_mult = trade_specialist_credit_multiplier_for_station(db, current_player.id, station)
+    if trade_mult != 1.0:
+        net_earnings = int(round(net_earnings * trade_mult))
+
     # Execute the trade
     try:
         # Update player credits (net of tax); the withheld tax is realized to
@@ -1942,6 +1947,25 @@ async def dock_at_station(
 
         db.commit()
 
+        # LEG-338: dock activity (Redis + durable PlayerActivity when db held)
+        try:
+            from src.services.player_activity_service import (
+                ActivityEventType,
+                get_player_activity_service,
+            )
+            activity_service = await get_player_activity_service()
+            await activity_service.track_activity(
+                str(current_player.id),
+                ActivityEventType.DOCK,
+                {
+                    "sector_id": current_player.current_sector_id,
+                    "station_id": str(station.id),
+                },
+                db=db,
+            )
+        except Exception:
+            logger.warning("activity tracking failed (dock)", exc_info=True)
+
         return {
             "message": f"Successfully docked at {station.name}",
             "turn_cost": DOCKING_TURN_COST,
@@ -2040,6 +2064,22 @@ async def undock_from_port(
         spend_turns(current_player, UNDOCKING_TURN_COST)
 
         db.commit()
+
+        # LEG-338: undock activity
+        try:
+            from src.services.player_activity_service import (
+                ActivityEventType,
+                get_player_activity_service,
+            )
+            activity_service = await get_player_activity_service()
+            await activity_service.track_activity(
+                str(current_player.id),
+                ActivityEventType.UNDOCK,
+                {"sector_id": current_player.current_sector_id},
+                db=db,
+            )
+        except Exception:
+            logger.warning("activity tracking failed (undock)", exc_info=True)
 
         return {
             "message": "Successfully undocked from port",

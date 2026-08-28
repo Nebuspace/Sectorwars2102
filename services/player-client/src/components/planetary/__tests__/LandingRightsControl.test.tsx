@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * LandingRightsControl — LEG-155 owner ACL UI.
+ * LandingRightsControl — LEG-155 + LEG-INI-31 owner ACL UI.
  */
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -16,9 +16,26 @@ vi.mock('../../../services/api', () => ({
   },
 }));
 
-import LandingRightsControl from '../LandingRightsControl';
+import LandingRightsControl, { parseUuidList } from '../LandingRightsControl';
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+const UUID_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const UUID_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+
+describe('parseUuidList', () => {
+  it('accepts line- and comma-separated UUIDs and drops empties', () => {
+    const { ok, bad } = parseUuidList(`${UUID_A}\n${UUID_B}, ${UUID_A}`);
+    expect(ok).toEqual([UUID_A, UUID_B]);
+    expect(bad).toEqual([]);
+  });
+
+  it('flags invalid tokens', () => {
+    const { ok, bad } = parseUuidList(`${UUID_A}\nnot-a-uuid`);
+    expect(ok).toEqual([UUID_A]);
+    expect(bad).toEqual(['not-a-uuid']);
+  });
+});
 
 describe('LandingRightsControl', () => {
   let container: HTMLElement;
@@ -126,21 +143,120 @@ describe('LandingRightsControl', () => {
     });
   });
 
-  it('disables whitelist and denylist options with honest residual copy', async () => {
+  it('shows UUID list editor when whitelist is selected (LEG-INI-31)', async () => {
     await act(async () => {
       root.render(
-        <LandingRightsControl planetId="planet-1" isOwned initialMode="private" />,
+        <LandingRightsControl planetId="planet-1" isOwned initialMode="public" />,
       );
     });
 
     const select = container.querySelector(
       '[data-testid="landing-rights-select"]',
     ) as HTMLSelectElement;
-    const whitelist = Array.from(select.options).find((o) => o.value === 'whitelist');
-    const denylist = Array.from(select.options).find((o) => o.value === 'denylist');
-    expect(whitelist?.disabled).toBe(true);
-    expect(denylist?.disabled).toBe(true);
-    expect(container.querySelector('[data-testid="landing-rights-list-residual"]')?.textContent)
-      .toMatch(/UUID list editor/i);
+
+    await act(async () => {
+      select.value = 'whitelist';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      await flush();
+    });
+
+    expect(setLandingRights).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="landing-rights-list-editor"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="landing-rights-list-input"]')).toBeTruthy();
+  });
+
+  it('enables whitelist mode and PUTs UUID array (LEG-INI-31)', async () => {
+    setLandingRights.mockResolvedValue({
+      success: true,
+      message: "Landing rights set to 'whitelist'.",
+      planet_id: 'planet-1',
+      mode: 'whitelist',
+      whitelist: [UUID_A, UUID_B],
+      denylist: [],
+    });
+
+    await act(async () => {
+      root.render(
+        <LandingRightsControl
+          planetId="planet-1"
+          isOwned
+          initialMode="whitelist"
+          initialWhitelist={[UUID_A, UUID_B]}
+        />,
+      );
+    });
+
+    expect(container.querySelector('[data-testid="landing-rights-list-editor"]')).toBeTruthy();
+
+    const apply = container.querySelector(
+      '[data-testid="landing-rights-apply-list"]',
+    ) as HTMLButtonElement;
+    await act(async () => {
+      apply.click();
+      await flush();
+    });
+
+    expect(setLandingRights).toHaveBeenCalledWith('planet-1', {
+      mode: 'whitelist',
+      whitelist: [UUID_A, UUID_B],
+      denylist: [],
+    });
+  });
+
+  it('enables denylist mode and PUTs UUID array (LEG-INI-31)', async () => {
+    setLandingRights.mockResolvedValue({
+      success: true,
+      message: "Landing rights set to 'denylist'.",
+      planet_id: 'planet-1',
+      mode: 'denylist',
+      whitelist: [],
+      denylist: [UUID_A],
+    });
+
+    await act(async () => {
+      root.render(
+        <LandingRightsControl
+          planetId="planet-1"
+          isOwned
+          initialMode="denylist"
+          initialDenylist={[UUID_A]}
+        />,
+      );
+    });
+
+    const apply = container.querySelector(
+      '[data-testid="landing-rights-apply-list"]',
+    ) as HTMLButtonElement;
+    await act(async () => {
+      apply.click();
+      await flush();
+    });
+
+    expect(setLandingRights).toHaveBeenCalledWith('planet-1', {
+      mode: 'denylist',
+      whitelist: [],
+      denylist: [UUID_A],
+    });
+  });
+
+  it('rejects empty whitelist without calling the API', async () => {
+    await act(async () => {
+      root.render(
+        <LandingRightsControl planetId="planet-1" isOwned initialMode="whitelist" />,
+      );
+    });
+
+    const apply = container.querySelector(
+      '[data-testid="landing-rights-apply-list"]',
+    ) as HTMLButtonElement;
+    await act(async () => {
+      apply.click();
+      await flush();
+    });
+
+    expect(setLandingRights).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="landing-rights-error"]')?.textContent).toMatch(
+      /at least one/i,
+    );
   });
 });
