@@ -194,7 +194,7 @@ describe('TacticalTargetPage', () => {
   });
 
   it('renders pinned medal pin and count on a sector contact row (LEG-2666)', () => {
-    const contacts = [
+    const contacts: TacticalContact[] = [
       {
         id: 'c1',
         player_id: 'p1',
@@ -202,7 +202,7 @@ describe('TacticalTargetPage', () => {
         pinned_medal_id: 'star_bronze',
         medal_count: 4,
       },
-    ] as TacticalContact[];
+    ];
     render(<TacticalTargetPage contacts={contacts} />);
     const plate = container.querySelector(
       '[role="listitem"] [data-testid="player-name-plate"]',
