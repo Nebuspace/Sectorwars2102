@@ -20,7 +20,8 @@ from src.models.colonist_profession import (
     PROFESSION_TRAINING_DAYS,
     ProfessionType,
 )
-from src.models.planet import Planet
+from src.models.planet import Planet, player_planets
+from src.models.station import Station
 from src.models.profession_training_queue import (
     ProfessionTrainingQueue,
     ProfessionTrainingStatus,
@@ -43,6 +44,8 @@ COMBAT_PILOT_DRONE_MULTIPLIER = 1.50
 DEFENSE_COORDINATOR_MULTIPLIER = 1.30
 TERRAFORM_ENGINEER_RATE_PER_1K = 0.5  # habitability / month per 1k engineers
 TERRAFORM_ENGINEER_MONTHLY_CAP = 5.0  # at 10k engineers
+SPACE_ENGINEER_REPAIR_MULTIPLIER = 1.25  # professions.md L32
+TRADE_SPECIALIST_CREDIT_MULTIPLIER = 1.25  # professions.md L57
 
 
 def _parse_profession(value: str) -> ProfessionType:
@@ -114,6 +117,61 @@ def defense_coordinator_multiplier(db: Session, planet_id: UUID) -> float:
     if counts.get(ProfessionType.DEFENSE_COORDINATORS, 0) > 0:
         return DEFENSE_COORDINATOR_MULTIPLIER
     return 1.0
+
+
+def space_engineer_repair_multiplier(db: Session, planet_id: UUID) -> float:
+    counts = profession_counts(db, planet_id)
+    if counts.get(ProfessionType.SPACE_ENGINEERS, 0) > 0:
+        return SPACE_ENGINEER_REPAIR_MULTIPLIER
+    return 1.0
+
+
+def trade_specialist_credit_multiplier(db: Session, planet_id: UUID) -> float:
+    counts = profession_counts(db, planet_id)
+    if counts.get(ProfessionType.TRADE_SPECIALISTS, 0) > 0:
+        return TRADE_SPECIALIST_CREDIT_MULTIPLIER
+    return 1.0
+
+
+def _max_profession_multiplier_for_station(
+    db: Session,
+    player_id: UUID,
+    station: Optional[Station],
+    *,
+    planet_multiplier,
+) -> float:
+    """Best planet-local bonus among player-owned worlds in the station's sector."""
+    if station is None or station.sector_id is None:
+        return 1.0
+    planets = (
+        db.query(Planet)
+        .join(player_planets, Planet.id == player_planets.c.planet_id)
+        .filter(
+            player_planets.c.player_id == player_id,
+            Planet.sector_id == station.sector_id,
+        )
+        .all()
+    )
+    best = 1.0
+    for planet in planets:
+        best = max(best, planet_multiplier(db, planet.id))
+    return best
+
+
+def space_engineer_repair_multiplier_for_station(
+    db: Session, player_id: UUID, station: Optional[Station],
+) -> float:
+    return _max_profession_multiplier_for_station(
+        db, player_id, station, planet_multiplier=space_engineer_repair_multiplier,
+    )
+
+
+def trade_specialist_credit_multiplier_for_station(
+    db: Session, player_id: UUID, station: Optional[Station],
+) -> float:
+    return _max_profession_multiplier_for_station(
+        db, player_id, station, planet_multiplier=trade_specialist_credit_multiplier,
+    )
 
 
 def terraform_engineer_monthly_habitability(engineer_count: int) -> float:
