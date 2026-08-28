@@ -762,7 +762,7 @@ const GameDashboardInner: React.FC = () => {
     setHarvestPreviewBlocked(blocked);
     setHarvestPreviewGateMessage(message);
   }, []);
-  const harvestPollRef = useRef<ReturnType<typeof window.setInterval> | null>(null);
+  const harvestPollRef = useRef<number | null>(null);
 
   const clearHarvestPoll = useCallback(() => {
     if (harvestPollRef.current) {

@@ -46,7 +46,15 @@ vi.mock('../../planetary/PopulationCenterInterface', () => ({ default: () => <di
 vi.mock('../../tactical/SolarSystemViewscreen', () => ({ default: () => <div /> }));
 vi.mock('../../tactical/WindshieldTableau', () => ({ default: () => <div /> }));
 vi.mock('../../mining/NearestAmRefineryOverlay', () => ({ default: () => null }));
-vi.mock('../../mining/HarvestYieldPreview', () => ({ default: () => null, HARVEST_GATE_COPY: {} }));
+vi.mock('../../mining/HarvestYieldPreview', () => ({
+  default: ({ onGateChange }: { onGateChange?: (state: { blocked: boolean; message: string | null }) => void }) => {
+    React.useEffect(() => {
+      onGateChange?.({ blocked: false, message: null });
+    }, [onGateChange]);
+    return null;
+  },
+  HARVEST_GATE_COPY: {},
+}));
 vi.mock('../../tactical/PlanetPortPair', () => ({ default: () => <div data-testid="ppp-stub" /> }));
 vi.mock('../../quantum/QuantumDriveConsole', () => ({ default: () => <div /> }));
 vi.mock('../../gatewright/GatewrightPanel', () => ({ default: () => <div /> }));
