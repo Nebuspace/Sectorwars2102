@@ -1172,7 +1172,11 @@ class MovementService:
                 player, current_sector_id, destination_sector_id
             )
             encounters = self._check_for_encounters(player, destination_sector_id)
-            result.update({"tunnel_events": tunnel_events, "encounters": encounters})
+            result.update({
+                "tunnel_events": tunnel_events,
+                "encounters": encounters,
+                "travel_mode": "warp",
+            })
             # WO-AY: a successful gate jump is a real arrival — sweep for
             # scanner-array detections (best-effort; only on real success).
             if result.get("success"):
@@ -1206,7 +1210,7 @@ class MovementService:
             encounters = self._check_for_encounters(player, destination_sector_id)
 
             # Combine results
-            result.update({"encounters": encounters})
+            result.update({"encounters": encounters, "travel_mode": "sector"})
 
             # WO-AB: a successful direct warp counts as a jump — roll for a
             # mechanical failure (best-effort; only fires on a real move success).
@@ -1246,7 +1250,11 @@ class MovementService:
             encounters = self._check_for_encounters(player, destination_sector_id)
 
             # Combine results
-            result.update({"tunnel_events": tunnel_events, "encounters": encounters})
+            result.update({
+                "tunnel_events": tunnel_events,
+                "encounters": encounters,
+                "travel_mode": "warp",
+            })
 
             # WO-AB: a successful warp-tunnel jump counts as a jump — roll for a
             # mechanical failure (best-effort; only fires on a real move success).
