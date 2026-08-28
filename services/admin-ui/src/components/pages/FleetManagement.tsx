@@ -202,7 +202,12 @@ const FleetManagement: React.FC = () => {
       fetchShips();
     } catch (error) {
       console.error('Error creating ship:', error);
-      toast.error('Failed to create ship');
+      toast.error(
+        formatAdminApiError(error, {
+          fallback: 'Failed to create ship',
+          scopeHint: 'admin.ships.manage scope required for fleet management',
+        })
+      );
     }
   };
 
@@ -217,7 +222,12 @@ const FleetManagement: React.FC = () => {
       fetchShips();
     } catch (error) {
       console.error('Error updating ship:', error);
-      toast.error('Failed to update ship');
+      toast.error(
+        formatAdminApiError(error, {
+          fallback: 'Failed to update ship',
+          scopeHint: 'admin.ships.manage scope required for fleet management',
+        })
+      );
     }
   };
 
@@ -236,7 +246,12 @@ const FleetManagement: React.FC = () => {
       fetchShips();
     } catch (error) {
       console.error('Error deleting ship:', error);
-      toast.error('Failed to delete ship');
+      toast.error(
+        formatAdminApiError(error, {
+          fallback: 'Failed to delete ship',
+          scopeHint: 'admin.ships.manage scope required for fleet management',
+        })
+      );
     }
   };
 
@@ -257,7 +272,12 @@ const FleetManagement: React.FC = () => {
       fetchShips();
     } catch (error) {
       console.error('Error teleporting ship:', error);
-      toast.error('Failed to teleport ship');
+      toast.error(
+        formatAdminApiError(error, {
+          fallback: 'Failed to teleport ship',
+          scopeHint: 'admin.ships.manage scope required for fleet management',
+        })
+      );
     }
   };
 
@@ -305,6 +325,33 @@ const FleetManagement: React.FC = () => {
         formatAdminApiError(error, {
           fallback: `Failed to ${action} ship`,
           scopeHint: 'SHIPS_MANAGE scope required for ship emergency actions',
+        })
+      );
+    }
+  };
+
+  /** Tip GS: POST /api/v1/admin/ships/registry/backfill — idempotent INITIAL_REGISTRATION (LEG-1682). */
+  const handleRegistryBackfill = async () => {
+    if (!(await confirm({
+      title: 'Backfill Ship Registry',
+      message:
+        'Run the one-shot ship registry backfill? This posts the tip admin ships registry/backfill route (idempotent; SHIPS_MANAGE).',
+      confirmLabel: 'Backfill registry',
+    }))) {
+      return;
+    }
+
+    try {
+      const response = await api.post('/api/v1/admin/ships/registry/backfill');
+      const backfilled =
+        (response.data as { backfilled?: number } | undefined)?.backfilled ?? 0;
+      toast.success(`Backfilled ${backfilled} ship registry row(s)`);
+    } catch (error) {
+      console.error('Error ship registry backfill:', error);
+      toast.error(
+        formatAdminApiError(error, {
+          fallback: 'Failed to backfill ship registry',
+          scopeHint: 'SHIPS_MANAGE scope required for ship registry backfill',
         })
       );
     }
@@ -418,6 +465,15 @@ const FleetManagement: React.FC = () => {
                   className="btn btn-primary"
                 >
                   + Create Ship
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleRegistryBackfill}
+                  className="btn btn-outline"
+                  aria-label="Backfill ship registry"
+                >
+                  Backfill registry
                 </button>
                 
                 <button onClick={fetchShips} className="btn btn-outline">

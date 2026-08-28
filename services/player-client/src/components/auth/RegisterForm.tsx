@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
+import { inviteCodeFromUrl } from './inviteCodeFromUrl';
 import './auth.css';
 
 interface RegisterFormProps {
@@ -13,10 +14,19 @@ const RegisterForm: React.FC<RegisterFormProps> = ({ onRegisterSuccess, switchTo
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [inviteCode, setInviteCode] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [infoMessage, setInfoMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  
+
   const { register, registerWithOAuth } = useAuth();
+
+  useEffect(() => {
+    const fromUrl = inviteCodeFromUrl();
+    if (fromUrl) {
+      setInviteCode(fromUrl);
+    }
+  }, []);
   
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -38,10 +48,14 @@ const RegisterForm: React.FC<RegisterFormProps> = ({ onRegisterSuccess, switchTo
     }
     
     setError(null);
+    setInfoMessage(null);
     setIsSubmitting(true);
     
     try {
-      await register(username, email, password);
+      const redemptionNotice = await register(username, email, password, inviteCode);
+      if (redemptionNotice) {
+        setInfoMessage(redemptionNotice);
+      }
       if (onRegisterSuccess) {
         onRegisterSuccess();
       }
@@ -58,7 +72,7 @@ const RegisterForm: React.FC<RegisterFormProps> = ({ onRegisterSuccess, switchTo
   };
 
   const handleOAuthRegister = (provider: string) => {
-    registerWithOAuth(provider);
+    registerWithOAuth(provider, inviteCode);
   };
   
   return (
@@ -72,6 +86,7 @@ const RegisterForm: React.FC<RegisterFormProps> = ({ onRegisterSuccess, switchTo
         <h2>Create Your Account</h2>
 
         {error && <div className="error-message">{error}</div>}
+        {infoMessage && <div className="notice-message">{infoMessage}</div>}
         
         <div className="form-group">
           <label htmlFor="username">Commander Name</label>
@@ -99,6 +114,19 @@ const RegisterForm: React.FC<RegisterFormProps> = ({ onRegisterSuccess, switchTo
           />
         </div>
         
+        <div className="form-group">
+          <label htmlFor="invite-code">Region invite code (optional)</label>
+          <input
+            type="text"
+            id="invite-code"
+            value={inviteCode}
+            onChange={(e) => setInviteCode(e.target.value)}
+            disabled={isSubmitting}
+            autoComplete="off"
+            placeholder="Paste the code from your invite link"
+          />
+        </div>
+
         <div className="form-group">
           <label htmlFor="password">Password</label>
           <input

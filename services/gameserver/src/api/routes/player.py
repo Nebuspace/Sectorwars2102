@@ -494,6 +494,11 @@ async def repair_player_ship(
     if service_mult != 1.0:
         cost = int(round(cost * service_mult))
 
+    from src.services.profession_service import space_engineer_repair_multiplier_for_station
+    repair_mult = space_engineer_repair_multiplier_for_station(db, locked_player.id, station)
+    if repair_mult != 1.0:
+        cost = int(round(cost / repair_mult))
+
     if locked_player.credits < cost:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

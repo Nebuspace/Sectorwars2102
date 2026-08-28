@@ -338,6 +338,78 @@
   background: rgba(59, 130, 246, 0.2);
 }
 
+.drone-ops-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.drone-ops-action-btn.edit {
+  border: 1px solid var(--primary-color);
+  background: rgba(59, 130, 246, 0.12);
+  color: var(--primary-color);
+}
+
+.drone-ops-action-btn.edit:hover:not(:disabled) {
+  background: rgba(59, 130, 246, 0.2);
+}
+
+.drone-ops-action-btn.delete {
+  border: 1px solid #ef4444;
+  background: rgba(239, 68, 68, 0.12);
+  color: #ef4444;
+}
+
+.drone-ops-action-btn.delete:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.2);
+}
+
+.drone-ops-edit-row td {
+  background: var(--bg-color);
+  padding: 0;
+}
+
+.drone-ops-edit-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+  gap: 0.75rem 1rem;
+  padding: 1rem 1.5rem;
+}
+
+.drone-ops-edit-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--primary-color);
+}
+
+.drone-ops-edit-field.wide {
+  grid-column: span 2;
+}
+
+.drone-ops-edit-field input {
+  padding: 0.4rem 0.55rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--container-bg);
+  color: var(--text-color);
+  font-size: 0.85rem;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.drone-ops-edit-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 0.5rem;
+}
+
 /* Combat history expansion row */
 .drone-ops-combat-expand-row td {
   background: var(--bg-color);

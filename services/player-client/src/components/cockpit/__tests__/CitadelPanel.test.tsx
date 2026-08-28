@@ -12,6 +12,10 @@ vi.mock('../../planetary/CitadelManager', () => ({
   default: () => <div data-testid="citadel-manager" />,
 }));
 
+vi.mock('../../planetary/ProfessionsPanel', () => ({
+  default: () => <div data-testid="professions-panel" />,
+}));
+
 import CitadelPanel from '../CitadelPanel';
 
 describe('CitadelPanel', () => {

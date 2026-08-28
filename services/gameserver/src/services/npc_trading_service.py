@@ -94,6 +94,9 @@ SURPLUS_RATIO = 0.5          # sells + stock above this = surplus seller
 DEFICIT_RATIO = 0.5          # buys + stock below this = deficit buyer
 DEMAND_SCORE_MIN = 0.0
 DEMAND_SCORE_MAX = 2.0
+# port-ownership.md § Tariff impact — NPC traders apply the same elasticity.
+TARIFF_DEMAND_FLOOR = 0.10
+TARIFF_ELASTICITY_PER_PCT = 0.05
 
 # --- Notoriety drift (npc-traders.md § Notoriety) --------------------------
 # Canon: "Notoriety drifts dynamically: a trader caught smuggling rises toward
@@ -197,6 +200,18 @@ SUPPLY_DELIVERY_SCHEDULE_TARGET_KEY = "supply_delivery"
 # Route generation
 # ---------------------------------------------------------------------------
 
+def compute_tariff_demand_factor(tax_rate: Optional[float]) -> float:
+    """Canon tariff elasticity for NPC (and player) traffic weighting.
+
+    port-ownership.md: demand_factor = max(min(1.0 - 0.05 × tariff_pct, 1.0), 0.10)
+    where tariff_pct = tax_rate × 100 (Station.tax_rate is a 0–1 fraction).
+    Unowned / unset tax_rate is treated as 0% → demand_factor 1.0."""
+    rate = float(tax_rate or 0.0)
+    tariff_pct = rate * 100.0
+    raw = 1.0 - TARIFF_ELASTICITY_PER_PCT * tariff_pct
+    return max(min(raw, 1.0), TARIFF_DEMAND_FLOOR)
+
+
 def _station_profile(station: Station) -> Dict[str, List[str]]:
     """Commodities this station can supply (sells, surplus stock) and
     wants (buys, deficit stock)."""
@@ -267,7 +282,11 @@ def generate_trade_route(
         return None
 
     route: List[Dict[str, Any]] = []
-    current = random.choice(candidates)
+    current = random.choices(
+        candidates,
+        weights=[compute_tariff_demand_factor(s.tax_rate) for s in candidates],
+        k=1,
+    )[0]
     visited = {current.id}
 
     while len(route) < ROUTE_MAX_STOPS:
@@ -287,7 +306,13 @@ def generate_trade_route(
                 options.append((nxt, goods))
         if not options:
             break
-        best, best_goods = random.choice(options)
+        best, best_goods = random.choices(
+            options,
+            weights=[
+                compute_tariff_demand_factor(nxt.tax_rate) for nxt, _ in options
+            ],
+            k=1,
+        )[0]
         route.append({
             "station_id": str(current.id),
             "sector_id": current.sector_id,

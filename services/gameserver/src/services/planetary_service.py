@@ -2839,6 +2839,26 @@ class PlanetaryService:
                     getattr(planet, "id", "?"), exc_info=True,
                 )
 
+        # Colonist profession production bonuses (LEG-2253 / professions.md).
+        try:
+            from src.services.profession_service import (
+                production_multipliers,
+                profession_counts,
+                research_multiplier,
+            )
+            prof_counts = profession_counts(self.db, planet.id)
+            prof_prod = production_multipliers(prof_counts)
+            fuel_rate *= prof_prod["fuel"]
+            organics_rate *= prof_prod["organics"]
+            equipment_rate *= prof_prod["equipment"]
+            colonist_rate *= prof_prod["colonists"]
+            research_rate *= research_multiplier(prof_counts)
+        except Exception:
+            logger.debug(
+                "Profession production-read skipped on planet %s (non-fatal)",
+                getattr(planet, "id", "?"), exc_info=True,
+            )
+
         # Gourmet-food luxury bonus (WO-G14): a planet holding a positive
         # gourmet_food stockpile lifts BOTH colonist growth and the three
         # commodity rates by GOURMET_FOOD_PRODUCTION_BONUS. This is a pure,

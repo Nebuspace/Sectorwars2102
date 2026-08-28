@@ -250,3 +250,108 @@ describe('CombatOverview scope errors (LEG-921)', () => {
     });
   });
 });
+
+describe('CombatOverview intervention mutation formatAdminApiError (LEG-2599)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    mockLoad();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  async function postRestoreShields(user: ReturnType<typeof userEvent.setup>) {
+    render(<CombatOverview />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Open intervention')).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByText('Open intervention'));
+    await user.click(screen.getByText('Restore shields'));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/combat/combat-1/intervene',
+        expect.objectContaining({ intervention_type: 'restore_shields' })
+      );
+    });
+  }
+
+  it('surfaces 403 detail on restore_shields intervention post', async () => {
+    vi.mocked(api.post).mockRejectedValue(
+      Object.assign(new Error('HTTP 403'), {
+        response: {
+          status: 403,
+          data: { detail: 'Missing scope admin.combat.intervene' },
+        },
+      })
+    );
+    const user = userEvent.setup();
+    await postRestoreShields(user);
+
+    await waitFor(() => {
+      expect(screen.getByText('Missing scope admin.combat.intervene')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('Failed to intervene in combat')).not.toBeInTheDocument();
+  });
+
+  it('surfaces scope hint on restore_shields intervention 403 without detail', async () => {
+    vi.mocked(api.post).mockRejectedValue({
+      response: { status: 403, data: {} },
+    });
+    const user = userEvent.setup();
+    await postRestoreShields(user);
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/admin combat intervention scope required|Access denied/i)
+      ).toBeInTheDocument();
+    });
+    expect(screen.queryByText('Failed to intervene in combat')).not.toBeInTheDocument();
+  });
+
+  it('surfaces rate-limit copy on restore_shields intervention 429', async () => {
+    vi.mocked(api.post).mockRejectedValue(
+      Object.assign(new Error('HTTP 429'), {
+        response: { status: 429 },
+      })
+    );
+    const user = userEvent.setup();
+    await postRestoreShields(user);
+
+    await waitFor(() => {
+      expect(screen.getByText(/rate limit/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByText('Failed to intervene in combat')).not.toBeInTheDocument();
+  });
+
+  it('surfaces 403 detail on adjust_damage intervention post', async () => {
+    vi.mocked(api.post).mockRejectedValue(
+      Object.assign(new Error('HTTP 403'), {
+        response: {
+          status: 403,
+          data: { detail: 'Missing scope admin.combat.intervene' },
+        },
+      })
+    );
+    const user = userEvent.setup();
+    render(<CombatOverview />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Open intervention')).toBeInTheDocument();
+    });
+    await user.click(screen.getByText('Open intervention'));
+    await user.click(screen.getByText('Adjust damage'));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/combat/combat-1/intervene',
+        expect.objectContaining({ intervention_type: 'adjust_damage' })
+      );
+    });
+    await waitFor(() => {
+      expect(screen.getByText('Missing scope admin.combat.intervene')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('Failed to intervene in combat')).not.toBeInTheDocument();
+  });
+});

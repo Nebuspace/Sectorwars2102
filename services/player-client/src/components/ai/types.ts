@@ -25,10 +25,14 @@ export interface MarketAnalysis {
   time_horizon: number; // hours
 }
 
+/** ADR-0068 / aria-companion.md — volunteering only, not learning depth. */
+export const AI_ASSISTANCE_LEVELS = ['minimal', 'quiet', 'standard', 'full'] as const;
+export type AIAssistanceLevel = (typeof AI_ASSISTANCE_LEVELS)[number];
+
 export interface PlayerTradingProfile {
   player_id: string;
   risk_tolerance: number; // 0-1
-  ai_assistance_level: 'minimal' | 'medium' | 'full';
+  ai_assistance_level: AIAssistanceLevel;
   average_profit_per_trade: number;
   total_trades_analyzed: number;
   preferred_commodities?: Record<string, number>;
@@ -38,7 +42,7 @@ export interface PlayerTradingProfile {
 }
 
 export interface AIPreferences {
-  ai_assistance_level: 'minimal' | 'medium' | 'full';
+  ai_assistance_level: AIAssistanceLevel;
   risk_tolerance: number;
   notification_preferences?: {
     market_opportunities?: boolean;

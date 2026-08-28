@@ -7,6 +7,7 @@ import { formatCredits } from '../../../utils/formatters';
 import ContactActionMenu, { type ContactActionMenuItem } from '../ContactActionMenu';
 import HailComposeDialog from '../HailComposeDialog';
 import PlayerTradeDesk from '../../trade/PlayerTradeDesk';
+import PlayerNamePlate from '../../common/PlayerNamePlate';
 import { repBucket, type RepBucket } from '../contactClassification';
 import { distancePx, REFERENCE_BAND } from '../WindshieldTableau';
 
@@ -443,7 +444,24 @@ const TacticalTargetPage: React.FC<TacticalTargetPageProps> = ({ contacts, selec
                 }
               >
                 {contact.military_rank ? `${contact.military_rank.toUpperCase()} ` : ''}
-                {contactDisplayName(contact)}
+                {contact.is_npc ? (
+                  contactDisplayName(contact)
+                ) : (
+                  <PlayerNamePlate
+                    name={contactDisplayName(contact)}
+                    size="sm"
+                    // Sector contacts do not yet carry pinned_medal_id — plate
+                    // still owns the discovery name slot for when they do.
+                    pinnedMedalId={
+                      (contact as { pinned_medal_id?: string }).pinned_medal_id || null
+                    }
+                    medalCount={
+                      typeof (contact as { medal_count?: number }).medal_count === 'number'
+                        ? (contact as { medal_count?: number }).medal_count
+                        : null
+                    }
+                  />
+                )}
                 {selected && <span className="target-selected-badge" aria-hidden="true"> ◎</span>}
               </span>
             </div>
