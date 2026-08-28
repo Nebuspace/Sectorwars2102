@@ -1092,6 +1092,16 @@ export const medalsAPI = {
   /** Clear-on-view offline award queue (GET /api/v1/medals/unviewed). */
   getUnviewed: (): Promise<{ unviewed: string[] }> =>
     apiRequest('/api/v1/medals/unviewed'),
+
+  /** Set or clear the public pinned medal (PUT /api/v1/medals/me/pin — LEG-59). */
+  pinMe: (pinned_medal_id: string | null): Promise<{
+    pinned_medal_id: string | null;
+    medal_count: number;
+  }> =>
+    apiRequest('/api/v1/medals/me/pin', {
+      method: 'PUT',
+      body: JSON.stringify({ pinned_medal_id }),
+    }),
 };
 
 // Bounty APIs — place / getOnTarget / getAvailable tip-PRESENT; cancel binds
