@@ -68,6 +68,9 @@ function mockAdminGetDefaults(overrides?: (url: string) => ApiGetResult | void) 
     if (url === '/api/v1/admin/regions') {
       return Promise.resolve({ data: { regions: [] } });
     }
+    if (url === '/api/v1/admin/regions/r1/zones') {
+      return Promise.resolve({ data: { zones: [] } });
+    }
     return Promise.resolve({ data: {} });
   });
 }
@@ -79,6 +82,8 @@ function Probe() {
     users,
     loadUsers,
     loadRegions,
+    loadRegionZones,
+    loadPlayers,
     activateUser,
     deactivateUser,
     error,
@@ -101,6 +106,8 @@ function Probe() {
       <button onClick={() => loadAdminStats()}>load-stats</button>
       <button onClick={() => loadUsers()}>load-users</button>
       <button onClick={() => void loadRegions()}>load-regions</button>
+      <button onClick={() => void loadRegionZones('r1')}>load-region-zones</button>
+      <button onClick={() => void loadPlayers()}>load-players</button>
       <button
         onClick={() => {
           void activateUser('u1').catch(() => undefined);
@@ -319,6 +326,82 @@ describe('AdminContext / AdminProvider', () => {
     );
     expect(screen.getByTestId('error').textContent).not.toMatch(/Failed to load regions/);
     expect(api.get).toHaveBeenCalledWith('/api/v1/admin/regions');
+  });
+
+  it('surfaces loadRegionZones 403 as admin.galaxy.manage denial (LEG-2822)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    vi.mocked(api.get).mockRejectedValue(httpErr(403));
+    const user = userEvent.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>
+    );
+
+    await user.click(screen.getByText('load-region-zones'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/admin\.galaxy\.manage/),
+    );
+    expect(screen.getByTestId('error').textContent).not.toMatch(/Failed to load region zones/);
+    expect(api.get).toHaveBeenCalledWith('/api/v1/admin/regions/r1/zones');
+  });
+
+  it('surfaces loadRegionZones 429 as admin rate-limit (LEG-2822)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    vi.mocked(api.get).mockRejectedValue(httpErr(429));
+    const user = userEvent.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>
+    );
+
+    await user.click(screen.getByText('load-region-zones'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/rate limit/i),
+    );
+    expect(screen.getByTestId('error').textContent).not.toMatch(/Failed to load region zones/);
+    expect(api.get).toHaveBeenCalledWith('/api/v1/admin/regions/r1/zones');
+  });
+
+  it('surfaces loadPlayers 403 as PLAYERS_VIEW denial (LEG-2822)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    vi.mocked(api.get).mockRejectedValue(httpErr(403));
+    const user = userEvent.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>
+    );
+
+    await user.click(screen.getByText('load-players'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/PLAYERS_VIEW/),
+    );
+    expect(screen.getByTestId('error').textContent).not.toMatch(/Failed to load player accounts/);
+    expect(api.get).toHaveBeenCalledWith('/api/v1/admin/players');
+  });
+
+  it('surfaces loadPlayers 429 as admin rate-limit (LEG-2822)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    vi.mocked(api.get).mockRejectedValue(httpErr(429));
+    const user = userEvent.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>
+    );
+
+    await user.click(screen.getByText('load-players'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/rate limit/i),
+    );
+    expect(screen.getByTestId('error').textContent).not.toMatch(/Failed to load player accounts/);
+    expect(api.get).toHaveBeenCalledWith('/api/v1/admin/players');
   });
 
   it('surfaces activateUser 403 as PLAYERS_VIEW denial (LEG-2811)', async () => {
