@@ -58,6 +58,13 @@ def _first_mock(value):
     return q
 
 
+def _count_mock(count=0):
+    """A MagicMock .query(...) chain: filter().count() -> count."""
+    q = MagicMock()
+    q.filter.return_value.count.return_value = count
+    return q
+
+
 def make_db(*query_results):
     """A MagicMock Session whose db.query(...) returns `query_results` in
     call order."""
@@ -122,6 +129,7 @@ async def test_send_message_delivers_new_message_frame_to_registered_recipient()
     db = make_db(
         _first_mock(sender_obj),               # sender lookup (send_message)
         _first_mock(recipient_for_validation),  # recipient lookup (send_message)
+        _count_mock(0),                         # count_earned_medals (notify)
         _first_mock(recipient_for_notify),      # recipient lookup (notify_new_message)
     )
 
@@ -136,6 +144,8 @@ async def test_send_message_delivers_new_message_frame_to_registered_recipient()
     frame = json.loads(fake_socket.sent[0])
     assert frame["type"] == "new_message"
     assert frame["priority"] == "normal"
+    assert "sender_pinned_medal_id" in frame
+    assert "sender_medal_count" in frame
 
 
 # --------------------------------------------------------------------------- #
