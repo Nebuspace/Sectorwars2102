@@ -14,10 +14,12 @@ import { createRoot } from 'react-dom/client';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const mockGetMedals = vi.fn();
+const mockPinMedal = vi.fn();
 
 vi.mock('../../services/api', () => ({
   medalsAPI: {
     getMe: (...a: unknown[]) => mockGetMedals(...a),
+    pinMedal: (...a: unknown[]) => mockPinMedal(...a),
   },
 }));
 
@@ -42,6 +44,7 @@ describe('MedalShowcase', () => {
 
   beforeEach(() => {
     mockGetMedals.mockReset();
+    mockPinMedal.mockReset();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -92,5 +95,84 @@ describe('MedalShowcase', () => {
     await mount();
 
     expect(container.querySelector('.medal-error')?.textContent).toBe('Network down');
+  });
+
+  it('pins an earned medal and shows the pinned state after refetch', async () => {
+    mockGetMedals
+      .mockResolvedValueOnce({
+        earned: [makeMedal({ key: 'star_bronze' }), makeMedal({ key: 'star_silver', name: 'Silver Star' })],
+        available: [],
+        pinned_medal_id: null,
+      })
+      .mockResolvedValueOnce({
+        earned: [makeMedal({ key: 'star_bronze' }), makeMedal({ key: 'star_silver', name: 'Silver Star' })],
+        available: [],
+        pinned_medal_id: 'star_bronze',
+      });
+    mockPinMedal.mockResolvedValue({ pinned_medal_id: 'star_bronze', medal_count: 2 });
+
+    await mount();
+
+    const pinButtons = Array.from(container.querySelectorAll('.medal-pin-btn'));
+    expect(pinButtons[0].textContent).toBe('Pin');
+
+    await act(async () => {
+      (pinButtons[0] as HTMLButtonElement).click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mockPinMedal).toHaveBeenCalledWith('star_bronze');
+    expect(container.querySelector('.medal-card.pinned')).not.toBeNull();
+    expect(container.querySelector('.medal-pin-btn[aria-pressed="true"]')?.textContent).toBe('Unpin');
+  });
+
+  it('unpins the current medal by sending null', async () => {
+    mockGetMedals
+      .mockResolvedValueOnce({
+        earned: [makeMedal({ key: 'star_bronze' })],
+        available: [],
+        pinned_medal_id: 'star_bronze',
+      })
+      .mockResolvedValueOnce({
+        earned: [makeMedal({ key: 'star_bronze' })],
+        available: [],
+        pinned_medal_id: null,
+      });
+    mockPinMedal.mockResolvedValue({ pinned_medal_id: null, medal_count: 1 });
+
+    await mount();
+
+    const unpinBtn = container.querySelector('.medal-pin-btn') as HTMLButtonElement;
+    expect(unpinBtn.textContent).toBe('Unpin');
+
+    await act(async () => {
+      unpinBtn.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mockPinMedal).toHaveBeenCalledWith(null);
+    expect(container.querySelector('.medal-card.pinned')).toBeNull();
+  });
+
+  it('surfaces a 400 pin error without crashing', async () => {
+    mockGetMedals.mockResolvedValue({
+      earned: [makeMedal({ key: 'star_bronze' })],
+      available: [],
+      pinned_medal_id: null,
+    });
+    mockPinMedal.mockRejectedValue(new Error('Medal not earned'));
+
+    await mount();
+
+    const pinBtn = container.querySelector('.medal-pin-btn') as HTMLButtonElement;
+    await act(async () => {
+      pinBtn.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.medal-pin-error')?.textContent).toBe('Medal not earned');
   });
 });

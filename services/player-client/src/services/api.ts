@@ -1076,6 +1076,13 @@ export const rankingAPI = {
 export const medalsAPI = {
   getMe: () => apiRequest('/api/v1/medals/me'),
 
+  /** Set or clear the public pinned medal (PUT /api/v1/medals/me/pin — LEG-59). */
+  pinMedal: (pinnedMedalId: string | null) =>
+    apiRequest('/api/v1/medals/me/pin', {
+      method: 'PUT',
+      body: JSON.stringify({ pinned_medal_id: pinnedMedalId }),
+    }),
+
   /** Clear-on-view offline award queue (GET /api/v1/medals/unviewed). */
   getUnviewed: (): Promise<{ unviewed: string[] }> =>
     apiRequest('/api/v1/medals/unviewed'),
