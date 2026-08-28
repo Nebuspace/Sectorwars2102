@@ -22,8 +22,15 @@ vi.mock('../../contexts/ToastContext', () => ({
 
 const emptySnapshot = {
   regions: [],
-  ship_specs: [],
-  upgrades: [],
+  ship_specs: [{ type: 'Frigate', base_cost: 5000, is_npc_only: false }],
+  upgrades: [
+    {
+      type: 'CargoBay',
+      base_cost: 1000,
+      cost_multiplier: 1.5,
+      description: 'Extra cargo',
+    },
+  ],
   bounty_payout_ratio: 1.0,
   insurance_premium_pct: { BASIC: 0.05, STANDARD: 0.1, PREMIUM: 0.15 },
   insurance_net_payout_pct: { BASIC: 0.5, STANDARD: 0.7, PREMIUM: 0.9 },
@@ -187,6 +194,155 @@ describe('EconomyLeversPanel (LEG-30)', () => {
     });
     const bountyRow = screen.getByLabelText('Bounty payout ratio').closest('tr');
     fireEvent.click(bountyRow!.querySelector('button')!);
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalled();
+    });
+    expect(String(toastError.mock.calls[0][0])).toMatch(/rate limit/i);
+  });
+
+  it('reports a 403 on commodity save via formatAdminApiError (LEG-2741)', async () => {
+    vi.mocked(api.get).mockResolvedValue({ data: emptySnapshot });
+    vi.mocked(api.patch).mockRejectedValue({ response: { status: 403 } });
+
+    render(<EconomyLeversPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Base price for Alpha Dock Ore')).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByLabelText('Base price for Alpha Dock Ore'), {
+      target: { value: '120' },
+    });
+    const commodityRow = screen.getByLabelText('Base price for Alpha Dock Ore').closest('tr');
+    fireEvent.click(commodityRow!.querySelector('button')!);
+
+    await waitFor(() => {
+      expect(api.patch).toHaveBeenCalledWith(
+        '/api/v1/admin/economy/levers/stations/s1/commodities/Ore',
+        expect.any(Object),
+      );
+      expect(toastError).toHaveBeenCalled();
+    });
+    const msg = String(toastError.mock.calls[0][0]);
+    expect(msg).toMatch(/ECONOMY_MANAGE/);
+    expect(msg).not.toBe('Failed to save station commodity levers');
+  });
+
+  it('reports a 429 on commodity save via formatAdminApiError (LEG-2741)', async () => {
+    vi.mocked(api.get).mockResolvedValue({ data: emptySnapshot });
+    vi.mocked(api.patch).mockRejectedValue({ response: { status: 429 } });
+
+    render(<EconomyLeversPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Base price for Alpha Dock Ore')).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByLabelText('Production rate for Alpha Dock Ore'), {
+      target: { value: '2' },
+    });
+    const commodityRow = screen.getByLabelText('Base price for Alpha Dock Ore').closest('tr');
+    fireEvent.click(commodityRow!.querySelector('button')!);
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalled();
+    });
+    expect(String(toastError.mock.calls[0][0])).toMatch(/rate limit/i);
+  });
+
+  it('reports a 403 on ship-spec save via formatAdminApiError (LEG-2742)', async () => {
+    vi.mocked(api.get).mockResolvedValue({ data: emptySnapshot });
+    vi.mocked(api.patch).mockRejectedValue({ response: { status: 403 } });
+
+    render(<EconomyLeversPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Base cost for Frigate')).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByLabelText('Base cost for Frigate'), {
+      target: { value: '6000' },
+    });
+    const shipRow = screen.getByLabelText('Base cost for Frigate').closest('tr');
+    fireEvent.click(shipRow!.querySelector('button')!);
+
+    await waitFor(() => {
+      expect(api.patch).toHaveBeenCalledWith('/api/v1/admin/economy/levers/ship-specs/Frigate', {
+        base_cost: 6000,
+      });
+      expect(toastError).toHaveBeenCalled();
+    });
+    const msg = String(toastError.mock.calls[0][0]);
+    expect(msg).toMatch(/ECONOMY_MANAGE/);
+    expect(msg).not.toBe('Failed to save ship cost');
+  });
+
+  it('reports a 429 on ship-spec save via formatAdminApiError (LEG-2742)', async () => {
+    vi.mocked(api.get).mockResolvedValue({ data: emptySnapshot });
+    vi.mocked(api.patch).mockRejectedValue({ response: { status: 429 } });
+
+    render(<EconomyLeversPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Base cost for Frigate')).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByLabelText('Base cost for Frigate'), {
+      target: { value: '5500' },
+    });
+    const shipRow = screen.getByLabelText('Base cost for Frigate').closest('tr');
+    fireEvent.click(shipRow!.querySelector('button')!);
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalled();
+    });
+    expect(String(toastError.mock.calls[0][0])).toMatch(/rate limit/i);
+  });
+
+  it('reports a 403 on upgrade save via formatAdminApiError (LEG-2742)', async () => {
+    vi.mocked(api.get).mockResolvedValue({ data: emptySnapshot });
+    vi.mocked(api.patch).mockRejectedValue({ response: { status: 403 } });
+
+    render(<EconomyLeversPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Base cost for upgrade CargoBay')).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByLabelText('Base cost for upgrade CargoBay'), {
+      target: { value: '1200' },
+    });
+    const upgradeRow = screen.getByLabelText('Base cost for upgrade CargoBay').closest('tr');
+    fireEvent.click(upgradeRow!.querySelector('button')!);
+
+    await waitFor(() => {
+      expect(api.patch).toHaveBeenCalledWith('/api/v1/admin/economy/levers/upgrades/CargoBay', {
+        base_cost: 1200,
+        cost_multiplier: 1.5,
+      });
+      expect(toastError).toHaveBeenCalled();
+    });
+    const msg = String(toastError.mock.calls[0][0]);
+    expect(msg).toMatch(/ECONOMY_MANAGE/);
+    expect(msg).not.toBe('Failed to save upgrade costs');
+  });
+
+  it('reports a 429 on upgrade save via formatAdminApiError (LEG-2742)', async () => {
+    vi.mocked(api.get).mockResolvedValue({ data: emptySnapshot });
+    vi.mocked(api.patch).mockRejectedValue({ response: { status: 429 } });
+
+    render(<EconomyLeversPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Cost multiplier for upgrade CargoBay')).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByLabelText('Cost multiplier for upgrade CargoBay'), {
+      target: { value: '2' },
+    });
+    const upgradeRow = screen.getByLabelText('Base cost for upgrade CargoBay').closest('tr');
+    fireEvent.click(upgradeRow!.querySelector('button')!);
 
     await waitFor(() => {
       expect(toastError).toHaveBeenCalled();
