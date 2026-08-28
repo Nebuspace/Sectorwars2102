@@ -10,10 +10,12 @@ vi.mock('../../utils/auth', () => ({
   },
 }));
 
+const toastError = vi.fn();
+
 vi.mock('../../contexts/ToastContext', () => ({
   useToast: () => ({
     success: vi.fn(),
-    error: vi.fn(),
+    error: toastError,
     warning: vi.fn(),
     info: vi.fn(),
   }),
@@ -24,26 +26,41 @@ describe('BountyAdminPanel', () => {
   beforeEach(() => {
     vi.mocked(api.get).mockReset();
     vi.mocked(api.post).mockReset();
+    toastError.mockReset();
   });
+
+  const bountyListPayload = {
+    success: true,
+    target_id: 't1',
+    target_name: 'Wanted',
+    player_bounties: [
+      {
+        id: 'b1',
+        placed_by: 'p2',
+        placed_by_name: 'Placer',
+        amount: 5000,
+        type: 'player',
+      },
+    ],
+    system_bounties: [],
+    total_value: 5000,
+  };
+
+  async function loadTargetBounties() {
+    vi.mocked(api.get).mockResolvedValue({ data: bountyListPayload });
+    render(<BountyAdminPanel />);
+    const targetInput = screen.getByLabelText('Target player UUID');
+    fireEvent.change(targetInput, { target: { value: 't1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Load' }));
+    await waitFor(() => {
+      expect(api.get).toHaveBeenCalledWith('/api/v1/admin/players/t1/bounties');
+    });
+    expect(await screen.findByRole('button', { name: 'Force-cancel' })).toBeTruthy();
+  }
 
   it('loads player bounties and force-cancels an entry', async () => {
     vi.mocked(api.get).mockResolvedValue({
-      data: {
-        success: true,
-        target_id: 't1',
-        target_name: 'Wanted',
-        player_bounties: [
-          {
-            id: 'b1',
-            placed_by: 'p2',
-            placed_by_name: 'Placer',
-            amount: 5000,
-            type: 'player',
-          },
-        ],
-        system_bounties: [],
-        total_value: 5000,
-      },
+      data: bountyListPayload,
     });
     vi.mocked(api.post).mockResolvedValue({
       data: { success: true, refund: 5000, refunded: true },
@@ -159,5 +176,44 @@ describe('BountyAdminPanel', () => {
     const alert = screen.getByRole('alert').textContent ?? '';
     expect(alert).toMatch(/rate limit/i);
     expect(alert).not.toMatch(/Failed to load bounties/);
+  });
+
+  it('surfaces formatAdminApiError on force-cancel POST 403 (LEG-2646)', async () => {
+    vi.mocked(api.post).mockRejectedValue(
+      Object.assign(new Error('HTTP 403'), {
+        response: {
+          status: 403,
+          data: { detail: 'Missing scope ECONOMY_INTERVENE' },
+        },
+      }),
+    );
+    await loadTargetBounties();
+    fireEvent.click(screen.getByRole('button', { name: 'Force-cancel' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/players/t1/bounties/b1/force-cancel',
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(
+      expect.stringMatching(/ECONOMY_INTERVENE|Missing scope|Access denied/i),
+    );
+    expect(toastError).not.toHaveBeenCalledWith('Force-cancel failed');
+  });
+
+  it('surfaces rate-limit copy on force-cancel POST 429 (LEG-2646)', async () => {
+    vi.mocked(api.post).mockRejectedValue(axiosError(429));
+    await loadTargetBounties();
+    fireEvent.click(screen.getByRole('button', { name: 'Force-cancel' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/players/t1/bounties/b1/force-cancel',
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(
+      expect.stringMatching(/rate limit/i),
+    );
+    expect(toastError).not.toHaveBeenCalledWith('Force-cancel failed');
   });
 });
