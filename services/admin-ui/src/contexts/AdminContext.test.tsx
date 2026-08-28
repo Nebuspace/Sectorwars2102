@@ -3,7 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { AdminProvider, useAdmin } from './AdminContext';
 import { api } from '../utils/auth';
-import { listBangJobs, wipeBangGalaxy } from '../services/bangGalaxyApi';
+import { listBangJobs, createBangJob, wipeBangGalaxy } from '../services/bangGalaxyApi';
 
 const mockUseAuth = vi.fn();
 vi.mock('./AuthContext', () => ({
@@ -30,6 +30,12 @@ function httpErr(status: number, detail?: string) {
     response: { status, data: detail ? { detail } : {} },
   });
 }
+
+const minimalBangConfig = {
+  seed: 1,
+  sectors: 100,
+  region_type: 'player_owned' as const,
+};
 
 type ApiGetResult = ReturnType<typeof api.get>;
 
@@ -62,6 +68,9 @@ function mockAdminGetDefaults(overrides?: (url: string) => ApiGetResult | void) 
     if (url === '/api/v1/admin/regions') {
       return Promise.resolve({ data: { regions: [] } });
     }
+    if (url === '/api/v1/admin/regions/r1/zones') {
+      return Promise.resolve({ data: { zones: [] } });
+    }
     return Promise.resolve({ data: {} });
   });
 }
@@ -72,6 +81,11 @@ function Probe() {
     loadAdminStats,
     users,
     loadUsers,
+    loadRegions,
+    loadRegionZones,
+    loadPlayers,
+    activateUser,
+    deactivateUser,
     error,
     wipeGalaxy,
     galaxyState,
@@ -81,6 +95,7 @@ function Probe() {
     clearGalaxyData,
     addSectors,
     createWarpTunnel,
+    bangGalaxy,
   } = useAdmin();
   return (
     <div>
@@ -90,6 +105,23 @@ function Probe() {
       <span data-testid="error">{error ?? 'none'}</span>
       <button onClick={() => loadAdminStats()}>load-stats</button>
       <button onClick={() => loadUsers()}>load-users</button>
+      <button onClick={() => void loadRegions()}>load-regions</button>
+      <button onClick={() => void loadRegionZones('r1')}>load-region-zones</button>
+      <button onClick={() => void loadPlayers()}>load-players</button>
+      <button
+        onClick={() => {
+          void activateUser('u1').catch(() => undefined);
+        }}
+      >
+        activate-user
+      </button>
+      <button
+        onClick={() => {
+          void deactivateUser('u1').catch(() => undefined);
+        }}
+      >
+        deactivate-user
+      </button>
       <button onClick={() => void loadGalaxyInfo()}>load-galaxy-info</button>
       <button onClick={() => void loadSectors()}>load-sectors</button>
       <button
@@ -127,6 +159,13 @@ function Probe() {
       >
         create-warp-tunnel
       </button>
+      <button
+        onClick={() => {
+          void bangGalaxy(minimalBangConfig, 'Test Galaxy').catch(() => undefined);
+        }}
+      >
+        bang-galaxy
+      </button>
     </div>
   );
 }
@@ -139,6 +178,7 @@ describe('AdminContext / AdminProvider', () => {
     vi.mocked(api.delete).mockReset();
     vi.mocked(wipeBangGalaxy).mockReset();
     vi.mocked(listBangJobs).mockReset();
+    vi.mocked(createBangJob).mockReset();
   });
 
   it('does not fetch admin stats for a non-admin user (loadAdminStats is a no-op)', async () => {
@@ -226,6 +266,223 @@ describe('AdminContext / AdminProvider', () => {
     await user.click(screen.getByText('load-users'));
     await waitFor(() =>
       expect(screen.getByTestId('error').textContent).toMatch(/rate limit/i),
+    );
+  });
+
+  it('surfaces loadUsers 403 as PLAYERS_VIEW denial (LEG-2812)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    vi.mocked(api.get).mockRejectedValue(httpErr(403));
+    const user = userEvent.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>
+    );
+
+    await user.click(screen.getByText('load-users'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/PLAYERS_VIEW/),
+    );
+    expect(screen.getByTestId('error').textContent).not.toMatch(
+      /Failed to load user accounts/,
+    );
+    expect(api.get).toHaveBeenCalledWith('/api/v1/admin/users');
+  });
+
+  it('surfaces loadRegions 403 as admin.galaxy.manage denial (LEG-2810)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    vi.mocked(api.get).mockRejectedValue(httpErr(403));
+    const user = userEvent.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>
+    );
+
+    await user.click(screen.getByText('load-regions'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/admin\.galaxy\.manage/),
+    );
+    expect(screen.getByTestId('error').textContent).not.toMatch(/Failed to load regions/);
+    expect(api.get).toHaveBeenCalledWith('/api/v1/admin/regions');
+  });
+
+  it('surfaces loadRegions 429 as admin rate-limit (LEG-2810)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    vi.mocked(api.get).mockRejectedValue(httpErr(429));
+    const user = userEvent.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>
+    );
+
+    await user.click(screen.getByText('load-regions'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/rate limit/i),
+    );
+    expect(screen.getByTestId('error').textContent).not.toMatch(/Failed to load regions/);
+    expect(api.get).toHaveBeenCalledWith('/api/v1/admin/regions');
+  });
+
+  it('surfaces loadRegionZones 403 as admin.galaxy.manage denial (LEG-2822)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    vi.mocked(api.get).mockRejectedValue(httpErr(403));
+    const user = userEvent.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>
+    );
+
+    await user.click(screen.getByText('load-region-zones'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/admin\.galaxy\.manage/),
+    );
+    expect(screen.getByTestId('error').textContent).not.toMatch(/Failed to load region zones/);
+    expect(api.get).toHaveBeenCalledWith('/api/v1/admin/regions/r1/zones');
+  });
+
+  it('surfaces loadRegionZones 429 as admin rate-limit (LEG-2822)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    vi.mocked(api.get).mockRejectedValue(httpErr(429));
+    const user = userEvent.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>
+    );
+
+    await user.click(screen.getByText('load-region-zones'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/rate limit/i),
+    );
+    expect(screen.getByTestId('error').textContent).not.toMatch(/Failed to load region zones/);
+    expect(api.get).toHaveBeenCalledWith('/api/v1/admin/regions/r1/zones');
+  });
+
+  it('surfaces loadPlayers 403 as PLAYERS_VIEW denial (LEG-2822)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    vi.mocked(api.get).mockRejectedValue(httpErr(403));
+    const user = userEvent.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>
+    );
+
+    await user.click(screen.getByText('load-players'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/PLAYERS_VIEW/),
+    );
+    expect(screen.getByTestId('error').textContent).not.toMatch(/Failed to load player accounts/);
+    expect(api.get).toHaveBeenCalledWith('/api/v1/admin/players');
+  });
+
+  it('surfaces loadPlayers 429 as admin rate-limit (LEG-2822)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    vi.mocked(api.get).mockRejectedValue(httpErr(429));
+    const user = userEvent.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>
+    );
+
+    await user.click(screen.getByText('load-players'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/rate limit/i),
+    );
+    expect(screen.getByTestId('error').textContent).not.toMatch(/Failed to load player accounts/);
+    expect(api.get).toHaveBeenCalledWith('/api/v1/admin/players');
+  });
+
+  it('surfaces activateUser 403 as PLAYERS_VIEW denial (LEG-2811)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    vi.mocked(api.put).mockRejectedValue(httpErr(403));
+    const user = userEvent.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>
+    );
+
+    await user.click(screen.getByText('activate-user'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/PLAYERS_VIEW/),
+    );
+    expect(screen.getByTestId('error').textContent).not.toMatch(
+      /Failed to activate user account/,
+    );
+    expect(api.put).toHaveBeenCalledWith('/api/v1/users/u1', { is_active: true });
+  });
+
+  it('surfaces activateUser 429 as admin rate-limit (LEG-2811)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    vi.mocked(api.put).mockRejectedValue(httpErr(429));
+    const user = userEvent.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>
+    );
+
+    await user.click(screen.getByText('activate-user'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/rate limit/i),
+    );
+    expect(screen.getByTestId('error').textContent).not.toMatch(
+      /Failed to activate user account/,
+    );
+  });
+
+  it('surfaces deactivateUser 403 as PLAYERS_VIEW denial (LEG-2811)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    vi.mocked(api.put).mockRejectedValue(httpErr(403));
+    const user = userEvent.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>
+    );
+
+    await user.click(screen.getByText('deactivate-user'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/PLAYERS_VIEW/),
+    );
+    expect(screen.getByTestId('error').textContent).not.toMatch(
+      /Failed to deactivate user account/,
+    );
+    expect(api.put).toHaveBeenCalledWith('/api/v1/users/u1', { is_active: false });
+  });
+
+  it('surfaces deactivateUser 429 as admin rate-limit (LEG-2811)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    vi.mocked(api.put).mockRejectedValue(httpErr(429));
+    const user = userEvent.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>
+    );
+
+    await user.click(screen.getByText('deactivate-user'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/rate limit/i),
+    );
+    expect(screen.getByTestId('error').textContent).not.toMatch(
+      /Failed to deactivate user account/,
     );
   });
 
@@ -524,6 +781,50 @@ describe('AdminContext / AdminProvider', () => {
     );
     expect(screen.getByTestId('error').textContent).not.toMatch(
       /Failed to load bang generation history/,
+    );
+  });
+
+  it('surfaces bangGalaxy 403 as BANG_REGENERATE denial (LEG-2806)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    vi.mocked(createBangJob).mockRejectedValue(httpErr(403));
+    const user = userEvent.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>,
+    );
+
+    await user.click(screen.getByText('bang-galaxy'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/BANG_REGENERATE/),
+    );
+    expect(screen.getByTestId('error').textContent).not.toMatch(
+      /Failed to start bang generation job/,
+    );
+    expect(createBangJob).toHaveBeenCalledWith(
+      { config: minimalBangConfig, galaxy_name: 'Test Galaxy' },
+      'tok',
+    );
+  });
+
+  it('surfaces bangGalaxy 429 as admin rate-limit (LEG-2806)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    vi.mocked(createBangJob).mockRejectedValue(httpErr(429));
+    const user = userEvent.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>,
+    );
+
+    await user.click(screen.getByText('bang-galaxy'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/rate limit/i),
+    );
+    expect(screen.getByTestId('error').textContent).not.toMatch(
+      /Failed to start bang generation job/,
     );
   });
 });

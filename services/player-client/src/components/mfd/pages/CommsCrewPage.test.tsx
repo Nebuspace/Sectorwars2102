@@ -87,6 +87,12 @@ vi.mock('../../../contexts/AuthContext', () => ({
 
 import CommsCrewPage, { FLAG_REASON_BY_CATEGORY } from './CommsCrewPage';
 
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
+
 describe('CommsCrewPage — MFD-B COMM', () => {
   let container: HTMLElement;
   let root: ReturnType<typeof createRoot>;
@@ -197,8 +203,8 @@ describe('CommsCrewPage — MFD-B COMM', () => {
     );
   });
 
-  it('FLAG error path surfaces honesty without crashing', async () => {
-    mockFlagMessage.mockRejectedValueOnce(new Error('Message not found'));
+  it('FLAG 404 surfaces server detail in flag-error alert', async () => {
+    mockFlagMessage.mockRejectedValueOnce(apiRequestError(404, 'Message not found'));
     mockInboxMessages = [makeMessage()];
     await mount();
     await click(container.querySelector('.mfd-page-comms-hail-summary')!);
