@@ -51,12 +51,13 @@ class _DBStub:
         return None
 
 
-def _planet(owner_id, *, citadel_level=3, colonists=500):
+def _planet(owner_id, *, citadel_level=3, colonists=500, research_level=0):
     return SimpleNamespace(
         id=uuid4(),
         owner_id=owner_id,
         citadel_level=citadel_level,
         colonists=colonists,
+        research_level=research_level,
     )
 
 
@@ -164,6 +165,61 @@ def test_get_state_includes_cost_blocked():
     assert state["cost_blocked"] is True
     assert "DECISION-NEEDED" in state["cost_block_reason"]
     assert len(state["professions"]) == 12
+
+
+def test_training_eligibility_research_scientists_blocked_below_lab_l3():
+    planet = _planet(uuid4(), research_level=2)
+    eligibility = ps.training_eligibility(planet)
+    assert eligibility[ProfessionType.RESEARCH_SCIENTISTS.value] is False
+    assert eligibility[ProfessionType.MINING_ENGINEERS.value] is True
+
+
+def test_training_eligibility_research_scientists_allowed_at_lab_l3():
+    planet = _planet(uuid4(), research_level=3)
+    eligibility = ps.training_eligibility(planet)
+    assert eligibility[ProfessionType.RESEARCH_SCIENTISTS.value] is True
+
+
+def test_get_state_includes_training_eligibility():
+    owner = uuid4()
+    planet = _planet(owner, research_level=2)
+    svc = ProfessionService(_DBStub())
+    state = svc.get_state(planet, owner)
+    assert state["training_eligibility"][ProfessionType.RESEARCH_SCIENTISTS.value] is False
+    assert state["training_eligibility"][ProfessionType.TRADE_SPECIALISTS.value] is True
+
+
+def test_queue_training_rejects_research_scientists_without_lab_l3():
+    owner = uuid4()
+    planet = _planet(owner, research_level=2, colonists=200)
+    svc = ProfessionService(_DBStub())
+    with pytest.raises(ValueError, match="research_lab_level_too_low"):
+        svc.queue_training(
+            planet,
+            owner,
+            ProfessionType.RESEARCH_SCIENTISTS.value,
+            10,
+        )
+
+
+def test_queue_training_allows_research_scientists_at_lab_l3(monkeypatch):
+    owner = uuid4()
+    planet = _planet(owner, research_level=3, colonists=200)
+    db = _DBStub()
+    svc = ProfessionService(db)
+    fixed_now = datetime(2026, 8, 28, tzinfo=timezone.utc)
+    fixed_deadline = fixed_now + timedelta(days=40)
+    monkeypatch.setattr(ps, "scaled_deadline", lambda hours, start=None: fixed_deadline)
+
+    result = svc.queue_training(
+        planet,
+        owner,
+        ProfessionType.RESEARCH_SCIENTISTS.value,
+        10,
+        now=fixed_now,
+    )
+    assert result["success"] is True
+    assert result["training_days"] == 40
 
 
 def test_space_engineer_repair_multiplier_without_specialists():

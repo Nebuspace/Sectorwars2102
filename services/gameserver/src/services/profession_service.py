@@ -29,6 +29,8 @@ from src.models.profession_training_queue import (
 
 # Citadel L3+ (Colony phase) required to operate training (professions.md).
 MIN_CITADEL_FOR_TRAINING = 3
+# Research Lab L3+ required for Research Scientists (professions.md L40, ADR-0087).
+MIN_RESEARCH_LAB_FOR_RESEARCH_SCIENTISTS = 3
 
 # Numeric bonus multipliers from professions.md (non-TBD cells only).
 PRODUCTION_BONUS: dict[ProfessionType, dict[str, float]] = {
@@ -53,6 +55,23 @@ def _parse_profession(value: str) -> ProfessionType:
         return ProfessionType(value)
     except ValueError as exc:
         raise ValueError(f"unknown_profession:{value}") from exc
+
+
+def training_eligibility(planet: Planet) -> Dict[str, bool]:
+    """Per-profession building gates for training UI (professions.md L70).
+
+    Only Research Scientists is gated here until building-mapping decisions land
+    for Orbital Shipyard / Military Academy / Terraforming Lab prerequisites.
+    """
+    research_lab_ok = (planet.research_level or 0) >= MIN_RESEARCH_LAB_FOR_RESEARCH_SCIENTISTS
+    return {
+        prof.value: (
+            research_lab_ok
+            if prof == ProfessionType.RESEARCH_SCIENTISTS
+            else True
+        )
+        for prof in ProfessionType
+    }
 
 
 def profession_counts(db: Session, planet_id: UUID) -> Dict[ProfessionType, int]:
@@ -202,6 +221,14 @@ class ProfessionService:
         if (planet.citadel_level or 0) < MIN_CITADEL_FOR_TRAINING:
             raise ValueError("citadel_level_too_low")
 
+    def _assert_profession_training_eligible(
+        self, planet: Planet, prof: ProfessionType
+    ) -> None:
+        if not training_eligibility(planet).get(prof.value, True):
+            if prof == ProfessionType.RESEARCH_SCIENTISTS:
+                raise ValueError("research_lab_level_too_low")
+            raise ValueError("profession_training_ineligible")
+
     def advance_queue(self, planet: Planet, *, now: Optional[datetime] = None) -> bool:
         """Lazy-complete due training rows. Returns True if planet state changed."""
         now = now or datetime.now(UTC)
@@ -283,6 +310,7 @@ class ProfessionService:
             "training_durations_days": {
                 prof.value: days for prof, days in PROFESSION_TRAINING_DAYS.items()
             },
+            "training_eligibility": training_eligibility(planet),
         }
 
     def queue_training(
@@ -299,6 +327,7 @@ class ProfessionService:
         self._assert_owner(planet, player_id)
         self._assert_training_gate(planet)
         prof = _parse_profession(profession)
+        self._assert_profession_training_eligible(planet, prof)
         self.advance_queue(planet, now=now)
         if (planet.colonists or 0) < trainee_count:
             raise ValueError("insufficient_generic_colonists")

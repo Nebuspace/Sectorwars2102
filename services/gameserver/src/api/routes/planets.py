@@ -2637,6 +2637,8 @@ async def train_planet_profession(
         status_map = {
             "not_owner": status.HTTP_403_FORBIDDEN,
             "citadel_level_too_low": status.HTTP_400_BAD_REQUEST,
+            "research_lab_level_too_low": status.HTTP_400_BAD_REQUEST,
+            "profession_training_ineligible": status.HTTP_400_BAD_REQUEST,
             "insufficient_generic_colonists": status.HTTP_400_BAD_REQUEST,
             "invalid_trainee_count": status.HTTP_400_BAD_REQUEST,
         }
