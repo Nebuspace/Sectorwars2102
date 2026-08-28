@@ -50,4 +50,18 @@ describe('AITradingDashboard scope errors (LEG-923)', () => {
       expect(screen.getByText(/admin\.ai\.view|Missing scope/i)).toBeTruthy();
     });
   });
+
+  it('shows rate-limit copy on 429 load', async () => {
+    vi.mocked(api.get).mockRejectedValue(
+      Object.assign(new Error('HTTP 429'), {
+        response: { status: 429 },
+      }),
+    );
+
+    render(<AITradingDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/rate limit/i)).toBeTruthy();
+    });
+  });
 });
