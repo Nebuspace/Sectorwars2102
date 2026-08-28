@@ -129,6 +129,52 @@ describe('MessageModeration', () => {
     expect(screen.getByText('No flagged sector beacons.')).toBeTruthy();
   });
 
+  it('shows escalation block-count badge when sender_block_count_30d is 2 (LEG-2690)', async () => {
+    mockLoad({
+      messages: {
+        ...emptyMessages,
+        messages: [{ ...message, sender_block_count_30d: 2 }],
+        total: 1,
+      },
+    });
+
+    render(<MessageModeration />);
+
+    await waitFor(() => {
+      expect(screen.getByText('2 blocks/30d')).toBeTruthy();
+    });
+    expect(screen.getByLabelText(/Sender escalation risk/i)).toBeTruthy();
+    expect(screen.queryByText('1 block/30d')).toBeNull();
+  });
+
+  it('omits block-count badge when sender_block_count_30d is 0 (LEG-2690)', async () => {
+    mockLoad({
+      messages: {
+        ...emptyMessages,
+        messages: [{ ...message, sender_block_count_30d: 0 }],
+        total: 1,
+      },
+    });
+
+    render(<MessageModeration />);
+
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+    expect(screen.queryByText(/block\/30d/i)).toBeNull();
+    expect(screen.queryByLabelText(/Sender block history/i)).toBeNull();
+    expect(screen.queryByLabelText(/Sender escalation risk/i)).toBeNull();
+  });
+
+  it('omits block-count badge when sender_block_count_30d is absent (LEG-2690 rollout)', async () => {
+    mockLoad({
+      messages: { ...emptyMessages, messages: [message], total: 1 },
+    });
+
+    render(<MessageModeration />);
+
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+    expect(screen.queryByText(/block\/30d/i)).toBeNull();
+  });
+
   it('renders flagged messages and beacons from the real endpoints', async () => {
     mockLoad({
       messages: { ...emptyMessages, messages: [message], total: 1 },
