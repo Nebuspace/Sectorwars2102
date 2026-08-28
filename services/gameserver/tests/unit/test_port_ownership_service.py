@@ -270,10 +270,34 @@ class TestApplyMonth:
 
 class TestForcedSalePrice:
     """clamp(avg-monthly-revenue x 12 x condition, acquisition_cost,
-    2 x acquisition_cost); condition_multiplier is 1.0 in v1."""
+    2 x acquisition_cost); condition_multiplier from canon formula."""
 
-    def test_condition_multiplier_is_v1_default(self):
-        assert po.CONDITION_MULTIPLIER == 1.0
+    def test_pristine_station_multiplier_is_one(self):
+        station = SimpleNamespace(ownership={}, security_level="basic")
+        assert po.compute_condition_multiplier(station) == pytest.approx(1.0)
+
+    def test_security_none_reduces_by_15pct(self):
+        station = SimpleNamespace(ownership={}, security_level="none")
+        assert po.compute_condition_multiplier(station) == pytest.approx(0.85)
+
+    def test_recent_incident_reduces_by_10pct(self):
+        now = datetime(2026, 1, 8, 12, 0, tzinfo=UTC)
+        station = SimpleNamespace(
+            ownership={"last_defense_incident_at": "2026-01-08T12:00:00+00:00"},
+            security_level="basic",
+        )
+        assert po.compute_condition_multiplier(station, now=now) == pytest.approx(0.90)
+
+    def test_incident_older_than_7_days_has_no_defense_penalty(self):
+        now = datetime(2026, 1, 15, tzinfo=UTC)
+        station = SimpleNamespace(
+            ownership={"last_defense_incident_at": "2026-01-01T00:00:00+00:00"},
+            security_level="basic",
+        )
+        assert po.compute_condition_multiplier(station, now=now) == pytest.approx(1.0)
+
+    def test_forced_sale_value_applies_condition_multiplier(self):
+        assert po.forced_sale_value(60_000, 500_000, condition_multiplier=0.9) == 648_000
 
     def test_low_revenue_floors_at_acquisition_cost(self):
         # 10k/month x 12 = 120k < 500k floor.
@@ -289,6 +313,14 @@ class TestForcedSalePrice:
 
     def test_zero_revenue_still_pays_acquisition_cost(self):
         assert po.forced_sale_value(0, 300_000) == 300_000
+
+
+class TestStampDefenseIncident:
+    def test_stamp_writes_iso_timestamp(self):
+        station = SimpleNamespace(ownership=None)
+        now = datetime(2026, 8, 28, 5, 0, tzinfo=UTC)
+        po.stamp_defense_incident(station, now=now)
+        assert station.ownership["last_defense_incident_at"] == now.isoformat()
 
 
 class TestDisputeHeuristic:
