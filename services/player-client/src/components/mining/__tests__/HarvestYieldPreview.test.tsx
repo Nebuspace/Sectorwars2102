@@ -74,12 +74,51 @@ describe('HarvestYieldPreview', () => {
   });
 
   it('does not call GET when shipId is missing', async () => {
+    const onGateChange = vi.fn();
     await act(async () => {
-      root.render(<HarvestYieldPreview shipId={undefined} />);
+      root.render(<HarvestYieldPreview shipId={undefined} onGateChange={onGateChange} />);
     });
     await flush();
     expect(mockPreview).not.toHaveBeenCalled();
     expect(container.querySelector('[data-testid="harvest-yield-preview"]')?.textContent)
       .toContain('No active ship to preview yield.');
+    expect(onGateChange).toHaveBeenCalledWith({
+      blocked: true,
+      message: 'No active ship to preview yield.',
+      reasonKey: null,
+    });
+  });
+
+  it('notifies onGateChange when preview succeeds', async () => {
+    const onGateChange = vi.fn();
+    mockPreview.mockResolvedValue({
+      success: true,
+      reason: null,
+      ore_lo: 8,
+      ore_hi: 12,
+    });
+    await act(async () => {
+      root.render(<HarvestYieldPreview shipId="ship-9" onGateChange={onGateChange} />);
+    });
+    await flush();
+    expect(onGateChange).toHaveBeenLastCalledWith({
+      blocked: false,
+      message: null,
+      reasonKey: null,
+    });
+  });
+
+  it('notifies onGateChange when preview rejects no_mining_laser', async () => {
+    const onGateChange = vi.fn();
+    mockPreview.mockRejectedValue(new Error('no_mining_laser'));
+    await act(async () => {
+      root.render(<HarvestYieldPreview shipId="ship-9" onGateChange={onGateChange} />);
+    });
+    await flush();
+    expect(onGateChange).toHaveBeenLastCalledWith({
+      blocked: true,
+      message: 'No mining laser equipped — fit one at a TradeDock to extract ore.',
+      reasonKey: 'no_mining_laser',
+    });
   });
 });
