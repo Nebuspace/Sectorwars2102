@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { api } from '../../utils/auth';
 import { formatAdminApiError } from '../../utils/adminApiError';
 import { useToast, useConfirm } from '../../contexts/ToastContext';
@@ -189,6 +190,16 @@ const SenderBlockCountBadge: React.FC<{
 const senderLabel = (playerId: string, nickname?: string | null): string =>
   nickname ?? `${playerId.slice(0, 8)}…`;
 
+/** Deep-link into AdminActionLog ledger filters (LEG-2703). */
+export const buildEscalationAuditLedgerHref = (senderId: string): string => {
+  const params = new URLSearchParams({
+    tab: 'ledger',
+    target_type: 'player',
+    target_id: senderId,
+  });
+  return `/audit?${params.toString()}`;
+};
+
 const LIVE_REFRESH_DEBOUNCE_MS = 400;
 
 const MessageModeration: React.FC = () => {
@@ -209,6 +220,9 @@ const MessageModeration: React.FC = () => {
   const [bulkActing, setBulkActing] = useState(false);
   const [bulkFailures, setBulkFailures] = useState<BulkModerateItemResult[]>(
     [],
+  );
+  const [escalationAuditHref, setEscalationAuditHref] = useState<string | null>(
+    null,
   );
 
   const [page, setPage] = useState(1);
@@ -413,6 +427,11 @@ const MessageModeration: React.FC = () => {
               ? `Message redacted.${rep}${escalate}`
               : `Message blocked.${rep}${escalate}`,
         );
+        if (data?.escalation_audit_logged) {
+          setEscalationAuditHref(
+            buildEscalationAuditLedgerHref(message.sender_id),
+          );
+        }
         if (data?.block_count_30d && data.block_count_30d >= 2 && !data.escalation_audit_logged) {
           toast.info(`Sender block count (30d): ${data.block_count_30d}.`);
         }
@@ -612,6 +631,17 @@ const MessageModeration: React.FC = () => {
           Review flagged player communications and sector message beacons.
         </p>
       </header>
+
+      {escalationAuditHref && (
+        <div
+          className="msgmod-escalation-notice"
+          role="status"
+          data-testid="escalation-audit-notice"
+        >
+          Escalation audit logged (2+ blocks/30d).{' '}
+          <Link to={escalationAuditHref}>View audit ledger entry</Link>
+        </div>
+      )}
 
       {/* Review queue */}
       <section className="msgmod-section">
