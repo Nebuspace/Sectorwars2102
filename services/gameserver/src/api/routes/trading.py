@@ -1143,6 +1143,11 @@ async def sell_resource(
     region_tax_amount = int(total_earnings * region_tax_rate)
     net_earnings -= region_tax_amount
 
+    from src.services.profession_service import trade_specialist_credit_multiplier_for_station
+    trade_mult = trade_specialist_credit_multiplier_for_station(db, current_player.id, station)
+    if trade_mult != 1.0:
+        net_earnings = int(round(net_earnings * trade_mult))
+
     # Execute the trade
     try:
         # Update player credits (net of tax); the withheld tax is realized to

@@ -164,3 +164,86 @@ def test_get_state_includes_cost_blocked():
     assert state["cost_blocked"] is True
     assert "DECISION-NEEDED" in state["cost_block_reason"]
     assert len(state["professions"]) == 12
+
+
+def test_space_engineer_repair_multiplier_without_specialists():
+    planet_id = uuid4()
+    db = _DBStub()
+    assert ps.space_engineer_repair_multiplier(db, planet_id) == 1.0
+
+
+def test_space_engineer_repair_multiplier_with_specialists():
+    planet_id = uuid4()
+    prof_row = SimpleNamespace(
+        planet_id=planet_id,
+        profession=ProfessionType.SPACE_ENGINEERS.value,
+        count=50,
+    )
+    db = _DBStub(professions=[prof_row])
+    assert ps.space_engineer_repair_multiplier(db, planet_id) == pytest.approx(1.25)
+
+
+def test_trade_specialist_credit_multiplier_without_specialists():
+    planet_id = uuid4()
+    db = _DBStub()
+    assert ps.trade_specialist_credit_multiplier(db, planet_id) == 1.0
+
+
+def test_trade_specialist_credit_multiplier_with_specialists():
+    planet_id = uuid4()
+    prof_row = SimpleNamespace(
+        planet_id=planet_id,
+        profession=ProfessionType.TRADE_SPECIALISTS.value,
+        count=10,
+    )
+    db = _DBStub(professions=[prof_row])
+    assert ps.trade_specialist_credit_multiplier(db, planet_id) == pytest.approx(1.25)
+
+
+class _PlanetQueryStub:
+    def __init__(self, planets):
+        self._planets = list(planets)
+
+    def join(self, *args, **kwargs):
+        return self
+
+    def filter(self, *args, **kwargs):
+        return self
+
+    def all(self):
+        return list(self._planets)
+
+
+class _StationProfessionDBStub:
+    def __init__(self, *, planets=None, professions=None):
+        self.planets = planets or []
+        self.professions = professions or []
+
+    def query(self, model):
+        name = getattr(model, "__name__", str(model))
+        if name == "Planet":
+            return _PlanetQueryStub(self.planets)
+        if name == "ColonistProfession":
+            return _QueryStub(self.professions)
+        return _QueryStub([])
+
+
+def test_space_engineer_repair_multiplier_for_station_sector_match():
+    owner = uuid4()
+    planet_id = uuid4()
+    planet = SimpleNamespace(id=planet_id, sector_id=42)
+    prof_row = SimpleNamespace(
+        planet_id=planet_id,
+        profession=ProfessionType.SPACE_ENGINEERS.value,
+        count=5,
+    )
+    station = SimpleNamespace(sector_id=42)
+    db = _StationProfessionDBStub(planets=[planet], professions=[prof_row])
+    assert ps.space_engineer_repair_multiplier_for_station(db, owner, station) == pytest.approx(1.25)
+
+
+def test_trade_specialist_credit_multiplier_for_station_no_owned_planet():
+    owner = uuid4()
+    station = SimpleNamespace(sector_id=99)
+    db = _StationProfessionDBStub(planets=[])
+    assert ps.trade_specialist_credit_multiplier_for_station(db, owner, station) == 1.0
