@@ -18,6 +18,42 @@ import { TeamChat } from './TeamChat';
 import { TeamWarPanel } from './TeamWarPanel';
 import './team-manager.css';
 
+type MedalCatalogEntry = { icon: string; name: string };
+
+type MedalApiRow = {
+  key: string;
+  name: string;
+  icon?: string | null;
+};
+
+function buildMedalCatalog(
+  earned: MedalApiRow[] = [],
+  available: MedalApiRow[] = [],
+): Map<string, MedalCatalogEntry> {
+  const map = new Map<string, MedalCatalogEntry>();
+  const add = (row: MedalApiRow) => {
+    if (!row.key) return;
+    map.set(row.key, {
+      name: row.name || row.key,
+      icon: row.icon || '🏅',
+    });
+  };
+  earned.forEach(add);
+  available.forEach(add);
+  return map;
+}
+
+function resolvePinnedMedal(
+  catalog: Map<string, MedalCatalogEntry>,
+  medalId: string | null | undefined,
+): { icon: string | null; name: string | null } {
+  if (!medalId) return { icon: null, name: null };
+  const hit = catalog.get(medalId);
+  return hit
+    ? { icon: hit.icon, name: hit.name }
+    : { icon: '🏅', name: medalId };
+}
+
 /**
  * TeamManager — full CREW MANIFEST console (invite/kick/promote/treasury/
  * chat). Post-UI5-retirement, /game/team redirects to the cockpit dashboard
@@ -213,34 +249,32 @@ export const TeamManager: React.FC = () => {
   const [confirmingLeave, setConfirmingLeave] = useState(false);
   const [confirmingKickId, setConfirmingKickId] = useState<string | null>(null);
 
-  // LEG-357 / LEG-33 — optional self enrichment from GET /medals/me (icon/name).
-  // Roster rows also carry pinned_medal_id + medal_count from the teams API.
+  // LEG-357 / LEG-33 / LEG-2652 — medal catalog from GET /medals/me for roster pin identity.
+  // Roster rows carry pinned_medal_id + medal_count from the teams API for every member.
+  const [medalCatalog, setMedalCatalog] = useState<Map<string, MedalCatalogEntry>>(
+    () => new Map(),
+  );
   const [selfMedalCount, setSelfMedalCount] = useState<number | null>(null);
-  const [selfPinnedIcon, setSelfPinnedIcon] = useState<string | null>(null);
   const [selfPinnedId, setSelfPinnedId] = useState<string | null>(null);
-  const [selfPinnedName, setSelfPinnedName] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const data = (await medalsAPI.getMe()) as {
-          earned?: Array<{ key: string; name: string; icon?: string }>;
+          earned?: MedalApiRow[];
+          available?: MedalApiRow[];
           pinned_medal_id?: string | null;
           total_earned?: number;
         };
         if (cancelled) return;
         const earned = data.earned ?? [];
+        const available = data.available ?? [];
+        setMedalCatalog(buildMedalCatalog(earned, available));
         setSelfMedalCount(
           typeof data.total_earned === 'number' ? data.total_earned : earned.length,
         );
-        const pinId = data.pinned_medal_id ?? null;
-        if (pinId) {
-          const match = earned.find(m => m.key === pinId);
-          setSelfPinnedId(pinId);
-          setSelfPinnedName(match?.name ?? pinId);
-          setSelfPinnedIcon(match?.icon || '🏅');
-        }
+        setSelfPinnedId(data.pinned_medal_id ?? null);
       } catch {
         /* roster still renders without medals */
       }
@@ -677,7 +711,13 @@ export const TeamManager: React.FC = () => {
             {memberActionError && <div className="form-error" role="alert">{memberActionError}</div>}
 
             <div className="members-list">
-              {members.map(member => (
+              {members.map(member => {
+                const pinId =
+                  member.playerId === playerState.id
+                    ? (selfPinnedId ?? member.pinnedMedalId)
+                    : member.pinnedMedalId;
+                const pinResolved = resolvePinnedMedal(medalCatalog, pinId);
+                return (
                 <div key={member.id} className="member-item">
                   <div className="member-info">
                     <div className="member-name">
@@ -685,17 +725,9 @@ export const TeamManager: React.FC = () => {
                       <PlayerNamePlate
                         name={member.playerName}
                         size="sm"
-                        pinnedMedalId={
-                          member.playerId === playerState.id
-                            ? (selfPinnedId ?? member.pinnedMedalId)
-                            : member.pinnedMedalId
-                        }
-                        pinnedMedalIcon={
-                          member.playerId === playerState.id ? selfPinnedIcon : null
-                        }
-                        pinnedMedalName={
-                          member.playerId === playerState.id ? selfPinnedName : null
-                        }
+                        pinnedMedalId={pinId}
+                        pinnedMedalIcon={pinResolved.icon}
+                        pinnedMedalName={pinResolved.name}
                         medalCount={
                           member.playerId === playerState.id
                             ? (selfMedalCount ?? member.medalCount)
@@ -740,7 +772,8 @@ export const TeamManager: React.FC = () => {
                     </div>
                   )}
                 </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}

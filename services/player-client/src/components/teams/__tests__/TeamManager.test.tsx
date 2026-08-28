@@ -421,6 +421,12 @@ describe('TeamManager', () => {
     });
 
     it('renders pinned medal pin and count for a non-self roster row from API fields', async () => {
+      mockMedalsGetMe.mockResolvedValue({
+        earned: [],
+        available: [{ key: 'star_bronze', name: 'Bronze Star', icon: '🥉' }],
+        pinned_medal_id: null,
+        total_earned: 0,
+      });
       mockGetMembers.mockResolvedValue([
         rawMember({
           player_id: 'p2',
@@ -437,7 +443,8 @@ describe('TeamManager', () => {
       const plate = container.querySelector('.member-item [data-testid="player-name-plate"]') as HTMLElement;
       expect(plate).not.toBeNull();
       expect(plate.getAttribute('data-pinned-medal')).toBe('star_bronze');
-      expect(plate.querySelector('[data-testid="player-name-plate-medal"]')?.textContent).toBe('🏅');
+      expect(plate.getAttribute('title')).toBe('Bronze Star');
+      expect(plate.querySelector('[data-testid="player-name-plate-medal"]')?.textContent).toBe('🥉');
       expect(plate.querySelector('[data-testid="player-name-plate-count"]')?.textContent).toBe('5');
     });
 
