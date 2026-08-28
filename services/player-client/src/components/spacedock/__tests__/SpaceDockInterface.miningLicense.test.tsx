@@ -95,6 +95,10 @@ vi.mock('../../../contexts/GameContext', () => ({
 
 import SpaceDockInterface from '../SpaceDockInterface';
 import { miningAPI } from '../../../services/api';
+import {
+  __resetSpacedockVenueBusForTests,
+  requestSpacedockVenue,
+} from '../../../services/spacedockVenueBus';
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -123,6 +127,7 @@ describe('SpaceDockInterface — mining license / laser', () => {
   let shipPayload: typeof SHIP_NO_LASER;
 
   beforeEach(() => {
+    __resetSpacedockVenueBusForTests();
     localStorage.clear();
     localStorage.setItem('accessToken', 'tok-test');
     updatePlayerCredits.mockReset();
@@ -285,5 +290,26 @@ describe('SpaceDockInterface — mining license / laser', () => {
     expect(init?.method).toBe('POST');
     expect(JSON.parse(init?.body as string)).toEqual({ ship_id: 'ship-1' });
     expect(installEquipmentMock).not.toHaveBeenCalled();
+  });
+
+  it('opens Astral Mining when spacedockVenueBus requests mining (license expiry deep-link)', async () => {
+    await act(async () => {
+      root.render(<SpaceDockInterface />);
+      await flush();
+    });
+    await vi.waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some((c) => String(c[0]).includes('/api/v1/player/current-ship')),
+      ).toBe(true);
+    });
+
+    await act(async () => {
+      requestSpacedockVenue('mining');
+      await flush();
+    });
+
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain('Claim License');
+    });
   });
 });
