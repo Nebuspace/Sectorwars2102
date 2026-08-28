@@ -38,8 +38,15 @@ type PreviewPayload = {
   turns_cost?: number;
 };
 
+export type HarvestGateState = {
+  blocked: boolean;
+  message: string | null;
+  reasonKey: string | null;
+};
+
 type Props = {
   shipId: string | undefined;
+  onGateChange?: (state: HarvestGateState) => void;
 };
 
 const asRecord = (value: unknown): Record<string, unknown> | null =>
@@ -47,7 +54,9 @@ const asRecord = (value: unknown): Record<string, unknown> | null =>
     ? (value as Record<string, unknown>)
     : null;
 
-export const HarvestYieldPreview: React.FC<Props> = ({ shipId }) => {
+const NO_SHIP_GATE_MESSAGE = 'No active ship to preview yield.';
+
+export const HarvestYieldPreview: React.FC<Props> = ({ shipId, onGateChange }) => {
   const [payload, setPayload] = useState<PreviewPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -57,21 +66,55 @@ export const HarvestYieldPreview: React.FC<Props> = ({ shipId }) => {
       setPayload(null);
       setError(null);
       setLoading(false);
+      onGateChange?.({
+        blocked: true,
+        message: NO_SHIP_GATE_MESSAGE,
+        reasonKey: null,
+      });
       return;
     }
     let cancelled = false;
     setLoading(true);
+    onGateChange?.({ blocked: true, message: null, reasonKey: null });
     miningAPI
       .getYieldPreview(shipId)
       .then((raw) => {
         if (cancelled) return;
+        const preview = asRecord(raw) as PreviewPayload;
+        const reason =
+          typeof preview?.reason === 'string' && preview.reason.length > 0
+            ? preview.reason
+            : null;
+        const failed = preview?.success === false || reason != null;
+        if (failed) {
+          setPayload(null);
+          const gateMessage = harvestGateMessage(reason);
+          setError(gateMessage);
+          onGateChange?.({
+            blocked: true,
+            message: gateMessage,
+            reasonKey: reason,
+          });
+          return;
+        }
         setError(null);
-        setPayload(asRecord(raw) as PreviewPayload);
+        setPayload(preview);
+        onGateChange?.({ blocked: false, message: null, reasonKey: null });
       })
       .catch((err: { message?: string }) => {
         if (cancelled) return;
         setPayload(null);
-        setError(harvestGateMessage(err?.message));
+        const reasonKey =
+          typeof err?.message === 'string' && err.message.length > 0
+            ? err.message
+            : null;
+        const gateMessage = harvestGateMessage(reasonKey);
+        setError(gateMessage);
+        onGateChange?.({
+          blocked: true,
+          message: gateMessage,
+          reasonKey,
+        });
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -79,13 +122,13 @@ export const HarvestYieldPreview: React.FC<Props> = ({ shipId }) => {
     return () => {
       cancelled = true;
     };
-  }, [shipId]);
+  }, [shipId, onGateChange]);
 
   return (
     <div className="harvest-yield-preview" data-testid="harvest-yield-preview">
       {!shipId && (
         <div className="harvest-yield-preview-line" role="status">
-          No active ship to preview yield.
+          {NO_SHIP_GATE_MESSAGE}
         </div>
       )}
       {shipId && loading && (

@@ -39,6 +39,20 @@ const { getPlanetProfessions, trainPlanetProfession, OWNER_STATE } = vi.hoisted(
       },
     ],
     training_durations_days: { MINING_ENGINEERS: 20 },
+    training_eligibility: {
+      SPACE_ENGINEERS: true,
+      STRUCTURAL_ENGINEERS: true,
+      MINING_ENGINEERS: true,
+      RESEARCH_SCIENTISTS: true,
+      AGRICULTURAL_SCIENTISTS: true,
+      MEDICAL_PROFESSIONALS: true,
+      TERRAFORM_ENGINEERS: true,
+      COMBAT_PILOTS: true,
+      DEFENSE_COORDINATORS: true,
+      STRATEGIC_ANALYSTS: true,
+      TRADE_SPECIALISTS: true,
+      INDUSTRIAL_MANAGERS: true,
+    },
   };
   return {
     OWNER_STATE: state,
@@ -155,5 +169,101 @@ describe('ProfessionsPanel', () => {
     );
     expect(btn?.disabled).toBe(true);
     expect(container.textContent).not.toMatch(/price|credits per/i);
+  });
+
+  it('hides Research Scientists from train select when training_eligibility is false', async () => {
+    getPlanetProfessions.mockResolvedValueOnce({
+      ...OWNER_STATE,
+      training_eligibility: {
+        ...OWNER_STATE.training_eligibility,
+        RESEARCH_SCIENTISTS: false,
+      },
+    });
+
+    await act(async () => {
+      root.render(<ProfessionsPanel planetId="planet-1" citadelLevel={3} />);
+    });
+    await act(async () => {
+      await flush();
+    });
+
+    const options = Array.from(container.querySelectorAll('select option')).map((o) =>
+      o.textContent?.trim(),
+    );
+    expect(options.some((t) => t?.includes('Research Scientists'))).toBe(false);
+    expect(container.querySelector('[data-testid="professions-research-lab-gate"]')?.textContent).toContain(
+      'Research Lab level 3',
+    );
+  });
+
+  it('shows Research Scientists in train select when training_eligibility is true', async () => {
+    getPlanetProfessions.mockResolvedValueOnce({
+      ...OWNER_STATE,
+      training_eligibility: {
+        ...OWNER_STATE.training_eligibility,
+        RESEARCH_SCIENTISTS: true,
+      },
+    });
+
+    await act(async () => {
+      root.render(<ProfessionsPanel planetId="planet-1" citadelLevel={3} />);
+    });
+    await act(async () => {
+      await flush();
+    });
+
+    const options = Array.from(container.querySelectorAll('select option')).map((o) =>
+      o.textContent?.trim(),
+    );
+    expect(options.some((t) => t?.includes('Research Scientists'))).toBe(true);
+    expect(container.querySelector('[data-testid="professions-research-lab-gate"]')).toBeNull();
+  });
+
+  it('shows generic gate notice when an unknown profession is ineligible', async () => {
+    getPlanetProfessions.mockResolvedValueOnce({
+      ...OWNER_STATE,
+      training_eligibility: {
+        ...OWNER_STATE.training_eligibility,
+        COMBAT_PILOTS: false,
+      },
+    });
+
+    await act(async () => {
+      root.render(<ProfessionsPanel planetId="planet-1" citadelLevel={3} />);
+    });
+    await act(async () => {
+      await flush();
+    });
+
+    const gate = container.querySelector('[data-testid="professions-training-gate-combat_pilots"]');
+    expect(gate?.textContent).toContain('Combat Pilots');
+    expect(gate?.textContent).toContain('not available yet');
+    const options = Array.from(container.querySelectorAll('select option')).map((o) =>
+      o.textContent?.trim(),
+    );
+    expect(options.some((t) => t?.includes('Combat Pilots'))).toBe(false);
+  });
+
+  it('shows no gate notice when a profession is eligible', async () => {
+    getPlanetProfessions.mockResolvedValueOnce({
+      ...OWNER_STATE,
+      training_eligibility: {
+        ...OWNER_STATE.training_eligibility,
+        COMBAT_PILOTS: true,
+      },
+    });
+
+    await act(async () => {
+      root.render(<ProfessionsPanel planetId="planet-1" citadelLevel={3} />);
+    });
+    await act(async () => {
+      await flush();
+    });
+
+    expect(container.querySelector('[data-testid="professions-training-gate-combat_pilots"]')).toBeNull();
+    const options = Array.from(container.querySelectorAll('select option')).map((o) =>
+      o.textContent?.trim(),
+    );
+    expect(options.some((t) => t?.includes('Combat Pilots'))).toBe(true);
   });
 });

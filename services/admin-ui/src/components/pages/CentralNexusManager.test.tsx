@@ -148,4 +148,72 @@ describe('CentralNexusManager (LEG-212 shared api)', () => {
       expect(screen.getByText(/rate limit/i)).toBeTruthy();
     });
   });
+
+  it('surfaces scope denial on 403 status load (LEG-2716)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/nexus/status')) {
+        throw Object.assign(new Error('HTTP 403'), {
+          response: { status: 403, data: { detail: 'Missing scope admin.universe.view' } },
+        });
+      }
+      if (String(url).includes('/nexus/clusters')) {
+        return { data: [] };
+      }
+      if (String(url).includes('/nexus/stats')) {
+        return {
+          data: {
+            total_sectors: 10,
+            total_ports: 2,
+            total_planets: 3,
+            total_warp_gates: 1,
+            active_players: null,
+            daily_traffic: null,
+            clusters: [],
+          },
+        };
+      }
+      return { data: {} };
+    });
+
+    render(<CentralNexusManager />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Missing scope admin\.universe\.view/i)).toBeTruthy();
+    });
+  });
+
+  it('shows rate-limit copy on 429 status load (LEG-2716)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/nexus/status')) {
+        throw Object.assign(new Error('HTTP 429'), {
+          response: { status: 429, data: {} },
+        });
+      }
+      if (String(url).includes('/nexus/clusters')) {
+        return { data: [] };
+      }
+      if (String(url).includes('/nexus/stats')) {
+        return {
+          data: {
+            total_sectors: 10,
+            total_ports: 2,
+            total_planets: 3,
+            total_warp_gates: 1,
+            active_players: null,
+            daily_traffic: null,
+            clusters: [],
+          },
+        };
+      }
+      return { data: {} };
+    });
+
+    render(<CentralNexusManager />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/rate limit/i)).toBeTruthy();
+    });
+  });
 });

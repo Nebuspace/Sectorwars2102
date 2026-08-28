@@ -1,7 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import MessageModeration from './MessageModeration';
+import { MemoryRouter } from 'react-router-dom';
+import MessageModeration, {
+  buildEscalationAuditLedgerHref,
+} from './MessageModeration';
 import { api } from '../../utils/auth';
 
 vi.mock('../../utils/auth', () => ({
@@ -97,6 +100,14 @@ function mockLoad({
   });
 }
 
+function renderPage() {
+  return render(
+    <MemoryRouter>
+      <MessageModeration />
+    </MemoryRouter>,
+  );
+}
+
 describe('MessageModeration', () => {
   beforeEach(() => {
     vi.mocked(api.get).mockReset();
@@ -121,12 +132,58 @@ describe('MessageModeration', () => {
 
   it('shows honest empty states when nothing is flagged', async () => {
     mockLoad();
-    render(<MessageModeration />);
+    renderPage();
 
     await waitFor(() => {
       expect(screen.getByText('No flagged messages.')).toBeTruthy();
     });
     expect(screen.getByText('No flagged sector beacons.')).toBeTruthy();
+  });
+
+  it('shows escalation block-count badge when sender_block_count_30d is 2 (LEG-2690)', async () => {
+    mockLoad({
+      messages: {
+        ...emptyMessages,
+        messages: [{ ...message, sender_block_count_30d: 2 }],
+        total: 1,
+      },
+    });
+
+    render(<MessageModeration />);
+
+    await waitFor(() => {
+      expect(screen.getByText('2 blocks/30d')).toBeTruthy();
+    });
+    expect(screen.getByLabelText(/Sender escalation risk/i)).toBeTruthy();
+    expect(screen.queryByText('1 block/30d')).toBeNull();
+  });
+
+  it('omits block-count badge when sender_block_count_30d is 0 (LEG-2690)', async () => {
+    mockLoad({
+      messages: {
+        ...emptyMessages,
+        messages: [{ ...message, sender_block_count_30d: 0 }],
+        total: 1,
+      },
+    });
+
+    render(<MessageModeration />);
+
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+    expect(screen.queryByText(/block\/30d/i)).toBeNull();
+    expect(screen.queryByLabelText(/Sender block history/i)).toBeNull();
+    expect(screen.queryByLabelText(/Sender escalation risk/i)).toBeNull();
+  });
+
+  it('omits block-count badge when sender_block_count_30d is absent (LEG-2690 rollout)', async () => {
+    mockLoad({
+      messages: { ...emptyMessages, messages: [message], total: 1 },
+    });
+
+    render(<MessageModeration />);
+
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+    expect(screen.queryByText(/block\/30d/i)).toBeNull();
   });
 
   it('renders flagged messages and beacons from the real endpoints', async () => {
@@ -136,7 +193,7 @@ describe('MessageModeration', () => {
       stats: { ...emptyStats, total_messages: 10, flagged_messages: 1 },
     });
 
-    render(<MessageModeration />);
+    renderPage();
 
     await waitFor(() => {
       expect(screen.getByText('Alice')).toBeTruthy();
@@ -157,7 +214,7 @@ describe('MessageModeration', () => {
       },
     });
 
-    render(<MessageModeration />);
+    renderPage();
 
     await waitFor(() => {
       expect(screen.getByText('abcdef12345678')).toBeTruthy();
@@ -175,7 +232,7 @@ describe('MessageModeration', () => {
       return Promise.resolve({ data: emptyBeacons });
     });
 
-    render(<MessageModeration />);
+    renderPage();
 
     await waitFor(() => {
       expect(
@@ -192,7 +249,7 @@ describe('MessageModeration', () => {
     confirmMock.mockResolvedValue(true);
     vi.mocked(api.post).mockResolvedValue({ data: { success: true } });
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
 
     await user.click(screen.getByRole('button', { name: 'Delete' }));
@@ -224,7 +281,7 @@ describe('MessageModeration', () => {
       },
     });
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
 
     await user.click(screen.getByRole('button', { name: 'Accept' }));
@@ -254,7 +311,7 @@ describe('MessageModeration', () => {
       },
     });
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
 
     await user.click(screen.getByRole('button', { name: 'Redact' }));
@@ -280,7 +337,7 @@ describe('MessageModeration', () => {
       }),
     );
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
 
     await user.click(screen.getByRole('button', { name: 'Block' }));
@@ -296,12 +353,52 @@ describe('MessageModeration', () => {
     );
   });
 
+  it('block escalation surfaces audit ledger deep link when flagged (LEG-2703)', async () => {
+    const user = userEvent.setup();
+    mockLoad({ messages: { ...emptyMessages, messages: [message], total: 1 } });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockResolvedValue({
+      data: {
+        success: true,
+        action: 'block',
+        message_id: 'm1',
+        rep_delta: -100,
+        sender_notified: true,
+        block_count_30d: 2,
+        escalation_audit_logged: true,
+      },
+    });
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: 'Block' }));
+
+    await waitFor(() => {
+      expect(toastSuccess).toHaveBeenCalledWith(
+        expect.stringMatching(/Message blocked\..*Escalation audit logged/),
+      );
+    });
+
+    const auditLink = screen.getByRole('link', { name: 'View audit ledger entry' });
+    expect(auditLink).toHaveAttribute(
+      'href',
+      buildEscalationAuditLedgerHref('sender-uuid'),
+    );
+  });
+
+  it('buildEscalationAuditLedgerHref encodes sender filter query (LEG-2703)', () => {
+    expect(buildEscalationAuditLedgerHref('sender-uuid')).toBe(
+      '/audit?tab=ledger&target_type=player&target_id=sender-uuid',
+    );
+  });
+
   it('does not call the API when the delete confirm is dismissed', async () => {
     const user = userEvent.setup();
     mockLoad({ messages: { ...emptyMessages, messages: [message], total: 1 } });
     confirmMock.mockResolvedValue(false);
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
 
     await user.click(screen.getByRole('button', { name: 'Delete' }));
@@ -316,7 +413,7 @@ describe('MessageModeration', () => {
     confirmMock.mockResolvedValue(true);
     vi.mocked(api.post).mockRejectedValue(new Error('server error'));
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
 
     await user.click(screen.getByRole('button', { name: 'Clear Flag' }));
@@ -346,7 +443,7 @@ describe('MessageModeration', () => {
       },
     });
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Bob')).toBeTruthy());
 
     await user.click(screen.getByRole('button', { name: 'Confirm Abuse' }));
@@ -374,7 +471,7 @@ describe('MessageModeration', () => {
       }),
     );
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Bob')).toBeTruthy());
 
     await user.click(screen.getByRole('button', { name: 'Clear Flag' }));
@@ -398,7 +495,7 @@ describe('MessageModeration', () => {
       }),
     );
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Bob')).toBeTruthy());
 
     await user.click(screen.getByRole('button', { name: 'Clear Flag' }));
@@ -424,7 +521,7 @@ describe('MessageModeration', () => {
       }),
     );
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Bob')).toBeTruthy());
 
     await user.click(screen.getByRole('button', { name: 'Confirm Abuse' }));
@@ -452,7 +549,7 @@ describe('MessageModeration', () => {
       }),
     );
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Bob')).toBeTruthy());
 
     await user.click(screen.getByRole('button', { name: 'Confirm Abuse' }));
@@ -482,7 +579,7 @@ describe('MessageModeration', () => {
       },
     });
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Page 1 of 2')).toBeTruthy());
 
     await user.click(screen.getByRole('button', { name: 'Next' }));
@@ -495,7 +592,7 @@ describe('MessageModeration', () => {
   it('subscribes to flagged:message:alert and debounced-refetches on alert', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     mockLoad();
-    render(<MessageModeration />);
+    renderPage();
 
     await waitFor(() => {
       expect(subscribeMock).toHaveBeenCalledWith(
@@ -537,7 +634,7 @@ describe('MessageModeration', () => {
 
   it('does not register handlers for unrelated WS event types', async () => {
     mockLoad();
-    render(<MessageModeration />);
+    renderPage();
 
     await waitFor(() => expect(subscribeMock).toHaveBeenCalled());
     const events = subscribeMock.mock.calls.map((c) => c[0]);
@@ -549,7 +646,7 @@ describe('MessageModeration', () => {
   it('shows honest live-update demotion when WebSocket is disconnected', async () => {
     isConnectedMock = false;
     mockLoad();
-    render(<MessageModeration />);
+    renderPage();
 
     await waitFor(() => {
       expect(
@@ -577,7 +674,7 @@ describe('MessageModeration', () => {
       return Promise.resolve({ data: emptyBeacons });
     });
 
-    render(<MessageModeration />);
+    renderPage();
 
     await waitFor(() => {
       expect(screen.getByText(/Missing scope admin\.messages\.moderate/i)).toBeTruthy();
@@ -599,11 +696,66 @@ describe('MessageModeration', () => {
       return Promise.resolve({ data: emptyBeacons });
     });
 
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByText(/rate limit/i)).toBeTruthy();
+    });
+  });
+
+  it('surfaces scope denial on 403 flagged-beacon load (LEG-2719)', async () => {
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url.startsWith('/api/v1/admin/beacons/flagged')) {
+        return Promise.reject(
+          Object.assign(new Error('HTTP 403'), {
+            response: {
+              status: 403,
+              data: { detail: 'Missing scope admin.beacons.moderate' },
+            },
+          }),
+        );
+      }
+      if (url.startsWith('/api/v1/admin/messages/flagged')) {
+        return Promise.resolve({ data: emptyMessages });
+      }
+      if (url === '/api/v1/admin/messages/stats') {
+        return Promise.resolve({ data: emptyStats });
+      }
+      return Promise.resolve({ data: emptyBeacons });
+    });
+
+    render(<MessageModeration />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Missing scope admin\.beacons\.moderate/i)).toBeTruthy();
+    });
+    expect(screen.queryByText('No flagged sector beacons.')).toBeNull();
+  });
+
+  it('shows rate-limit copy on 429 flagged-beacon load (LEG-2719)', async () => {
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url.startsWith('/api/v1/admin/beacons/flagged')) {
+        return Promise.reject(
+          Object.assign(new Error('HTTP 429'), {
+            response: { status: 429 },
+          }),
+        );
+      }
+      if (url.startsWith('/api/v1/admin/messages/flagged')) {
+        return Promise.resolve({ data: emptyMessages });
+      }
+      if (url === '/api/v1/admin/messages/stats') {
+        return Promise.resolve({ data: emptyStats });
+      }
+      return Promise.resolve({ data: emptyBeacons });
+    });
+
     render(<MessageModeration />);
 
     await waitFor(() => {
       expect(screen.getByText(/rate limit/i)).toBeTruthy();
     });
+    expect(screen.queryByText('No flagged sector beacons.')).toBeNull();
   });
 
   it('select-all toggles every message on the current page', async () => {
@@ -617,7 +769,7 @@ describe('MessageModeration', () => {
       },
     });
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
 
     await user.click(
@@ -655,7 +807,7 @@ describe('MessageModeration', () => {
       },
     });
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
 
     await user.click(screen.getByRole('checkbox', { name: 'Select message m1' }));
@@ -704,7 +856,7 @@ describe('MessageModeration', () => {
       },
     });
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
 
     await user.click(
@@ -735,7 +887,7 @@ describe('MessageModeration', () => {
       }),
     );
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
 
     await user.click(screen.getByRole('checkbox', { name: 'Select message m1' }));
@@ -763,7 +915,7 @@ describe('MessageModeration', () => {
       }),
     );
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
 
     await user.click(screen.getByRole('checkbox', { name: 'Select message m1' }));
@@ -794,7 +946,7 @@ describe('MessageModeration', () => {
       }),
     );
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
 
     await user.click(screen.getByRole('checkbox', { name: 'Select message m1' }));
@@ -822,7 +974,7 @@ describe('MessageModeration', () => {
       }),
     );
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
 
     await user.click(screen.getByRole('checkbox', { name: 'Select message m1' }));

@@ -60,4 +60,37 @@ describe('GalaxyGenerationForm (LEG-1253)', () => {
       expect(screen.getByText(/rate limit/i)).toBeTruthy();
     });
   });
+
+  it('surfaces commit 403 as BANG_REGENERATE denial (LEG-2711)', async () => {
+    bangGalaxy.mockRejectedValue(
+      Object.assign(new Error('HTTP 403'), { response: { status: 403 } }),
+    );
+    const user = userEvent.setup();
+    render(<GalaxyGenerationForm />);
+
+    await user.click(screen.getByRole('button', { name: 'bang.form.actions.commit' }));
+
+    await waitFor(() => {
+      expect(bangGalaxy).toHaveBeenCalled();
+    });
+    expect(screen.getByText(/BANG_REGENERATE/i)).toBeTruthy();
+    expect(screen.getByText(/Access denied/i).textContent).not.toMatch(
+      /submitFailed/i,
+    );
+  });
+
+  it('surfaces commit 429 as admin rate-limit copy (LEG-2711)', async () => {
+    bangGalaxy.mockRejectedValue(
+      Object.assign(new Error('HTTP 429'), { response: { status: 429 } }),
+    );
+    const user = userEvent.setup();
+    render(<GalaxyGenerationForm />);
+
+    await user.click(screen.getByRole('button', { name: 'bang.form.actions.commit' }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/rate limit/i)).toBeTruthy();
+    });
+    expect(screen.queryByText(/submitFailed/i)).toBeNull();
+  });
 });

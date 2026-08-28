@@ -96,6 +96,8 @@ class PublicLeaderboardEntry(BaseModel):
     nickname: str
     military_rank: str
     score: int
+    rank_level: Optional[int] = None
+    rank_tier: Optional[str] = None
     pinned_medal_id: Optional[str] = None
     medal_count: Optional[int] = None
 
@@ -243,6 +245,7 @@ async def get_public_leaderboard(
     total_players = db.query(Player).filter(Player.is_active == True).count()
 
     if category == "rank_points":
+        ranking_service = RankingService(db)
         rows = (
             db.query(Player)
             .filter(Player.is_active == True)
@@ -251,12 +254,15 @@ async def get_public_leaderboard(
             .all()
         )
         for pos, p in enumerate(rows, start=1):
+            rank_info = ranking_service._build_rank_info(p)
             entries.append(PublicLeaderboardEntry(
                 position=pos,
                 player_id=str(p.id),
                 nickname=p.username,
                 military_rank=p.military_rank,
                 score=p.rank_points or 0,
+                rank_level=rank_info["rank_level"],
+                rank_tier=rank_info["rank_tier"],
             ))
 
         # Find requesting player's position

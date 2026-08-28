@@ -8,7 +8,11 @@ import pytest
 from src.models.colonist_profession import ProfessionType, PROFESSION_TRAINING_DAYS
 from src.models.profession_training_queue import ProfessionTrainingStatus
 from src.services import profession_service as ps
-from src.services.profession_service import ProfessionService, MIN_CITADEL_FOR_TRAINING
+from src.services.profession_service import (
+    MIN_CITADEL_FOR_TRAINING,
+    MIN_RESEARCH_LAB_FOR_RESEARCH_SCIENTISTS,
+    ProfessionService,
+)
 
 
 class _QueryStub:
@@ -51,11 +55,12 @@ class _DBStub:
         return None
 
 
-def _planet(owner_id, *, citadel_level=3, colonists=500):
+def _planet(owner_id, *, citadel_level=3, research_level=3, colonists=500):
     return SimpleNamespace(
         id=uuid4(),
         owner_id=owner_id,
         citadel_level=citadel_level,
+        research_level=research_level,
         colonists=colonists,
     )
 
@@ -99,6 +104,62 @@ def test_citadel_gate():
     svc = ProfessionService(_DBStub())
     with pytest.raises(ValueError, match="citadel_level_too_low"):
         svc.queue_training(planet, owner, ProfessionType.MINING_ENGINEERS.value, 10)
+
+
+def test_research_scientists_rejected_when_research_lab_below_l3():
+    owner = uuid4()
+    planet = _planet(
+        owner,
+        research_level=MIN_RESEARCH_LAB_FOR_RESEARCH_SCIENTISTS - 1,
+    )
+    svc = ProfessionService(_DBStub())
+    with pytest.raises(ValueError, match="research_lab_level_too_low"):
+        svc.queue_training(
+            planet, owner, ProfessionType.RESEARCH_SCIENTISTS.value, 10
+        )
+
+
+def test_research_scientists_allowed_at_research_lab_l3(monkeypatch):
+    owner = uuid4()
+    planet = _planet(owner, research_level=MIN_RESEARCH_LAB_FOR_RESEARCH_SCIENTISTS)
+    db = _DBStub()
+    svc = ProfessionService(db)
+    fixed_now = datetime(2026, 8, 28, tzinfo=timezone.utc)
+    fixed_deadline = fixed_now + timedelta(days=40)
+    monkeypatch.setattr(ps, "scaled_deadline", lambda hours, start=None: fixed_deadline)
+
+    result = svc.queue_training(
+        planet,
+        owner,
+        ProfessionType.RESEARCH_SCIENTISTS.value,
+        10,
+        now=fixed_now,
+    )
+    assert result["success"] is True
+    assert result["training_days"] == 40
+    assert len(db.added) == 1
+
+
+def test_training_eligibility_research_scientists_requires_research_lab_l3():
+    owner = uuid4()
+    svc = ProfessionService(_DBStub())
+    low_lab = _planet(owner, research_level=2)
+    eligibility = svc.training_eligibility(low_lab)
+    assert eligibility[ProfessionType.RESEARCH_SCIENTISTS.value] is False
+    assert eligibility[ProfessionType.MINING_ENGINEERS.value] is True
+
+    high_lab = _planet(owner, research_level=3)
+    eligibility = svc.training_eligibility(high_lab)
+    assert eligibility[ProfessionType.RESEARCH_SCIENTISTS.value] is True
+
+
+def test_get_state_includes_training_eligibility():
+    owner = uuid4()
+    planet = _planet(owner, research_level=2)
+    svc = ProfessionService(_DBStub())
+    state = svc.get_state(planet, owner)
+    assert state["training_eligibility"][ProfessionType.RESEARCH_SCIENTISTS.value] is False
+    assert state["training_eligibility"][ProfessionType.MINING_ENGINEERS.value] is True
 
 
 def test_queue_training_no_charge(monkeypatch):
@@ -247,3 +308,46 @@ def test_trade_specialist_credit_multiplier_for_station_no_owned_planet():
     station = SimpleNamespace(sector_id=99)
     db = _StationProfessionDBStub(planets=[])
     assert ps.trade_specialist_credit_multiplier_for_station(db, owner, station) == 1.0
+
+
+def test_mining_engineer_ore_multiplier_without_engineers():
+    planet_id = uuid4()
+    db = _DBStub()
+    assert ps.mining_engineer_ore_multiplier(db, planet_id) == 1.0
+
+
+def test_mining_engineer_ore_multiplier_with_engineers():
+    planet_id = uuid4()
+    prof_row = SimpleNamespace(
+        planet_id=planet_id,
+        profession=ProfessionType.MINING_ENGINEERS.value,
+        count=10,
+    )
+    db = _DBStub(professions=[prof_row])
+    assert ps.mining_engineer_ore_multiplier(db, planet_id) == pytest.approx(1.30)
+
+
+def test_mining_engineer_ore_multiplier_for_region_none():
+    owner = uuid4()
+    db = _StationProfessionDBStub(planets=[])
+    assert ps.mining_engineer_ore_multiplier_for_region(db, owner, None) == 1.0
+
+
+def test_mining_engineer_ore_multiplier_for_region_match():
+    owner = uuid4()
+    region_id = uuid4()
+    planet_id = uuid4()
+    planet = SimpleNamespace(id=planet_id, region_id=region_id)
+    prof_row = SimpleNamespace(
+        planet_id=planet_id,
+        profession=ProfessionType.MINING_ENGINEERS.value,
+        count=5,
+    )
+    db = _StationProfessionDBStub(planets=[planet], professions=[prof_row])
+    assert ps.mining_engineer_ore_multiplier_for_region(db, owner, region_id) == pytest.approx(1.30)
+
+
+def test_mining_engineer_ore_multiplier_for_region_no_owned_planet():
+    owner = uuid4()
+    db = _StationProfessionDBStub(planets=[])
+    assert ps.mining_engineer_ore_multiplier_for_region(db, owner, uuid4()) == 1.0

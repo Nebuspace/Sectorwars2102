@@ -37,7 +37,7 @@ import BankPanel, { isStarportPrimeStation, shipCargoFree } from '../cockpit/Ban
 import { miningAPI, navAPI, playerAPI, type NavChartResponse, sectorAPI, type SectorWreck } from '../../services/api';
 import NearestAmRefineryOverlay from '../mining/NearestAmRefineryOverlay';
 import AsteroidDepletionOverlay from '../mining/AsteroidDepletionOverlay';
-import HarvestYieldPreview, { HARVEST_GATE_COPY } from '../mining/HarvestYieldPreview';
+import HarvestYieldPreview, { HARVEST_GATE_COPY, type HarvestGateState } from '../mining/HarvestYieldPreview';
 import { projectedWarpBearing, subscribeWarpDepart, WARP_TURN_MS } from '../../services/warpCinematicBus';
 import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import { TurnsIcon } from '../icons/TurnsIcon';
@@ -749,6 +749,12 @@ const GameDashboardInner: React.FC = () => {
   // button reads "MINING…" without dimming the rest of the rail.
   const [harvestResult, setHarvestResult] = useState<any>(null);
   const [harvestBusy, setHarvestBusy] = useState(false);
+  const [harvestPreviewBlocked, setHarvestPreviewBlocked] = useState(true);
+  const [harvestPreviewGateMessage, setHarvestPreviewGateMessage] = useState<string | null>(null);
+  const handleHarvestGateChange = useCallback(({ blocked, message }: HarvestGateState) => {
+    setHarvestPreviewBlocked(blocked);
+    setHarvestPreviewGateMessage(message);
+  }, []);
 
   // Special-formation investigation (WO-UI-ANOMALY): which discovered formations
   // this player has already investigated this session (the chip disables once
@@ -3951,7 +3957,10 @@ const GameDashboardInner: React.FC = () => {
                         ) : currentSector?.type?.toUpperCase() === 'ASTEROID_FIELD' ? (
                           <div className="planetary-asteroid-state">
                             <b className="planetary-asteroid-label">⚫ ASTEROID FIELD</b>
-                            <HarvestYieldPreview shipId={currentShip?.id} />
+                            <HarvestYieldPreview
+                              shipId={currentShip?.id}
+                              onGateChange={handleHarvestGateChange}
+                            />
                             {flying ? (
                               // Demo L1352 field-row branch: here?HARVEST:(flying?HALT:APPROACH) —
                               // under burn, the row offers HALT instead of HARVEST (same
@@ -3969,10 +3978,20 @@ const GameDashboardInner: React.FC = () => {
                               <button
                                 className="planetary-harvest-btn"
                                 onClick={handleHarvest}
-                                disabled={helmBusy || harvestBusy}
-                                aria-disabled={helmBusy || harvestBusy}
-                                aria-label={helmBusy ? 'Harvest unavailable — helm is busy' : 'Deploy the mining laser to harvest ore from the asteroid field'}
-                                title="Deploy the mining laser to harvest ore from the asteroid field"
+                                disabled={helmBusy || harvestBusy || harvestPreviewBlocked}
+                                aria-disabled={helmBusy || harvestBusy || harvestPreviewBlocked}
+                                aria-label={
+                                  harvestPreviewBlocked && harvestPreviewGateMessage
+                                    ? harvestPreviewGateMessage
+                                    : helmBusy
+                                      ? 'Harvest unavailable — helm is busy'
+                                      : 'Deploy the mining laser to harvest ore from the asteroid field'
+                                }
+                                title={
+                                  harvestPreviewBlocked && harvestPreviewGateMessage
+                                    ? harvestPreviewGateMessage
+                                    : 'Deploy the mining laser to harvest ore from the asteroid field'
+                                }
                               >
                                 {harvestBusy ? '⛏️ MINING…' : helmBusy ? '⛏️ HARVEST (busy)' : '⛏️ HARVEST'}
                               </button>

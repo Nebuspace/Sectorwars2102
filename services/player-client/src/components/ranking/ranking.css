@@ -387,6 +387,27 @@
 }
 
 .col-pos { width: 40px; text-align: center; color: #888; }
+
+.leaderboard-rank-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.leaderboard-rank-cell .rank-badge.rank-badge--compact {
+  width: 1.75rem;
+  height: 1.75rem;
+}
+
+.leaderboard-rank-cell .rank-badge--compact .rank-level {
+  font-size: 0.75rem;
+}
+
+.leaderboard-rank-name {
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
 .col-medals { width: 72px; text-align: center; }
 .col-medals .leaderboard-medal-plate .pnp-name:empty { display: none; }
 .col-medals .leaderboard-medal-plate { justify-content: center; }
@@ -453,6 +474,21 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+.rank-progress-current-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.rank-progress-current-row .rank-badge.rank-badge--compact {
+  width: 1.75rem;
+  height: 1.75rem;
+}
+
+.rank-progress-current-row .rank-badge--compact .rank-level {
+  font-size: 0.75rem;
 }
 
 .rank-progress-label {

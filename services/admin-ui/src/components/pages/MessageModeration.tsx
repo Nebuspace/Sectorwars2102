@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { api } from '../../utils/auth';
 import { formatAdminApiError } from '../../utils/adminApiError';
 import { useToast, useConfirm } from '../../contexts/ToastContext';
@@ -48,6 +49,10 @@ interface FlaggedMessage {
   flagged: boolean;
   is_read: boolean;
   sender_name?: string;
+  /** LEG-2690 — prior canon `block` actions in rolling 30d (GS flagged list enrich). */
+  sender_block_count_30d?: number;
+  /** LEG-2690 — audit escalation marker already logged for sender (no account_review invent). */
+  sender_escalation_logged?: boolean;
 }
 
 interface FlaggedBeacon {
@@ -145,11 +150,55 @@ const recipientLabel = (message: FlaggedMessage): string => {
   return '—';
 };
 
+/** LEG-2690 — honest empty when GS omits field (rollout) or count is 0. */
+const SenderBlockCountBadge: React.FC<{
+  count?: number;
+  escalationLogged?: boolean;
+}> = ({ count, escalationLogged }) => {
+  if (count === undefined || count < 1) return null;
+
+  const escalated = count >= 2 || escalationLogged === true;
+  const label =
+    count === 1 ? '1 block in the last 30 days' : `${count} blocks in the last 30 days`;
+
+  return (
+    <span
+      className={
+        escalated
+          ? 'msgmod-block-badge msgmod-block-badge--escalation'
+          : 'msgmod-block-badge'
+      }
+      aria-label={
+        escalated
+          ? `Sender escalation risk: ${label}`
+          : `Sender block history: ${label}`
+      }
+      title={
+        escalated
+          ? '2+ blocks in 30 days — escalation threshold (LEG-DEC-157)'
+          : label
+      }
+    >
+      {count === 1 ? '1 block/30d' : `${count} blocks/30d`}
+    </span>
+  );
+};
+
 // NO-CANON (flagged to DECISIONS): fallback display when a sender's nickname
 // is missing/null — a truncated UUID rather than 'Unknown', so the row still
 // carries a stable, at-a-glance identifier an admin can search on.
 const senderLabel = (playerId: string, nickname?: string | null): string =>
   nickname ?? `${playerId.slice(0, 8)}…`;
+
+/** Deep-link into AdminActionLog ledger filters (LEG-2703). */
+export const buildEscalationAuditLedgerHref = (senderId: string): string => {
+  const params = new URLSearchParams({
+    tab: 'ledger',
+    target_type: 'player',
+    target_id: senderId,
+  });
+  return `/audit?${params.toString()}`;
+};
 
 const LIVE_REFRESH_DEBOUNCE_MS = 400;
 
@@ -171,6 +220,9 @@ const MessageModeration: React.FC = () => {
   const [bulkActing, setBulkActing] = useState(false);
   const [bulkFailures, setBulkFailures] = useState<BulkModerateItemResult[]>(
     [],
+  );
+  const [escalationAuditHref, setEscalationAuditHref] = useState<string | null>(
+    null,
   );
 
   const [page, setPage] = useState(1);
@@ -375,6 +427,11 @@ const MessageModeration: React.FC = () => {
               ? `Message redacted.${rep}${escalate}`
               : `Message blocked.${rep}${escalate}`,
         );
+        if (data?.escalation_audit_logged) {
+          setEscalationAuditHref(
+            buildEscalationAuditLedgerHref(message.sender_id),
+          );
+        }
         if (data?.block_count_30d && data.block_count_30d >= 2 && !data.escalation_audit_logged) {
           toast.info(`Sender block count (30d): ${data.block_count_30d}.`);
         }
@@ -575,6 +632,17 @@ const MessageModeration: React.FC = () => {
         </p>
       </header>
 
+      {escalationAuditHref && (
+        <div
+          className="msgmod-escalation-notice"
+          role="status"
+          data-testid="escalation-audit-notice"
+        >
+          Escalation audit logged (2+ blocks/30d).{' '}
+          <Link to={escalationAuditHref}>View audit ledger entry</Link>
+        </div>
+      )}
+
       {/* Review queue */}
       <section className="msgmod-section">
         <div className="msgmod-section-head">
@@ -697,7 +765,13 @@ const MessageModeration: React.FC = () => {
                       />
                     </td>
                     <td className="msgmod-sender">
-                      {message.sender_name ?? message.sender_id}
+                      <span className="msgmod-sender-label">
+                        {message.sender_name ?? message.sender_id}
+                      </span>
+                      <SenderBlockCountBadge
+                        count={message.sender_block_count_30d}
+                        escalationLogged={message.sender_escalation_logged}
+                      />
                     </td>
                     <td className="msgmod-recipient">
                       {recipientLabel(message)}
