@@ -35,7 +35,7 @@ const sampleDrone = {
   speed: 1.5,
   status: 'idle',
   sector_id: null,
-  deployed_at: null,
+  deployed_at: null as string | null,
   last_action: null,
   kills: 0,
   damage_dealt: 0,
