@@ -54,7 +54,6 @@ import pytest
 from sqlalchemy.sql import operators
 from sqlalchemy.sql.elements import False_, True_
 
-from src.models.cluster import Cluster
 from src.models.sector import Sector, SectorType
 from src.models.ship import ShipSpecification, ShipType
 from src.models.warp_tunnel import WarpTunnel, WarpTunnelStatus
@@ -151,14 +150,8 @@ class FakeChartSession:
         tunnels: List[Any],
         warp_edges: List[Any],
         ship_specs: List[Any] = None,
-        clusters: List[Any] = None,
     ) -> None:
-        self._stores = {
-            Sector: sectors,
-            WarpTunnel: tunnels,
-            ShipSpecification: ship_specs or [],
-            Cluster: clusters or [],
-        }
+        self._stores = {Sector: sectors, WarpTunnel: tunnels, ShipSpecification: ship_specs or []}
         self._warp_edges = warp_edges
 
     def query(self, *entities: Any) -> _FakeQuery:
@@ -188,43 +181,12 @@ class FakeChartSession:
 # Fixture helpers
 # --------------------------------------------------------------------------- #
 
-def _sector(sector_id: int, *, name: str = None, cluster_id: Any = None) -> SimpleNamespace:
+def _sector(sector_id: int, *, name: str = None) -> SimpleNamespace:
     return SimpleNamespace(
         id=uuid.uuid4(),
         sector_id=sector_id,
         name=name or f"Sector {sector_id}",
         type=SectorType.STANDARD,
-        x_coord=sector_id, y_coord=sector_id * 2, z_coord=0,
-        cluster_id=cluster_id or uuid.uuid4(),
-    )
-
-
-def _cluster(
-    *,
-    nebula_type: str = "crimson",
-    quantum_field_strength: float = 85.0,
-    color_hex: str = "#DC143C",
-) -> SimpleNamespace:
-    return SimpleNamespace(
-        id=uuid.uuid4(),
-        nebula_type=nebula_type,
-        quantum_field_strength=quantum_field_strength,
-        color_hex=color_hex,
-    )
-
-
-def _nebula_sector(
-    sector_id: int,
-    cluster: SimpleNamespace,
-    *,
-    name: str = None,
-) -> SimpleNamespace:
-    return SimpleNamespace(
-        id=uuid.uuid4(),
-        sector_id=sector_id,
-        cluster_id=cluster.id,
-        name=name or f"Nebula {sector_id}",
-        type=SectorType.NEBULA,
         x_coord=sector_id, y_coord=sector_id * 2, z_coord=0,
     )
 
@@ -678,84 +640,6 @@ class TestBoundedChart:
         got_ids = {s["sector_id"] for s in chart["sectors"]}
         assert got_ids == known_ids  # WITHOUT bounding, s4 leaks in -- the opposite of the fixed test's assertion
         assert chart["frontier"] == []  # and no frontier stub is produced for it
-
-
-# --------------------------------------------------------------------------- #
-# LEG-INI-16 / LEG-2586: nebula cluster fields on known NEBULA sectors only
-# --------------------------------------------------------------------------- #
-
-@pytest.mark.unit
-class TestNebulaChartFields:
-    def test_known_nebula_sector_includes_cluster_fields(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        cluster = _cluster(
-            nebula_type="crimson",
-            quantum_field_strength=85.0,
-            color_hex="#DC143C",
-        )
-        nebula = _nebula_sector(10, cluster, name="Crimson Nebula")
-        current = _sector(1, name="Current")
-        sectors = [current, nebula]
-
-        known_ids = {current.sector_id, nebula.sector_id}
-        _patch_known(monkeypatch, known_ids)
-        _patch_own_visited(monkeypatch, known_ids)
-
-        db = FakeChartSession(
-            sectors=sectors, tunnels=[], warp_edges=[], clusters=[cluster]
-        )
-        player = _player(current_sector_id=current.sector_id)
-
-        chart = NavService(db).get_chart(player)
-        by_id = {s["sector_id"]: s for s in chart["sectors"]}
-
-        nebula_entry = by_id[nebula.sector_id]
-        assert nebula_entry["type"] == SectorType.NEBULA.value
-        assert nebula_entry["nebula_type"] == "crimson"
-        assert nebula_entry["quantum_field_strength"] == 85.0
-        assert nebula_entry["color_hex"] == "#DC143C"
-
-    def test_non_nebula_sector_omits_nebula_keys(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        standard = _sector(5, name="Standard")
-        known_ids = {standard.sector_id}
-        _patch_known(monkeypatch, known_ids)
-        _patch_own_visited(monkeypatch, known_ids)
-
-        db = FakeChartSession(sectors=[standard], tunnels=[], warp_edges=[])
-        player = _player(current_sector_id=standard.sector_id)
-
-        chart = NavService(db).get_chart(player)
-        entry = chart["sectors"][0]
-
-        assert entry["type"] == SectorType.STANDARD.value
-        assert "nebula_type" not in entry
-        assert "quantum_field_strength" not in entry
-        assert "color_hex" not in entry
-
-    def test_frontier_stub_unchanged_no_nebula_leak(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        cluster = _cluster(nebula_type="azure", quantum_field_strength=65.0, color_hex="#1E90FF")
-        current = _sector(1, name="Current")
-        unknown_nebula = _nebula_sector(99, cluster, name="Hidden Nebula")
-        sectors = [current, unknown_nebula]
-
-        known_ids = {current.sector_id}
-        _patch_known(monkeypatch, known_ids)
-        _patch_own_visited(monkeypatch, known_ids)
-
-        warp_edges = [_warp_edge(current, unknown_nebula, bidirectional=False)]
-        db = FakeChartSession(
-            sectors=sectors, tunnels=[], warp_edges=warp_edges, clusters=[cluster]
-        )
-        player = _player(current_sector_id=current.sector_id)
-
-        chart = NavService(db).get_chart(player)
-
-        assert chart["frontier"] == [
-            {"id": unknown_nebula.sector_id, "from": current.sector_id}
-        ]
-        for stub in chart["frontier"]:
-            assert set(stub.keys()) == {"id", "from"}
-            assert "nebula_type" not in stub
-            assert "color_hex" not in stub
 
 
 # --------------------------------------------------------------------------- #

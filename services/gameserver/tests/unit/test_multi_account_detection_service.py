@@ -185,22 +185,19 @@ def test_shared_paypal_creates_hard_flags_and_zeros_weight(mac_db, monkeypatch):
 
     class _PWSession:
         def query(self, model):
-            self._model = model
+            assert model is MultiAccountFlag
             return self
 
         def filter(self, *a, **k):
             return self
 
         def first(self):
-            if self._model is MultiAccountCluster:
-                return mac_db.store[MultiAccountCluster][0]
             return mac_db.store[MultiAccountFlag][0]
 
     assert participation_weight(_PWSession(), p1) == 0.0
 
 
-def test_soft_ip_cluster_applies_half_participation_weight(mac_db, monkeypatch):
-    """LEG-256: SOFT flags discount to 0.5× (not full weight)."""
+def test_soft_ip_cluster_does_not_affect_participation_weight(mac_db, monkeypatch):
     p1, p2 = uuid.uuid4(), uuid.uuid4()
     monkeypatch.setattr(mac, "_clusters_shared_paypal", lambda d: [])
     monkeypatch.setattr(
@@ -217,36 +214,21 @@ def test_soft_ip_cluster_applies_half_participation_weight(mac_db, monkeypatch):
     assert mac_db.store[MultiAccountCluster][0].severity == MultiAccountSeverity.SOFT
 
     class _PWSession:
-        def __init__(self) -> None:
-            self._model = None
-            self._severity = None
-
         def query(self, model):
-            self._model = model
-            self._severity = None
             return self
 
-        def filter(self, *conds):
-            for cond in conds:
-                col = getattr(getattr(cond, "left", None), "key", None)
-                if col == "severity":
-                    self._severity = cond.right.value
+        def filter(self, *a, **k):
             return self
 
         def first(self):
-            if self._model is MultiAccountCluster:
-                return mac_db.store[MultiAccountCluster][0]
-            flags = list(mac_db.store[MultiAccountFlag])
-            if self._severity is not None:
-                flags = [
-                    f
-                    for f in flags
-                    if f.severity.value == self._severity
-                    or f.severity == self._severity
-                ]
-            return flags[0] if flags else None
+            hard = [
+                f
+                for f in mac_db.store[MultiAccountFlag]
+                if f.severity == MultiAccountSeverity.HARD
+            ]
+            return hard[0] if hard else None
 
-    assert participation_weight(_PWSession(), p1) == 0.5
+    assert participation_weight(_PWSession(), p1) == 1.0
 
 
 def test_idempotent_second_sweep_refreshes_not_duplicates(mac_db, monkeypatch):
