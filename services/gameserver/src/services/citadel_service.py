@@ -631,6 +631,11 @@ class CitadelService:
         # levy preserves it. (Tiers 0→1 are documented free; handled by the early
         # current_level==0 branch above.)
         upgrade_cost = promotion_levy(self.db, player_id, next_level)
+        try:
+            from src.services.profession_service import structural_engineer_cost_multiplier
+            upgrade_cost = int(round(upgrade_cost * structural_engineer_cost_multiplier(self.db, planet_id)))
+        except Exception:
+            pass
         if next_level >= NO_FREE_PROMOTION_TIER and upgrade_cost <= 0:
             # Defensive: should be impossible given the shipped table, but never let a
             # tier-2+ promotion slip through free if the catalog is ever mis-edited.
