@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { useAuth } from './AuthContext';
-import { sectorAPI, messageAPI, planetaryAPI, citadelAPI, expeditionAPI, pioneerAPI, armoryAPI, tradingAPI, quantumAPI, portOwnershipAPI, playerAPI, shipAPI, firstLoginAPI } from '../services/api';
+import { sectorAPI, messageAPI, planetaryAPI, citadelAPI, expeditionAPI, pioneerAPI, armoryAPI, tradingAPI, quantumAPI, portOwnershipAPI, playerAPI, shipAPI, firstLoginAPI, type ArmoryMineItem } from '../services/api';
 import websocketService from '../services/websocket';
 import { ariaFeed } from '../components/mfd/ariaFeedStore';
 
@@ -397,7 +397,7 @@ interface GameContextType {
     amount: number,
   ) => Promise<any>;
   setCitadelAutoDeposit: (planetId: string, enabled: boolean) => Promise<any>;
-  deployMines: (quantity: number) => Promise<any>;
+  deployMines: (quantity: number, item?: ArmoryMineItem) => Promise<any>;
   // Planetary defenses — shield generator status/upgrade
   getPlanetDefenseInfo: (planetId: string) => Promise<any>;
   upgradeShields: (planetId: string) => Promise<any>;
@@ -1410,12 +1410,11 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  // Lay armored mines in the current sector (open space).
-  // WO-WIRE-ARMORY-DEPLOY: armoryAPI.deploy (same URL; still refresh state).
-  const deployMines = async (quantity: number) => {
+  // Lay mines in the current sector (open space). Item defaults to armored.
+  const deployMines = async (quantity: number, item: ArmoryMineItem = 'armored_mine') => {
     if (!user || !playerState) throw new Error('Not authenticated');
     try {
-      const data = await armoryAPI.deploy(quantity);
+      const data = await armoryAPI.deploy(quantity, item);
       await refreshPlayerState();
       return data;
     } catch (error: any) {
