@@ -6,7 +6,7 @@ Player-facing and admin endpoints for ranking, reputation, and bounty systems.
 
 import logging
 import uuid
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
@@ -79,6 +79,7 @@ class LeaderboardEntry(BaseModel):
     military_rank: str
     rank_points: int
     rank_level: int
+    rank_tier: str
     is_game_complete: bool = False
     is_suspect: bool = False
     is_wanted: bool = False
@@ -95,6 +96,8 @@ class PublicLeaderboardEntry(BaseModel):
     nickname: str
     military_rank: str
     score: int
+    pinned_medal_id: Optional[str] = None
+    medal_count: Optional[int] = None
 
 
 class PublicLeaderboardResponse(BaseModel):
@@ -102,6 +105,56 @@ class PublicLeaderboardResponse(BaseModel):
     entries: List[PublicLeaderboardEntry]
     player_position: Optional[int] = None
     total_players: int
+
+
+def _enrich_public_leaderboard_medal_identity(
+    db: Session,
+    entries: List[PublicLeaderboardEntry],
+) -> List[PublicLeaderboardEntry]:
+    """Attach pinned_medal_id + medal_count per row (team roster batch pattern)."""
+    if not entries:
+        return entries
+
+    from sqlalchemy import func as sa_func
+
+    from src.models.medal import PlayerMedal
+    from src.services.medal_service import public_medal_identity
+
+    player_ids = [uuid.UUID(e.player_id) for e in entries]
+    players_map: Dict[Any, Player] = {
+        p.id: p
+        for p in db.query(Player)
+        .filter(Player.id.in_(player_ids), Player.is_active == True)
+        .all()
+    }
+    counts: Dict[Any, int] = {}
+    if player_ids:
+        rows = (
+            db.query(PlayerMedal.player_id, sa_func.count(PlayerMedal.medal_id))
+            .filter(PlayerMedal.player_id.in_(player_ids))
+            .group_by(PlayerMedal.player_id)
+            .all()
+        )
+        counts = {pid: int(n) for pid, n in rows}
+
+    enriched: List[PublicLeaderboardEntry] = []
+    for entry in entries:
+        player = players_map.get(uuid.UUID(entry.player_id))
+        if player is None:
+            enriched.append(entry)
+            continue
+        identity = public_medal_identity(
+            player, medal_count=counts.get(player.id, 0)
+        )
+        enriched.append(
+            entry.model_copy(
+                update={
+                    "pinned_medal_id": identity["pinned_medal_id"],
+                    "medal_count": identity["medal_count"],
+                }
+            )
+        )
+    return enriched
 
 
 class RankRequirement(BaseModel):
@@ -367,6 +420,8 @@ async def get_public_leaderboard(
             player_position = next(
                 e.position for e in entries if e.player_id == str(player.id)
             )
+
+    entries = _enrich_public_leaderboard_medal_identity(db, entries)
 
     return PublicLeaderboardResponse(
         category=category,

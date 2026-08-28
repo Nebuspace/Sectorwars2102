@@ -45,6 +45,10 @@ export interface TeamMember {
   };
   shipType: string;
   combatRating: number;
+  /** Public pinned medal from team roster API (public_medal_identity) */
+  pinnedMedalId?: string | null;
+  /** Earned medal count when visible; null when privacy-hidden */
+  medalCount?: number | null;
 }
 
 // --- Gameserver wire shapes (snake_case) -----------------------------------
@@ -84,6 +88,8 @@ export interface TeamMemberApiResponse {
   contribution_credits: Record<string, number> | null;
   current_sector: number | null;
   combat_rating: number;
+  pinned_medal_id?: string | null;
+  medal_count?: number | null;
 }
 
 export interface TeamPermissionsApiResponse {
