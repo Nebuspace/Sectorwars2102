@@ -971,6 +971,22 @@
    classes) so it doesn't leak onto any other `.vit` badge; same compound
    selector also outranks cockpit-shell.css's bare `.repb` on specificity
    for the color rule below, regardless of CSS load order. */
+
+/* LEG-2606 — compact rank insignia chip (reuses ranking.css rank-badge art). */
+.vit.rank-insignia {
+  padding: 0;
+  line-height: 1;
+}
+
+.rank-insignia .rank-badge {
+  width: 1.625rem;
+  height: 1.625rem;
+}
+
+.rank-insignia .rank-level {
+  font-size: 0.75rem;
+}
+
 .vit.repb {
   color: var(--rep-color, var(--grn));
   text-transform: uppercase;
