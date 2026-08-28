@@ -87,6 +87,12 @@ vi.mock('../../../contexts/AuthContext', () => ({
 
 import CommsCrewPage, { FLAG_REASON_BY_CATEGORY } from './CommsCrewPage';
 
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
+
 describe('CommsCrewPage — MFD-B COMM', () => {
   let container: HTMLElement;
   let root: ReturnType<typeof createRoot>;
@@ -320,6 +326,32 @@ describe('CommsCrewPage — MFD-B COMM', () => {
     await flush();
     expect(container.querySelector('.mfd-page-warnline')?.textContent).toBe('Uplink timeout');
     expect(container.querySelector('.mfd-page-ops')).not.toBeNull();
+  });
+
+  it('THREADS tab surfaces getConversations 403 permission error in warnline', async () => {
+    mockGetConversations.mockRejectedValueOnce(
+      apiRequestError(403, 'Messaging access requires an active crew affiliation.'),
+    );
+    await mount();
+    await click(container.querySelectorAll('.mfd-page-comms-mode-tab')[1]!);
+    await flush();
+    const warnline = container.querySelector('.mfd-page-warnline');
+    expect(warnline?.getAttribute('role')).toBe('alert');
+    expect(warnline?.textContent).toContain('Messaging access requires an active crew affiliation');
+    expect(warnline?.textContent).not.toBe('FAILED TO LOAD THREADS');
+    expect(container.querySelector('[data-testid="comms-threads-list"]')).toBeNull();
+  });
+
+  it('THREADS tab surfaces getConversations 429 rate-limit error in warnline', async () => {
+    mockGetConversations.mockRejectedValueOnce(apiRequestError(429));
+    await mount();
+    await click(container.querySelectorAll('.mfd-page-comms-mode-tab')[1]!);
+    await flush();
+    const warnline = container.querySelector('.mfd-page-warnline');
+    expect(warnline?.getAttribute('role')).toBe('alert');
+    expect(warnline?.textContent).toMatch(/rate limit exceeded/i);
+    expect(warnline?.textContent).not.toBe('FAILED TO LOAD THREADS');
+    expect(container.querySelector('[data-testid="comms-threads-list"]')).toBeNull();
   });
 
   it('THREADS tab selecting a thread shows merged messages in the detail pane', async () => {

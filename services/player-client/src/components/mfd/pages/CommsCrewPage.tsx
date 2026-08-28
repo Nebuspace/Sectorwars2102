@@ -70,6 +70,38 @@ const contactDisplayName = (contact: any): string =>
 
 type CommsMode = 'hails' | 'threads';
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+/** apiRequest throws Error with `.status`; mirror BountyBoard formatBountyBoardLoadError on LIST. */
+export function formatCommsThreadsLoadError(err: unknown): string {
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'Access denied — you cannot browse message threads right now.';
+  }
+
+  if (status === 429) {
+    return 'Message threads rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (hasServerDetail) return message!;
+  return 'FAILED TO LOAD THREADS';
+}
+
 const conversationPartyLabel = (msg: PlayerMessage, playerId: string | undefined): string => {
   if (!playerId) return (msg.sender_name || 'UNKNOWN').toUpperCase();
   if (msg.sender_id !== playerId) return (msg.sender_name || 'UNKNOWN').toUpperCase();
@@ -201,9 +233,7 @@ const CommsCrewPage: React.FC = () => {
       .catch((err: unknown) => {
         if (cancelled) return;
         setConversations([]);
-        setConversationsError(
-          err instanceof Error ? err.message : 'FAILED TO LOAD THREADS'
-        );
+        setConversationsError(formatCommsThreadsLoadError(err));
       })
       .finally(() => {
         if (!cancelled) setConversationsLoading(false);
