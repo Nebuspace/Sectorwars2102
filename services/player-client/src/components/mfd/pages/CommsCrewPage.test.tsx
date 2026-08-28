@@ -14,12 +14,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const mockGetTeam = vi.fn();
 const mockFlagMessage = vi.fn();
+const mockGetConversations = vi.fn();
 vi.mock('../../../services/api', () => ({
   teamAPI: {
     getTeam: (...a: unknown[]) => mockGetTeam(...a),
   },
   messageAPI: {
     flagMessage: (...a: unknown[]) => mockFlagMessage(...a),
+    getConversations: (...a: unknown[]) => mockGetConversations(...a),
   },
 }));
 
@@ -93,6 +95,8 @@ describe('CommsCrewPage — MFD-B COMM', () => {
     mockGetTeam.mockReset();
     mockFlagMessage.mockReset();
     mockFlagMessage.mockResolvedValue({ success: true });
+    mockGetConversations.mockReset();
+    mockGetConversations.mockResolvedValue({ conversations: [], total: 0, page: 1, limit: 20, pages: 0 });
     mockRefreshInbox.mockReset();
     mockSendPlayerMessage.mockReset();
     mockMarkMessageRead.mockReset();
@@ -243,6 +247,40 @@ describe('CommsCrewPage — MFD-B COMM', () => {
 
     expect(mockSendPlayerMessage).toHaveBeenCalledWith('sender-9', 'On my way.', 'RE: Hello', 'msg-2');
     expect(container.querySelector('.mfd-page-comms-send-notice')?.textContent).toBe('TRANSMISSION SENT');
+  });
+
+  it('LEG-390: fetches conversations and opens a thread body from tip payload', async () => {
+    mockGetConversations.mockResolvedValue({
+      conversations: [
+        {
+          id: 'msg-thread-latest',
+          sender_id: 'sender-9',
+          recipient_id: 'player-1',
+          subject: 'Convoy',
+          content: 'Meet at the gate.',
+          sent_at: '2026-08-17T12:00:00+00:00',
+          thread_id: 'thread-9',
+          is_read: true,
+          sender_name: 'Rex',
+        },
+      ],
+      total: 1,
+      page: 1,
+      limit: 20,
+      pages: 1,
+    });
+
+    await mount();
+
+    expect(mockGetConversations).toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="comms-thread-row"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="comms-thread-body"]')).toBeNull();
+
+    await click(container.querySelector('[data-testid="comms-thread-open"]')!);
+
+    const body = container.querySelector('[data-testid="comms-thread-body"]');
+    expect(body?.textContent).toContain('Meet at the gate.');
+    expect(body?.textContent).toMatch(/THREAD DEPTH CAP 50/);
   });
 
   it('opens the composer via HAIL on a non-NPC sector contact (a source CommsMailbox also supports)', async () => {

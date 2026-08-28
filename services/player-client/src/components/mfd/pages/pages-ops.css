@@ -151,6 +151,30 @@
   gap: 0.3rem;
 }
 
+.mfd-page-comms-threads {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin-bottom: 0.75rem;
+}
+
+.mfd-page-comms-thread-cap-note {
+  font-size: 0.55rem;
+  letter-spacing: 0.06em;
+  opacity: 0.7;
+  margin: 0 0 0.4rem 0;
+}
+
+.mfd-page-comms-thread-msg {
+  margin-bottom: 0.45rem;
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid rgba(0, 255, 127, 0.15);
+}
+
+.mfd-page-comms-thread-msg:last-of-type {
+  border-bottom: none;
+}
+
 .mfd-page-comms-hail-item {
   background: rgba(0, 255, 127, 0.04);
   border: 1px solid rgba(0, 255, 127, 0.18);
