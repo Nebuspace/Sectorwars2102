@@ -147,4 +147,101 @@ describe('EconomyLeversPanel (LEG-30)', () => {
     });
     expect(String(toastError.mock.calls[0][0])).toMatch(/rate limit/i);
   });
+
+  it('surfaces ECONOMY_MANAGE scope denial on bounty-payout PATCH 403 (LEG-2673)', async () => {
+    vi.mocked(api.get).mockResolvedValue({ data: emptySnapshot });
+    vi.mocked(api.patch).mockRejectedValue({ response: { status: 403 } });
+
+    render(<EconomyLeversPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Bounty payout ratio')).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByLabelText('Bounty payout ratio'), {
+      target: { value: '1.25' },
+    });
+    const bountyRow = screen.getByLabelText('Bounty payout ratio').closest('tr');
+    fireEvent.click(bountyRow!.querySelector('button')!);
+
+    await waitFor(() => {
+      expect(api.patch).toHaveBeenCalledWith('/api/v1/admin/economy/levers/bounty-payout', {
+        bounty_payout_ratio: 1.25,
+      });
+      expect(toastError).toHaveBeenCalled();
+    });
+    const msg = String(toastError.mock.calls[0][0]);
+    expect(msg).toMatch(/ECONOMY_MANAGE/);
+    expect(msg).not.toBe('Failed to save bounty payout ratio');
+  });
+
+  it('surfaces admin rate-limit copy on bounty-payout PATCH 429 (LEG-2673)', async () => {
+    vi.mocked(api.get).mockResolvedValue({ data: emptySnapshot });
+    vi.mocked(api.patch).mockRejectedValue({ response: { status: 429 } });
+
+    render(<EconomyLeversPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Bounty payout ratio')).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByLabelText('Bounty payout ratio'), {
+      target: { value: '1.5' },
+    });
+    const bountyRow = screen.getByLabelText('Bounty payout ratio').closest('tr');
+    fireEvent.click(bountyRow!.querySelector('button')!);
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalled();
+    });
+    expect(String(toastError.mock.calls[0][0])).toMatch(/rate limit/i);
+  });
+
+  it('surfaces ECONOMY_MANAGE scope denial on insurance PATCH 403 (LEG-2674)', async () => {
+    vi.mocked(api.get).mockResolvedValue({ data: emptySnapshot });
+    vi.mocked(api.patch).mockRejectedValue({ response: { status: 403 } });
+
+    render(<EconomyLeversPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('BASIC insurance premium percent')).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByLabelText('BASIC insurance premium percent'), {
+      target: { value: '12' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save insurance levers' }));
+
+    await waitFor(() => {
+      expect(api.patch).toHaveBeenCalledWith('/api/v1/admin/economy/levers/insurance', {
+        insurance_premium_pct: { BASIC: 0.12, STANDARD: 0.1, PREMIUM: 0.15 },
+        insurance_net_payout_pct: { BASIC: 0.5, STANDARD: 0.7, PREMIUM: 0.9 },
+      });
+      expect(toastError).toHaveBeenCalled();
+    });
+    const msg = String(toastError.mock.calls[0][0]);
+    expect(msg).toMatch(/ECONOMY_MANAGE/);
+    expect(msg).not.toBe('Failed to save insurance levers');
+  });
+
+  it('surfaces admin rate-limit copy on insurance PATCH 429 (LEG-2674)', async () => {
+    vi.mocked(api.get).mockResolvedValue({ data: emptySnapshot });
+    vi.mocked(api.patch).mockRejectedValue({ response: { status: 429 } });
+
+    render(<EconomyLeversPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('BASIC insurance premium percent')).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByLabelText('BASIC insurance premium percent'), {
+      target: { value: '11' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save insurance levers' }));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalled();
+    });
+    expect(String(toastError.mock.calls[0][0])).toMatch(/rate limit/i);
+  });
 });
