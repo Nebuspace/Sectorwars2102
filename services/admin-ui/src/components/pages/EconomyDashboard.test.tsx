@@ -48,9 +48,9 @@ vi.mock('./BountyAdminPanel', () => ({
 }));
 
 function d3Chain(): Record<string, unknown> {
-  const api: Record<string, unknown> = Object.assign(() => 0, {
+  const api = Object.assign(() => 0, {
     bandwidth: () => 10,
-  });
+  }) as unknown as Record<string, unknown>;
   const ret = () => api;
   for (const m of [
     'select',
