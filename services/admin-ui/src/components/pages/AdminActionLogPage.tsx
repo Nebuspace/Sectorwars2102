@@ -76,6 +76,7 @@ export const AdminActionLogPage: React.FC = () => {
   const [markError, setMarkError] = useState<string | null>(null);
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const previouslyFocused = useRef<HTMLElement | null>(null);
+  const deepLinkFiltersApplied = useRef(false);
 
   const load = useCallback(async () => {
     setIsLoading(true);
@@ -117,6 +118,22 @@ export const AdminActionLogPage: React.FC = () => {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    if (deepLinkFiltersApplied.current) return;
+    const tt = searchParams.get('target_type') ?? '';
+    const tid = searchParams.get('target_id') ?? '';
+    if (!tt && !tid) return;
+    deepLinkFiltersApplied.current = true;
+    setTargetType(tt);
+    setTargetId(tid);
+    setPage(1);
+    setApplied((prev) => ({
+      ...prev,
+      targetType: tt,
+      targetId: tid,
+    }));
+  }, [searchParams]);
 
   useEffect(() => {
     if (!reviewTarget) return;
