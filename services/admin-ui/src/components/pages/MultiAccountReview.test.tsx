@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import MultiAccountReview from './MultiAccountReview';
 import { api } from '../../utils/auth';
 
@@ -88,5 +89,100 @@ describe('MultiAccountReview scope errors (LEG-968)', () => {
     await waitFor(() => {
       expect(screen.getByText(/rate limit/i)).toBeTruthy();
     });
+  });
+});
+
+const pendingClusterListItem = {
+  id: 'cluster-1',
+  signal_summary: { shared_ip: true },
+  severity: 'hard' as const,
+  all_paid_subscribers: false,
+  admin_decision: 'pending' as const,
+  admin_decision_reason: null,
+  admin_decision_at: null,
+  admin_decision_by: null,
+  created_at: '2026-01-01T00:00:00Z',
+  updated_at: '2026-01-01T00:00:00Z',
+  member_count: 2,
+};
+
+const pendingClusterDetail = {
+  ...pendingClusterListItem,
+  flags: [],
+};
+
+function mockSuccessfulClusterLoad() {
+  vi.mocked(api.get).mockImplementation((url: string) => {
+    if (url.includes('/clusters/cluster-1')) {
+      return Promise.resolve({ data: pendingClusterDetail });
+    }
+    if (url.includes('/clusters')) {
+      return Promise.resolve({ data: [pendingClusterListItem] });
+    }
+    return Promise.reject(new Error(`Unexpected GET ${url}`));
+  });
+}
+
+async function submitPendingClusterDecision(user: ReturnType<typeof userEvent.setup>) {
+  render(<MultiAccountReview />);
+  await waitFor(() => expect(screen.getByText(/2 members/i)).toBeInTheDocument());
+  await user.click(screen.getByText(/2 members/i));
+
+  await waitFor(() => expect(screen.getByText('Record Ruling')).toBeInTheDocument());
+
+  await user.click(
+    screen.getByRole('button', { name: /Confirm \(enforce limits\)/i }),
+  );
+  await user.click(screen.getByRole('button', { name: 'Submit Ruling' }));
+}
+
+describe('MultiAccountReview decide mutation errors (LEG-2628)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    mockSuccessfulClusterLoad();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('surfaces formatAdminApiError on decide POST 403', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.post).mockRejectedValue(
+      axiosError(403, 'Missing scope admin.multi_account.review'),
+    );
+
+    await submitPendingClusterDecision(user);
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/multi-account/clusters/cluster-1/decide',
+        { decision: 'confirmed', reason: undefined },
+      );
+    });
+
+    const alert = document.querySelector('.mar-decide-error');
+    expect(alert).toBeTruthy();
+    expect(alert).toHaveAttribute('role', 'alert');
+    expect(alert).toHaveTextContent(/Missing scope admin\.multi_account\.review/i);
+    expect(alert).not.toHaveTextContent('Failed to record decision');
+  });
+
+  it('shows rate-limit copy on decide POST 429', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.post).mockRejectedValue(axiosError(429));
+
+    await submitPendingClusterDecision(user);
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/multi-account/clusters/cluster-1/decide',
+        { decision: 'confirmed', reason: undefined },
+      );
+    });
+
+    const alert = document.querySelector('.mar-decide-error');
+    expect(alert).toBeTruthy();
+    expect(alert).toHaveAttribute('role', 'alert');
+    expect(alert).toHaveTextContent(/rate limit/i);
+    expect(alert).not.toHaveTextContent('Failed to record decision');
   });
 });
