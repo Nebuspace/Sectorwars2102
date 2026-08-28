@@ -652,6 +652,61 @@ describe('MessageModeration', () => {
     });
   });
 
+  it('surfaces scope denial on 403 flagged-beacon load (LEG-2719)', async () => {
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url.startsWith('/api/v1/admin/beacons/flagged')) {
+        return Promise.reject(
+          Object.assign(new Error('HTTP 403'), {
+            response: {
+              status: 403,
+              data: { detail: 'Missing scope admin.beacons.moderate' },
+            },
+          }),
+        );
+      }
+      if (url.startsWith('/api/v1/admin/messages/flagged')) {
+        return Promise.resolve({ data: emptyMessages });
+      }
+      if (url === '/api/v1/admin/messages/stats') {
+        return Promise.resolve({ data: emptyStats });
+      }
+      return Promise.resolve({ data: emptyBeacons });
+    });
+
+    render(<MessageModeration />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Missing scope admin\.beacons\.moderate/i)).toBeTruthy();
+    });
+    expect(screen.queryByText('No flagged sector beacons.')).toBeNull();
+  });
+
+  it('shows rate-limit copy on 429 flagged-beacon load (LEG-2719)', async () => {
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url.startsWith('/api/v1/admin/beacons/flagged')) {
+        return Promise.reject(
+          Object.assign(new Error('HTTP 429'), {
+            response: { status: 429 },
+          }),
+        );
+      }
+      if (url.startsWith('/api/v1/admin/messages/flagged')) {
+        return Promise.resolve({ data: emptyMessages });
+      }
+      if (url === '/api/v1/admin/messages/stats') {
+        return Promise.resolve({ data: emptyStats });
+      }
+      return Promise.resolve({ data: emptyBeacons });
+    });
+
+    render(<MessageModeration />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/rate limit/i)).toBeTruthy();
+    });
+    expect(screen.queryByText('No flagged sector beacons.')).toBeNull();
+  });
+
   it('select-all toggles every message on the current page', async () => {
     const user = userEvent.setup();
     const message2 = { ...message, id: 'm2', sender_name: 'Dana' };
