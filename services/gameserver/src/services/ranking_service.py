@@ -706,6 +706,7 @@ class RankingService:
                     "military_rank": player.military_rank,
                     "rank_points": player.rank_points or 0,
                     "rank_level": rank_info["rank_level"],
+                    "rank_tier": rank_info["rank_tier"],
                     # Read-only display flags (Tasks B & C). The leaderboard
                     # Pydantic schema must opt these in to surface them.
                     "is_game_complete": bool(getattr(player, "is_game_complete", False)),

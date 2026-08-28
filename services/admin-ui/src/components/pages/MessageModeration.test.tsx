@@ -361,6 +361,115 @@ describe('MessageModeration', () => {
     );
   });
 
+  it('surfaces formatAdminApiError on beacon clear-flag POST 403 (LEG-2648)', async () => {
+    const user = userEvent.setup();
+    mockLoad({ beacons: { ...emptyBeacons, beacons: [beacon], total: 1 } });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockRejectedValue(
+      Object.assign(new Error('HTTP 403'), {
+        response: {
+          status: 403,
+          data: { detail: 'Missing scope admin.beacons.moderate' },
+        },
+      }),
+    );
+
+    render(<MessageModeration />);
+    await waitFor(() => expect(screen.getByText('Bob')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: 'Clear Flag' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/beacons/b1/clear-flag',
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith('Missing scope admin.beacons.moderate');
+    expect(toastError).not.toHaveBeenCalledWith('Failed to clear the beacon flag');
+  });
+
+  it('surfaces rate-limit copy on beacon clear-flag POST 429 (LEG-2648)', async () => {
+    const user = userEvent.setup();
+    mockLoad({ beacons: { ...emptyBeacons, beacons: [beacon], total: 1 } });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockRejectedValue(
+      Object.assign(new Error('HTTP 429'), {
+        response: { status: 429 },
+      }),
+    );
+
+    render(<MessageModeration />);
+    await waitFor(() => expect(screen.getByText('Bob')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: 'Clear Flag' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/beacons/b1/clear-flag',
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(
+      expect.stringMatching(/rate limit/i),
+    );
+    expect(toastError).not.toHaveBeenCalledWith('Failed to clear the beacon flag');
+  });
+
+  it('surfaces formatAdminApiError on confirm-abuse POST 403 (LEG-2649)', async () => {
+    const user = userEvent.setup();
+    mockLoad({ beacons: { ...emptyBeacons, beacons: [beacon], total: 1 } });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockRejectedValue(
+      Object.assign(new Error('HTTP 403'), {
+        response: { status: 403, data: {} },
+      }),
+    );
+
+    render(<MessageModeration />);
+    await waitFor(() => expect(screen.getByText('Bob')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: 'Confirm Abuse' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/beacons/b1/confirm-abuse',
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(
+      expect.stringMatching(/admin\.beacons\.moderate|Access denied/i),
+    );
+    expect(toastError).not.toHaveBeenCalledWith(
+      'Failed to confirm abuse for this beacon',
+    );
+  });
+
+  it('surfaces rate-limit copy on confirm-abuse POST 429 (LEG-2649)', async () => {
+    const user = userEvent.setup();
+    mockLoad({ beacons: { ...emptyBeacons, beacons: [beacon], total: 1 } });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockRejectedValue(
+      Object.assign(new Error('HTTP 429'), {
+        response: { status: 429 },
+      }),
+    );
+
+    render(<MessageModeration />);
+    await waitFor(() => expect(screen.getByText('Bob')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: 'Confirm Abuse' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/beacons/b1/confirm-abuse',
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(
+      expect.stringMatching(/rate limit/i),
+    );
+    expect(toastError).not.toHaveBeenCalledWith(
+      'Failed to confirm abuse for this beacon',
+    );
+  });
+
   it('paginates flagged messages using the page query param', async () => {
     const user = userEvent.setup();
     mockLoad({
