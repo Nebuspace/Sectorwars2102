@@ -309,6 +309,62 @@ describe('BountyAdminPanel', () => {
     expect(toastError).not.toHaveBeenCalledWith('Force-cancel failed');
   });
 
+  it('surfaces formatAdminApiError on faction-bounty POST 403 (LEG-2880)', async () => {
+    vi.mocked(api.post).mockRejectedValue(axiosError(403));
+
+    render(<BountyAdminPanel />);
+
+    fireEvent.change(screen.getByLabelText('NPC UUID'), {
+      target: { value: 'npc-1' },
+    });
+    fireEvent.change(screen.getByLabelText('Amount (≥ 1000)'), {
+      target: { value: '2000' },
+    });
+    fireEvent.change(screen.getByLabelText('Reason'), {
+      target: { value: 'Pirate captain' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Place faction bounty' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith('/api/v1/admin/npcs/npc-1/faction-bounty', {
+        faction_type: 'Federation',
+        amount: 2000,
+        reason: 'Pirate captain',
+      });
+    });
+    expect(String(toastError.mock.calls[0][0])).toMatch(/ECONOMY_INTERVENE|Access denied/i);
+    expect(toastError).not.toHaveBeenCalledWith('Faction bounty failed');
+  });
+
+  it('surfaces rate-limit copy on faction-bounty POST 429 (LEG-2880)', async () => {
+    vi.mocked(api.post).mockRejectedValue(axiosError(429));
+
+    render(<BountyAdminPanel />);
+
+    fireEvent.change(screen.getByLabelText('NPC UUID'), {
+      target: { value: 'npc-1' },
+    });
+    fireEvent.change(screen.getByLabelText('Amount (≥ 1000)'), {
+      target: { value: '2000' },
+    });
+    fireEvent.change(screen.getByLabelText('Reason'), {
+      target: { value: 'Pirate captain' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Place faction bounty' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith('/api/v1/admin/npcs/npc-1/faction-bounty', {
+        faction_type: 'Federation',
+        amount: 2000,
+        reason: 'Pirate captain',
+      });
+    });
+    expect(toastError).toHaveBeenCalledWith(
+      expect.stringMatching(/rate limit/i),
+    );
+    expect(toastError).not.toHaveBeenCalledWith('Faction bounty failed');
+  });
+
   const axiosError = (status: number) =>
     Object.assign(new Error(`HTTP ${status}`), { response: { status } });
 
