@@ -14,7 +14,8 @@ from types import SimpleNamespace
 import pytest
 
 from src.api.routes.player import repair_player_ship
-from src.models.colonist_profession import ProfessionType
+from src.models.colonist_profession import ColonistProfession, ProfessionType
+from src.models.planet import Planet
 from src.models.player import Player
 from src.models.ship import Ship, ShipType
 from src.models.station import Station
