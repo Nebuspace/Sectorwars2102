@@ -43,7 +43,7 @@ vi.mock('../../../services/api', () => ({
     getNearestAmRefinery: vi.fn().mockResolvedValue({ found: false, reason: 'none_reachable' }),
     getYieldPreview: vi.fn().mockResolvedValue({ success: false, reason: 'not_an_asteroid_field' }),
   },
-  playerAPI: { investigateFormation: vi.fn() },
+  playerAPI: { investigateFormation: vi.fn(), investigateAnomaly: vi.fn() },
   // WindshieldTableau (real, unstubbed) calls helmAPI.getPose on mount.
   helmAPI: {
     getPose: vi.fn().mockRejectedValue(new Error('no pose mock in this suite')),
