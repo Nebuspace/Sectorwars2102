@@ -63,6 +63,10 @@ export interface Sector {
   asteroid_depletion?: Record<string, unknown> | null;
   /** Tip SectorResponse — true after POST investigate-anomaly (LEG-478). */
   anomaly_investigated?: boolean;
+  /** NAV chart nebula cluster fields (LEG-INI-16) — omitted on non-nebula / frontier. */
+  nebula_type?: string;
+  quantum_field_strength?: number;
+  color_hex?: string;
 }
 
 export interface Planet {
