@@ -824,6 +824,12 @@ export const messageAPI = {
     return apiRequest(`/api/v1/messages/inbox?${params}`);
   },
 
+  /** LEG-2602: tip GET /messages/conversations — paginated thread browse. */
+  getConversations: (page: number = 1) => {
+    const params = new URLSearchParams({ page: page.toString() });
+    return apiRequest(`/api/v1/messages/conversations?${params}`);
+  },
+
   markAsRead: (messageId: string) =>
     apiRequest(`/api/v1/messages/${messageId}/read`, {
       method: 'PUT'
