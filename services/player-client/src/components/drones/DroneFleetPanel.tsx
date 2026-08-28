@@ -207,6 +207,19 @@ export const DroneFleetPanel: React.FC = () => {
       await refresh();
     });
 
+  const onDeployOne = (droneId: string) =>
+    run(`deploy-one-${droneId}`, async () => {
+      if (!sectorUuid) {
+        throw { message: 'Current sector UUID unavailable — cannot deploy.' };
+      }
+      await droneFleetAPI.deployOne(droneId, {
+        sector_id: sectorUuid,
+        deployment_type: 'defense',
+      });
+      setNotice('Drone deployed to this sector.');
+      await refresh();
+    });
+
   return (
     <div className="drone-fleet-panel" data-testid="drone-fleet-panel">
       <header className="drone-fleet-header">
@@ -406,6 +419,18 @@ export const DroneFleetPanel: React.FC = () => {
                   >
                     Upgrade
                   </button>
+                  {d.status === 'idle' && (
+                    <button
+                      type="button"
+                      className="drone-fleet-btn"
+                      data-testid={`drone-deploy-one-${d.id}`}
+                      aria-label={`Deploy ${d.name || d.drone_type}`}
+                      disabled={Boolean(busy) || !sectorUuid}
+                      onClick={() => void onDeployOne(d.id)}
+                    >
+                      {busy === `deploy-one-${d.id}` ? 'Deploying…' : 'Deploy this drone'}
+                    </button>
+                  )}
                   {(d.status === 'deployed' || d.status === 'combat') && (
                     <button
                       type="button"

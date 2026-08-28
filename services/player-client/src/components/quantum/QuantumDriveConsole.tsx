@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useGame, type QuantumBearing, type QuantumScanResult, type QuantumJumpResult, type QuantumHarvestResult } from '../../contexts/GameContext';
-import { quantumAPI } from '../../services/api';
+import { quantumAPI, shipUpgradeAPI } from '../../services/api';
+import { formatCredits } from '../../utils/formatters';
 import { TurnsIcon } from '../icons/TurnsIcon';
 import QuantumBearingViewport, { type MinimapSector } from './QuantumBearingViewport';
 import CrystalRefiningPanel from './CrystalRefiningPanel';
@@ -53,6 +54,44 @@ const RESONANCE_LEVELS: Record<QuantumScanResult['resonance'], number> = {
 const SCAN_TURN_COST = 5;
 const JUMP_TURN_COST = 50;
 
+// Catalog Mk I price — lockstep ModuleGridInterface harvester baseCost / GS
+// MODULE_DEFINITIONS harvester (quantum-resources.md 50,000 cr). Display only;
+// the server charges. Do not resurrect retired installEquipment.
+const HARVESTER_CATALOG_COST = 50000;
+const HARVESTER_MODULE_CLASS = 'harvester';
+const HARVESTER_INSTALL_TIER = 1;
+
+type LatticeSlot = { i: number; class: string | null };
+type ModulesSnapshot = {
+  module_slots: { slots: LatticeSlot[] } | null;
+  installed: Record<string, { class?: string } | undefined>;
+};
+
+const installedHasHarvester = (installed: ModulesSnapshot['installed'] | undefined): boolean =>
+  Object.values(installed ?? {}).some((mod) => mod?.class === HARVESTER_MODULE_CLASS);
+
+const firstOpenEmptySlot = (snapshot: ModulesSnapshot | null): number | null => {
+  if (!snapshot) return null;
+  const slots = snapshot.module_slots?.slots ?? [];
+  const installed = snapshot.installed ?? {};
+  for (const slot of slots) {
+    if (slot.class !== null) continue;
+    if (installed[String(slot.i)]) continue;
+    return slot.i;
+  }
+  return null;
+};
+
+const gsInstallMessage = (error: unknown, fallback: string): string => {
+  if (error && typeof error === 'object') {
+    const msg = (error as { message?: unknown }).message;
+    if (typeof msg === 'string' && msg) return msg;
+    const detail = (error as { response?: { data?: { detail?: unknown } } }).response?.data?.detail;
+    if (typeof detail === 'string' && detail) return detail;
+  }
+  return fallback;
+};
+
 // mm:ss under an hour, h:mm:ss above (jump cooldown is 24 scaled hours)
 const formatCountdown = (ms: number): string => {
   const totalSeconds = Math.ceil(ms / 1000);
@@ -74,6 +113,7 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
     refineQuantumCharge,
     harvestNebula,
     refreshQuantumStatus,
+    updatePlayerCredits,
     quantumScanResult,
     setQuantumScanResult,
   } = useGame();
@@ -114,6 +154,14 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
   // on_cooldown rejection that carries the ISO deadline in its detail).
   const [harvestCooldownUntil, setHarvestCooldownUntil] = useState<string | null>(null);
 
+  // --- Install Quantum Field Harvester (LEG-2484) — lattice installModule ---
+  // quantumStatus does not expose fitted-harvester; GET /ships/{id}/modules is
+  // the tip contract. Class-7+/shipyard gates stay server-authoritative.
+  const [modulesSnapshot, setModulesSnapshot] = useState<ModulesSnapshot | null>(null);
+  const [modulesReady, setModulesReady] = useState(false);
+  const [isInstallingHarvester, setIsInstallingHarvester] = useState(false);
+  const [installHarvesterError, setInstallHarvesterError] = useState<string | null>(null);
+
   // --- Astrogation chart (minimap) — fetched once per sector while piloting
   // a Warp Jumper. On fetch failure the viewport renders WITHOUT dots and
   // shows an honest CHART UNAVAILABLE notice; we never fabricate sectors. ---
@@ -150,6 +198,35 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
       });
     return () => { cancelled = true; };
   }, [isWarpJumper, originSectorId]);
+
+  const currentShipId = playerState?.current_ship_id ?? null;
+  useEffect(() => {
+    if (!isWarpJumper || !currentShipId) {
+      setModulesSnapshot(null);
+      setModulesReady(false);
+      return;
+    }
+    let cancelled = false;
+    setModulesReady(false);
+    shipUpgradeAPI
+      .getModules(currentShipId)
+      .then((data) => {
+        if (cancelled) return;
+        const snapshot = data as ModulesSnapshot;
+        setModulesSnapshot({
+          module_slots: snapshot.module_slots ?? null,
+          installed: snapshot.installed && typeof snapshot.installed === 'object' ? snapshot.installed : {},
+        });
+        setModulesReady(true);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        // Honest unknown → still offer the CTA; installModule will surface GS errors.
+        setModulesSnapshot(null);
+        setModulesReady(true);
+      });
+    return () => { cancelled = true; };
+  }, [isWarpJumper, currentShipId]);
 
   // Render-time origin gate: never let a previous sector's chart (or one
   // that raced in around a jump) reach the viewport.
@@ -328,6 +405,52 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
       setHarvestError(friendlyHarvestError(detail));
     } finally {
       if (isMounted.current) setIsHarvesting(false);
+    }
+  };
+
+  const harvesterFitted = installedHasHarvester(modulesSnapshot?.installed);
+  const showInstallHarvesterCta = statusReady && modulesReady && !harvesterFitted;
+
+  const handleInstallHarvester = async () => {
+    if (!currentShipId || isInstallingHarvester) return;
+    setInstallHarvesterError(null);
+    const slotIndex = firstOpenEmptySlot(modulesSnapshot);
+    if (slotIndex === null) {
+      setInstallHarvesterError(
+        'No empty open module slot for a Quantum Field Harvester — free a slot in the Module Bay',
+      );
+      return;
+    }
+    setIsInstallingHarvester(true);
+    try {
+      const result = await shipUpgradeAPI.installModule(
+        currentShipId,
+        slotIndex,
+        HARVESTER_MODULE_CLASS,
+        HARVESTER_INSTALL_TIER,
+      );
+      if (!isMounted.current) return;
+      if (result && result.success === false) {
+        setInstallHarvesterError(result.message || 'Harvester install failed');
+        return;
+      }
+      setModulesSnapshot((prev) => ({
+        module_slots: prev?.module_slots ?? null,
+        installed: {
+          ...(prev?.installed ?? {}),
+          [String(slotIndex)]: { class: HARVESTER_MODULE_CLASS },
+        },
+      }));
+      if (typeof result?.remaining_credits === 'number') {
+        updatePlayerCredits(result.remaining_credits);
+      }
+      setInstallHarvesterError(null);
+      void refreshQuantumStatus?.();
+    } catch (error: unknown) {
+      if (!isMounted.current) return;
+      setInstallHarvesterError(gsInstallMessage(error, 'Harvester install failed'));
+    } finally {
+      if (isMounted.current) setIsInstallingHarvester(false);
     }
   };
 
@@ -512,6 +635,24 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
         </div>
         {scanError && <div className="qd-inline-error">{scanError}</div>}
         {harvestError && <div className="qd-inline-error">{harvestError}</div>}
+
+        {showInstallHarvesterCta && (
+          <button
+            type="button"
+            className="qd-install-harvester-btn"
+            onClick={handleInstallHarvester}
+            disabled={isInstallingHarvester}
+            aria-label={`Install Quantum Field Harvester, ${formatCredits(HARVESTER_CATALOG_COST)}`}
+          >
+            {isInstallingHarvester ? 'INSTALLING…' : 'Install Quantum Field Harvester'}
+            {!isInstallingHarvester && (
+              <span className="qd-cost-tag">{formatCredits(HARVESTER_CATALOG_COST)}</span>
+            )}
+          </button>
+        )}
+        {installHarvesterError && (
+          <div className="qd-inline-error" role="alert">{installHarvesterError}</div>
+        )}
 
         {harvestResult && (
           <div className="qd-telemetry">

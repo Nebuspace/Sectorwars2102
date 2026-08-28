@@ -92,5 +92,18 @@ test.describe('Admin UI route smoke (WO-ADM-ROUTE-SMOKE-E2E)', () => {
         'true'
       );
     });
+
+    // LEG-2604 — catch-all NotFound (WO-ADM-FALLBACK-404) stays in-shell, not dashboard redirect
+    test('/this-route-does-not-exist renders NotFound h1 landmark', async ({ page }) => {
+      const unknownPath = '/this-route-does-not-exist';
+      await page.goto(unknownPath, { waitUntil: 'domcontentloaded' });
+      await expect(page).toHaveURL((url) => {
+        const pathname = url.pathname;
+        return pathname === unknownPath || pathname === `${unknownPath}/`;
+      });
+      await expect(
+        page.getByRole('heading', { name: 'Page Not Found', level: 1 })
+      ).toBeVisible();
+    });
   });
 });

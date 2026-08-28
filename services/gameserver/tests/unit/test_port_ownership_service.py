@@ -564,3 +564,18 @@ class TestOwnerPriceLeverFields:
         assert row["docking_fee_enabled"] is True
         assert row["service_charge_multiplier"] == 0.9
         assert row["storage_rental_per_day"] == 2000
+        assert row["expected_revenue_per_day"] is None
+
+
+class TestExpectedRevenuePerDay:
+    """Canon port-ownership.md:195-205 owner dashboard projection."""
+
+    def test_canon_worked_example(self):
+        # 60 trades/day × 1,000 cr × (1 − 0.05 region tax) × 30% owner cut.
+        assert po.expected_revenue_per_day(60, 1000, 0.05, 30) == 17_100
+
+    def test_zero_traffic_returns_zero(self):
+        assert po.expected_revenue_per_day(0, 1000, 0.05, 30) == 0
+
+    def test_zero_owner_pct_returns_zero(self):
+        assert po.expected_revenue_per_day(60, 1000, 0.05, 0) == 0

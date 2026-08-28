@@ -13,9 +13,11 @@ import ContractBoardVenue from '../spacedock/ContractBoardVenue';
 import PopulationCenterInterface from '../planetary/PopulationCenterInterface';
 import SurveyExpeditionPanel from '../survey/SurveyExpeditionPanel';
 import { LandingRightsControl } from '../planetary/LandingRightsControl';
+import { OwnershipTransferControl } from '../planetary/OwnershipTransferControl';
 import SolarSystemViewscreen from '../tactical/SolarSystemViewscreen';
 import WindshieldTableau from '../tactical/WindshieldTableau';
 import PlanetPortPair from '../tactical/PlanetPortPair';
+import PlanetaryLanderInstallCta from '../planetary/PlanetaryLanderInstallCta';
 import NavigationMap from '../tactical/NavigationMap';
 import { chartToNavSectors } from '../tactical/navChartTransform';
 import Galaxy3DRenderer from '../galaxy/Galaxy3DRenderer';
@@ -24,6 +26,7 @@ import QuantumDriveConsole from '../quantum/QuantumDriveConsole';
 import GatewrightPanel from '../gatewright/GatewrightPanel';
 import TacticalMonitor from '../tactical/TacticalMonitor';
 import SolarSalvagePage from '../tactical/pages/SolarSalvagePage';
+import AnomalyInvestigateCta from '../tactical/AnomalyInvestigateCta';
 import CockpitColonyManagement from '../cockpit/CockpitColonyManagement';
 import StockpileWithdrawControl from '../cockpit/StockpileWithdrawControl';
 import DeckPageTabs from '../cockpit/DeckPageTabs';
@@ -33,6 +36,8 @@ import SafeVaultPanel from '../cockpit/SafeVaultPanel';
 import BankPanel, { isStarportPrimeStation, shipCargoFree } from '../cockpit/BankPanel';
 import { miningAPI, navAPI, playerAPI, type NavChartResponse, sectorAPI, type SectorWreck } from '../../services/api';
 import NearestAmRefineryOverlay from '../mining/NearestAmRefineryOverlay';
+import AsteroidDepletionOverlay from '../mining/AsteroidDepletionOverlay';
+import HarvestYieldPreview, { HARVEST_GATE_COPY, type HarvestGateState } from '../mining/HarvestYieldPreview';
 import { projectedWarpBearing, subscribeWarpDepart, WARP_TURN_MS } from '../../services/warpCinematicBus';
 import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import { TurnsIcon } from '../icons/TurnsIcon';
@@ -633,11 +638,26 @@ const GameDashboardInner: React.FC = () => {
     exploreCurrentLocation,
     getAvailableMoves,
     refreshPlayerState,
+    updatePlayerCredits,
     quantumStatus,
     refineQuantumCharge,
     error
   } = useGame();
   const { getIcon: getResourceIcon, getLabel: getResourceLabel } = useResourceCatalog();
+
+  const handlePlanetaryLanderInstalled = useCallback(
+    async (result: { remainingCredits?: number }) => {
+      if (typeof result.remainingCredits === 'number') {
+        updatePlayerCredits(result.remainingCredits);
+      }
+      try {
+        await refreshPlayerState();
+      } catch {
+        /* non-fatal */
+      }
+    },
+    [refreshPlayerState, updatePlayerCredits],
+  );
 
   const autopilot = useAutopilot();
   const flight = useWindshieldFlight();
@@ -729,6 +749,12 @@ const GameDashboardInner: React.FC = () => {
   // button reads "MINING…" without dimming the rest of the rail.
   const [harvestResult, setHarvestResult] = useState<any>(null);
   const [harvestBusy, setHarvestBusy] = useState(false);
+  const [harvestPreviewBlocked, setHarvestPreviewBlocked] = useState(true);
+  const [harvestPreviewGateMessage, setHarvestPreviewGateMessage] = useState<string | null>(null);
+  const handleHarvestGateChange = useCallback(({ blocked, message }: HarvestGateState) => {
+    setHarvestPreviewBlocked(blocked);
+    setHarvestPreviewGateMessage(message);
+  }, []);
 
   // Special-formation investigation (WO-UI-ANOMALY): which discovered formations
   // this player has already investigated this session (the chip disables once
@@ -2247,16 +2273,6 @@ const GameDashboardInner: React.FC = () => {
   // code in the HTTP detail, which we translate to player-facing copy. Refresh
   // player state after a successful harvest so the cockpit turns/cargo reflect
   // the spend immediately.
-  const HARVEST_GATE_COPY: Record<string, string> = {
-    no_mining_laser: 'No mining laser equipped — fit one at a TradeDock to extract ore.',
-    must_be_undocked: 'You must be undocked and in open space to deploy the mining laser.',
-    cargo_full: 'Cargo hold is full — no room for ore. Sell or jettison before mining.',
-    insufficient_turns: 'Not enough turns to run a harvest cycle.',
-    not_an_asteroid_field: 'No asteroids here — harvesting requires an asteroid field.',
-    ship_not_found: 'Active ship not found — re-select a ship and try again.',
-    already_mining: 'Mining laser already deployed — wait for the current harvest to finish.',
-  };
-
   const handleHarvest = async () => {
     if (harvestBusy) return;
     const shipId = currentShip?.id;
@@ -2923,6 +2939,7 @@ const GameDashboardInner: React.FC = () => {
         const consoleNode = (
         <div className="cockpit-console">
           <NearestAmRefineryOverlay />
+          <AsteroidDepletionOverlay readout={currentSector?.asteroid_depletion} />
           {/* DOCKED STATE: the station-face venue workspace (WO-UI3-STATION-
               MODE) — replaces the flight-monitor bezel wrapper
               (.console-monitor.trading-monitor.full-width + .monitor-bezel
@@ -3233,6 +3250,14 @@ const GameDashboardInner: React.FC = () => {
                                   ?.landingRights?.mode
                                 ?? null
                               }
+                              onChanged={() => setOpsRefresh((n) => n + 1)}
+                            />
+                          )}
+                          {landedPlanet?.id && playerState?.id && (
+                            <OwnershipTransferControl
+                              planetId={String(landedPlanet.id)}
+                              isOwned={isLandedPlanetMine}
+                              currentPlayerId={playerState.id}
                               onChanged={() => setOpsRefresh((n) => n + 1)}
                             />
                           )}
@@ -3897,6 +3922,9 @@ const GameDashboardInner: React.FC = () => {
                             flying={flying}
                             onHalt={handleHalt}
                             onApproach={flight.approach}
+                            shipId={currentShip?.id ?? null}
+                            shipType={currentShip?.type ?? null}
+                            onLanderInstalled={handlePlanetaryLanderInstalled}
                           />
                         );
                       })}
@@ -3920,9 +3948,19 @@ const GameDashboardInner: React.FC = () => {
                           Asteroid fields get a HARVEST trigger; all other empty
                           sectors get the generic "nothing detected" label. */}
                       {planetsInSector.length === 0 && stationsInSector.length === 0 && (
-                        currentSector?.type?.toUpperCase() === 'ASTEROID_FIELD' ? (
+                        currentSector?.type?.toUpperCase() === 'ANOMALY' ? (
+                          <AnomalyInvestigateCta
+                            sectorId={currentSector.sector_id}
+                            sectorType={currentSector.type}
+                            anomalyInvestigated={Boolean(currentSector.anomaly_investigated)}
+                          />
+                        ) : currentSector?.type?.toUpperCase() === 'ASTEROID_FIELD' ? (
                           <div className="planetary-asteroid-state">
                             <b className="planetary-asteroid-label">⚫ ASTEROID FIELD</b>
+                            <HarvestYieldPreview
+                              shipId={currentShip?.id}
+                              onGateChange={handleHarvestGateChange}
+                            />
                             {flying ? (
                               // Demo L1352 field-row branch: here?HARVEST:(flying?HALT:APPROACH) —
                               // under burn, the row offers HALT instead of HARVEST (same
@@ -3940,10 +3978,20 @@ const GameDashboardInner: React.FC = () => {
                               <button
                                 className="planetary-harvest-btn"
                                 onClick={handleHarvest}
-                                disabled={helmBusy || harvestBusy}
-                                aria-disabled={helmBusy || harvestBusy}
-                                aria-label={helmBusy ? 'Harvest unavailable — helm is busy' : 'Deploy the mining laser to harvest ore from the asteroid field'}
-                                title="Deploy the mining laser to harvest ore from the asteroid field"
+                                disabled={helmBusy || harvestBusy || harvestPreviewBlocked}
+                                aria-disabled={helmBusy || harvestBusy || harvestPreviewBlocked}
+                                aria-label={
+                                  harvestPreviewBlocked && harvestPreviewGateMessage
+                                    ? harvestPreviewGateMessage
+                                    : helmBusy
+                                      ? 'Harvest unavailable — helm is busy'
+                                      : 'Deploy the mining laser to harvest ore from the asteroid field'
+                                }
+                                title={
+                                  harvestPreviewBlocked && harvestPreviewGateMessage
+                                    ? harvestPreviewGateMessage
+                                    : 'Deploy the mining laser to harvest ore from the asteroid field'
+                                }
                               >
                                 {harvestBusy ? '⛏️ MINING…' : helmBusy ? '⛏️ HARVEST (busy)' : '⛏️ HARVEST'}
                               </button>
@@ -4030,10 +4078,19 @@ const GameDashboardInner: React.FC = () => {
                        RETIREMENT+GLASS — this is now its one call site. */
                     !currentSector ? (
                       <div className="empty-state">No sector telemetry</div>
-                    ) : currentSector.special_formations && currentSector.special_formations.length > 0 ? (
-                      renderFormationList(currentSector.special_formations)
                     ) : (
-                      <div className="empty-state">No signals or formations charted in this sector</div>
+                      <>
+                        <AnomalyInvestigateCta
+                          sectorId={currentSector.sector_id}
+                          sectorType={currentSector.type}
+                          anomalyInvestigated={Boolean(currentSector.anomaly_investigated)}
+                        />
+                        {currentSector.special_formations && currentSector.special_formations.length > 0
+                          ? renderFormationList(currentSector.special_formations)
+                          : (currentSector.type || '').toUpperCase() !== 'ANOMALY' && (
+                              <div className="empty-state">No signals or formations charted in this sector</div>
+                            )}
+                      </>
                     )
                   ) : (
                     /* HAZARD — the numeric deep-dive (WO-UI-MAX-BATCH-1 human
@@ -4151,6 +4208,15 @@ const GameDashboardInner: React.FC = () => {
                   ? <>🚀 {currentShip?.name || 'Your ship'} → 🪐 {landedPlanet.name}</>
                   : <>🪐 {landedPlanet.name} → 🚀 {currentShip?.name || 'Your ship'}</>}
               </div>
+
+              {transferModal === 'disembark' && (
+                <PlanetaryLanderInstallCta
+                  shipId={currentShip?.id ?? null}
+                  shipType={currentShip?.type ?? null}
+                  compact
+                  onInstalled={handlePlanetaryLanderInstalled}
+                />
+              )}
 
               <div className="colonist-qty-section">
                 <label className="colonist-qty-label" htmlFor="colonist-qty-input">Colonists</label>

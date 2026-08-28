@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import AdminActionLogPage, {
   REVIEW_QUEUE_STALE_ALARM_THRESHOLD,
@@ -149,5 +150,66 @@ describe('AdminActionLogPage review-queue sweep-test alarm (LEG-110)', () => {
       expect(screen.getByText(/\d+ rows? · page/i)).toBeTruthy();
     });
     expect(screen.queryByTestId('review-queue-sweep-alarm')).toBeNull();
+  });
+});
+
+describe('AdminActionLogPage mark reviewed POST errors (LEG-2710)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('surfaces audit scope denial on mark-reviewed POST 403', async () => {
+    mockReviewQueue([makeRow('unreviewed-1', false)]);
+    vi.mocked(api.post).mockRejectedValue(
+      axiosError(403, 'Missing scope admin.audit.review'),
+    );
+    const user = userEvent.setup();
+
+    renderReviewTab();
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Mark reviewed' })).toBeTruthy();
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Mark reviewed' }));
+    const dialog = await screen.findByRole('dialog');
+
+    await user.click(within(dialog).getByRole('button', { name: 'Mark reviewed' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/audit/actions/unreviewed-1/review',
+      );
+    });
+    const alert = screen.getByRole('alert');
+    expect(alert.textContent).toMatch(/admin\.audit\.review/i);
+    expect(alert.textContent).not.toMatch(/Failed to mark action reviewed/i);
+  });
+
+  it('surfaces rate-limit copy on mark-reviewed POST 429', async () => {
+    mockReviewQueue([makeRow('unreviewed-2', false)]);
+    vi.mocked(api.post).mockRejectedValue(axiosError(429));
+    const user = userEvent.setup();
+
+    renderReviewTab();
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Mark reviewed' })).toBeTruthy();
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Mark reviewed' }));
+    const dialog = await screen.findByRole('dialog');
+
+    await user.click(within(dialog).getByRole('button', { name: 'Mark reviewed' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/audit/actions/unreviewed-2/review',
+      );
+    });
+    expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
+    expect(screen.getByRole('alert').textContent).not.toMatch(
+      /Failed to mark action reviewed/i,
+    );
   });
 });

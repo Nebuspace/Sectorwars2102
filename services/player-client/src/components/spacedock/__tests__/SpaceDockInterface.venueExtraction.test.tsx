@@ -101,10 +101,27 @@ describe('SpaceDockInterface — extracted venues mount without error (WO-UI3-VE
   beforeEach(() => {
     gameState = makeGameState();
     localStorage.clear();
+    localStorage.setItem('accessToken', 'tok-venue-smoke');
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
     errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const u = String(url);
+        if (u.includes('/api/v1/mining/licenses')) {
+          return {
+            ok: true,
+            json: async () => ({ items: [], total: 0, recently_expired_window_hours: 24 }),
+          };
+        }
+        if (u.includes('/api/v1/player/current-ship')) {
+          return { ok: true, json: async () => ({ id: 'ship-1', mining_laser_level: null }) };
+        }
+        return { ok: true, json: async () => ({}) };
+      }),
+    );
   });
 
   afterEach(async () => {
@@ -113,6 +130,7 @@ describe('SpaceDockInterface — extracted venues mount without error (WO-UI3-VE
     });
     container.remove();
     errorSpy.mockRestore();
+    vi.unstubAllGlobals();
   });
 
   it.each(VENUES)('mounts $card cleanly with the correct header and zero console errors', async ({ card, header }) => {

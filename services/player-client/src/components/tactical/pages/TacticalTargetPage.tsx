@@ -131,6 +131,9 @@ export interface TacticalContact {
   /** NPC-only enrichment (npc_spawn_service._presence_entry / player.py). */
   archetype?: string;
   notoriety?: number;
+  /** Medal identity from players_present / enrich_presence_with_live_pose (medals.md §203). */
+  pinned_medal_id?: string | null;
+  medal_count?: number | null;
   /** WO-ISP: authoritative in-system pose/leg plan from the server — same
    *  shape ShipPresence.pose carries (SolarSystemViewscreen.tsx); the raw
    *  players_present row already carries this at runtime, just previously
@@ -450,15 +453,9 @@ const TacticalTargetPage: React.FC<TacticalTargetPageProps> = ({ contacts, selec
                   <PlayerNamePlate
                     name={contactDisplayName(contact)}
                     size="sm"
-                    // Sector contacts do not yet carry pinned_medal_id — plate
-                    // still owns the discovery name slot for when they do.
-                    pinnedMedalId={
-                      (contact as { pinned_medal_id?: string }).pinned_medal_id || null
-                    }
+                    pinnedMedalId={contact.pinned_medal_id ?? null}
                     medalCount={
-                      typeof (contact as { medal_count?: number }).medal_count === 'number'
-                        ? (contact as { medal_count?: number }).medal_count
-                        : null
+                      typeof contact.medal_count === 'number' ? contact.medal_count : null
                     }
                   />
                 )}

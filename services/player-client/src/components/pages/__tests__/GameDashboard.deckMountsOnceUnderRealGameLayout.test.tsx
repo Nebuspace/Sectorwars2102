@@ -60,7 +60,10 @@ vi.mock('../../../services/api', () => ({
     salvageWreck: vi.fn(), getContents: vi.fn().mockResolvedValue({ star: null, bodies: [] }), },
   combatAPI: { engage: vi.fn(), getStatus: vi.fn() },
   greyStatusAPI: { getStatus: () => Promise.resolve({ isGrey: false, kind: null, greyUntil: null, remainingSeconds: 0, clearFineCredits: null }) },
-  planetaryAPI: { getOwnedPlanets: () => Promise.resolve({ planets: [] }) },
+  planetaryAPI: {
+    getOwnedPlanets: () => Promise.resolve({ planets: [] }),
+    getOwnershipTransfer: () => Promise.resolve({ planet_id: '', pending: false, offer: null }),
+  },
 }));
 
 vi.mock('react-router-dom', () => ({
@@ -82,6 +85,7 @@ vi.mock('../../tactical/SolarSystemViewscreen', () => ({ default: () => <div /> 
 // WO-UI2-WINDSHIELD-TABLEAU: flight-mode mount is now WindshieldTableau.
 vi.mock('../../tactical/WindshieldTableau', () => ({ default: () => <div /> }));
 vi.mock('../../mining/NearestAmRefineryOverlay', () => ({ default: () => null }));
+vi.mock('../../mining/HarvestYieldPreview', () => ({ default: () => null, HARVEST_GATE_COPY: {} }));
 vi.mock('../../tactical/PlanetPortPair', () => ({ default: () => <div /> }));
 vi.mock('../../galaxy/Galaxy3DRenderer', () => ({ default: () => <div /> }));
 vi.mock('../../quantum/QuantumDriveConsole', () => ({ default: () => <div /> }));

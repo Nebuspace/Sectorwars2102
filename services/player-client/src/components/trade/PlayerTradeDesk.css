@@ -159,3 +159,15 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+.p2p-trade-desk__fuel {
+  border: 1px solid #2a4a62;
+  margin: 0 0 0.75rem;
+  padding: 0.5rem 0.65rem;
+  font-size: 0.8rem;
+}
+
+.p2p-trade-desk__fuel legend {
+  padding: 0 0.25rem;
+  color: #7a94a8;
+}

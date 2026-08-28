@@ -10,11 +10,16 @@ import GenesisVenue from './GenesisVenue';
 import ArmoryVenue from './ArmoryVenue';
 import ServicesVenue from './ServicesVenue';
 import MiningVenue from './MiningVenue';
+import type { ClaimLicenseRow } from './MiningVenue';
 import GamblingVenue from './GamblingVenue';
 import RefiningVenue from './RefiningVenue';
 import { getStationClassInfo } from '../common/stationIdentity';
-import { shipAPI, registryAPI } from '../../services/api';
+import { shipAPI, registryAPI, ariaMarketAPI, shipUpgradeAPI, miningAPI, type AriaMarketIntelList } from '../../services/api';
 import { formatCredits } from '../../utils/formatters';
+import {
+  getLatestSpacedockVenueRequest,
+  subscribeSpacedockVenueRequest,
+} from '../../services/spacedockVenueBus';
 import './spacedock.css';
 
 // Use same API URL logic as GameContext for Codespaces compatibility
@@ -209,6 +214,18 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
   const { playerState, stationsInSector, updatePlayerCredits, updateShipGenesis, refreshPlayerState, loadShips, getStationSlips } = useGame();
   const [activeVenue, setActiveVenue] = useState<VenueType>('hub');
 
+  React.useEffect(() => {
+    const latched = getLatestSpacedockVenueRequest();
+    if (latched?.venue === 'mining') {
+      setActiveVenue('mining');
+    }
+    return subscribeSpacedockVenueRequest((request) => {
+      if (request.venue === 'mining') {
+        setActiveVenue('mining');
+      }
+    });
+  }, []);
+
   // Transient slips gauge for the hub header (fetched when docked)
   const [slipsGauge, setSlipsGauge] = useState<{ occupied: number; capacity: number } | null>(null);
 
@@ -375,6 +392,11 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
   const [armoryError, setArmoryError] = useState<string | null>(null);
   const [armorySuccess, setArmorySuccess] = useState<string | null>(null);
 
+  const [marketIntelOpen, setMarketIntelOpen] = useState(false);
+  const [marketIntelLoading, setMarketIntelLoading] = useState(false);
+  const [marketIntelError, setMarketIntelError] = useState<string | null>(null);
+  const [marketIntel, setMarketIntel] = useState<AriaMarketIntelList | null>(null);
+
   // Get the current docked station
   const currentStation = stationsInSector?.find(
     s => s.id === playerState?.current_port_id
@@ -400,6 +422,30 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
 
   // Define available venues based on station services
   const stationServices = currentStation?.services || {};
+
+  const loadMarketIntelligence = async () => {
+    const stationId = currentStation?.id;
+    if (!stationId) {
+      setMarketIntelOpen(true);
+      setMarketIntel(null);
+      setMarketIntelError('Docked station id unavailable.');
+      return;
+    }
+    setMarketIntelOpen(true);
+    setMarketIntelLoading(true);
+    setMarketIntelError(null);
+    try {
+      const data = await ariaMarketAPI.getMarketIntelligence(stationId);
+      setMarketIntel(data);
+    } catch (err) {
+      setMarketIntel(null);
+      setMarketIntelError(
+        err instanceof Error ? err.message : 'Could not load market intelligence.',
+      );
+    } finally {
+      setMarketIntelLoading(false);
+    }
+  };
 
   const venues: Venue[] = [
     {
@@ -940,6 +986,8 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
     cargo?: Record<string, number> | null;
     cargo_capacity?: number;
     current_value?: number;
+    /** null when no Mining Laser fitted (GET /player/current-ship). */
+    mining_laser_level?: number | null;
   } | null>(null);
 
   const [showInsurance, setShowInsurance] = useState(false);
@@ -1163,6 +1211,20 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
     }
   }, [armoryBuying, displayCredits, updatePlayerCredits, refreshPlayerState]);
 
+  const handleTacticalEquipmentInstalled = useCallback(
+    async (result: { remainingCredits?: number }) => {
+      if (typeof result.remainingCredits === 'number') {
+        updatePlayerCredits(result.remainingCredits);
+      }
+      try {
+        await refreshPlayerState();
+      } catch {
+        /* non-fatal */
+      }
+    },
+    [updatePlayerCredits, refreshPlayerState],
+  );
+
   // --- Ship Services: real repair flow ---
   const [repairBusy, setRepairBusy] = useState(false);
   const [repairError, setRepairError] = useState<string | null>(null);
@@ -1265,9 +1327,49 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
   const [licenseBusy, setLicenseBusy] = useState(false);
   const [licenseError, setLicenseError] = useState<string | null>(null);
   const [licenseSuccess, setLicenseSuccess] = useState<string | null>(null);
+  const [licenses, setLicenses] = useState<ClaimLicenseRow[]>([]);
+  const [licensesLoading, setLicensesLoading] = useState(false);
+  const [licensesError, setLicensesError] = useState<string | null>(null);
   const [laserBusy, setLaserBusy] = useState(false);
   const [laserError, setLaserError] = useState<string | null>(null);
   const [laserSuccess, setLaserSuccess] = useState<string | null>(null);
+
+  const parseLicenseList = (raw: unknown): ClaimLicenseRow[] => {
+    if (!raw || typeof raw !== 'object') return [];
+    const items = (raw as { items?: unknown }).items;
+    if (!Array.isArray(items)) return [];
+    const rows: ClaimLicenseRow[] = [];
+    for (const entry of items) {
+      if (!entry || typeof entry !== 'object') continue;
+      const r = entry as Record<string, unknown>;
+      if (typeof r.id !== 'string') continue;
+      rows.push({
+        id: r.id,
+        region_id: typeof r.region_id === 'string' ? r.region_id : null,
+        sector_number: typeof r.sector_number === 'number' ? r.sector_number : Number(r.sector_number) || 0,
+        expires_at: typeof r.expires_at === 'string' ? r.expires_at : null,
+        purchased_at: typeof r.purchased_at === 'string' ? r.purchased_at : null,
+        cost_paid_cr: typeof r.cost_paid_cr === 'number' ? r.cost_paid_cr : 0,
+        is_active: Boolean(r.is_active),
+      });
+    }
+    return rows;
+  };
+
+  const fetchLicenses = useCallback(async () => {
+    setLicensesLoading(true);
+    setLicensesError(null);
+    try {
+      const data = await miningAPI.listLicenses();
+      setLicenses(parseLicenseList(data));
+    } catch (error) {
+      console.error('Claim license list error:', error);
+      setLicenses([]);
+      setLicensesError('Could not load licenses.');
+    } finally {
+      setLicensesLoading(false);
+    }
+  }, []);
 
   React.useEffect(() => {
     if (activeVenue === 'mining') {
@@ -1277,8 +1379,9 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
       setLicenseSuccess(null);
       setLaserError(null);
       setLaserSuccess(null);
+      void fetchLicenses();
     }
-  }, [activeVenue, fetchShipData]);
+  }, [activeVenue, fetchShipData, fetchLicenses]);
 
   // Purchase / renew the AM claim license for the current sector
   // (POST /api/v1/mining/license {ship_id}). The fee is sector-tier-scaled and
@@ -1318,14 +1421,48 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
       const cost = formatCredits(result.cost_paid_cr ?? 0);
       const expires = result.expires_at ? new Date(result.expires_at).toLocaleString() : 'soon';
       setLicenseSuccess(`Claim filed for ${cost} — license valid until ${expires}.`);
-      Promise.allSettled([refreshPlayerState(), fetchShipData()]);
+      Promise.allSettled([refreshPlayerState(), fetchShipData(), fetchLicenses()]);
     } catch (error) {
       console.error('Claim license error:', error);
       setLicenseError('Connection error. Please try again.');
     } finally {
       setLicenseBusy(false);
     }
-  }, [shipData?.id, licenseBusy, refreshPlayerState, fetchShipData]);
+  }, [shipData?.id, licenseBusy, refreshPlayerState, fetchShipData, fetchLicenses]);
+
+  // First Mining Laser fit (LEG-1226 / LEG-109): POST .../equipment/install { equipment_key }.
+  // Distinct from laser-upgrade (requires an existing equipment_slots mining_laser).
+  const installMiningLaser = useCallback(async () => {
+    const shipId = shipData?.id;
+    if (!shipId || laserBusy) {
+      if (!shipId) setLaserError('No active ship found.');
+      return;
+    }
+    setLaserBusy(true);
+    setLaserError(null);
+    setLaserSuccess(null);
+    try {
+      const result = await shipUpgradeAPI.installEquipment(shipId, 'mining_laser');
+      const cost = formatCredits(result.cost_paid ?? 0);
+      setLaserSuccess(
+        `${result.message || 'Mining Laser installed successfully'} — ${cost}.`,
+      );
+      if (typeof result.remaining_credits === 'number') {
+        setLocalCredits(result.remaining_credits);
+        updatePlayerCredits(result.remaining_credits);
+      }
+      Promise.allSettled([refreshPlayerState(), fetchShipData()]);
+    } catch (error) {
+      console.error('Mining laser install error:', error);
+      setLaserError(
+        error instanceof Error && error.message
+          ? error.message
+          : 'Mining laser install failed',
+      );
+    } finally {
+      setLaserBusy(false);
+    }
+  }, [shipData?.id, laserBusy, updatePlayerCredits, refreshPlayerState, fetchShipData]);
 
   // Buy the next Mining Laser ladder level
   // (POST /api/v1/mining/laser-upgrade {ship_id}). Requires a Mining Laser
@@ -1820,9 +1957,23 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
                 <span className="status-label">Services</span>
                 <div className="station-service-icons">
                   {activeServices.map(s => (
-                    <span key={s.key} className="station-service-icon" title={s.label}>
-                      {s.icon}
-                    </span>
+                    s.key === 'market_intelligence' ? (
+                      <button
+                        key={s.key}
+                        type="button"
+                        className="station-service-icon station-service-icon-action"
+                        title={s.label}
+                        aria-label="Open market intelligence"
+                        data-testid="market-intelligence-service"
+                        onClick={() => void loadMarketIntelligence()}
+                      >
+                        {s.icon}
+                      </button>
+                    ) : (
+                      <span key={s.key} className="station-service-icon" title={s.label}>
+                        {s.icon}
+                      </span>
+                    )
                   ))}
                 </div>
               </div>
@@ -1833,6 +1984,35 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
         <div className="hub-welcome">
           <p>{greeting}</p>
         </div>
+
+        {marketIntelOpen && (
+          <div className="market-intel-panel" data-testid="market-intelligence-panel">
+            <h3>Market intelligence</h3>
+            {marketIntelLoading && <p>Loading observations…</p>}
+            {marketIntelError && (
+              <p role="alert" data-testid="market-intelligence-error">{marketIntelError}</p>
+            )}
+            {marketIntel && (
+              marketIntel.items.length === 0 ? (
+                <p data-testid="market-intelligence-empty">No observations at this port yet.</p>
+              ) : (
+                <ul className="market-intel-list">
+                  {marketIntel.items.map((item) => {
+                    const ready =
+                      item.observation_count >= 5 && item.next_prediction != null;
+                    return (
+                      <li key={item.commodity} data-testid={`market-intel-row-${item.commodity}`}>
+                        {ready
+                          ? `I expect ${item.commodity} to trade around ${item.next_prediction}${item.price_band != null ? `±${item.price_band}` : ''} credits, based on ${item.observation_count} observations.`
+                          : `${item.commodity}: ${item.observation_count} observation(s) — not enough data for a prediction (need 5).`}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )
+            )}
+          </div>
+        )}
 
         <div className="venues-grid">
           {venues.map(venue => (
@@ -1990,6 +2170,9 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
             playerDefenseDrones={playerState?.defense_drones}
             onBack={() => setActiveVenue('hub')}
             blackMarketButton={<BlackMarketButton />}
+            shipId={shipData?.id}
+            shipType={shipData?.type}
+            onTacticalEquipmentInstalled={handleTacticalEquipmentInstalled}
           />
         );
       case 'services':
@@ -2020,13 +2203,18 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
         return (
           <MiningVenue
             shipId={shipData?.id}
+            miningLaserLevel={shipData?.mining_laser_level ?? null}
             licenseBusy={licenseBusy}
             licenseError={licenseError}
             licenseSuccess={licenseSuccess}
             purchaseClaimLicense={purchaseClaimLicense}
+            licenses={licenses}
+            licensesLoading={licensesLoading}
+            licensesError={licensesError}
             laserBusy={laserBusy}
             laserError={laserError}
             laserSuccess={laserSuccess}
+            installMiningLaser={installMiningLaser}
             upgradeMiningLaser={upgradeMiningLaser}
             onBack={() => setActiveVenue('hub')}
             blackMarketButton={<BlackMarketButton />}

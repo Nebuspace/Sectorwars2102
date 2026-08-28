@@ -15,6 +15,7 @@ const {
   mockRepair,
   mockUpgrade,
   mockDeploy,
+  mockDeployOne,
   mockRecall,
   mockGetDeployedDrones,
   mockRecallDrones,
@@ -25,6 +26,7 @@ const {
   mockRepair: vi.fn(),
   mockUpgrade: vi.fn(),
   mockDeploy: vi.fn(),
+  mockDeployOne: vi.fn(),
   mockRecall: vi.fn(),
   mockGetDeployedDrones: vi.fn(),
   mockRecallDrones: vi.fn(),
@@ -48,6 +50,7 @@ vi.mock('../../../services/api', async () => {
       repair: (...a: unknown[]) => mockRepair(...a),
       upgrade: (...a: unknown[]) => mockUpgrade(...a),
       deploy: (...a: unknown[]) => mockDeploy(...a),
+      deployOne: (...a: unknown[]) => mockDeployOne(...a),
       recall: (...a: unknown[]) => mockRecall(...a),
     },
     combatAPI: {
@@ -74,6 +77,7 @@ describe('DroneFleetPanel', () => {
     mockRepair.mockReset();
     mockUpgrade.mockReset();
     mockDeploy.mockReset();
+    mockDeployOne.mockReset();
     mockRecall.mockReset();
     mockGetDeployedDrones.mockReset();
     mockRecallDrones.mockReset();
@@ -117,6 +121,7 @@ describe('DroneFleetPanel', () => {
     mockRepair.mockResolvedValue({ id: 'drone-1', health: 65 });
     mockUpgrade.mockResolvedValue({ id: 'drone-1', level: 2 });
     mockDeploy.mockResolvedValue({ dronesDeployed: 1 });
+    mockDeployOne.mockResolvedValue({ id: 'drone-1', status: 'deployed' });
     mockRecall.mockResolvedValue({ message: 'Drone recalled successfully' });
     mockGetDeployedDrones.mockResolvedValue({ deployments: [] });
     mockRecallDrones.mockResolvedValue({ dronesRecalled: 1 });
@@ -216,6 +221,53 @@ describe('DroneFleetPanel', () => {
       await flush();
     });
     expect(mockRecall).toHaveBeenCalledWith('drone-deployed');
+  });
+
+  it('idle roster row POSTs per-id deploy; deployed row has no Deploy this drone', async () => {
+    await act(async () => {
+      root.render(<DroneFleetPanel />);
+    });
+    await act(async () => {
+      await flush();
+      await flush();
+    });
+
+    expect(container.querySelector('[data-testid="drone-deploy-one-drone-1"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="drone-deploy-one-drone-deployed"]')).toBeNull();
+
+    const deployOneBtn = container.querySelector(
+      '[data-testid="drone-deploy-one-drone-1"]',
+    ) as HTMLButtonElement;
+    await act(async () => {
+      deployOneBtn.click();
+      await flush();
+      await flush();
+    });
+    expect(mockDeployOne).toHaveBeenCalledWith('drone-1', {
+      sector_id: '11111111-1111-1111-1111-111111111111',
+      deployment_type: 'defense',
+    });
+  });
+
+  it('per-id deploy failure surfaces role=alert', async () => {
+    mockDeployOne.mockRejectedValueOnce(new Error('Drone is not idle'));
+    await act(async () => {
+      root.render(<DroneFleetPanel />);
+    });
+    await act(async () => {
+      await flush();
+      await flush();
+    });
+    const deployOneBtn = container.querySelector(
+      '[data-testid="drone-deploy-one-drone-1"]',
+    ) as HTMLButtonElement;
+    await act(async () => {
+      deployOneBtn.click();
+      await flush();
+      await flush();
+    });
+    const alert = container.querySelector('.drone-fleet-error[role="alert"]');
+    expect(alert?.textContent).toContain('Drone is not idle');
   });
 
   it('shows empty state when getDeployedDrones returns no rows', async () => {

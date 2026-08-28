@@ -11,7 +11,11 @@ from typing import Any, Dict, List, Tuple
 
 from sqlalchemy import text
 
-from src.services.scheduler._common import _MINING_HARVEST_LOCK_KEY
+from src.services.mining_service import MiningService, build_harvest_notification_events
+from src.services.scheduler._common import (
+    _MINING_HARVEST_LOCK_KEY,
+    _MINING_LICENSE_EXPIRY_LOCK_KEY,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +27,6 @@ def _run_mining_harvest_resolve_sync() -> Tuple[int, List[Dict[str, Any]]]:
     broadcast by the caller POST-COMMIT (same shape as genesis_progress).
     """
     from src.core.database import SessionLocal
-    from src.services.mining_service import MiningService
 
     db = SessionLocal()
     events: List[Dict[str, Any]] = []
@@ -42,6 +45,7 @@ def _run_mining_harvest_resolve_sync() -> Tuple[int, List[Dict[str, Any]]]:
                 continue
             completed += 1
             player_id = result.get("player_id")
+            user_id = result.get("user_id")
             if player_id:
                 events.append(
                     {
@@ -58,8 +62,33 @@ def _run_mining_harvest_resolve_sync() -> Tuple[int, List[Dict[str, Any]]]:
                         },
                     }
                 )
+            if user_id:
+                events.extend(build_harvest_notification_events(user_id, result))
         db.commit()
         return completed, events
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def _run_mining_license_expiry_warn_sync() -> Tuple[int, List[Dict[str, Any]]]:
+    """Warn players whose active ClaimLicense expires within 1 hour."""
+    from src.core.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _MINING_LICENSE_EXPIRY_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return 0, []
+
+        events = MiningService(db).collect_license_expiry_warning_events()
+        db.commit()
+        return len(events), events
     except Exception:
         db.rollback()
         raise
