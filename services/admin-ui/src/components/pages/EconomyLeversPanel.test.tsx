@@ -147,4 +147,50 @@ describe('EconomyLeversPanel (LEG-30)', () => {
     });
     expect(String(toastError.mock.calls[0][0])).toMatch(/rate limit/i);
   });
+
+  it('reports a 403 on bounty save via formatAdminApiError (LEG-2730)', async () => {
+    vi.mocked(api.get).mockResolvedValue({ data: emptySnapshot });
+    vi.mocked(api.patch).mockRejectedValue({ response: { status: 403 } });
+
+    render(<EconomyLeversPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Bounty payout ratio')).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByLabelText('Bounty payout ratio'), {
+      target: { value: '1.25' },
+    });
+    const bountyRow = screen.getByLabelText('Bounty payout ratio').closest('tr');
+    fireEvent.click(bountyRow!.querySelector('button')!);
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalled();
+    });
+    const msg = String(toastError.mock.calls[0][0]);
+    expect(msg).toMatch(/ECONOMY_MANAGE/);
+    expect(msg).not.toBe('Failed to save bounty payout ratio');
+  });
+
+  it('reports a 429 on bounty save via formatAdminApiError (LEG-2730)', async () => {
+    vi.mocked(api.get).mockResolvedValue({ data: emptySnapshot });
+    vi.mocked(api.patch).mockRejectedValue({ response: { status: 429 } });
+
+    render(<EconomyLeversPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Bounty payout ratio')).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByLabelText('Bounty payout ratio'), {
+      target: { value: '1.1' },
+    });
+    const bountyRow = screen.getByLabelText('Bounty payout ratio').closest('tr');
+    fireEvent.click(bountyRow!.querySelector('button')!);
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalled();
+    });
+    expect(String(toastError.mock.calls[0][0])).toMatch(/rate limit/i);
+  });
 });
