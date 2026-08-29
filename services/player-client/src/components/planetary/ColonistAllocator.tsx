@@ -42,6 +42,18 @@ const ROLE_META: Array<{ key: RoleKey; icon: string; label: string; cssClass: st
   { key: 'equipment', icon: resourceIcon('equipment'), label: 'Equipment Production', cssClass: 'equipment', color: resourceColor('equipment') },
 ];
 
+/** Surface gameserver 400 detail on colonist allocate refusal (ownership / overflow). */
+export function formatColonistAllocateError(err: unknown): string {
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (hasServerDetail) return message!;
+  return 'Failed to update allocations';
+}
+
 export const ColonistAllocator: React.FC<ColonistAllocatorProps> = ({
   planet,
   onUpdate,
@@ -138,7 +150,7 @@ export const ColonistAllocator: React.FC<ColonistAllocatorProps> = ({
         setTimeout(() => setSuccessMessage(null), 3000);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update allocations');
+      setError(formatColonistAllocateError(err));
     } finally {
       setSaving(false);
     }

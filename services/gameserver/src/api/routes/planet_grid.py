@@ -49,6 +49,7 @@ from src.models.player import Player
 from src.models.planet import Planet
 from src.services import structures as structures_svc
 from src.services import building_catalog
+from src.services.profession_service import structural_engineer_cost_multiplier
 
 logger = logging.getLogger(__name__)
 
@@ -359,6 +360,9 @@ async def place_building(
             detail=f"{kind} has no cost defined for level {body.level}",
         )
     cost_credits = int(cost.get("credits", 0) or 0)
+    cost_credits = int(
+        round(cost_credits * structural_engineer_cost_multiplier(db, planet.id))
+    )
 
     # 3b. lock the player row (AFTER the planet row) for credit safety.
     # populate_existing() refreshes the identity-mapped object from the DB row

@@ -57,8 +57,11 @@ DOCUMENTED INTERPRETATIONS (where canon is summarized or silent):
     challenger — comparing against a finished month made the match
     unwinnable). Success resets the campaign clock (status 'countered',
     months_satisfied 0) and evaluation continues from the NEXT month.
-  * Forced-sale condition_multiplier is 1.0 in v1 (station condition is
-    not modeled yet).
+  * Forced-sale condition_multiplier (port-ownership.md:60-66): penalises
+    recent defense incidents (within 7 days, up to −10%) and stations with
+    security tier ``none`` (−15%). Reads
+    ``ownership['last_defense_incident_at']`` (ISO UTC, stamped on port
+    defense engagements).
   * acquisition_cost reads from station.ownership['acquisition_cost']
     (written on every transfer here); stations owned before this feature
     fall back to acquisition_requirements['base_price'].
@@ -158,7 +161,10 @@ MONTH_HOURS = 30 * 24.0             # 1 scaled month = 30 canonical days
 TAKEOVER_SHARE_THRESHOLD = 0.5      # challenger needs >50% of monthly volume
 TAKEOVER_MONTHS_REQUIRED = 3        # consecutive satisfied months
 BOT_FARM_FRACTION = 0.8             # >80% self-cancelling volume = bot farming
-CONDITION_MULTIPLIER = 1.0          # v1: station condition not modeled
+LAST_DEFENSE_INCIDENT_KEY = "last_defense_incident_at"
+DEFENSE_INCIDENT_LOOKBACK_DAYS = 7
+DEFENSE_INCIDENT_MAX_PENALTY = 0.10
+SECURITY_NONE_PENALTY = 0.15
 HOSTILE_UNDERCUT_FACTOR = 0.97      # selling >=3% under the station-pays price
 CATCHUP_EVAL_LIMIT = 3              # lazy month catch-up: evaluate at most the
                                     # trailing N months individually; older
@@ -540,6 +546,27 @@ def split_revenue(
     return defense, owner, operating
 
 
+def expected_revenue_per_day(
+    traffic_final: float,
+    per_trade_revenue_avg: float,
+    region_tax_rate: float,
+    owner_pct: float,
+) -> int:
+    """Per-day owner revenue projection (port-ownership.md:195-205).
+
+    Pure planning helper — callers supply already-composed traffic and split
+    inputs (no NPC traffic simulation here). Returns integer credits/day."""
+    if traffic_final <= 0 or per_trade_revenue_avg <= 0 or owner_pct <= 0:
+        return 0
+    gross = (
+        traffic_final
+        * per_trade_revenue_avg
+        * (1.0 - region_tax_rate)
+        * (owner_pct / 100.0)
+    )
+    return int(round(gross))
+
+
 def _effective_fee_split_pcts(station: Station) -> Tuple[float, float, float]:
     """Effective (defense_pct, owner_pct, operating_pct) fee-split for THIS
     station: reads the owner's rebalanced price_modifiers override (canon
@@ -586,10 +613,67 @@ def depreciated_value(acquisition_cost: int) -> int:
     return int(max(0, acquisition_cost) * DEPRECIATION_FACTOR)
 
 
-def forced_sale_value(avg_monthly_revenue: float, acquisition_cost: int) -> int:
+def stamp_defense_incident(
+    station: Station, now: Optional[datetime] = None
+) -> None:
+    """Record a port-defense engagement on ``station.ownership`` (LEG-2060)."""
+    now = now or datetime.now(UTC)
+    ownership = _ownership(station)
+    ownership[LAST_DEFENSE_INCIDENT_KEY] = now.isoformat()
+    if getattr(station, "_sa_instance_state", None):
+        flag_modified(station, "ownership")
+
+
+def _parse_defense_incident_at(raw: Any) -> Optional[datetime]:
+    if raw is None:
+        return None
+    if isinstance(raw, datetime):
+        incident_at = raw
+    elif isinstance(raw, str):
+        try:
+            incident_at = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    if incident_at.tzinfo is None:
+        incident_at = incident_at.replace(tzinfo=UTC)
+    return incident_at
+
+
+def compute_condition_multiplier(
+    station: Station, now: Optional[datetime] = None
+) -> float:
+    """Canon condition_multiplier for forced-sale pricing (LEG-2055)."""
+    now = now or datetime.now(UTC)
+    ownership = station.ownership or {}
+    incident_at = _parse_defense_incident_at(
+        ownership.get(LAST_DEFENSE_INCIDENT_KEY)
+    )
+    if incident_at is None:
+        days_since = DEFENSE_INCIDENT_LOOKBACK_DAYS
+    else:
+        days_since = int((now - incident_at).total_seconds() // 86400)
+
+    defense_term = (
+        DEFENSE_INCIDENT_MAX_PENALTY
+        * max(0, DEFENSE_INCIDENT_LOOKBACK_DAYS - days_since)
+        / DEFENSE_INCIDENT_LOOKBACK_DAYS
+    )
+    security_level = getattr(station, "security_level", "none")
+    security_term = SECURITY_NONE_PENALTY if security_level == "none" else 0.0
+    return max(0.0, 1.0 - defense_term - security_term)
+
+
+def forced_sale_value(
+    avg_monthly_revenue: float,
+    acquisition_cost: int,
+    *,
+    condition_multiplier: float = 1.0,
+) -> int:
     """Canon forced-sale price: clamp(avg-monthly-revenue x 12 x
     condition_multiplier, acquisition_cost, 2 x acquisition_cost)."""
-    raw = avg_monthly_revenue * 12 * CONDITION_MULTIPLIER
+    raw = avg_monthly_revenue * 12 * condition_multiplier
     return int(max(acquisition_cost, min(2 * acquisition_cost, raw)))
 
 
@@ -925,6 +1009,58 @@ def list_station(
     db.add(listing)
     db.flush()
     logger.info("Station listed: %s at %s credits (listing %s)", station.id, price, listing.id)
+    return listing
+
+
+
+def apply_governance_sale_listing(
+    db: Session,
+    station: Station,
+    now: Optional[datetime] = None,
+) -> Optional[StationListing]:
+    """Passed syndicate sale vote: release ownership and list at canon price.
+
+    Treasury conveys with the listing per standard port-ownership rules.
+    Reuses ``list_station`` — no insolvency reputation penalty."""
+    now = now or datetime.now(UTC)
+    station = _lock_station(db, station.id)
+
+    if station.owner_id is not None:
+        db.execute(
+            player_stations.delete().where(player_stations.c.station_id == station.id)
+        )
+        station.owner_id = None
+        ownership = dict(station.ownership or {})
+        ownership.pop("player_id", None)
+        ownership.pop(SYNDICATE_MODE_KEY, None)
+        ownership.pop(SYNDICATE_SHARES_KEY, None)
+        ownership.pop(SYNDICATE_INVITES_KEY, None)
+        station.ownership = ownership
+        flag_modified(station, "ownership")
+        db.flush()
+
+    if not is_listable(station):
+        logger.warning(
+            "Governance sale vote passed but station %s is not listable", station.id
+        )
+        return None
+
+    try:
+        listing = list_station(db, station, now=now)
+    except PortOwnershipError as exc:
+        logger.warning(
+            "Governance sale vote passed but station %s could not be listed: %s",
+            station.id,
+            exc.detail,
+        )
+        return None
+
+    logger.info(
+        "Governance sale listing applied station=%s listing=%s price=%s",
+        station.id,
+        listing.id,
+        listing.price,
+    )
     return listing
 
 
@@ -2279,15 +2415,56 @@ def set_fee_distribution(
     return _fee_distribution_payload(station)
 
 
+def _syndicate_withdrawal_payouts(
+    station: Station, amount: int
+) -> List[Tuple[uuid.UUID, int, int]]:
+    """Split ``amount`` across syndicate shares by integer stake pct.
+
+    Floor each share (``amount * pct // 100``); give any remainder to the
+    primary owner so payouts always sum to ``amount`` (invent=0).
+    Returns ``[(player_id, pct, credits), ...]``.
+    """
+    primary = station.owner_id
+    if primary is None:
+        raise PortOwnershipError(400, "Station has no primary owner")
+    shares = _ensure_primary_share(station)
+    rows: List[List[Any]] = []
+    for share in shares:
+        try:
+            pct = int(share.get("pct", 0))
+        except (TypeError, ValueError):
+            continue
+        if pct <= 0:
+            continue
+        try:
+            pid = uuid.UUID(str(share["player_id"]))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        rows.append([pid, pct, (amount * pct) // 100])
+    if not rows:
+        return [(primary, 100, amount)]
+    allocated = sum(int(r[2]) for r in rows)
+    remainder = amount - allocated
+    for row in rows:
+        if row[0] == primary:
+            row[2] = int(row[2]) + remainder
+            break
+    else:
+        rows[0][2] = int(rows[0][2]) + remainder
+    return [(row[0], int(row[1]), int(row[2])) for row in rows]
+
+
 def withdraw_treasury(
     db: Session, station: Station, owner: Player, amount: int
 ) -> Dict[str, Any]:
-    """Withdraw from the station treasury to the owner (solo owner only
-    this pass — no co-ownership shares yet). Canon cushion (port-ownership.md
-    "Owner withdrawals"): the treasury must retain at least a 10% operating
-    cushion on every sweep, so at most 90% of the CURRENT balance may leave
-    in one withdrawal (v1 has no separate scheduled-sweep engine, so manual
-    ad-hoc withdrawals are held to the same 90% cap per canon)."""
+    """Withdraw from the station treasury.
+
+    Initiation remains primary-owner only (``_require_owner``). Solo mode
+    credits the owner 100%. Syndicate mode (``co_ownership_mode=syndicate``)
+    distributes the same withdrawal across share holders by stake pct
+    (canon port-ownership.md Owner withdrawals — per share). Canon cushion:
+    at most 90% of the CURRENT balance may leave in one withdrawal.
+    """
     station = _lock_station(db, station.id)
     _require_owner(station, owner)
     if amount <= 0:
@@ -2301,15 +2478,77 @@ def withdraw_treasury(
             f"cushion must remain, so at most {cap:,} credits (90%) can be "
             f"withdrawn — requested {amount:,}",
         )
-    locked = _lock_players_ascending(db, [owner.id])
+    mode = (station.ownership or {}).get(SYNDICATE_MODE_KEY) or "solo"
+    if mode == "syndicate":
+        payouts = _syndicate_withdrawal_payouts(station, amount)
+    else:
+        payouts = [(owner.id, 100, amount)]
+
+    locked = _lock_players_ascending(db, [pid for pid, _pct, _cr in payouts])
     owner = locked[owner.id]
     station.treasury_balance = balance - amount
-    owner.credits += amount
+    distributions: List[Dict[str, Any]] = []
+    for pid, pct, credits in payouts:
+        player = locked[pid]
+        player.credits = int(player.credits or 0) + credits
+        distributions.append(
+            {
+                "player_id": str(pid),
+                "pct": pct,
+                "credits": credits,
+            }
+        )
     db.flush()
-    logger.info("Treasury withdrawal: %s credits from station %s to %s", amount, station.id, owner.id)
+    logger.info(
+        "Treasury withdrawal: %s credits from station %s (mode=%s, recipients=%s)",
+        amount,
+        station.id,
+        mode,
+        len(distributions),
+    )
     return {
         "station_id": str(station.id),
         "withdrawn": amount,
+        "treasury_balance": station.treasury_balance,
+        "credits": owner.credits,
+        "mode": mode,
+        "distributions": distributions,
+    }
+
+
+def inject_treasury(
+    db: Session, station: Station, owner: Player, amount: int
+) -> Dict[str, Any]:
+    """Owner cash-injection into the station treasury (canon Cash-injection).
+
+    Debits the primary owner's personal credits and credits
+    ``station.treasury_balance``. Injections are not revenue. Compel-injection
+    stake-weighted votes remain Design-only — not implemented here.
+    """
+    station = _lock_station(db, station.id)
+    _require_owner(station, owner)
+    if amount <= 0:
+        raise PortOwnershipError(400, "Injection amount must be positive")
+    locked = _lock_players_ascending(db, [owner.id])
+    owner = locked[owner.id]
+    available = int(owner.credits or 0)
+    if available < amount:
+        raise PortOwnershipError(
+            400,
+            f"Insufficient credits: have {available:,}, need {amount:,}",
+        )
+    owner.credits = available - amount
+    station.treasury_balance = int(station.treasury_balance or 0) + amount
+    db.flush()
+    logger.info(
+        "Treasury injection: %s credits into station %s from %s",
+        amount,
+        station.id,
+        owner.id,
+    )
+    return {
+        "station_id": str(station.id),
+        "injected": amount,
         "treasury_balance": station.treasury_balance,
         "credits": owner.credits,
     }
@@ -3024,12 +3263,14 @@ def _owner_at_eligibility(campaign: TakeoverCampaign) -> Optional[str]:
 
 def forced_sale_price(db: Session, station: Station, now: Optional[datetime] = None) -> int:
     """Canon forced-sale price: clamp(90-day-average monthly revenue x 12 x
-    condition_multiplier, acquisition_cost, 2 x acquisition_cost).
-    condition_multiplier is 1.0 in v1 (station condition not modeled)."""
+    condition_multiplier, acquisition_cost, 2 x acquisition_cost)."""
     now = now or datetime.now(UTC)
     revenue_90 = _station_revenue(db, station.id, _wall_cutoff(REVENUE_WINDOW_DAYS, now))
     avg_monthly = revenue_90 / 3.0  # 90 canonical days = 3 scaled months
-    return forced_sale_value(avg_monthly, _acquisition_cost(station))
+    multiplier = compute_condition_multiplier(station, now)
+    return forced_sale_value(
+        avg_monthly, _acquisition_cost(station), condition_multiplier=multiplier
+    )
 
 
 def _settle_forced_sale(
@@ -3685,6 +3926,8 @@ def my_stations(db: Session, player: Player) -> Dict[str, Any]:
             "treasury_balance": station.treasury_balance or 0,
             "acquisition_cost": _acquisition_cost(station),
             "revenue": revenue_summary(db, station),
+            # invent=0: helper exists; populated when elasticity spine feeds inputs.
+            "expected_revenue_per_day": None,
         }
         row.update(_owner_price_lever_fields(station))
         out.append(row)

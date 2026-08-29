@@ -9,3 +9,4 @@ export { GenesisDeployment } from './GenesisDeployment';
 // SpecializationDrawer + useColonySpecialization remain the live path.
 export { SiegeStatusMonitor } from './SiegeStatusMonitor';
 export { LandingRightsControl } from './LandingRightsControl';
+export { OwnershipTransferControl } from './OwnershipTransferControl';

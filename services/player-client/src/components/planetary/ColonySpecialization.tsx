@@ -130,6 +130,19 @@ export const SPECIALIZATIONS: SpecializationInfo[] = [
  * specialization. Live UI is SpecializationDrawer
  * (WO-RETIRE-COLONY-SPECIALIZATION-MODAL removed the unused modal shell).
  */
+
+/** Surface GS specialize PUT 400 detail (`detail=str(e)`), else stable fallback. */
+export function formatColonySpecializeError(err: unknown): string {
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (hasServerDetail) return message!;
+  return 'Failed to specialize colony';
+}
+
 export const useColonySpecialization = (
   planet: Planet,
   onUpdate?: (planet: Planet) => void,
@@ -213,7 +226,7 @@ export const useColonySpecialization = (
         }, 2000);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to specialize colony');
+      setError(formatColonySpecializeError(err));
     } finally {
       setChanging(false);
     }

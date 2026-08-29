@@ -1060,6 +1060,10 @@ async def repair_ship_maintenance(
     from src.services import docking_service
     service_mult = docking_service.service_charge_multiplier_for(station)
     cost = round((max(0.0, 100.0 - condition) / 10.0) * pct * value * service_mult)
+    from src.services.profession_service import space_engineer_repair_multiplier_for_station
+    repair_mult = space_engineer_repair_multiplier_for_station(db, locked_player.id, station)
+    if repair_mult != 1.0:
+        cost = round(cost / repair_mult)
     # Never restore for free: a near-pristine or zero-value hull whose cost rounds
     # to <=0 would otherwise get a free full-condition reset.
     if cost <= 0:

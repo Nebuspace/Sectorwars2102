@@ -19,6 +19,7 @@ const {
   mockGetTakeoverStatus,
   mockLaunchTakeover,
   mockCounterTakeover,
+  mockMilitaryTakeover,
 } = vi.hoisted(() => ({
   mockGet: vi.fn(),
   mockPost: vi.fn(),
@@ -32,6 +33,7 @@ const {
   mockGetTakeoverStatus: vi.fn(),
   mockLaunchTakeover: vi.fn(),
   mockCounterTakeover: vi.fn(),
+  mockMilitaryTakeover: vi.fn(),
 }));
 
 vi.mock('../../services/apiClient', () => ({
@@ -55,6 +57,7 @@ vi.mock('../../services/api', async () => {
       getTakeoverStatus: (...a: unknown[]) => mockGetTakeoverStatus(...a),
       launchTakeover: (...a: unknown[]) => mockLaunchTakeover(...a),
       counterTakeover: (...a: unknown[]) => mockCounterTakeover(...a),
+      militaryTakeover: (...a: unknown[]) => mockMilitaryTakeover(...a),
     },
     sectorAPI: {
       ...actual.sectorAPI,
@@ -142,6 +145,7 @@ describe('GameContext portOwnershipAPI', () => {
     mockGetTakeoverStatus.mockResolvedValue({ active: false });
     mockLaunchTakeover.mockResolvedValue({ success: true });
     mockCounterTakeover.mockResolvedValue({ success: true });
+    mockMilitaryTakeover.mockResolvedValue({ campaign_type: 'military' });
     captured = null;
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -177,6 +181,7 @@ describe('GameContext portOwnershipAPI', () => {
       await captured!.getTakeoverStatus('st-1');
       await captured!.launchTakeover('st-1');
       await captured!.counterTakeover('st-1', 'match');
+      await captured!.militaryTakeover('st-1', 'declare');
       await flush();
     });
 
@@ -190,6 +195,7 @@ describe('GameContext portOwnershipAPI', () => {
     expect(mockGetTakeoverStatus).toHaveBeenCalledWith('st-1');
     expect(mockLaunchTakeover).toHaveBeenCalledWith('st-1');
     expect(mockCounterTakeover).toHaveBeenCalledWith('st-1', 'match');
+    expect(mockMilitaryTakeover).toHaveBeenCalledWith('st-1', 'declare');
 
     const raw = [...mockGet.mock.calls, ...mockPost.mock.calls].filter((c) =>
       String(c[0]).includes('/port-ownership/'),
