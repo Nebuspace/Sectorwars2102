@@ -559,6 +559,8 @@ class TestFactionRepLayers:
         faction = SimpleNamespace(id=uuid.uuid4(), faction_type=FactionType.FEDERATION)
         reputation = SimpleNamespace(current_value=-10)
         db = _FakeSession({
+            # resolve_effective queries Player for team_id (solo → None).
+            Player: _FakeQuery(first=player),
             Faction: _FakeQuery(first=faction),
             Reputation: _FakeQuery(first=reputation),
         })
@@ -579,6 +581,7 @@ class TestFactionRepLayers:
         faction = SimpleNamespace(id=uuid.uuid4(), faction_type=FactionType.FEDERATION)
         reputation = SimpleNamespace(current_value=50)
         db = _FakeSession({
+            Player: _FakeQuery(first=player),
             Faction: _FakeQuery(first=faction),
             Reputation: _FakeQuery(first=reputation),
         })
@@ -592,6 +595,7 @@ class TestFactionRepLayers:
         faction = SimpleNamespace(id=uuid.uuid4(), faction_type=FactionType.FEDERATION)
         reputation = SimpleNamespace(current_value=500)
         db = _FakeSession({
+            Player: _FakeQuery(first=player),
             Faction: _FakeQuery(first=faction),
             Reputation: _FakeQuery(first=reputation),
         })
