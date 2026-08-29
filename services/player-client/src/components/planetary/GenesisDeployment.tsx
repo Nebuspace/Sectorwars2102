@@ -21,6 +21,30 @@ export function formatGenesisQuotesLoadError(err: unknown): string {
   return 'Failed to load genesis pricing';
 }
 
+/** Pre-deploy price re-verify failure (LEG-2933 Soft-ORDER). */
+export function formatGenesisVerifyError(err: unknown): string {
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (hasServerDetail) return message!;
+  return 'Failed to verify genesis pricing';
+}
+
+/** deployGenesis POST failure (LEG-2933 Soft-ORDER). */
+export function formatGenesisDeployError(err: unknown): string {
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (hasServerDetail) return message!;
+  return 'Failed to deploy Genesis Device';
+}
+
 interface PlanetTypeInfo {
   type: PlanetType;
   name: string;
@@ -313,7 +337,7 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
         delete next[`${tier}:${registration}`];
         return next;
       });
-      setQuotesError(err instanceof Error ? err.message : 'Failed to verify genesis pricing');
+      setQuotesError(formatGenesisVerifyError(err));
       setCheckingPrice(false);
       return;
     }
@@ -383,7 +407,7 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
         }, 5200);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to deploy Genesis Device');
+      setError(formatGenesisDeployError(err));
     } finally {
       setDeploying(false);
     }

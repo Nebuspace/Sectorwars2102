@@ -25,7 +25,7 @@ vi.mock('../../../services/api', () => ({
   },
 }));
 
-import PolicyCard from '../PolicyCard';
+import PolicyCard, { formatPolicyVoteError } from '../PolicyCard';
 
 const VOTING_POLICY: Policy = {
   id: 'policy-1',
@@ -158,5 +158,46 @@ describe('PolicyCard', () => {
 
     expect(container.querySelector('.gov-policy-vote-buttons')).toBeNull();
     expect(container.querySelector('.gov-confirm-card')).toBeNull();
+  });
+
+  it('formatPolicyVoteError preserves gameserver detail on reject (LEG-2944)', () => {
+    const err = Object.assign(new Error('Policy suspended pending review'), { status: 400 });
+    expect(formatPolicyVoteError(err)).toBe('Policy suspended pending review');
+  });
+
+  it('formatPolicyVoteError uses 429 rate-limit copy when detail absent (LEG-2944)', () => {
+    const err = Object.assign(new Error('API Error: 429'), { status: 429 });
+    expect(formatPolicyVoteError(err)).toBe(
+      'Vote rate limit exceeded — wait a moment and try again.',
+    );
+  });
+
+  it('formatPolicyVoteError uses 403 fallback when detail absent (LEG-2944)', () => {
+    const err = Object.assign(new Error('API Error: 403'), { status: 403 });
+    expect(formatPolicyVoteError(err)).toBe('You are not allowed to vote on this policy.');
+  });
+
+  it('surfaces GS vote-reject detail in the validation strip (LEG-2944)', async () => {
+    mockCastPolicyVote.mockRejectedValue(
+      Object.assign(new Error('Policy suspended pending review'), { status: 403 }),
+    );
+
+    await act(async () => {
+      root.render(
+        <PolicyCard policy={VOTING_POLICY} regionId="region-1" canVote={true} onChanged={() => {}} />
+      );
+    });
+    await armAye();
+    const confirmBtn = container.querySelector('.gov-btn.primary.commit') as HTMLButtonElement;
+    await act(async () => {
+      confirmBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.gov-validation-strip')?.textContent).toBe(
+      'Policy suspended pending review',
+    );
+    expect(container.querySelector('.gov-policy-vote-buttons')).not.toBeNull();
   });
 });
