@@ -20,7 +20,7 @@ vi.mock('../../../services/api', () => ({
   },
 }));
 
-import CitizenshipBadge from '../CitizenshipBadge';
+import CitizenshipBadge, { formatCitizenshipClaimError } from '../CitizenshipBadge';
 
 const flush = async () => {
   await act(async () => {
@@ -28,6 +28,20 @@ const flush = async () => {
     await Promise.resolve();
   });
 };
+
+describe('formatCitizenshipClaimError (LEG-2922)', () => {
+  it('preserves gameserver claim refusal detail', () => {
+    const err = Object.assign(new Error('No colony ownership in this region'), {
+      status: 400,
+    });
+    expect(formatCitizenshipClaimError(err)).toBe('No colony ownership in this region');
+  });
+
+  it('falls back when message is bare API Error: 403', () => {
+    const err = Object.assign(new Error('API Error: 403'), { status: 403 });
+    expect(formatCitizenshipClaimError(err)).toBe('Claim failed');
+  });
+});
 
 describe('CitizenshipBadge claim', () => {
   let container: HTMLDivElement;
@@ -113,5 +127,42 @@ describe('CitizenshipBadge claim', () => {
 
     expect(container.querySelector('[data-testid="citizenship-claim"]')).toBeNull();
     expect(claimColonyCitizenship).not.toHaveBeenCalled();
+  });
+
+  it('surfaces GS detail when claim API rejects', async () => {
+    getMyMembership.mockResolvedValue({
+      region_id: 'r1',
+      is_member: false,
+      membership_type: null,
+      stored_membership_type: null,
+      owns_colony_in_region: true,
+      can_vote: false,
+      voting_power: 0,
+      citizenship_source: null,
+    });
+    claimColonyCitizenship.mockRejectedValue(
+      Object.assign(new Error('Colony ownership required to claim citizenship'), {
+        status: 400,
+      }),
+    );
+
+    await act(async () => {
+      root.render(<CitizenshipBadge regionId="r1" regionName="Fringe" />);
+    });
+    await flush();
+
+    const claim = container.querySelector(
+      '[data-testid="citizenship-claim"]'
+    ) as HTMLButtonElement;
+    expect(claim).not.toBeNull();
+
+    await act(async () => {
+      claim.click();
+    });
+    await flush();
+
+    expect(container.querySelector('[data-testid="citizenship-claim-error"]')?.textContent).toBe(
+      'Colony ownership required to claim citizenship',
+    );
   });
 });

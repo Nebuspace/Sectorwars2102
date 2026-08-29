@@ -28,7 +28,7 @@ vi.mock('../../../contexts/GameContext', () => ({
   }),
 }));
 
-import { SiegeStatusMonitor } from '../SiegeStatusMonitor';
+import { SiegeStatusMonitor, formatSiegeAidError, formatSiegeHailError } from '../SiegeStatusMonitor';
 import type { Planet } from '../../../types/planetary';
 
 const siegedPlanet: Planet = {
@@ -110,5 +110,29 @@ describe('SiegeStatusMonitor action buttons', () => {
     expect(sendDirectMessage).toHaveBeenCalledTimes(1);
     expect(sendDirectMessage.mock.calls[0][0]).toBe('attacker-1');
     expect(String(sendDirectMessage.mock.calls[0][1])).toMatch(/negotiation/i);
+  });
+
+  it('surfaces emergency aid 403 server detail', async () => {
+    sendTeamMessage.mockRejectedValue(Object.assign(new Error('Team membership required'), { status: 403 }));
+    await act(async () => { root.render(<SiegeStatusMonitor planet={siegedPlanet} />); });
+    const btn = container.querySelector('[data-testid="siege-emergency-aid"]') as HTMLButtonElement;
+    await act(async () => { btn.click(); await Promise.resolve(); });
+    expect(container.querySelector('[data-testid="siege-action-feedback"]')?.textContent).toBe('Team membership required');
+  });
+
+  it('surfaces negotiate hail 400 server detail', async () => {
+    sendDirectMessage.mockRejectedValue(Object.assign(new Error('Recipient has blocked messages'), { status: 400 }));
+    await act(async () => { root.render(<SiegeStatusMonitor planet={siegedPlanet} />); });
+    const btn = container.querySelector('[data-testid="siege-negotiate-surrender"]') as HTMLButtonElement;
+    await act(async () => { btn.click(); await Promise.resolve(); });
+    expect(container.querySelector('[data-testid="siege-action-feedback"]')?.textContent).toBe('Recipient has blocked messages');
+  });
+
+  it('formatSiegeAidError falls back when detail absent', () => {
+    expect(formatSiegeAidError(new Error('API Error: 500'))).toBe('Failed to send emergency aid request.');
+  });
+
+  it('formatSiegeHailError falls back when detail absent', () => {
+    expect(formatSiegeHailError(new Error('API Error: 500'))).toBe('Failed to send negotiation hail.');
   });
 });

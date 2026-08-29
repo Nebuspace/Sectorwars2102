@@ -126,6 +126,8 @@ export interface Station {
 }
 
 export interface MoveOption {
+  /** Sector row UUID (LEG-132) — POST to fleet move-as-one. */
+  id?: string | null;
   sector_id: number;
   sector_number?: number;  // Display number
   name: string;
@@ -286,6 +288,9 @@ export interface PlayerMessage {
   flagged: boolean;
   is_read: boolean;
   sender_name?: string;
+  /** Inbox/REST medal identity (LEG-2854 wire) — optional until present. */
+  sender_pinned_medal_id?: string | null;
+  sender_medal_count?: number | null;
 }
 
 export interface PlayerState {

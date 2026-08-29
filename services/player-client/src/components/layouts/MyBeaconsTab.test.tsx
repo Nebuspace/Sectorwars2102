@@ -34,7 +34,7 @@ vi.mock('../../contexts/GameContext', () => ({
   }),
 }));
 
-import MyBeaconsTab from './MyBeaconsTab';
+import MyBeaconsTab, { formatBeaconDeployError } from './MyBeaconsTab';
 
 const BEACON_A = {
   id: 'beacon-1',
@@ -224,5 +224,25 @@ describe('MyBeaconsTab', () => {
     });
 
     expect(container.textContent).toContain('Not in sector 42 right now — travel there to read.');
+  });
+
+  it('surfaces deploy 400 server detail in deploy feedback', async () => {
+    mockMine.mockResolvedValue({ beacons: [] });
+    mockDeploy.mockRejectedValue(Object.assign(new Error('Insufficient equipment for beacon deploy'), { status: 400 }));
+    await mount();
+    const textarea = container.querySelector('[data-testid="beacon-deploy-message"]') as HTMLTextAreaElement;
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+    await act(async () => {
+      setter?.call(textarea, 'Hello sector');
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+      textarea.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    const deployBtn = container.querySelector('[data-testid="beacon-deploy-submit"]') as HTMLButtonElement;
+    await act(async () => { deployBtn.click(); await Promise.resolve(); await Promise.resolve(); });
+    expect(container.querySelector('[data-testid="beacon-deploy-feedback"]')?.textContent).toBe('Insufficient equipment for beacon deploy');
+  });
+
+  it('formatBeaconDeployError falls back when detail absent', () => {
+    expect(formatBeaconDeployError(new Error('API Error: 400'))).toBe('Deploy failed');
   });
 });

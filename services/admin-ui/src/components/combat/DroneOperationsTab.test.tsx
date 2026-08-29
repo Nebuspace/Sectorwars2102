@@ -35,7 +35,7 @@ const sampleDrone = {
   speed: 1.5,
   status: 'idle',
   sector_id: null,
-  deployed_at: null,
+  deployed_at: null as string | null,
   last_action: null,
   kills: 0,
   damage_dealt: 0,
@@ -230,5 +230,116 @@ describe('DroneOperationsTab PATCH + DELETE (LEG-1683)', () => {
         expect.objectContaining({ name: 'Wreck', status: 'destroyed' })
       );
     });
+  });
+});
+
+describe('DroneOperationsTab POST mutations (LEG-2763)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    vi.mocked(api.patch).mockReset();
+    vi.mocked(api.delete).mockReset();
+    toastSuccess.mockReset();
+    toastError.mockReset();
+    confirmMock.mockReset();
+    confirmMock.mockResolvedValue(true);
+  });
+
+  it('force-recall POST 403 toasts COMBAT_INTERVENE, not generic Failed', async () => {
+    mockHappyGets([
+      {
+        ...sampleDrone,
+        status: 'deployed',
+        deployed_at: '2026-01-01T12:00:00Z',
+      },
+    ]);
+    vi.mocked(api.post).mockRejectedValue({ response: { status: 403 } });
+
+    render(<DroneOperationsTab />);
+    await waitFor(() => {
+      expect(screen.getByText('Scout Alpha')).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Force Recall' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith('/api/v1/admin/drones/drone-1/force-recall');
+      expect(toastError).toHaveBeenCalled();
+    });
+    const msg = String(toastError.mock.calls[0][0]);
+    expect(msg).toMatch(/COMBAT_INTERVENE/);
+    expect(msg).not.toMatch(/Failed to force-recall drone\.$/);
+  });
+
+  it('force-recall POST 429 toasts admin rate-limit', async () => {
+    mockHappyGets([
+      {
+        ...sampleDrone,
+        status: 'deployed',
+        deployed_at: '2026-01-01T12:00:00Z',
+      },
+    ]);
+    vi.mocked(api.post).mockRejectedValue({ response: { status: 429 } });
+
+    render(<DroneOperationsTab />);
+    await waitFor(() => {
+      expect(screen.getByText('Scout Alpha')).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Force Recall' }));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalled();
+    });
+    expect(String(toastError.mock.calls[0][0])).toMatch(/rate limit/i);
+  });
+
+  it('restore POST 403 toasts COMBAT_INTERVENE, not generic Failed', async () => {
+    mockHappyGets([
+      {
+        ...sampleDrone,
+        id: 'drone-2',
+        name: 'Wreck',
+        status: 'destroyed',
+        destroyed_at: '2026-01-02T00:00:00Z',
+      },
+    ]);
+    vi.mocked(api.post).mockRejectedValue({ response: { status: 403 } });
+
+    render(<DroneOperationsTab />);
+    await waitFor(() => {
+      expect(screen.getByText('Wreck')).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith('/api/v1/admin/drones/drone-2/restore');
+      expect(toastError).toHaveBeenCalled();
+    });
+    const msg = String(toastError.mock.calls[0][0]);
+    expect(msg).toMatch(/COMBAT_INTERVENE/);
+    expect(msg).not.toMatch(/Failed to restore drone\.$/);
+  });
+
+  it('restore POST 429 toasts admin rate-limit', async () => {
+    mockHappyGets([
+      {
+        ...sampleDrone,
+        id: 'drone-2',
+        name: 'Wreck',
+        status: 'destroyed',
+        destroyed_at: '2026-01-02T00:00:00Z',
+      },
+    ]);
+    vi.mocked(api.post).mockRejectedValue({ response: { status: 429 } });
+
+    render(<DroneOperationsTab />);
+    await waitFor(() => {
+      expect(screen.getByText('Wreck')).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalled();
+    });
+    expect(String(toastError.mock.calls[0][0])).toMatch(/rate limit/i);
   });
 });

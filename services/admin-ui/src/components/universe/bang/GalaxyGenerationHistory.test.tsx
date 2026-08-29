@@ -54,4 +54,17 @@ describe('GalaxyGenerationHistory load errors (LEG-2713)', () => {
       /HTTP 429/i,
     );
   });
+
+  it('surfaces honest fallback on non-RBAC network collapse (LEG-2934)', async () => {
+    loadBangHistory.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<GalaxyGenerationHistory />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to load history/i)).toBeTruthy();
+    });
+    const text = screen.getByText(/bang\.history\.loadFailed/i).textContent ?? '';
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
 });

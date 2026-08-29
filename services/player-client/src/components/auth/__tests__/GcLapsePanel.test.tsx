@@ -26,7 +26,7 @@ vi.mock('../../../contexts/GameContext', () => ({
   useGame: () => ({ refreshPlayerState }),
 }));
 
-import GcLapsePanel from '../GcLapsePanel';
+import GcLapsePanel, { formatGcLapseRelocateError } from '../GcLapsePanel';
 
 const flush = async () => {
   await act(async () => {
@@ -103,5 +103,23 @@ describe('GcLapsePanel', () => {
 
     expect(emergencyRelocate).toHaveBeenCalledWith('planet', 'p-1');
     expect(refreshPlayerState).toHaveBeenCalled();
+  });
+
+  it('surfaces relocate 400 server detail in feedback', async () => {
+    getStatus.mockResolvedValue({
+      lapsed: true, gc_lapsed_at: '2026-08-01T00:00:00Z', relocation_available: true,
+      foreign_holdings: [{ asset_type: 'planet', asset_id: 'p-1', name: 'Outpost', region_id: 'r-2', sector_id: 99 }],
+    });
+    emergencyRelocate.mockRejectedValue(Object.assign(new Error('Emergency relocation already used'), { status: 400 }));
+    await act(async () => { root.render(<GcLapsePanel />); });
+    await flush();
+    const btn = container.querySelector('[data-testid="gc-lapse-relocate-p-1"]') as HTMLButtonElement;
+    await act(async () => { btn.click(); });
+    await flush();
+    expect(container.querySelector('[data-testid="gc-lapse-feedback"]')?.textContent).toBe('Emergency relocation already used');
+  });
+
+  it('formatGcLapseRelocateError falls back when detail absent', () => {
+    expect(formatGcLapseRelocateError(new Error('API Error: 400'))).toBe('Relocation failed');
   });
 });

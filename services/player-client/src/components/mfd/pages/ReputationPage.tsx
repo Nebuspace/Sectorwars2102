@@ -101,6 +101,38 @@ const formatLevel = (level: string): string => level.replace(/_/g, ' ');
 
 const formatSigned = (value: number): string => (value > 0 ? `+${value}` : `${value}`);
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+/** apiRequest throws Error with `.status`; surface gameserver detail on standings load. */
+export function formatReputationLoadError(err: unknown): string {
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'Access denied — faction standings are not available right now.';
+  }
+
+  if (status === 429) {
+    return 'Faction standings rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (hasServerDetail) return message!;
+  return 'Failed to load faction standings';
+}
+
 const ReputationPage: React.FC = () => {
   const { playerState } = useGame();
   const { reputationEventSignal, lastReputationChanged, lastTeamReputationChanged } = useWebSocket();
@@ -142,7 +174,7 @@ const ReputationPage: React.FC = () => {
       .catch((e: any) => {
         if (cancelled) return;
         setRows(null);
-        setLoadError(e?.message || 'Failed to load faction standings');
+        setLoadError(formatReputationLoadError(e));
       });
     return () => {
       cancelled = true;
