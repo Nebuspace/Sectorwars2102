@@ -23,6 +23,40 @@ const VOTE_ERROR_COPY: Record<string, string> = {
   ERR_ACCOUNT_TOO_NEW: 'Your account must be at least 60 days old to vote (anti-alt-ring rule).',
 };
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+/** Surface GS cast-policy-vote detail (LEG-2944 Soft-ORDER). */
+export function formatPolicyVoteError(err: unknown): string {
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (message && VOTE_ERROR_COPY[message]) return VOTE_ERROR_COPY[message];
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You are not allowed to vote on this policy.';
+  }
+
+  if (status === 429) {
+    return 'Vote rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (hasServerDetail) return message!;
+  return 'Failed to cast vote.';
+}
+
 function formatChangeValue(key: string, value: unknown): string {
   if (key === 'trade_bonuses' && value && typeof value === 'object') {
     return Object.entries(value as Record<string, unknown>)
@@ -60,10 +94,10 @@ const PolicyCard: React.FC<PolicyCardProps> = ({ policy, regionId, canVote, onCh
       setConfirmArmed(false);
       onChanged();
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to cast vote.';
+      const message = err instanceof Error ? err.message : '';
       if (message.includes('ERR_ALREADY_VOTED')) setAlreadyVoted(true);
       setConfirmArmed(false);
-      setVoteError(VOTE_ERROR_COPY[message] || message);
+      setVoteError(formatPolicyVoteError(err));
     } finally {
       setCasting(false);
     }
