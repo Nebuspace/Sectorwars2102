@@ -379,6 +379,18 @@ class TeamService:
         if team.leader_id != player_id:
             raise ValueError("Only team leader can delete the team")
 
+        # Soft-ORDER LEG-2033: team-owned stations force-sell at depreciated
+        # value before the team row disappears (no insolvency rep hit).
+        try:
+            from src.services.port_ownership_service import (
+                force_sell_stations_for_team_disband,
+            )
+            force_sell_stations_for_team_disband(self.db, team_id)
+        except Exception as exc:  # noqa: BLE001 — never block disband on sell edge
+            logger.warning(
+                "force_sell_stations_for_team_disband(%s) failed: %s", team_id, exc
+            )
+
         # Remove all members' team_id
         self.db.query(Player).filter(Player.team_id == team_id).update({"team_id": None})
 
