@@ -27,6 +27,12 @@ vi.mock('../../contexts/WebSocketContext', () => ({
 
 import MedalShowcase from './MedalShowcase';
 
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
+
 const makeMedal = (overrides: Record<string, unknown> = {}) => ({
   key: 'star_bronze',
   name: 'Bronze Star',
@@ -92,5 +98,12 @@ describe('MedalShowcase', () => {
     await mount();
 
     expect(container.querySelector('.medal-error')?.textContent).toBe('Network down');
+  });
+
+  it('surfaces 404 with server detail on initial load failure', async () => {
+    mockGetMedals.mockRejectedValue(apiRequestError(404, 'Player not found'));
+    await mount();
+
+    expect(container.querySelector('.medal-error')?.textContent).toBe('Player not found');
   });
 });

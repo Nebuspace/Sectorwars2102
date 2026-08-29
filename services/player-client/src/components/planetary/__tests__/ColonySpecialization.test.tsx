@@ -17,8 +17,22 @@ vi.mock('../../../services/api', () => ({
   },
 }));
 
-import { SPECIALIZATIONS, useColonySpecialization } from '../ColonySpecialization';
+import { SPECIALIZATIONS, formatColonySpecializeError, useColonySpecialization } from '../ColonySpecialization';
 import type { Planet } from '../../../types/planetary';
+
+describe('formatColonySpecializeError', () => {
+  it('preserves 400 server detail from specialize PUT', () => {
+    const err = new Error('Planet not found or not owned by player');
+    (err as { status?: number }).status = 400;
+    expect(formatColonySpecializeError(err)).toBe('Planet not found or not owned by player');
+  });
+
+  it('falls back when only bare API Error status is present', () => {
+    expect(formatColonySpecializeError(new Error('API Error: 400'))).toBe(
+      'Failed to specialize colony',
+    );
+  });
+});
 
 const agri = SPECIALIZATIONS.find((s) => s.type === 'agricultural')!;
 
@@ -147,5 +161,50 @@ describe('useColonySpecialization', () => {
     });
     expect(specializePlanet).not.toHaveBeenCalled();
     expect(api!.error).toContain('already specialized');
+  });
+
+  it('surfaces 400 server detail when specialize API refuses', async () => {
+    const rich = {
+      ...planet,
+      colonists: 20_000,
+      buildings: [{ type: 'farm', level: 3 }],
+    } as unknown as Planet;
+    specializePlanet.mockRejectedValueOnce(
+      new Error('Planet not found or not owned by player'),
+    );
+
+    await act(async () => {
+      root.render(<Probe p={rich} />);
+    });
+    await act(async () => {
+      api!.setSelectedSpec('agricultural');
+    });
+    await act(async () => {
+      await api!.handleSpecialize();
+    });
+
+    expect(specializePlanet).toHaveBeenCalledWith('p1', 'agricultural');
+    expect(api!.error).toBe('Planet not found or not owned by player');
+  });
+
+  it('surfaces fallback when specialize API fails with bare API Error status', async () => {
+    const rich = {
+      ...planet,
+      colonists: 20_000,
+      buildings: [{ type: 'farm', level: 3 }],
+    } as unknown as Planet;
+    specializePlanet.mockRejectedValueOnce(new Error('API Error: 400'));
+
+    await act(async () => {
+      root.render(<Probe p={rich} />);
+    });
+    await act(async () => {
+      api!.setSelectedSpec('agricultural');
+    });
+    await act(async () => {
+      await api!.handleSpecialize();
+    });
+
+    expect(api!.error).toBe('Failed to specialize colony');
   });
 });

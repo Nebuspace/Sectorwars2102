@@ -88,7 +88,25 @@ vi.mock('../../contexts/GameContext', () => ({
   }),
 }));
 
-import { GenesisDeployment } from './GenesisDeployment';
+import { GenesisDeployment, formatGenesisQuotesLoadError } from './GenesisDeployment';
+
+describe('formatGenesisQuotesLoadError', () => {
+  it('preserves 400 server detail from get_genesis_quote', () => {
+    const err = new Error('Unknown genesis tier');
+    (err as { status?: number }).status = 400;
+    expect(formatGenesisQuotesLoadError(err)).toBe('Unknown genesis tier');
+  });
+
+  it('falls back when only bare API Error status is present', () => {
+    expect(formatGenesisQuotesLoadError(new Error('API Error: 400'))).toBe(
+      'Failed to load genesis pricing',
+    );
+  });
+
+  it('falls back on non-Error throwables', () => {
+    expect(formatGenesisQuotesLoadError('boom')).toBe('Failed to load genesis pricing');
+  });
+});
 
 const flush = async () => {
   await act(async () => {
@@ -236,5 +254,59 @@ describe('GenesisDeployment — pre-submit price re-confirm', () => {
 
     expect(mockDeployGenesis).not.toHaveBeenCalled();
     expect(container.querySelector('.error-message')?.textContent).toMatch(/Requires Federation reputation 250/);
+  });
+});
+
+describe('GenesisDeployment — quotes load honesty (LEG-2885)', () => {
+  let container: HTMLElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    mockGetGenesisQuote.mockClear();
+    mockDeployGenesis.mockClear();
+    setCharteredFee(50000);
+    setRepGateMet(true);
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it('surfaces 400 server detail when quotes load fails', async () => {
+    mockGetGenesisQuote.mockRejectedValueOnce(new Error('Unknown genesis tier'));
+
+    await act(async () => {
+      root.render(<GenesisDeployment onSuccess={vi.fn()} onClose={vi.fn()} />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toMatch(/Could not load genesis pricing: Unknown genesis tier/);
+  });
+
+  it('surfaces fallback when quotes load fails with bare API Error status', async () => {
+    mockGetGenesisQuote.mockRejectedValueOnce(new Error('API Error: 400'));
+
+    await act(async () => {
+      root.render(<GenesisDeployment onSuccess={vi.fn()} onClose={vi.fn()} />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toMatch(
+      /Could not load genesis pricing: Failed to load genesis pricing/,
+    );
   });
 });

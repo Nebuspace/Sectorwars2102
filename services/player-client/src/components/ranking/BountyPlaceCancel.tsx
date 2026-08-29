@@ -81,6 +81,30 @@ export function formatBountyInspectLoadError(err: unknown): string {
   return 'Failed to load bounties on target';
 }
 
+function bountyActionDetail(err: unknown): string | undefined {
+  const message = err instanceof Error ? err.message : undefined;
+  if (
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim())
+  ) {
+    return message.trim();
+  }
+  return undefined;
+}
+
+export function formatBountyPlaceError(err: unknown): string {
+  const detail = bountyActionDetail(err);
+  if (detail) return detail;
+  return 'Failed to place bounty';
+}
+
+export function formatBountyCancelError(err: unknown): string {
+  const detail = bountyActionDetail(err);
+  if (detail) return detail;
+  return 'Failed to cancel bounty';
+}
+
 const BountyPlaceCancel: React.FC<BountyPlaceCancelProps> = ({
   placeBounty,
   cancelBounty,
@@ -173,7 +197,7 @@ const BountyPlaceCancel: React.FC<BountyPlaceCancelProps> = ({
         );
         await runInspect(trimmed);
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to place bounty');
+        setError(formatBountyPlaceError(err));
       } finally {
         setBusy(null);
       }
@@ -202,7 +226,7 @@ const BountyPlaceCancel: React.FC<BountyPlaceCancelProps> = ({
         );
         await runInspect(trimmed);
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to cancel bounty');
+        setError(formatBountyCancelError(err));
       } finally {
         setBusy(null);
         setCancellingId(null);

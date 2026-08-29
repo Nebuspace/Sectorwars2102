@@ -29,6 +29,7 @@ import { useGame, type PlayerMessage } from '../../../contexts/GameContext';
 import { useWebSocket } from '../../../contexts/WebSocketContext';
 import { useAuth } from '../../../contexts/AuthContext';
 import { messageAPI, teamAPI } from '../../../services/api';
+import PlayerNamePlate from '../../common/PlayerNamePlate';
 import { MFDPageHeader, MFDPageBody, MFDField, MFDEmpty } from '../atoms';
 import './pages-ops.css';
 
@@ -107,8 +108,37 @@ export function formatCommsFlagError(err: unknown): string {
     return 'Message not found';
   }
 
+  if (status === 403) {
+    if (detail) return detail;
+    return 'Access denied — you cannot flag transmissions right now.';
+  }
+
+  if (status === 429) {
+    if (detail) return detail;
+    return 'Flag rate limit exceeded — wait a moment and try again.';
+  }
+
   if (detail) return detail;
   return 'Failed to flag transmission';
+}
+
+/** Compose send — surface 429 rate-limit + 409 thread-cap refusals (messaging.md). */
+export function formatCommsSendError(err: unknown): string {
+  const status = httpStatus(err);
+  const detail = serverDetail(err);
+
+  if (status === 429) {
+    if (detail) return detail;
+    return 'Too many messages — limit is 5 per 60s. Wait a moment and try again.';
+  }
+
+  if (status === 409) {
+    if (detail && detail !== 'thread_limit_exceeded') return detail;
+    return 'Thread is full (50 messages) — archive or start a new thread.';
+  }
+
+  if (detail) return detail;
+  return 'TRANSMISSION FAILED';
 }
 
 /** PURGE soft-delete — surface gameserver 404 detail (messages.py). */
@@ -417,16 +447,8 @@ const CommsCrewPage: React.FC = () => {
       );
       setComposeContent('');
       setSendNotice('TRANSMISSION SENT');
-    } catch (error: any) {
-      // FastAPI 422s return `detail` as an array of validation objects, and a
-      // raw object would render as "[object Object]" / crash the CRT line.
-      // Only a plain string is safe to surface; anything else → generic.
-      const rawDetail = error?.response?.data?.detail;
-      const message =
-        (typeof rawDetail === 'string' && rawDetail) ||
-        (typeof error?.message === 'string' && error.message) ||
-        'TRANSMISSION FAILED';
-      setSendError(message);
+    } catch (error: unknown) {
+      setSendError(formatCommsSendError(error));
     } finally {
       setIsSending(false);
     }
@@ -481,7 +503,12 @@ const CommsCrewPage: React.FC = () => {
                     aria-hidden="true"
                   />
                   <span className="mfd-page-comms-hail-sender">
-                    {(msg.sender_name || 'UNKNOWN').toUpperCase()}
+                    <PlayerNamePlate
+                      name={(msg.sender_name || 'UNKNOWN').toUpperCase()}
+                      size="sm"
+                      pinnedMedalId={msg.sender_pinned_medal_id}
+                      medalCount={msg.sender_medal_count}
+                    />
                   </span>
                   <span className="mfd-page-comms-hail-subject">
                     {msg.subject || '(NO SUBJECT)'}
@@ -620,7 +647,12 @@ const CommsCrewPage: React.FC = () => {
                       aria-expanded={expandedThreadMsgId === msg.id}
                     >
                       <span className="mfd-page-comms-hail-sender">
-                        {(msg.sender_name || 'UNKNOWN').toUpperCase()}
+                        <PlayerNamePlate
+                          name={(msg.sender_name || 'UNKNOWN').toUpperCase()}
+                          size="sm"
+                          pinnedMedalId={msg.sender_pinned_medal_id}
+                          medalCount={msg.sender_medal_count}
+                        />
                       </span>
                       <span className="mfd-page-comms-hail-time">{timeAgo(msg.sent_at)}</span>
                     </button>

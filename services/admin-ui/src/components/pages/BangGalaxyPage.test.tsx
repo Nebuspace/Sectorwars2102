@@ -4,6 +4,7 @@ import BangGalaxyPage from './BangGalaxyPage';
 
 const wipeGalaxy = vi.fn();
 const loadGalaxyInfo = vi.fn();
+const addPlayerOwnedRegion = vi.fn();
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -23,6 +24,10 @@ vi.mock('../../contexts/AuthContext', () => ({
   useAuth: () => ({ token: 'tok' }),
 }));
 
+vi.mock('../../services/bangGalaxyApi', () => ({
+  addPlayerOwnedRegion: (...args: unknown[]) => addPlayerOwnedRegion(...args),
+}));
+
 vi.mock('../universe/bang/GalaxyGenerationForm', () => ({
   default: () => <div data-testid="form-stub" />,
 }));
@@ -36,14 +41,38 @@ vi.mock('../universe/bang/GenerationLogPanel', () => ({
 }));
 
 vi.mock('../universe/bang/AddRegionDialog', () => ({
-  default: () => null,
+  default: ({
+    onConfirm,
+    error,
+  }: {
+    onConfirm: (seed: number, sectors: number) => void;
+    error: string | null;
+  }) => (
+    <div>
+      <button type="button" onClick={() => onConfirm(42, 100)}>
+        Confirm add region
+      </button>
+      {error ? <div role="alert">{error}</div> : null}
+    </div>
+  ),
 }));
 
 vi.mock('../universe/bang/GalaxyOverviewHeader', () => ({
-  default: ({ onWipe }: { onWipe?: () => void }) => (
-    <button type="button" onClick={onWipe}>
-      Open wipe
-    </button>
+  default: ({
+    onWipe,
+    onAddRegion,
+  }: {
+    onWipe?: () => void;
+    onAddRegion?: () => void;
+  }) => (
+    <div>
+      <button type="button" onClick={onWipe}>
+        Open wipe
+      </button>
+      <button type="button" onClick={onAddRegion}>
+        Open add region
+      </button>
+    </div>
   ),
 }));
 
@@ -68,6 +97,7 @@ describe('BangGalaxyPage scope errors (LEG-1039)', () => {
   beforeEach(() => {
     wipeGalaxy.mockReset();
     loadGalaxyInfo.mockReset();
+    addPlayerOwnedRegion.mockReset();
   });
 
   it('surfaces scope denial on wipe 403', async () => {
@@ -100,5 +130,39 @@ describe('BangGalaxyPage scope errors (LEG-1039)', () => {
     await waitFor(() => {
       expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
     });
+  });
+
+  it('surfaces scope denial on add-region 403 (LEG-2892)', async () => {
+    addPlayerOwnedRegion.mockRejectedValue(
+      Object.assign(new Error('HTTP 403'), {
+        response: { status: 403, data: { detail: 'Missing scope admin.universe.manage' } },
+      }),
+    );
+
+    render(<BangGalaxyPage />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open add region' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm add region' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/admin\.universe\.manage/i);
+    });
+    expect(screen.queryByText('Failed to add player-owned region')).toBeNull();
+  });
+
+  it('shows rate-limit copy on add-region 429 (LEG-2892)', async () => {
+    addPlayerOwnedRegion.mockRejectedValue(
+      Object.assign(new Error('HTTP 429'), {
+        response: { status: 429, data: {} },
+      }),
+    );
+
+    render(<BangGalaxyPage />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open add region' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm add region' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
+    });
+    expect(screen.queryByText('Failed to add player-owned region')).toBeNull();
   });
 });

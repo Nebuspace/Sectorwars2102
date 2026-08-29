@@ -83,6 +83,12 @@ function renderDash() {
   );
 }
 
+function httpErr(status: number, detail?: string) {
+  return Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: detail ? { detail } : {} },
+  });
+}
+
 describe('SecurityDashboard cleanup + player action (LEG-1713)', () => {
   beforeEach(() => {
     vi.mocked(api.get).mockReset();
@@ -207,5 +213,95 @@ describe('SecurityDashboard cleanup + player action (LEG-1713)', () => {
     await waitFor(() => {
       expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/rate limit/i));
     });
+  });
+});
+
+describe('SecurityDashboard overview load errors (LEG-2682)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    toastSuccess.mockReset();
+    toastError.mockReset();
+    confirmMock.mockReset();
+    confirmMock.mockResolvedValue(true);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('surfaces security report 403 as scope denial in overview alert', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/security/report')) {
+        throw httpErr(403);
+      }
+      if (String(url).includes('/security/alerts')) {
+        return { data: { alerts: [], alert_count: 0, high_priority_count: 0 } };
+      }
+      return { data: {} };
+    });
+
+    renderDash();
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/Access denied/i);
+    });
+    expect(screen.getByRole('alert').textContent).toMatch(/security report scope/i);
+    expect(screen.getByRole('alert').textContent).not.toMatch(/HTTP 403/i);
+  });
+
+  it('surfaces security alerts 403 as scope denial in overview alert', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/security/report')) {
+        return { data: sampleReport };
+      }
+      if (String(url).includes('/security/alerts')) {
+        throw httpErr(403);
+      }
+      return { data: {} };
+    });
+
+    renderDash();
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/Access denied/i);
+    });
+    expect(screen.getByRole('alert').textContent).toMatch(/security alerts scope/i);
+    expect(screen.getByRole('alert').textContent).not.toMatch(/HTTP 403/i);
+  });
+
+  it('surfaces security report 429 as admin rate-limit copy in overview alert', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/security/report')) {
+        throw httpErr(429);
+      }
+      if (String(url).includes('/security/alerts')) {
+        return { data: { alerts: [], alert_count: 0, high_priority_count: 0 } };
+      }
+      return { data: {} };
+    });
+
+    renderDash();
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
+    });
+    expect(screen.getByRole('alert').textContent).toMatch(/security report/i);
+  });
+
+  it('surfaces security alerts 429 as admin rate-limit copy in overview alert', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/security/report')) {
+        return { data: sampleReport };
+      }
+      if (String(url).includes('/security/alerts')) {
+        throw httpErr(429);
+      }
+      return { data: {} };
+    });
+
+    renderDash();
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
+    });
+    expect(screen.getByRole('alert').textContent).toMatch(/security alerts/i);
   });
 });

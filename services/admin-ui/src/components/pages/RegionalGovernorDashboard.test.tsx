@@ -44,20 +44,38 @@ function httpErr(status: number, detail?: string) {
   });
 }
 
+const member = {
+  player_id: 'p1',
+  username: 'alice',
+  membership_type: 'citizen',
+  reputation_score: 100,
+  local_rank: '',
+  voting_power: 1.5,
+  joined_at: '2026-01-01T00:00:00Z',
+  last_visit: '2026-01-02T00:00:00Z',
+  total_visits: 3,
+};
+
+function mockRegionalGets(includeMembers = false) {
+  vi.mocked(api.get).mockImplementation(async (url: string) => {
+    if (url === '/api/v1/regions/my-region') return { data: region };
+    if (url.endsWith('/stats')) return { data: {} };
+    if (url.endsWith('/policies')) return { data: [] };
+    if (url.endsWith('/elections')) return { data: [] };
+    if (url.endsWith('/treaties')) return { data: [] };
+    if (url.endsWith('/members')) return { data: includeMembers ? [member] : [] };
+    return { data: {} };
+  });
+}
+
 describe('RegionalGovernorDashboard (LEG-213)', () => {
   beforeEach(() => {
     vi.mocked(useAuth).mockReturnValue({ user: { is_admin: false } } as any);
     vi.mocked(api.get).mockReset();
     vi.mocked(api.put).mockReset();
-    vi.mocked(api.get).mockImplementation(async (url: string) => {
-      if (url === '/api/v1/regions/my-region') return { data: region };
-      if (url.endsWith('/stats')) return { data: {} };
-      if (url.endsWith('/policies')) return { data: [] };
-      if (url.endsWith('/elections')) return { data: [] };
-      if (url.endsWith('/treaties')) return { data: [] };
-      if (url.endsWith('/members')) return { data: [] };
-      return { data: {} };
-    });
+    vi.mocked(api.post).mockReset();
+    vi.mocked(api.patch).mockReset();
+    mockRegionalGets(false);
   });
 
   it('loads region surfaces via shared api with no raw Bearer fetch', async () => {
@@ -97,6 +115,52 @@ describe('RegionalGovernorDashboard (LEG-213)', () => {
     await waitFor(() => {
       expect(screen.getByRole('alert').textContent).toMatch(/admin\.regions|region owner/i);
     });
+  });
+
+  it('surfaces scope denial on 403 stats load (LEG-2747)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url === '/api/v1/regions/my-region') return { data: region };
+      if (url === '/api/v1/regions/my-region/stats') {
+        throw httpErr(403, 'Missing scope admin.regions.view');
+      }
+      if (url.endsWith('/policies')) return { data: [] };
+      if (url.endsWith('/elections')) return { data: [] };
+      if (url.endsWith('/treaties')) return { data: [] };
+      if (url.endsWith('/members')) return { data: [] };
+      return { data: {} };
+    });
+
+    render(<RegionalGovernorDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(
+        /Missing scope admin\.regions\.view/i,
+      );
+    });
+    expect(screen.queryByText('Failed to load regional stats')).toBeNull();
+  });
+
+  it('shows rate-limit copy on 429 stats load (LEG-2747)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url === '/api/v1/regions/my-region') return { data: region };
+      if (url === '/api/v1/regions/my-region/stats') {
+        throw httpErr(429);
+      }
+      if (url.endsWith('/policies')) return { data: [] };
+      if (url.endsWith('/elections')) return { data: [] };
+      if (url.endsWith('/treaties')) return { data: [] };
+      if (url.endsWith('/members')) return { data: [] };
+      return { data: {} };
+    });
+
+    render(<RegionalGovernorDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
+    });
+    expect(screen.queryByText('Failed to load regional stats')).toBeNull();
   });
 
   it('shows admin rate-limit copy on 429 economy save', async () => {
@@ -183,6 +247,126 @@ describe('RegionalGovernorDashboard (LEG-213)', () => {
     await waitFor(() => {
       expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
     });
+  });
+
+  it('shows scope-aware copy on 403 createPolicy (LEG-2893)', async () => {
+    render(<RegionalGovernorDashboard />);
+    await waitFor(() => expect(screen.getByText('Sol Reach')).toBeTruthy());
+
+    vi.mocked(api.post).mockRejectedValueOnce(httpErr(403));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Policies' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Create Policy' })[0]!);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Create Policy' })[1]!);
+
+    await waitFor(() => {
+      expect(vi.mocked(api.post)).toHaveBeenCalledWith(
+        '/api/v1/regions/my-region/policies',
+        expect.objectContaining({ policy_type: expect.any(String) }),
+      );
+    });
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(
+        /region owner or admin\.regions scope|Access denied/i,
+      );
+    });
+    expect(screen.queryByText('Failed to create policy')).toBeNull();
+  });
+
+  it('shows admin rate-limit copy on 429 createPolicy (LEG-2893)', async () => {
+    render(<RegionalGovernorDashboard />);
+    await waitFor(() => expect(screen.getByText('Sol Reach')).toBeTruthy());
+
+    vi.mocked(api.post).mockRejectedValueOnce(httpErr(429));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Policies' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Create Policy' })[0]!);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Create Policy' })[1]!);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
+    });
+    expect(screen.queryByText('Failed to create policy')).toBeNull();
+  });
+
+  it('shows scope-aware copy on 403 updateMemberDials (LEG-2893)', async () => {
+    mockRegionalGets(true);
+    render(<RegionalGovernorDashboard />);
+    await waitFor(() => expect(screen.getByText('Sol Reach')).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Members' }));
+    await waitFor(() => expect(screen.getByText('alice')).toBeTruthy());
+
+    vi.mocked(api.patch).mockRejectedValueOnce(httpErr(403));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => {
+      expect(vi.mocked(api.patch)).toHaveBeenCalledWith(
+        '/api/v1/regions/my-region/members/p1',
+        expect.objectContaining({ voting_power: expect.any(Number) }),
+      );
+    });
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(
+        /region owner or admin\.regions scope|Access denied/i,
+      );
+    });
+    expect(screen.queryByText('Failed to update member dials')).toBeNull();
+  });
+
+  it('shows admin rate-limit copy on 429 updateMemberDials (LEG-2893)', async () => {
+    mockRegionalGets(true);
+    render(<RegionalGovernorDashboard />);
+    await waitFor(() => expect(screen.getByText('Sol Reach')).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Members' }));
+    await waitFor(() => expect(screen.getByText('alice')).toBeTruthy());
+
+    vi.mocked(api.patch).mockRejectedValueOnce(httpErr(429));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
+    });
+    expect(screen.queryByText('Failed to update member dials')).toBeNull();
+  });
+
+  it('shows scope-aware copy on 403 startElection (LEG-2893)', async () => {
+    render(<RegionalGovernorDashboard />);
+    await waitFor(() => expect(screen.getByText('Sol Reach')).toBeTruthy());
+
+    vi.mocked(api.post).mockRejectedValueOnce(httpErr(403));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Elections' }));
+    fireEvent.click(screen.getByRole('button', { name: /Start Governor Election/i }));
+
+    await waitFor(() => {
+      expect(vi.mocked(api.post)).toHaveBeenCalledWith(
+        '/api/v1/regions/my-region/elections',
+        expect.objectContaining({ position: 'governor' }),
+      );
+    });
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(
+        /region owner or admin\.regions scope|Access denied/i,
+      );
+    });
+    expect(screen.queryByText('Failed to start election')).toBeNull();
+  });
+
+  it('shows admin rate-limit copy on 429 startElection (LEG-2893)', async () => {
+    render(<RegionalGovernorDashboard />);
+    await waitFor(() => expect(screen.getByText('Sol Reach')).toBeTruthy());
+
+    vi.mocked(api.post).mockRejectedValueOnce(httpErr(429));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Elections' }));
+    fireEvent.click(screen.getByRole('button', { name: /Start Governor Election/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
+    });
+    expect(screen.queryByText('Failed to start election')).toBeNull();
   });
 });
 
