@@ -397,16 +397,25 @@ def service_charge_multiplier_for(station: Station) -> float:
     owner has not set a multiplier this returns 1.0 — a port with no service
     charge set prices services EXACTLY as today (reproduce-exactly). Defensively
     clamped to the canon 0.8x-2.0x range.
+
+    Soft-ORDER invent=0 (#2110): post-capture productivity_until applies an
+    additional 0.5× (operational disruption) after the owner clamp.
     """
     mods = getattr(station, "price_modifiers", None) or {}
     raw = mods.get(_SERVICE_CHARGE_KEY)
     if raw is None:
-        return 1.0
-    try:
-        mult = float(raw)
-    except (TypeError, ValueError):
-        return 1.0
-    return max(_SERVICE_CHARGE_MIN, min(_SERVICE_CHARGE_MAX, mult))
+        base = 1.0
+    else:
+        try:
+            mult = float(raw)
+        except (TypeError, ValueError):
+            base = 1.0
+        else:
+            base = max(_SERVICE_CHARGE_MIN, min(_SERVICE_CHARGE_MAX, mult))
+    # Lazy import: avoid cycle with port_ownership_service.
+    from src.services.port_ownership_service import station_productivity_multiplier
+
+    return float(base) * float(station_productivity_multiplier(station))
 
 
 # Canon docking-fee matrix (FEATURES/economy/station-protection.md §Docking
@@ -505,7 +514,10 @@ def docking_fee_for(
         policy = get_defense_policy(station)
         if str(player.id) in policy["hostility_list"]:
             fee = int(round(fee * float(policy["punitive_fee_mult"])))
-    return fee
+    # Soft-ORDER invent=0 (#2110): post-capture -50% productivity choke.
+    from src.services.port_ownership_service import station_productivity_multiplier
+
+    return int(round(fee * float(station_productivity_multiplier(station))))
 
 
 def occupant_tenure_hours(occupancy: DockingSlipOccupancy, now=None) -> float:
