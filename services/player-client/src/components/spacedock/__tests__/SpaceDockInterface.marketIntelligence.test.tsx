@@ -61,7 +61,9 @@ vi.mock('../../../services/api', async () => {
   };
 });
 
-import SpaceDockInterface from '../SpaceDockInterface';
+import SpaceDockInterface, {
+  formatSpaceDockMarketIntelError,
+} from '../SpaceDockInterface';
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
@@ -156,5 +158,44 @@ describe('SpaceDockInterface — market intelligence (LEG-1937)', () => {
     const alert = container.querySelector('[data-testid="market-intelligence-error"]');
     expect(alert?.getAttribute('role')).toBe('alert');
     expect(alert?.textContent).toBe('Must be docked at this station to view market intelligence.');
+  });
+
+  it('surfaces honest 429 fallback when detail is a bare API Error blob', async () => {
+    const err = Object.assign(new Error('API Error: 429'), { status: 429 });
+    mockGetMarketIntelligence.mockRejectedValue(err);
+    await act(async () => {
+      root.render(<SpaceDockInterface />);
+    });
+    const btn = container.querySelector(
+      '[data-testid="market-intelligence-service"]',
+    ) as HTMLButtonElement;
+    await act(async () => {
+      btn.click();
+      await flush();
+      await flush();
+    });
+    const alert = container.querySelector('[data-testid="market-intelligence-error"]');
+    expect(alert?.textContent).toBe(
+      'Market intelligence rate limit exceeded — wait a moment and try again.',
+    );
+  });
+});
+
+describe('formatSpaceDockMarketIntelError (LEG-2958)', () => {
+  it('preserves gameserver detail', () => {
+    const err = Object.assign(
+      new Error('Must be docked at this station to view market intelligence.'),
+      { status: 403 },
+    );
+    expect(formatSpaceDockMarketIntelError(err)).toBe(
+      'Must be docked at this station to view market intelligence.',
+    );
+  });
+
+  it('uses 403 fallback for bare API Error blob', () => {
+    const err = Object.assign(new Error('API Error: 403'), { status: 403 });
+    expect(formatSpaceDockMarketIntelError(err)).toBe(
+      'Access denied — you cannot view market intelligence right now.',
+    );
   });
 });

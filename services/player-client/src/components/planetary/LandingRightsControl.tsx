@@ -60,6 +60,38 @@ export function parseUuidList(raw: string): { ok: string[]; bad: string[] } {
   return { ok, bad };
 }
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+/** Surface GS landing-rights PUT detail; hide bare API Error status blobs (LEG-2952). */
+export function formatLandingRightsError(err: unknown): string {
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission to change landing rights.';
+  }
+
+  if (status === 429) {
+    return 'Landing-rights update rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (hasServerDetail) return message!;
+  return 'Failed to update landing rights.';
+}
+
 export interface LandingRightsControlProps {
   planetId: string;
   /** When false, render nothing (non-owner / not landed on own colony). */
@@ -145,8 +177,7 @@ export const LandingRightsControl: React.FC<LandingRightsControlProps> = ({
       setNotice(result?.message || `Landing rights set to ${applied}.`);
       onChanged?.(applied);
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to update landing rights.';
-      setError(message);
+      setError(formatLandingRightsError(err));
     } finally {
       setSaving(false);
     }

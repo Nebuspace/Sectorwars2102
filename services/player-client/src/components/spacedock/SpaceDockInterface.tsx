@@ -31,6 +31,76 @@ const getApiBaseUrl = () => {
   return window.location.origin;
 };
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+function hasNonBareApiDetail(err: unknown): string | undefined {
+  const message = err instanceof Error ? err.message : undefined;
+  if (
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim())
+  ) {
+    return message;
+  }
+  return undefined;
+}
+
+/** Surface GS market-intelligence detail; hide bare API Error: N blobs (LEG-2958). */
+export function formatSpaceDockMarketIntelError(err: unknown): string {
+  const status = httpStatus(err);
+  const detail = hasNonBareApiDetail(err);
+
+  if (status === 403) {
+    if (detail) return detail;
+    return 'Access denied — you cannot view market intelligence right now.';
+  }
+
+  if (status === 429) {
+    return 'Market intelligence rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (detail) return detail;
+  return 'Could not load market intelligence.';
+}
+
+/**
+ * Surface GS planetary-registry lookup detail (LEG-2959).
+ * 404 keeps the named-pilot copy; other failures get honesty fallbacks.
+ */
+export function formatSpaceDockRegistryLookupError(
+  err: unknown,
+  queryName?: string,
+): string {
+  const status = httpStatus(err);
+  if (status === 404) {
+    const name = (queryName ?? '').trim();
+    return name
+      ? `No pilot named "${name}" on record.`
+      : 'No pilot on record.';
+  }
+
+  const detail = hasNonBareApiDetail(err);
+  if (status === 403) {
+    if (detail) return detail;
+    return 'Access denied — registry lookup is not available right now.';
+  }
+
+  if (status === 429) {
+    return 'Registry lookup rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (detail) return detail;
+  return 'Lookup failed.';
+}
+
 // Venue type definitions
 type VenueType = 'hub' | 'trading' | 'shipyard' | 'construction' | 'portoffice' | 'contracts' | 'genesis' | 'armory' | 'services' | 'gambling' | 'mining' | 'refining';
 type GamblingGame = 'menu' | 'slots' | 'dice' | 'blackjack' | 'lottery';
@@ -439,9 +509,7 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
       setMarketIntel(data);
     } catch (err) {
       setMarketIntel(null);
-      setMarketIntelError(
-        err instanceof Error ? err.message : 'Could not load market intelligence.',
-      );
+      setMarketIntelError(formatSpaceDockMarketIntelError(err));
     } finally {
       setMarketIntelLoading(false);
     }
@@ -1550,11 +1618,7 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
       const data = await registryAPI.lookup(name);
       setRegistryResults(Array.isArray(data?.planets) ? data.planets : []);
     } catch (err) {
-      const status = (err as any)?.status;
-      const detail = status === 404
-        ? `No pilot named "${name}" on record.`
-        : err instanceof Error ? err.message : 'Lookup failed.';
-      setRegistryError(detail);
+      setRegistryError(formatSpaceDockRegistryLookupError(err, name));
     } finally {
       setRegistryLoading(false);
     }
