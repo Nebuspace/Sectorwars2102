@@ -27,6 +27,12 @@ import OwnershipTransferControl from '../OwnershipTransferControl';
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
+
 const OFFER = {
   from_player_id: 'owner-1',
   to_player_id: 'recipient-9',
@@ -189,5 +195,68 @@ describe('OwnershipTransferControl', () => {
 
     expect(container.querySelector('[data-testid="ownership-transfer-error"]')?.textContent)
       .toBe('Current owner cannot afford the 5% transfer fee.');
+  });
+
+  it('surfaces load 403 permission error in the alert (not silent empty panel)', async () => {
+    getOwnershipTransfer.mockRejectedValue(
+      apiRequestError(403, 'Only the planet owner may view transfer status.'),
+    );
+
+    await act(async () => {
+      root.render(
+        <OwnershipTransferControl
+          planetId="planet-1"
+          isOwned
+          currentPlayerId="owner-1"
+        />,
+      );
+      await flush();
+    });
+
+    const alert = container.querySelector('[data-testid="ownership-transfer-error"]');
+    expect(alert?.getAttribute('role')).toBe('alert');
+    expect(alert?.textContent).toContain('Only the planet owner may view transfer status.');
+    expect(container.querySelector('[data-testid="ownership-transfer-control"]')).toBeTruthy();
+  });
+
+  it('surfaces transfer offer 429 rate-limit error in the alert', async () => {
+    offerOwnershipTransfer.mockRejectedValue(
+      apiRequestError(429, 'Rate limit exceeded. Try again later.'),
+    );
+
+    await act(async () => {
+      root.render(
+        <OwnershipTransferControl
+          planetId="planet-1"
+          isOwned
+          currentPlayerId="owner-1"
+        />,
+      );
+      await flush();
+    });
+
+    const input = container.querySelector(
+      '[data-testid="ownership-transfer-recipient"]',
+    ) as HTMLInputElement;
+    await act(async () => {
+      const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        'value',
+      )?.set;
+      nativeInputValueSetter?.call(input, 'recipient-9');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      await flush();
+    });
+
+    await act(async () => {
+      (container.querySelector(
+        '[data-testid="ownership-transfer-offer"]',
+      ) as HTMLButtonElement).click();
+      await flush();
+    });
+
+    const alert = container.querySelector('[data-testid="ownership-transfer-error"]');
+    expect(alert?.getAttribute('role')).toBe('alert');
+    expect(alert?.textContent).toMatch(/rate limit exceeded/i);
   });
 });

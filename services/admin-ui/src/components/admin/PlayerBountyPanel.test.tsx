@@ -62,17 +62,64 @@ describe('PlayerBountyPanel', () => {
     expect(await screen.findByRole('button', { name: 'Force-cancel' })).toBeTruthy();
   }
 
-  it('auto-loads bounties for targetId and force-cancels an entry', async () => {
+  async function confirmForceCancel() {
+    fireEvent.click(screen.getByRole('button', { name: 'Force-cancel' }));
+    fireEvent.click(await screen.findByRole('button', { name: /Confirm\? · ₡5,000 refund/ }));
+  }
+
+  it('auto-loads bounties for targetId and force-cancels an entry above ₡1,000 after inline confirm', async () => {
     await loadTargetWithBounty();
     vi.mocked(api.post).mockResolvedValue({
       data: { success: true, refund: 5000, refunded: true },
     });
 
     fireEvent.click(screen.getByRole('button', { name: 'Force-cancel' }));
+    expect(api.post).not.toHaveBeenCalled();
+
+    fireEvent.click(await screen.findByRole('button', { name: /Confirm\? · ₡5,000 refund/ }));
 
     await waitFor(() => {
       expect(api.post).toHaveBeenCalledWith('/api/v1/admin/players/t1/bounties/b1/force-cancel');
     });
+  });
+
+  it('force-cancels at or below ₡1,000 in one click (ADR-0093)', async () => {
+    vi.mocked(api.get).mockResolvedValue({
+      data: {
+        success: true,
+        target_id: 't1',
+        target_name: 'Wanted',
+        player_bounties: [
+          {
+            id: 'b-low',
+            placed_by: 'p2',
+            placed_by_name: 'Placer',
+            amount: 1000,
+            type: 'player',
+          },
+        ],
+        system_bounties: [],
+        total_value: 1000,
+      },
+    });
+    vi.mocked(api.post).mockResolvedValue({
+      data: { success: true, refund: 1000, refunded: true },
+    });
+
+    render(<PlayerBountyPanel targetId="t1" targetName="Wanted" />);
+
+    await waitFor(() => {
+      expect(api.get).toHaveBeenCalledWith('/api/v1/admin/players/t1/bounties');
+    });
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Force-cancel' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/players/t1/bounties/b-low/force-cancel'
+      );
+    });
+    expect(screen.queryByRole('button', { name: /Confirm\?/ })).toBeNull();
   });
 
   it('calls collapse endpoint', async () => {
@@ -164,7 +211,7 @@ describe('PlayerBountyPanel', () => {
     await loadTargetWithBounty();
     vi.mocked(api.post).mockRejectedValue(axiosError(403));
 
-    fireEvent.click(screen.getByRole('button', { name: 'Force-cancel' }));
+    await confirmForceCancel();
 
     await waitFor(() => {
       expect(api.post).toHaveBeenCalledWith(
@@ -179,7 +226,7 @@ describe('PlayerBountyPanel', () => {
     await loadTargetWithBounty();
     vi.mocked(api.post).mockRejectedValue(axiosError(429));
 
-    fireEvent.click(screen.getByRole('button', { name: 'Force-cancel' }));
+    await confirmForceCancel();
 
     await waitFor(() => {
       expect(api.post).toHaveBeenCalledWith(
