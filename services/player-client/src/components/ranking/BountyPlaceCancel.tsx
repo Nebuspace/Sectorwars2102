@@ -48,6 +48,39 @@ function feeFor(amount: number): number {
   return Math.floor(amount * BOUNTY_PLACEMENT_FEE);
 }
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+/** Surface gameserver detail when inspect-on-target load fails. */
+export function formatBountyInspectLoadError(err: unknown): string {
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (status === 404) {
+    if (hasServerDetail) return message!;
+    return 'Target player not found.';
+  }
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'Access denied — you cannot inspect bounties on this target right now.';
+  }
+
+  if (hasServerDetail) return message!;
+  return 'Failed to load bounties on target';
+}
+
 const BountyPlaceCancel: React.FC<BountyPlaceCancelProps> = ({
   placeBounty,
   cancelBounty,
@@ -101,7 +134,7 @@ const BountyPlaceCancel: React.FC<BountyPlaceCancelProps> = ({
         return result;
       } catch (err) {
         setInspect(null);
-        setError(err instanceof Error ? err.message : 'Failed to load bounties on target');
+        setError(formatBountyInspectLoadError(err));
         return null;
       } finally {
         setBusy(null);

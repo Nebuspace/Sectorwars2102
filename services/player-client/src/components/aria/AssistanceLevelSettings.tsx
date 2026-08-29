@@ -27,6 +27,41 @@ const LEVEL_LABEL: Record<AIAssistanceLevel, string> = {
   full: 'Full',
 };
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+/** Surface gameserver detail on ARIA profile load/update refusals. */
+export function formatAssistanceLevelError(
+  err: unknown,
+  context: 'load' | 'update',
+): string {
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+  const fallback =
+    context === 'load'
+      ? 'Failed to load ARIA assistance level'
+      : 'Failed to update ARIA assistance level';
+
+  if (status === 403 || status === 429 || status === 500) {
+    if (hasServerDetail) return message!;
+    return fallback;
+  }
+
+  if (hasServerDetail) return message!;
+  return fallback;
+}
+
 const AssistanceLevelSettings: React.FC = () => {
   const [level, setLevel] = useState<AIAssistanceLevel>('standard');
   const [riskTolerance, setRiskTolerance] = useState(0.5);
@@ -44,7 +79,7 @@ const AssistanceLevelSettings: React.FC = () => {
         typeof profile?.risk_tolerance === 'number' ? profile.risk_tolerance : 0.5,
       );
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load ARIA assistance level');
+      setError(formatAssistanceLevelError(err, 'load'));
     } finally {
       setLoading(false);
     }
@@ -69,7 +104,7 @@ const AssistanceLevelSettings: React.FC = () => {
       });
       setLevel(coerced);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update ARIA assistance level');
+      setError(formatAssistanceLevelError(err, 'update'));
     } finally {
       setSaving(false);
     }

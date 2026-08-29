@@ -101,10 +101,12 @@ describe('ContractDisputeArbitration resolve mutation errors (LEG-2625)', () => 
       );
     });
 
-    const resolveError = document.querySelector('.resolve-error');
-    expect(resolveError).toBeTruthy();
-    expect(resolveError?.textContent).toMatch(/Missing scope admin\.contracts\.disputes\.resolve/i);
-    expect(resolveError?.textContent).not.toMatch(/^Failed to resolve dispute$/);
+    await waitFor(() => {
+      const resolveError = document.querySelector('.resolve-error');
+      expect(resolveError).toBeTruthy();
+      expect(resolveError?.textContent).toMatch(/Missing scope admin\.contracts\.disputes\.resolve/i);
+      expect(resolveError?.textContent).not.toMatch(/^Failed to resolve dispute$/);
+    });
   });
 
   it('shows rate-limit copy on resolve POST 429', async () => {
@@ -117,9 +119,11 @@ describe('ContractDisputeArbitration resolve mutation errors (LEG-2625)', () => 
       expect(api.post).toHaveBeenCalled();
     });
 
-    const resolveError = document.querySelector('.resolve-error');
-    expect(resolveError).toBeTruthy();
-    expect(resolveError?.textContent).toMatch(/rate limit/i);
-    expect(resolveError?.textContent).not.toMatch(/^Failed to resolve dispute$/);
+    await waitFor(() => {
+      const resolveError = document.querySelector('.resolve-error');
+      expect(resolveError).toBeTruthy();
+      expect(resolveError?.textContent).toMatch(/rate limit/i);
+      expect(resolveError?.textContent).not.toMatch(/^Failed to resolve dispute$/);
+    });
   });
 });
