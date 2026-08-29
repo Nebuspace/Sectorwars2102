@@ -71,4 +71,17 @@ describe('ColonyOverview (LEG-212 shared api)', () => {
       expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
     });
   });
+
+  it('surfaces honest fallback on non-RBAC network collapse (LEG-2947)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<ColonyOverview />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/Failed to load colonies/i);
+    });
+    const text = screen.getByRole('alert').textContent ?? '';
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
 });

@@ -129,6 +129,22 @@ describe('PlanetaryManagement (LEG-151)', () => {
     expect(alert).toMatch(/rate limit/i);
     expect(alert).not.toMatch(/Failed to load planetary data \(HTTP 429\)/);
   });
+
+  it('surfaces honest fallback on non-RBAC network collapse (LEG-2948)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<PlanetaryManagement />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Gameserver unreachable|network error fetching planetary/i);
+    expect(alert).not.toMatch(/TypeError/i);
+    expect(alert).not.toBe('Failed to fetch');
+    expect(alert).not.toMatch(/Failed to load planetary data/i);
+  });
 });
 
 describe('PlanetaryManagement force tick errors (LEG-2769)', () => {
@@ -182,5 +198,21 @@ describe('PlanetaryManagement force tick errors (LEG-2769)', () => {
     const alert = screen.getByRole('alert');
     expect(alert.textContent).toMatch(/rate limit/i);
     expect(alert.textContent).not.toMatch(/HTTP 429/);
+  });
+
+  it('surfaces honest fallback on force tick TypeError (LEG-2948)', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.post).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await openPlanetAndForceTick(user);
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith('/api/v1/admin/planets/pl-1/tick');
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Gameserver unreachable|network error advancing production/i);
+    expect(alert).not.toMatch(/TypeError/i);
+    expect(alert).not.toBe('Failed to fetch');
   });
 });
