@@ -142,6 +142,48 @@ describe('RegionalGovernorDashboard (LEG-213)', () => {
       );
     });
   });
+
+  it('shows scope-aware copy on 403 governance save (LEG-2783)', async () => {
+    render(<RegionalGovernorDashboard />);
+    await waitFor(() => expect(screen.getByText('Sol Reach')).toBeTruthy());
+
+    vi.mocked(api.put).mockRejectedValueOnce(httpErr(403));
+
+    fireEvent.click(screen.getByRole('button', { name: /governance/i }));
+    fireEvent.click(screen.getByRole('button', { name: /update governance/i }));
+
+    await waitFor(() => {
+      expect(vi.mocked(api.put)).toHaveBeenCalledWith(
+        '/api/v1/regions/my-region/governance',
+        expect.objectContaining({ governance_type: expect.any(String) }),
+      );
+    });
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(
+        /region owner or admin\.regions scope|Access denied/i,
+      );
+    });
+  });
+
+  it('shows admin rate-limit copy on 429 governance save (LEG-2783)', async () => {
+    render(<RegionalGovernorDashboard />);
+    await waitFor(() => expect(screen.getByText('Sol Reach')).toBeTruthy());
+
+    vi.mocked(api.put).mockRejectedValueOnce(httpErr(429));
+
+    fireEvent.click(screen.getByRole('button', { name: /governance/i }));
+    fireEvent.click(screen.getByRole('button', { name: /update governance/i }));
+
+    await waitFor(() => {
+      expect(vi.mocked(api.put)).toHaveBeenCalledWith(
+        '/api/v1/regions/my-region/governance',
+        expect.objectContaining({ governance_type: expect.any(String) }),
+      );
+    });
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
+    });
+  });
 });
 
 describe('BeaconSectorCap (LEG-1014)', () => {
