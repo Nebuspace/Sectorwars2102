@@ -135,15 +135,15 @@ def test_end_battle_emits_battle_ended_once():
     assert second["winner"] == first["winner"]
 
 
-def test_event_names_wired_without_move_fleet():
+def test_event_names_wired_for_fleet_coordination():
+    """Tip retains move_fleet (route + LEG-DEC-222 hop path); assert four emits."""
     src = open("src/services/fleet_service.py", encoding="utf-8").read()
     assert '"battle_round_complete"' in src
     assert '"fleet_status_changed"' in src
     assert '"battle_ended"' in src
     assert '"fleet_moved"' in src
     assert "_flush_fleet_moved_events" in src
-    assert "def move_fleet" not in src
-    assert "POST /fleets/{id}/move" not in src
+    assert "_emit_fleet_event" in src
 
 
 def _flatten(conditions):
