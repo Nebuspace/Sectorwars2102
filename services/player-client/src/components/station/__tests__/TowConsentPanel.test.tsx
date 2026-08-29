@@ -27,7 +27,7 @@ vi.mock('../../tactical/contactClassification', () => ({
   useSectorContacts: () => [],
 }));
 
-import TowConsentPanel from '../TowConsentPanel';
+import TowConsentPanel, { formatTowActionError } from '../TowConsentPanel';
 
 const flush = async () => {
   await act(async () => {
@@ -108,5 +108,23 @@ describe('TowConsentPanel', () => {
     await flush();
 
     expect(accept).toHaveBeenCalledWith('hauler-1');
+  });
+
+  it('surfaces accept 400 server detail in feedback', async () => {
+    getStatus.mockResolvedValue({
+      towing: null, being_towed_by: null, pending_outgoing: null,
+      pending_incoming: { hauler_id: 'hauler-1', towed_ship_id: 'me', surcharge_per_move: 2, request_state: 'PENDING' },
+    });
+    accept.mockRejectedValue(Object.assign(new Error('Tow request expired'), { status: 400 }));
+    await act(async () => { root.render(<TowConsentPanel />); });
+    await flush();
+    const btn = container.querySelector('[data-testid="tow-consent-accept"]') as HTMLButtonElement;
+    await act(async () => { btn.click(); });
+    await flush();
+    expect(container.querySelector('[data-testid="tow-consent-feedback"]')?.textContent).toBe('Tow request expired');
+  });
+
+  it('formatTowActionError falls back when detail absent', () => {
+    expect(formatTowActionError(new Error('API Error: 500'))).toBe('Tow action failed');
   });
 });

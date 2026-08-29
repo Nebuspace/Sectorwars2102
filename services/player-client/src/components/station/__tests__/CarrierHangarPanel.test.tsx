@@ -33,7 +33,7 @@ vi.mock('../../../contexts/GameContext', () => ({
   useGame: () => ({ refreshPlayerState: vi.fn().mockResolvedValue(undefined) }),
 }));
 
-import CarrierHangarPanel from '../CarrierHangarPanel';
+import CarrierHangarPanel, { formatHangarActionError } from '../CarrierHangarPanel';
 
 const flush = async () => {
   await act(async () => {
@@ -113,5 +113,23 @@ describe('CarrierHangarPanel', () => {
     });
     await flush();
     expect(accept).toHaveBeenCalledWith('c1', 's1');
+  });
+
+  it('surfaces accept 400 server detail in feedback', async () => {
+    getStatus.mockResolvedValue({
+      hangared_on: null, pending_outgoing: null,
+      owned_carrier: { carrier_id: 'c1', capacity_units: 8, used_units: 0, docked: [{ ship_id: 's1', request_state: 'PENDING', size_units: 2 }] },
+    });
+    accept.mockRejectedValue(Object.assign(new Error('Hangar capacity exceeded'), { status: 400 }));
+    await act(async () => { root.render(<CarrierHangarPanel />); });
+    await flush();
+    const btn = container.querySelector('[data-testid="carrier-hangar-accept-s1"]') as HTMLButtonElement;
+    await act(async () => { btn.click(); });
+    await flush();
+    expect(container.querySelector('[data-testid="carrier-hangar-feedback"]')?.textContent).toBe('Hangar capacity exceeded');
+  });
+
+  it('formatHangarActionError falls back when detail absent', () => {
+    expect(formatHangarActionError(new Error('API Error: 500'))).toBe('Hangar action failed');
   });
 });

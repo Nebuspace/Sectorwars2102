@@ -20,6 +20,35 @@ interface SiegePhaseInfo {
   defenseOptions: string[];
 }
 
+function serverDetail(err: unknown): string | undefined {
+  if (err && typeof err === 'object') {
+    const rawDetail = (err as { response?: { data?: { detail?: unknown } } }).response?.data
+      ?.detail;
+    if (typeof rawDetail === 'string' && rawDetail.trim()) return rawDetail.trim();
+  }
+  const message = err instanceof Error ? err.message : undefined;
+  if (
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim())
+  ) {
+    return message.trim();
+  }
+  return undefined;
+}
+
+export function formatSiegeAidError(err: unknown): string {
+  const detail = serverDetail(err);
+  if (detail) return detail;
+  return 'Failed to send emergency aid request.';
+}
+
+export function formatSiegeHailError(err: unknown): string {
+  const detail = serverDetail(err);
+  if (detail) return detail;
+  return 'Failed to send negotiation hail.';
+}
+
 const SIEGE_PHASES: SiegePhaseInfo[] = [
   {
     phase: 'orbital',
@@ -190,9 +219,7 @@ export const SiegeStatusMonitor: React.FC<SiegeStatusMonitorProps> = ({
       );
       setActionFeedback('Emergency aid request sent to your team.');
     } catch (err) {
-      setActionFeedback(
-        err instanceof Error ? err.message : 'Failed to send emergency aid request.'
-      );
+      setActionFeedback(formatSiegeAidError(err));
     } finally {
       setActionBusy(false);
     }
@@ -228,9 +255,7 @@ export const SiegeStatusMonitor: React.FC<SiegeStatusMonitorProps> = ({
       );
       setActionFeedback('Negotiation hail sent to the besieger.');
     } catch (err) {
-      setActionFeedback(
-        err instanceof Error ? err.message : 'Failed to send negotiation hail.'
-      );
+      setActionFeedback(formatSiegeHailError(err));
     } finally {
       setActionBusy(false);
     }
