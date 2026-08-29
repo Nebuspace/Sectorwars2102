@@ -271,10 +271,11 @@ class _FakePresenceSweepDB:
         # (2-tuple keyed by Player.id) rather than the 2nd column's identity.
         if len(entities) == 2 and entities[0] is Player.id:
             return _PlayerFreshnessBranch(self._player_rows)
-        # QUEUE-HEAL-ENTRY-SHAPE (2026-07-16): grew from 7 to 9 entities --
-        # trailing Ship.name/Ship.type added via an outer join so the heal
-        # pass can stop hardcoding ship_name/ship_type to "None".
-        if len(entities) == 9 and entities[0] is Player.id and entities[1] is Player.current_sector_id:
+        # QUEUE-HEAL-ENTRY-SHAPE (2026-07-16) + LEG-391: grew to 10 entities --
+        # trailing Ship.name/Ship.type/Ship.attack_turn_cost via outer join so
+        # the heal pass can stop hardcoding ship_name/ship_type to "None" and
+        # can carry attack_turn_cost into build_presence_entry.
+        if len(entities) == 10 and entities[0] is Player.id and entities[1] is Player.current_sector_id:
             if self._raise_on_heal_query:
                 raise RuntimeError("simulated heal-candidate-query construction crash")
             return _FreshPlayersForHealBranch(self._fresh_players_for_heal)
@@ -536,7 +537,7 @@ class TestPresenceSweepHeal:
             player_rows=[],
             sectors_by_sector_id={sid: sector},
             fresh_players_for_heal=[
-                (pid, sid, "sweepclean", ship_id, None, pose, _FRESH_LOGIN, "Nomad", ship_type),
+                (pid, sid, "sweepclean", ship_id, None, pose, _FRESH_LOGIN, "Nomad", ship_type, 3),
             ],
         )
 
@@ -558,6 +559,7 @@ class TestPresenceSweepHeal:
         assert entry["ship_id"] == str(ship_id)
         assert entry["ship_name"] == "Nomad"
         assert entry["ship_type"] == "LIGHT_FREIGHTER"
+        assert entry["attack_turn_cost"] == 3
 
     def test_completes_an_existing_pose_less_human_entry(self) -> None:
         """Live repro #1: ensure_player_pose's lazy create-on-GET never
@@ -582,7 +584,7 @@ class TestPresenceSweepHeal:
             sectors_by_pk={},
             player_rows=[],
             sectors_by_sector_id={sid: sector},
-            fresh_players_for_heal=[(pid, sid, "Shouden", None, None, pose, _FRESH_LOGIN, None, None)],
+            fresh_players_for_heal=[(pid, sid, "Shouden", None, None, pose, _FRESH_LOGIN, None, None, None)],
         )
 
         with patch("src.core.database.SessionLocal", return_value=db):
@@ -627,7 +629,7 @@ class TestPresenceSweepHeal:
             sectors_by_pk={},
             player_rows=[],
             sectors_by_sector_id={sid: sector},
-            fresh_players_for_heal=[(pid, sid, "NewArrival", None, None, pose, _FRESH_LOGIN, None, None)],
+            fresh_players_for_heal=[(pid, sid, "NewArrival", None, None, pose, _FRESH_LOGIN, None, None, None)],
         )
 
         with patch("src.core.database.SessionLocal", return_value=db):
@@ -655,7 +657,7 @@ class TestPresenceSweepHeal:
             sectors_by_pk={pk_a: sector_a},
             player_rows=[(stale_human, now - timedelta(minutes=90))],
             sectors_by_sector_id={sid_b: sector_b},
-            fresh_players_for_heal=[(missing_pid, sid_b, "New Player", None, None, pose, now, None, None)],
+            fresh_players_for_heal=[(missing_pid, sid_b, "New Player", None, None, pose, now, None, None, None)],
         )
 
         with patch("src.core.database.SessionLocal", return_value=db):
@@ -701,8 +703,8 @@ class TestPresenceSweepHeal:
             player_rows=[(str(fresh_pid), now), (str(stale_pid), stale_login)],
             sectors_by_sector_id={sid: sector},
             fresh_players_for_heal=[
-                (fresh_pid, sid, "fresh-player", None, None, fresh_pose, now, None, None),
-                (stale_pid, sid, "stale-player", None, None, fresh_pose, stale_login, None, None),
+                (fresh_pid, sid, "fresh-player", None, None, fresh_pose, now, None, None, None),
+                (stale_pid, sid, "stale-player", None, None, fresh_pose, stale_login, None, None, None),
             ],
         )
 

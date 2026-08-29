@@ -677,6 +677,7 @@ def build_presence_entry(
     arrived_at: Optional[datetime] = None,
     pinned_medal_id: Optional[str] = None,
     medal_count: Optional[int] = None,
+    attack_turn_cost: Optional[int] = None,
 ) -> Dict[str, Any]:
     """QUEUE-HEAL-ENTRY-SHAPE (2026-07-16): the SINGLE canonical
     ``players_present`` entry constructor -- used by BOTH the organic
@@ -724,6 +725,11 @@ def build_presence_entry(
     LEG-59: ``pinned_medal_id`` / ``medal_count`` are part of the canonical
     key-set (defaults null) so heal + organic stay key-parity; live values
     are also re-derived on read in ``enrich_presence_with_live_pose``.
+
+    LEG-391: ``attack_turn_cost`` is the defender-side combat tip field
+    (Ship.attack_turn_cost / ShipSpecification column). JSON null when
+    unset — never invent the combat resolver's ``or 2`` floor here; PC
+    Combat HUD prefers this tip field when present.
     """
     if arrived_at is None:
         arrived_at = datetime.now(timezone.utc)
@@ -739,6 +745,7 @@ def build_presence_entry(
         "arrived_at": arrived_at.isoformat(),
         "pinned_medal_id": pinned_medal_id,
         "medal_count": medal_count,
+        "attack_turn_cost": attack_turn_cost,
     }
 
 
@@ -846,6 +853,26 @@ def enrich_presence_with_live_pose(db: Session, present: List[Dict[str, Any]]) -
         ):
             medal_counts[str(pid)] = int(n)
 
+    # LEG-391: batch-load ships so REST presence carries live attack_turn_cost
+    # (write-time mirror may be stale / pre-LEG-391). Null when unset — no
+    # combat-resolver floor invented on the tip payload.
+    from src.models.ship import Ship
+
+    ship_ids: List[Any] = []
+    for p in player_by_id.values():
+        sid = getattr(p, "current_ship_id", None)
+        if sid is not None:
+            ship_ids.append(sid)
+    for n in npc_by_id.values():
+        sid = getattr(n, "ship_id", None)
+        if sid is not None:
+            ship_ids.append(sid)
+    ship_by_id: Dict[str, Any] = {}
+    if ship_ids:
+        ship_by_id = {
+            str(s.id): s for s in db.query(Ship).filter(Ship.id.in_(ship_ids)).all()
+        }
+
     enriched: List[Dict[str, Any]] = []
     for e in present:
         if not isinstance(e, dict):
@@ -898,6 +925,10 @@ def enrich_presence_with_live_pose(db: Session, present: List[Dict[str, Any]]) -
                         pose_source = empty_idle_pose(int(sector_id), ship_key)
                 if pose_source is not None:
                     e["pose"] = pose_public(pose_source)
+                npc_ship = ship_by_id.get(str(getattr(n, "ship_id", None) or ""))
+                e["attack_turn_cost"] = (
+                    getattr(npc_ship, "attack_turn_cost", None) if npc_ship else None
+                )
         else:
             p = player_by_id.get(str(e.get("player_id")))
             if p is not None:
@@ -920,6 +951,10 @@ def enrich_presence_with_live_pose(db: Session, present: List[Dict[str, Any]]) -
                 )
                 e["pinned_medal_id"] = medal_fields["pinned_medal_id"]
                 e["medal_count"] = medal_fields["medal_count"]
+                human_ship = ship_by_id.get(str(getattr(p, "current_ship_id", None) or ""))
+                e["attack_turn_cost"] = (
+                    getattr(human_ship, "attack_turn_cost", None) if human_ship else None
+                )
         enriched.append(e)
     return enriched
 
