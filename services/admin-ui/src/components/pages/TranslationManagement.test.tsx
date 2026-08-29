@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import TranslationManagement from './TranslationManagement';
 import { api } from '../../utils/auth';
 
@@ -10,10 +11,12 @@ vi.mock('../../utils/auth', () => ({
   },
 }));
 
+const toastError = vi.fn();
+
 vi.mock('../../contexts/ToastContext', () => ({
   useToast: () => ({
     success: vi.fn(),
-    error: vi.fn(),
+    error: toastError,
     warning: vi.fn(),
     info: vi.fn(),
   }),
@@ -27,6 +30,77 @@ vi.mock('../../contexts/AuthContext', () => ({
 vi.mock('../ui/PageHeader', () => ({
   default: ({ title }: { title: string }) => <h1>{title}</h1>,
 }));
+
+const axiosError = (status: number, detail?: string) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: detail ? { detail } : {} },
+  });
+
+const sampleLanguage = {
+  code: 'en',
+  name: 'English',
+  nativeName: 'English',
+  direction: 'ltr',
+  isActive: true,
+  completionPercentage: 80,
+};
+
+const sampleProgress = {
+  language: 'en',
+  overallCompletion: 80,
+  totalKeys: 50,
+  translatedKeys: 40,
+  namespaces: {
+    common: {
+      totalKeys: 50,
+      translatedKeys: 40,
+      verifiedKeys: 35,
+      completionPercentage: 80,
+      lastUpdated: '2026-01-01T00:00:00Z',
+    },
+  },
+};
+
+function mockSuccessfulLoad() {
+  vi.mocked(api.get).mockImplementation((url: string) => {
+    if (url === '/api/v1/i18n/admin/languages/all') {
+      return Promise.resolve({ data: [sampleLanguage] });
+    }
+    if (url === '/api/v1/i18n/admin/progress/en') {
+      return Promise.resolve({ data: sampleProgress });
+    }
+    if (url === '/api/v1/i18n/en/common') {
+      return Promise.resolve({ data: { buttons: { save: 'Save' } } });
+    }
+    return Promise.reject(new Error(`Unexpected GET ${url}`));
+  });
+}
+
+async function openSaveKeyFlow() {
+  render(<TranslationManagement />);
+
+  await waitFor(() => {
+    expect(screen.getByRole('button', { name: 'View progress' })).toBeTruthy();
+  });
+
+  fireEvent.click(screen.getByRole('button', { name: 'View progress' }));
+
+  await waitFor(() => {
+    expect(screen.getByText('Progress: en')).toBeTruthy();
+  });
+
+  fireEvent.click(screen.getByRole('button', { name: 'Browse' }));
+
+  await waitFor(() => {
+    expect(screen.getByText('buttons.save')).toBeTruthy();
+  });
+
+  fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+
+  await waitFor(() => {
+    expect(screen.getByText('Edit Translation Key')).toBeTruthy();
+  });
+}
 
 describe('TranslationManagement scope errors (LEG-925)', () => {
   beforeEach(() => {
@@ -61,5 +135,52 @@ describe('TranslationManagement scope errors (LEG-925)', () => {
     await waitFor(() => {
       expect(screen.getByText(/rate limit/i)).toBeTruthy();
     });
+  });
+});
+
+describe('TranslationManagement save-key mutation errors (LEG-2626)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    toastError.mockReset();
+    mockSuccessfulLoad();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('surfaces formatAdminApiError on save-key POST 403', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.post).mockRejectedValue(
+      axiosError(403, 'Missing scope admin.i18n.manage'),
+    );
+
+    await openSaveKeyFlow();
+    await user.click(screen.getByRole('button', { name: /^Save$/i }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/i18n/admin/translation/en/common',
+        expect.objectContaining({ key: 'buttons.save' }),
+      );
+    });
+
+    expect(toastError).toHaveBeenCalledWith(
+      expect.stringMatching(/Missing scope admin\.i18n\.manage/i),
+    );
+    expect(toastError).not.toHaveBeenCalledWith('Failed to save translation key');
+  });
+
+  it('shows rate-limit copy on save-key POST 429', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.post).mockRejectedValue(axiosError(429));
+
+    await openSaveKeyFlow();
+    await user.click(screen.getByRole('button', { name: /^Save$/i }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalled();
+    });
+
+    expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/rate limit/i));
+    expect(toastError).not.toHaveBeenCalledWith('Failed to save translation key');
   });
 });

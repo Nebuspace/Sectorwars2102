@@ -9,7 +9,7 @@
 }
 
 .p2p-trade-desk {
-  width: min(420px, 92vw);
+  width: min(520px, 94vw);
   max-height: 90vh;
   overflow: auto;
   background: #0b1520;
@@ -82,11 +82,63 @@
   font-size: 0.8rem;
 }
 
-.p2p-trade-desk__field input {
+.p2p-trade-desk__field input,
+.p2p-trade-desk__field select {
   background: #061018;
   border: 1px solid #3a6a8a;
   color: inherit;
   padding: 0.35rem 0.5rem;
+}
+
+.p2p-trade-desk__offer-body p {
+  margin: 0 0 0.25rem;
+}
+
+.p2p-trade-desk__offer-list,
+.p2p-trade-desk__draft-list {
+  margin: 0.25rem 0 0;
+  padding-left: 1.1rem;
+  font-size: 0.8rem;
+}
+
+.p2p-trade-desk__commodity-stage {
+  display: grid;
+  grid-template-columns: 1fr 5rem auto;
+  gap: 0.5rem;
+  align-items: end;
+  margin-bottom: 0.75rem;
+}
+
+.p2p-trade-desk__commodity-stage .p2p-trade-desk__field {
+  margin-bottom: 0;
+}
+
+.p2p-trade-desk__commodity-stage button {
+  background: #12324a;
+  border: 1px solid #3a6a8a;
+  color: inherit;
+  padding: 0.4rem 0.55rem;
+  cursor: pointer;
+  height: fit-content;
+}
+
+.p2p-trade-desk__ships {
+  border: 1px solid #2a4a62;
+  margin: 0 0 0.75rem;
+  padding: 0.5rem 0.65rem;
+  font-size: 0.8rem;
+}
+
+.p2p-trade-desk__ships legend {
+  padding: 0 0.25rem;
+  color: #7a94a8;
+}
+
+.p2p-trade-desk__check {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0.2rem 0;
 }
 
 .p2p-trade-desk__row {
@@ -106,4 +158,16 @@
 .p2p-trade-desk__row button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.p2p-trade-desk__fuel {
+  border: 1px solid #2a4a62;
+  margin: 0 0 0.75rem;
+  padding: 0.5rem 0.65rem;
+  font-size: 0.8rem;
+}
+
+.p2p-trade-desk__fuel legend {
+  padding: 0 0.25rem;
+  color: #7a94a8;
 }

@@ -39,6 +39,9 @@ vi.mock('../../../services/api', () => ({
   // WO-UI2-LIVING-WINDSHIELD: the flight SSV's SCAN-layer wrecks fetch --
   // not under test here, resolved empty so the mount doesn't reject.
   sectorAPI: { sectorWrecks: vi.fn().mockResolvedValue([]), getContents: vi.fn().mockResolvedValue({ star: null, bodies: [] }), },
+  planetaryAPI: {
+    getOwnershipTransfer: vi.fn().mockResolvedValue({ planet_id: '', pending: false, offer: null }),
+  },
 }));
 
 vi.mock('react-router-dom', () => ({
@@ -57,6 +60,8 @@ vi.mock('../../planetary/PopulationCenterInterface', () => ({ default: () => <di
 vi.mock('../../tactical/SolarSystemViewscreen', () => ({ default: () => <div /> }));
 // WO-UI2-WINDSHIELD-TABLEAU: flight-mode mount is now WindshieldTableau.
 vi.mock('../../tactical/WindshieldTableau', () => ({ default: () => <div /> }));
+vi.mock('../../mining/NearestAmRefineryOverlay', () => ({ default: () => null }));
+vi.mock('../../mining/HarvestYieldPreview', () => ({ default: () => null, HARVEST_GATE_COPY: {} }));
 vi.mock('../../tactical/PlanetPortPair', () => ({ default: () => <div /> }));
 vi.mock('../../quantum/QuantumDriveConsole', () => ({ default: () => <div /> }));
 vi.mock('../../gatewright/GatewrightPanel', () => ({ default: () => <div /> }));

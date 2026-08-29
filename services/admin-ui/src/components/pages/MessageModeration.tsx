@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { api } from '../../utils/auth';
 import { formatAdminApiError } from '../../utils/adminApiError';
 import { useToast, useConfirm } from '../../contexts/ToastContext';
@@ -26,6 +27,7 @@ interface FlaggedMessageAlert {
  *   GET  /api/v1/admin/messages/flagged?page=N   -> FlaggedMessagesResponse
  *   GET  /api/v1/admin/messages/stats            -> MessageStats
  *   POST /api/v1/admin/messages/{id}/moderate    -> { success: boolean }
+ *   POST /api/v1/admin/messages/bulk-moderate    -> BulkModerateResponse (LEG-270 / LEG-266)
  *   GET  /api/v1/admin/beacons/flagged?page=N    -> FlaggedBeaconsResponse
  *   POST /api/v1/admin/beacons/{id}/clear-flag   -> { success, flagged, ... }
  *   POST /api/v1/admin/beacons/{id}/confirm-abuse -> { success, removed, deployer_player_id, trust_before, trust_after, trust_dock, aria_violation_count }
@@ -47,6 +49,10 @@ interface FlaggedMessage {
   flagged: boolean;
   is_read: boolean;
   sender_name?: string;
+  /** LEG-2690 — prior canon `block` actions in rolling 30d (GS flagged list enrich). */
+  sender_block_count_30d?: number;
+  /** LEG-2690 — audit escalation marker already logged for sender (no account_review invent). */
+  sender_escalation_logged?: boolean;
 }
 
 interface FlaggedBeacon {
@@ -101,7 +107,32 @@ interface MessageStats {
   most_active_senders: ActiveSender[];
 }
 
+/** LEG-266 Accepted contract (PR #711) — mass message moderation. */
+interface BulkModerateItemResult {
+  message_id: string;
+  success: boolean;
+  detail?: string | null;
+}
+
+interface BulkModerateResponse {
+  action: string;
+  succeeded: number;
+  failed: number;
+  results: BulkModerateItemResult[];
+}
+
 type ModerationAction = 'delete' | 'unflag';
+type CanonModerationAction = 'accept' | 'redact' | 'block';
+
+interface CanonModerationResponse {
+  success: boolean;
+  action: string;
+  message_id: string;
+  rep_delta: number;
+  sender_notified: boolean;
+  block_count_30d: number;
+  escalation_audit_logged: boolean;
+}
 
 const formatTimestamp = (value: string | null): string => {
   if (!value) return '—';
@@ -119,11 +150,55 @@ const recipientLabel = (message: FlaggedMessage): string => {
   return '—';
 };
 
+/** LEG-2690 — honest empty when GS omits field (rollout) or count is 0. */
+const SenderBlockCountBadge: React.FC<{
+  count?: number;
+  escalationLogged?: boolean;
+}> = ({ count, escalationLogged }) => {
+  if (count === undefined || count < 1) return null;
+
+  const escalated = count >= 2 || escalationLogged === true;
+  const label =
+    count === 1 ? '1 block in the last 30 days' : `${count} blocks in the last 30 days`;
+
+  return (
+    <span
+      className={
+        escalated
+          ? 'msgmod-block-badge msgmod-block-badge--escalation'
+          : 'msgmod-block-badge'
+      }
+      aria-label={
+        escalated
+          ? `Sender escalation risk: ${label}`
+          : `Sender block history: ${label}`
+      }
+      title={
+        escalated
+          ? '2+ blocks in 30 days — escalation threshold (LEG-DEC-157)'
+          : label
+      }
+    >
+      {count === 1 ? '1 block/30d' : `${count} blocks/30d`}
+    </span>
+  );
+};
+
 // NO-CANON (flagged to DECISIONS): fallback display when a sender's nickname
 // is missing/null — a truncated UUID rather than 'Unknown', so the row still
 // carries a stable, at-a-glance identifier an admin can search on.
 const senderLabel = (playerId: string, nickname?: string | null): string =>
   nickname ?? `${playerId.slice(0, 8)}…`;
+
+/** Deep-link into AdminActionLog ledger filters (LEG-2703). */
+export const buildEscalationAuditLedgerHref = (senderId: string): string => {
+  const params = new URLSearchParams({
+    tab: 'ledger',
+    target_type: 'player',
+    target_id: senderId,
+  });
+  return `/audit?${params.toString()}`;
+};
 
 const LIVE_REFRESH_DEBOUNCE_MS = 400;
 
@@ -141,6 +216,14 @@ const MessageModeration: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [beaconError, setBeaconError] = useState<string | null>(null);
   const [actingId, setActingId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [bulkActing, setBulkActing] = useState(false);
+  const [bulkFailures, setBulkFailures] = useState<BulkModerateItemResult[]>(
+    [],
+  );
+  const [escalationAuditHref, setEscalationAuditHref] = useState<string | null>(
+    null,
+  );
 
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -170,11 +253,13 @@ const MessageModeration: React.FC = () => {
       setMessages(data.messages ?? []);
       setTotalFlagged(data.total ?? 0);
       setTotalPages(data.pages && data.pages > 0 ? data.pages : 1);
+      setSelectedIds([]);
     } else {
       console.error('Failed to load flagged messages:', flaggedResult.reason);
       setMessages([]);
       setTotalFlagged(0);
       setTotalPages(1);
+      setSelectedIds([]);
       setError(
         formatAdminApiError(flaggedResult.reason, {
           fallback: 'Failed to load the flagged-message review queue.',
@@ -277,6 +362,7 @@ const MessageModeration: React.FC = () => {
         );
         // Remove the row locally for immediate feedback, then refresh totals.
         setMessages((current) => current.filter((m) => m.id !== message.id));
+        setSelectedIds((current) => current.filter((id) => id !== message.id));
         await loadData();
       } catch (err) {
         console.error(`Failed to ${action} message:`, err);
@@ -293,6 +379,175 @@ const MessageModeration: React.FC = () => {
       }
     },
     [confirm, toast, loadData],
+  );
+
+  /** LEG-1579: tip GS canon paths accept/redact/block (distinct from delete/unflag). */
+  const canonModerate = useCallback(
+    async (message: FlaggedMessage, action: CanonModerationAction) => {
+      const titles: Record<CanonModerationAction, string> = {
+        accept: 'Accept Flag',
+        redact: 'Redact Message',
+        block: 'Block Message',
+      };
+      const bodies: Record<CanonModerationAction, string> = {
+        accept:
+          'Clear the flag and leave the message visible? No reputation penalty.',
+        redact:
+          'Replace the message body with [Moderated], notify the sender, and apply −50 personal reputation?',
+        block:
+          'Hide the message from player reads, notify the sender, and apply −100 personal reputation? (2+ blocks / 30d logs an audit escalation only — no account_review invent.)',
+      };
+      const confirmed = await confirm({
+        title: titles[action],
+        message: bodies[action],
+        confirmLabel:
+          action === 'accept' ? 'Accept' : action === 'redact' ? 'Redact' : 'Block',
+        danger: action !== 'accept',
+      });
+      if (!confirmed) return;
+
+      setActingId(message.id);
+      try {
+        const { data } = await api.post<CanonModerationResponse>(
+          `/api/v1/admin/moderation/messages/${message.id}/${action}`,
+          {},
+        );
+        const rep =
+          typeof data?.rep_delta === 'number' && data.rep_delta !== 0
+            ? ` Reputation Δ ${data.rep_delta}.`
+            : '';
+        const escalate =
+          data?.escalation_audit_logged
+            ? ' Escalation audit logged (2+ blocks/30d).'
+            : '';
+        toast.success(
+          action === 'accept'
+            ? `Flag accepted.${rep}`
+            : action === 'redact'
+              ? `Message redacted.${rep}${escalate}`
+              : `Message blocked.${rep}${escalate}`,
+        );
+        if (data?.escalation_audit_logged) {
+          setEscalationAuditHref(
+            buildEscalationAuditLedgerHref(message.sender_id),
+          );
+        }
+        if (data?.block_count_30d && data.block_count_30d >= 2 && !data.escalation_audit_logged) {
+          toast.info(`Sender block count (30d): ${data.block_count_30d}.`);
+        }
+        setMessages((current) => current.filter((m) => m.id !== message.id));
+        setSelectedIds((current) => current.filter((id) => id !== message.id));
+        await loadData();
+      } catch (err) {
+        console.error(`Failed to ${action} message:`, err);
+        toast.error(
+          formatAdminApiError(err, {
+            fallback: `Failed to ${action} the message`,
+            scopeHint: 'admin.security.act scope required for canon moderation',
+          }),
+        );
+      } finally {
+        setActingId(null);
+      }
+    },
+    [confirm, toast, loadData],
+  );
+
+  const toggleSelected = useCallback((messageId: string) => {
+    setSelectedIds((current) =>
+      current.includes(messageId)
+        ? current.filter((id) => id !== messageId)
+        : [...current, messageId],
+    );
+  }, []);
+
+  const allPageSelected =
+    messages.length > 0 && messages.every((m) => selectedIds.includes(m.id));
+
+  const toggleSelectAllPage = useCallback(() => {
+    setSelectedIds((current) => {
+      const pageIds = messages.map((m) => m.id);
+      const allSelected =
+        pageIds.length > 0 && pageIds.every((id) => current.includes(id));
+      if (allSelected) {
+        return current.filter((id) => !pageIds.includes(id));
+      }
+      const merged = new Set([...current, ...pageIds]);
+      return Array.from(merged);
+    });
+  }, [messages]);
+
+  const bulkModerate = useCallback(
+    async (action: ModerationAction) => {
+      const ids = selectedIds.filter((id) =>
+        messages.some((m) => m.id === id),
+      );
+      if (ids.length === 0) return;
+
+      const isDestructive = action === 'delete';
+      const confirmed = await confirm({
+        title: isDestructive ? 'Bulk Delete Messages' : 'Bulk Clear Flags',
+        message: isDestructive
+          ? `Permanently delete ${ids.length} flagged message${ids.length === 1 ? '' : 's'}? This action cannot be undone.`
+          : `Clear the flag on ${ids.length} message${ids.length === 1 ? '' : 's'} and remove them from the review queue?`,
+        confirmLabel: isDestructive ? 'Delete selected' : 'Clear flags',
+        danger: isDestructive,
+      });
+      if (!confirmed) return;
+
+      setBulkActing(true);
+      setBulkFailures([]);
+      try {
+        const res = await api.post<BulkModerateResponse>(
+          '/api/v1/admin/messages/bulk-moderate',
+          { message_ids: ids, action },
+        );
+        const payload = res.data;
+        const succeededIds = (payload.results ?? [])
+          .filter((r) => r.success)
+          .map((r) => r.message_id);
+        const failed = (payload.results ?? []).filter((r) => !r.success);
+
+        if (succeededIds.length > 0) {
+          setMessages((current) =>
+            current.filter((m) => !succeededIds.includes(m.id)),
+          );
+          setSelectedIds((current) =>
+            current.filter((id) => !succeededIds.includes(id)),
+          );
+        }
+
+        await loadData();
+
+        if (payload.failed > 0 || failed.length > 0) {
+          setBulkFailures(failed);
+          toast.warning(
+            `Bulk ${action}: ${payload.succeeded} succeeded, ${payload.failed} failed.`,
+          );
+        } else {
+          setBulkFailures([]);
+          toast.success(
+            isDestructive
+              ? `Deleted ${payload.succeeded} message${payload.succeeded === 1 ? '' : 's'}.`
+              : `Cleared flags on ${payload.succeeded} message${payload.succeeded === 1 ? '' : 's'}.`,
+          );
+        }
+      } catch (err) {
+        console.error(`Failed to bulk ${action} messages:`, err);
+        toast.error(
+          formatAdminApiError(err, {
+            fallback: isDestructive
+              ? 'Failed to bulk-delete messages.'
+              : 'Failed to bulk-clear flags.',
+            scopeHint:
+              'admin.messages.moderate scope required for message moderation',
+          }),
+        );
+      } finally {
+        setBulkActing(false);
+      }
+    },
+    [selectedIds, messages, confirm, toast, loadData],
   );
 
   const clearBeaconFlag = useCallback(
@@ -377,6 +632,17 @@ const MessageModeration: React.FC = () => {
         </p>
       </header>
 
+      {escalationAuditHref && (
+        <div
+          className="msgmod-escalation-notice"
+          role="status"
+          data-testid="escalation-audit-notice"
+        >
+          Escalation audit logged (2+ blocks/30d).{' '}
+          <Link to={escalationAuditHref}>View audit ledger entry</Link>
+        </div>
+      )}
+
       {/* Review queue */}
       <section className="msgmod-section">
         <div className="msgmod-section-head">
@@ -414,6 +680,24 @@ const MessageModeration: React.FC = () => {
           </div>
         )}
 
+        {bulkFailures.length > 0 && (
+          <div
+            className="msgmod-bulk-failures"
+            role="status"
+            data-testid="bulk-partial-failures"
+          >
+            <strong>Bulk moderation partial failures</strong>
+            <ul>
+              {bulkFailures.map((f) => (
+                <li key={f.message_id}>
+                  {f.message_id}
+                  {f.detail ? `: ${f.detail}` : ' — failed'}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
         {loading && messages.length === 0 && !error ? (
           <div className="msgmod-empty">Loading flagged messages…</div>
         ) : null}
@@ -422,11 +706,44 @@ const MessageModeration: React.FC = () => {
           <div className="msgmod-empty">No flagged messages.</div>
         ) : null}
 
+        {messages.length > 0 && selectedIds.length > 0 && (
+          <div className="msgmod-bulk-bar" data-testid="bulk-action-bar">
+            <span className="msgmod-bulk-count">
+              {selectedIds.length} selected
+            </span>
+            <button
+              type="button"
+              className="msgmod-btn msgmod-btn-secondary"
+              disabled={bulkActing || actingId !== null}
+              onClick={() => void bulkModerate('unflag')}
+            >
+              Bulk Clear Flag
+            </button>
+            <button
+              type="button"
+              className="msgmod-btn msgmod-btn-danger"
+              disabled={bulkActing || actingId !== null}
+              onClick={() => void bulkModerate('delete')}
+            >
+              Bulk Delete
+            </button>
+          </div>
+        )}
+
         {messages.length > 0 && (
           <div className="msgmod-table-wrap">
             <table className="msgmod-table">
               <thead>
                 <tr>
+                  <th className="msgmod-select-col">
+                    <input
+                      type="checkbox"
+                      aria-label="Select all messages on this page"
+                      checked={allPageSelected}
+                      disabled={bulkActing}
+                      onChange={toggleSelectAllPage}
+                    />
+                  </th>
                   <th>Sender</th>
                   <th>Recipient</th>
                   <th>Content</th>
@@ -438,8 +755,23 @@ const MessageModeration: React.FC = () => {
               <tbody>
                 {messages.map((message) => (
                   <tr key={message.id}>
+                    <td className="msgmod-select-col">
+                      <input
+                        type="checkbox"
+                        aria-label={`Select message ${message.id}`}
+                        checked={selectedIds.includes(message.id)}
+                        disabled={bulkActing}
+                        onChange={() => toggleSelected(message.id)}
+                      />
+                    </td>
                     <td className="msgmod-sender">
-                      {message.sender_name ?? message.sender_id}
+                      <span className="msgmod-sender-label">
+                        {message.sender_name ?? message.sender_id}
+                      </span>
+                      <SenderBlockCountBadge
+                        count={message.sender_block_count_30d}
+                        escalationLogged={message.sender_escalation_logged}
+                      />
                     </td>
                     <td className="msgmod-recipient">
                       {recipientLabel(message)}
@@ -471,7 +803,39 @@ const MessageModeration: React.FC = () => {
                         <button
                           type="button"
                           className="msgmod-btn msgmod-btn-secondary"
-                          disabled={actingId === message.id}
+                          disabled={
+                            actingId === message.id || bulkActing
+                          }
+                          onClick={() => void canonModerate(message, 'accept')}
+                        >
+                          Accept
+                        </button>
+                        <button
+                          type="button"
+                          className="msgmod-btn msgmod-btn-secondary"
+                          disabled={
+                            actingId === message.id || bulkActing
+                          }
+                          onClick={() => void canonModerate(message, 'redact')}
+                        >
+                          Redact
+                        </button>
+                        <button
+                          type="button"
+                          className="msgmod-btn msgmod-btn-danger"
+                          disabled={
+                            actingId === message.id || bulkActing
+                          }
+                          onClick={() => void canonModerate(message, 'block')}
+                        >
+                          Block
+                        </button>
+                        <button
+                          type="button"
+                          className="msgmod-btn msgmod-btn-secondary"
+                          disabled={
+                            actingId === message.id || bulkActing
+                          }
                           onClick={() => void moderate(message, 'unflag')}
                         >
                           Clear Flag
@@ -479,7 +843,9 @@ const MessageModeration: React.FC = () => {
                         <button
                           type="button"
                           className="msgmod-btn msgmod-btn-danger"
-                          disabled={actingId === message.id}
+                          disabled={
+                            actingId === message.id || bulkActing
+                          }
                           onClick={() => void moderate(message, 'delete')}
                         >
                           Delete

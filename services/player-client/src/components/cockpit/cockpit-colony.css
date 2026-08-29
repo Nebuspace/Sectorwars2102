@@ -404,6 +404,14 @@
 .cp-prod-bar-fill.near-cap { background: linear-gradient(90deg, #fbbf24, #f59e0b); }
 .cp-prod-bar-fill.at-cap { background: linear-gradient(90deg, #f87171, #ef4444); }
 
+.cp-prod-eta {
+  grid-column: 1 / -1;
+  font-size: 0.55rem;
+  letter-spacing: 0.06em;
+  color: #94a3b8;
+  text-align: right;
+}
+
 .cp-prod-overflow {
   margin-top: 0.35rem;
   font-size: 0.58rem;
@@ -600,6 +608,14 @@
   background: color-mix(in srgb, var(--panel-accent) 24%, transparent);
 }
 .cp-store-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.cp-cargo-btn {
+  color: color-mix(in srgb, #fbbf24 70%, #ffffff 30%);
+  background: color-mix(in srgb, #fbbf24 10%, transparent);
+  border-color: color-mix(in srgb, #fbbf24 32%, transparent);
+}
+.cp-cargo-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, #fbbf24 24%, transparent);
+}
 
 @keyframes cp-live-pulse {
   0%, 100% { opacity: 1; }

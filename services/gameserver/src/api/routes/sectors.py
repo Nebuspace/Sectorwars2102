@@ -145,6 +145,8 @@ class SectorContentsResponse(BaseModel):
     stations: List[Dict[str, Any]] = []
     # Live sector state (GET /player/current-sector passthrough).
     live_ships: List[Any] = []
+    # LEG-333 — in-progress salvage breaks (same contract as SectorResponse.salvage_breaks).
+    salvage_breaks: List[Any] = []
     hazards: SectorHazards
     formations: List[FormationResponse] = []
     # Salvage (GET /sectors/{id}/wrecks passthrough).
@@ -515,6 +517,9 @@ async def get_sector_contents(
     #     100% read-only in the source route -- NPCCharacter query only). ---
     present = _enrich_players_present(db, sector.players_present or [])
 
+    from src.services.ship_registry_service import list_sector_salvage_breaks
+    salvage_breaks = list_sector_salvage_breaks(db, sector.sector_id)
+
     # WO-API-A1: the same server-authoritative ENGAGE proximity dial
     # POST /combat/engage now enforces -- a plain constant read, not a query.
     from src.services import intrasystem_movement_service as isp
@@ -558,6 +563,7 @@ async def get_sector_contents(
         bodies=system.get("bodies", []),
         stations=system.get("stations", []),
         live_ships=present,
+        salvage_breaks=salvage_breaks,
         hazards=SectorHazards(
             hazard_level=sector.hazard_level,
             radiation_level=sector.radiation_level,

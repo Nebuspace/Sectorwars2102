@@ -67,6 +67,9 @@ vi.mock('../../../contexts/GameContext', () => ({
     ships: [],
     currentShip: null,
     setCurrentShip: vi.fn(),
+    // LEG-1159 / LEG-141 — FLEET tab mounts FleetManagerPanel move picker.
+    availableMoves: { warps: [], tunnels: [] },
+    getAvailableMoves: vi.fn().mockResolvedValue(undefined),
   }),
 }));
 
@@ -89,6 +92,7 @@ const mockGetOwnedPlanets = vi.fn();
 const mockGetTeam = vi.fn();
 const mockGetPermissions = vi.fn();
 const mockBeaconMine = vi.fn();
+const mockGetFleets = vi.fn();
 
 vi.mock('../../../services/api', () => ({
   factionAPI: {
@@ -118,6 +122,22 @@ vi.mock('../../../services/api', () => ({
   // My Beacons dossier tab (1bc7540d) loads on mount when cycled.
   beaconAPI: {
     mine: (...a: unknown[]) => mockBeaconMine(...a),
+  },
+  // LEG-2278 — FLEET tab mounts FleetManagerPanel, which calls getFleets on mount.
+  fleetAPI: {
+    getFleets: (...a: unknown[]) => mockGetFleets(...a),
+    createFleet: vi.fn(),
+    getFleetMembers: vi.fn().mockResolvedValue([]),
+    addShipToFleet: vi.fn(),
+    removeShipFromFleet: vi.fn(),
+    updateFormation: vi.fn(),
+    disbandFleet: vi.fn(),
+    resupplyFleet: vi.fn(),
+    getBattles: vi.fn().mockResolvedValue([]),
+    getBattle: vi.fn().mockResolvedValue({}),
+    initiateBattle: vi.fn(),
+    simulateBattleRound: vi.fn(),
+    move: vi.fn(),
   },
 }));
 
@@ -170,6 +190,7 @@ mockGetProgress.mockResolvedValue(FULL_PROGRESS);
 mockGetMedals.mockResolvedValue({ earned: [], available: [] });
 mockGetOwnedPlanets.mockResolvedValue({ planets: [] });
 mockBeaconMine.mockResolvedValue({ beacons: [], total: 0, page: 1, pages: 0 });
+mockGetFleets.mockResolvedValue([]);
 
 import StatusBar from '../StatusBar';
 import { SettingsProvider } from '../../../contexts/SettingsContext';
@@ -249,9 +270,10 @@ describe('StatusBar — live-mount smoke', () => {
     expect(container.querySelector('.grow')).not.toBeNull();
     expect(container.querySelector('.sb-vitals')).not.toBeNull();
 
-    // credits, turns, drones (combined ⚔/🛡), mines, LINK, REP -- bounty_total
-    // is 0 in this mock so the conditional BOUNTY chip doesn't render.
-    expect(container.querySelectorAll('.vit').length).toBe(6);
+    // credits, turns, drones (combined ⚔/🛡), mines, LINK, rank insignia, REP
+    // -- bounty_total is 0 in this mock so the conditional BOUNTY chip doesn't render.
+    expect(container.querySelectorAll('.vit').length).toBe(7);
+    expect(container.querySelector('.rank-badge-compact')).not.toBeNull();
 
     // No shield vital anywhere -- there is no such player vital (nit b).
     expect(container.textContent).not.toMatch(/shield/i);
@@ -295,7 +317,7 @@ describe('StatusBar — live-mount smoke', () => {
     const tabpanel = container.querySelector('[role="tabpanel"]');
     expect(tabpanel).not.toBeNull();
     const tabs = container.querySelectorAll('[role="tab"]');
-    expect(tabs.length).toBe(9);
+    expect(tabs.length).toBe(10);
     // exactly one tab starts selected (Identity, the default active tab)
     expect(Array.from(tabs).filter((t) => t.getAttribute('aria-selected') === 'true').length).toBe(1);
 
@@ -306,6 +328,10 @@ describe('StatusBar — live-mount smoke', () => {
       await flush();
       expect(tab.getAttribute('aria-selected')).toBe('true');
       expect(container.querySelector('.sb-dossier-body')).not.toBeNull();
+      if (tab.textContent === 'FLEET') {
+        expect(container.querySelector('[data-testid="fleet-manager"]')).not.toBeNull();
+        expect(mockGetFleets).toHaveBeenCalled();
+      }
     }
 
     expect(errorSpy).not.toHaveBeenCalled();
@@ -371,7 +397,7 @@ describe('StatusBar — live-mount smoke', () => {
 
     const tablist = container.querySelector('[role="tablist"]') as HTMLElement;
     const tabs = Array.from(container.querySelectorAll('[role="tab"]')) as HTMLButtonElement[];
-    expect(tabs.length).toBe(9);
+    expect(tabs.length).toBe(10);
 
     const pressKey = async (key: string) => {
       await act(async () => {
@@ -392,10 +418,10 @@ describe('StatusBar — live-mount smoke', () => {
     expect(tabs[1].tabIndex).toBe(0);
     expect(tabs[0].tabIndex).toBe(-1);
 
-    // End: jump straight to the last tab (Settings, index 8).
+    // End: jump straight to the last tab (Settings, index 9).
     await pressKey('End');
-    expect(tabs[8].getAttribute('aria-selected')).toBe('true');
-    expect(document.activeElement).toBe(tabs[8]);
+    expect(tabs[9].getAttribute('aria-selected')).toBe('true');
+    expect(document.activeElement).toBe(tabs[9]);
 
     // ArrowRight wraps from the last tab back to the first.
     await pressKey('ArrowRight');
@@ -404,8 +430,8 @@ describe('StatusBar — live-mount smoke', () => {
 
     // ArrowLeft wraps from the first tab back to the last.
     await pressKey('ArrowLeft');
-    expect(tabs[8].getAttribute('aria-selected')).toBe('true');
-    expect(document.activeElement).toBe(tabs[8]);
+    expect(tabs[9].getAttribute('aria-selected')).toBe('true');
+    expect(document.activeElement).toBe(tabs[9]);
 
     // Home: jump straight back to the first tab.
     await pressKey('Home');

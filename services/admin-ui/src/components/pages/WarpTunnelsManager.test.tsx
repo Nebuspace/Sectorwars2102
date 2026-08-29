@@ -1,5 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import WarpTunnelsManager from './WarpTunnelsManager';
 import { api } from '../../utils/auth';
 
@@ -12,14 +13,16 @@ vi.mock('../../utils/auth', () => ({
   },
 }));
 
+const toastError = vi.fn();
+
 vi.mock('../../contexts/ToastContext', () => ({
   useToast: () => ({
     success: vi.fn(),
-    error: vi.fn(),
+    error: toastError,
     info: vi.fn(),
     warning: vi.fn(),
   }),
-  useConfirm: () => vi.fn().mockResolvedValue(false),
+  useConfirm: () => vi.fn(async () => true),
 }));
 
 vi.mock('../ui/PageHeader', () => ({
@@ -30,6 +33,26 @@ const axiosError = (status: number, detail?: string) =>
   Object.assign(new Error(`HTTP ${status}`), {
     response: { status, data: detail ? { detail } : {} },
   });
+
+const sampleTunnel = {
+  id: 'tunnel-1',
+  name: 'Test Tunnel',
+  origin_sector_id: 1,
+  destination_sector_id: 2,
+  origin_sector_name: 'Origin',
+  destination_sector_name: 'Dest',
+  is_active: true,
+  is_bidirectional: true,
+  stability: 0.9,
+  energy_cost: 100,
+  travel_time: 5,
+  max_ship_size: 'MEDIUM',
+  total_traversals: 0,
+};
+
+function mockSuccessfulLoad() {
+  vi.mocked(api.get).mockResolvedValue({ data: { warp_tunnels: [sampleTunnel] } });
+}
 
 describe('WarpTunnelsManager scope errors (LEG-966)', () => {
   beforeEach(() => {
@@ -56,5 +79,162 @@ describe('WarpTunnelsManager scope errors (LEG-966)', () => {
     await waitFor(() => {
       expect(screen.getByText(/rate limit/i)).toBeTruthy();
     });
+  });
+});
+
+describe('WarpTunnelsManager mutation errors (LEG-2611)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.put).mockReset();
+    vi.mocked(api.delete).mockReset();
+    toastError.mockReset();
+    mockSuccessfulLoad();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('surfaces formatAdminApiError on maintenance PUT 403', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.put).mockRejectedValue(
+      axiosError(403, 'Missing scope admin.universe.warp'),
+    );
+
+    render(<WarpTunnelsManager />);
+    await waitFor(() => expect(screen.getByText('Test Tunnel')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: /^Maintain$/i }));
+
+    await waitFor(() => {
+      expect(api.put).toHaveBeenCalledWith(
+        `/api/v1/admin/warp-tunnels/${sampleTunnel.id}`,
+        { status: 'MAINTENANCE' },
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(
+      expect.stringMatching(/Missing scope admin\.universe\.warp/i),
+    );
+    expect(toastError).not.toHaveBeenCalledWith(expect.stringMatching(/^Failed to update tunnel: update failed$/));
+  });
+
+  it('surfaces rate-limit copy on maintenance PUT 429', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.put).mockRejectedValue(axiosError(429));
+
+    render(<WarpTunnelsManager />);
+    await waitFor(() => expect(screen.getByText('Test Tunnel')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: /^Maintain$/i }));
+
+    await waitFor(() => {
+      expect(api.put).toHaveBeenCalled();
+    });
+    expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/rate limit/i));
+  });
+
+  it('surfaces formatAdminApiError on delete DELETE 403', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.delete).mockRejectedValue(
+      axiosError(403, 'Missing scope admin.universe.warp'),
+    );
+
+    render(<WarpTunnelsManager />);
+    await waitFor(() => expect(screen.getByText('Test Tunnel')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: /^Delete$/i }));
+
+    await waitFor(() => {
+      expect(api.delete).toHaveBeenCalledWith(
+        `/api/v1/admin/warp-tunnels/${sampleTunnel.id}`,
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(
+      expect.stringMatching(/Missing scope admin\.universe\.warp/i),
+    );
+    expect(toastError).not.toHaveBeenCalledWith(expect.stringMatching(/^Failed to delete tunnel: delete failed$/));
+  });
+
+  it('surfaces rate-limit copy on delete DELETE 429', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.delete).mockRejectedValue(axiosError(429));
+
+    render(<WarpTunnelsManager />);
+    await waitFor(() => expect(screen.getByText('Test Tunnel')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: /^Delete$/i }));
+
+    await waitFor(() => {
+      expect(api.delete).toHaveBeenCalled();
+    });
+    expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/rate limit/i));
+  });
+});
+
+describe('WarpTunnelsManager modal save errors (LEG-2761)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.put).mockReset();
+    toastError.mockReset();
+    mockSuccessfulLoad();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('surfaces formatAdminApiError on modal save PUT 403', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.put).mockRejectedValue(
+      axiosError(403, 'Missing scope admin.universe.warp'),
+    );
+
+    render(<WarpTunnelsManager />);
+    await waitFor(() => expect(screen.getByText('Test Tunnel')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: /^Edit$/i }));
+    await waitFor(() => expect(screen.getByRole('heading', { name: /Edit Tunnel: Test Tunnel/i })).toBeTruthy());
+
+    const energyInput = screen.getByDisplayValue('100');
+    await user.clear(energyInput);
+    await user.type(energyInput, '150');
+    await user.click(screen.getByRole('button', { name: /Save Changes/i }));
+
+    await waitFor(() => {
+      expect(api.put).toHaveBeenCalledWith(
+        `/api/v1/admin/warp-tunnels/${sampleTunnel.id}`,
+        expect.objectContaining({ energy_cost: 150 }),
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(
+      expect.stringMatching(/Missing scope admin\.universe\.warp/i),
+    );
+    expect(toastError).not.toHaveBeenCalledWith(expect.stringMatching(/^Failed to update tunnel: update failed$/));
+  });
+
+  it('surfaces rate-limit copy on modal save PUT 429', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.put).mockRejectedValue(axiosError(429));
+
+    render(<WarpTunnelsManager />);
+    await waitFor(() => expect(screen.getByText('Test Tunnel')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: /^Edit$/i }));
+    await waitFor(() => expect(screen.getByRole('heading', { name: /Edit Tunnel: Test Tunnel/i })).toBeTruthy());
+
+    const energyInput = screen.getByDisplayValue('100');
+    await user.clear(energyInput);
+    await user.type(energyInput, '200');
+    await user.click(screen.getByRole('button', { name: /Save Changes/i }));
+
+    await waitFor(() => {
+      expect(api.put).toHaveBeenCalledWith(
+        `/api/v1/admin/warp-tunnels/${sampleTunnel.id}`,
+        expect.objectContaining({ energy_cost: 200 }),
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/rate limit/i));
   });
 });

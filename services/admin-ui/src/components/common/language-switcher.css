@@ -232,3 +232,8 @@
     --text-secondary: #6c757d;
   }
 }
+.language-progress-error {
+  color: #b42318;
+  font-size: 0.75rem;
+  margin-bottom: 0.35rem;
+}

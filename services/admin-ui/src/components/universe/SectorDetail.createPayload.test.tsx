@@ -12,10 +12,13 @@ vi.mock('../../utils/auth', () => ({
   },
 }));
 
+const toastError = vi.fn();
+const toastSuccess = vi.fn();
+
 vi.mock('../../contexts/ToastContext', () => ({
   useToast: () => ({
-    error: vi.fn(),
-    success: vi.fn(),
+    error: toastError,
+    success: toastSuccess,
     info: vi.fn(),
   }),
 }));
@@ -276,5 +279,135 @@ describe('SectorDetail Soft-ORDER residual SectorUpdateRequest fields (LEG-1488)
 
     const [, body] = vi.mocked(api.put).mock.calls[0];
     expect(body).toEqual({ resource_regeneration: 1.1 });
+  });
+});
+
+const axiosError = (status: number, detail?: string) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: detail ? { detail } : {} },
+  });
+
+describe('SectorDetail mutation PUT/POST formatUniverseAdminError (LEG-2921)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    vi.mocked(api.put).mockReset();
+    toastError.mockReset();
+    toastSuccess.mockReset();
+    vi.mocked(api.get).mockRejectedValue(new Error('404'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('surfaces admin.universe.manage on PUT save 403', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.put).mockRejectedValue(axiosError(403));
+    render(
+      <SectorDetail
+        sector={{ ...sector, description: 'Old blurb' }}
+        onBack={() => undefined}
+        onPortClick={() => undefined}
+        onPlanetClick={() => undefined}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Old blurb')).toBeTruthy();
+    });
+    await user.click(screen.getByText('Old blurb'));
+    const input = await screen.findByRole('textbox');
+    await user.clear(input);
+    await user.type(input, 'Nebula corridor');
+    await user.click(screen.getByRole('button', { name: '✓' }));
+
+    await waitFor(() => {
+      expect(api.put).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(String(toastError.mock.calls[0]?.[0])).toMatch(/admin\.universe\.manage/i);
+    });
+    expect(toastError).not.toHaveBeenCalledWith('Failed to update description');
+  });
+
+  it('surfaces rate-limit copy on PUT save 429', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.put).mockRejectedValue(axiosError(429));
+    render(
+      <SectorDetail
+        sector={{ ...sector, description: 'Old blurb' }}
+        onBack={() => undefined}
+        onPortClick={() => undefined}
+        onPlanetClick={() => undefined}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Old blurb')).toBeTruthy();
+    });
+    await user.click(screen.getByText('Old blurb'));
+    const input = await screen.findByRole('textbox');
+    await user.clear(input);
+    await user.type(input, 'Nebula corridor');
+    await user.click(screen.getByRole('button', { name: '✓' }));
+
+    await waitFor(() => {
+      expect(String(toastError.mock.calls[0]?.[0])).toMatch(/rate limit/i);
+    });
+    expect(toastError).not.toHaveBeenCalledWith('Failed to update description');
+  });
+
+  it('surfaces admin.universe.manage on create station POST 403', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.post).mockRejectedValue(axiosError(403));
+    render(
+      <SectorDetail
+        sector={sector}
+        onBack={() => undefined}
+        onPortClick={() => undefined}
+        onPlanetClick={() => undefined}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /\+ Create Station/i })).toBeTruthy();
+    });
+    await user.click(screen.getByRole('button', { name: /\+ Create Station/i }));
+    await user.type(screen.getByPlaceholderText(/station name/i), 'Hub One');
+    await user.click(screen.getByRole('button', { name: /^Create Station$/i }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(String(toastError.mock.calls[0]?.[0])).toMatch(/admin\.universe\.manage/i);
+    });
+    expect(toastError).not.toHaveBeenCalledWith('Failed to create station');
+  });
+
+  it('surfaces rate-limit copy on create planet POST 429', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.post).mockRejectedValue(axiosError(429));
+    render(
+      <SectorDetail
+        sector={sector}
+        onBack={() => undefined}
+        onPortClick={() => undefined}
+        onPlanetClick={() => undefined}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /\+ Create Planet/i })).toBeTruthy();
+    });
+    await user.click(screen.getByRole('button', { name: /\+ Create Planet/i }));
+    await user.type(screen.getByPlaceholderText(/planet name/i), 'Nova World');
+    await user.click(screen.getByRole('button', { name: /^Create Planet$/i }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(String(toastError.mock.calls[0]?.[0])).toMatch(/rate limit/i);
+    });
+    expect(toastError).not.toHaveBeenCalledWith('Failed to create planet');
   });
 });

@@ -631,6 +631,11 @@ class CitadelService:
         # levy preserves it. (Tiers 0→1 are documented free; handled by the early
         # current_level==0 branch above.)
         upgrade_cost = promotion_levy(self.db, player_id, next_level)
+        try:
+            from src.services.profession_service import structural_engineer_cost_multiplier
+            upgrade_cost = int(round(upgrade_cost * structural_engineer_cost_multiplier(self.db, planet_id)))
+        except Exception:
+            pass
         if next_level >= NO_FREE_PROMOTION_TIER and upgrade_cost <= 0:
             # Defensive: should be impossible given the shipped table, but never let a
             # tier-2+ promotion slip through free if the catalog is ever mis-edited.
@@ -1391,9 +1396,21 @@ class CitadelService:
                     "success": False, "reason": reason,
                     "error_code": "ERR_CITADEL_PREREQUISITE_OFFLINE",
                     "message": msg,
+                    "building_key": key,
+                    "building_name": name,
                 }
-            msg = f"Upgrade to {level_name_str} requires {name} — build it first."
-            return {"success": False, "reason": reason, "message": msg}
+            msg = (
+                f"ERR_CITADEL_PREREQUISITE_MISSING: Upgrade to {level_name_str} "
+                f"requires {name} — build it first."
+            )
+            return {
+                "success": False,
+                "reason": reason,
+                "error_code": "ERR_CITADEL_PREREQUISITE_MISSING",
+                "message": msg,
+                "building_key": key,
+                "building_name": name,
+            }
 
         if req["type"] == "shield":
             min_level = req["min"]
@@ -1415,12 +1432,21 @@ class CitadelService:
                     "success": False, "reason": reason,
                     "error_code": "ERR_CITADEL_PREREQUISITE_OFFLINE",
                     "message": msg,
+                    "building_key": "shield_generator",
+                    "building_name": name,
                 }
             msg = (
-                f"Upgrade to {level_name_str} requires {name} "
-                f"(current shield generator: L{current})."
+                f"ERR_CITADEL_PREREQUISITE_MISSING: Upgrade to {level_name_str} requires "
+                f"{name} (current shield generator: L{current})."
             )
-            return {"success": False, "reason": reason, "message": msg}
+            return {
+                "success": False,
+                "reason": reason,
+                "error_code": "ERR_CITADEL_PREREQUISITE_MISSING",
+                "message": msg,
+                "building_key": "shield_generator",
+                "building_name": name,
+            }
 
         # Unknown requirement type: log a warning and return a blocking failure.
         # Silently returning None (= satisfied) here would let a future config

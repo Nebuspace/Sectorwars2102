@@ -31,7 +31,10 @@ vi.mock('../../../services/api', () => ({
   },
 }));
 
-import ElectionCard from '../ElectionCard';
+import ElectionCard, {
+  formatElectionCandidacyError,
+  formatElectionVoteError,
+} from '../ElectionCard';
 
 const ACTIVE_ELECTION: Election = {
   id: 'election-1',
@@ -184,6 +187,112 @@ describe('ElectionCard', () => {
 
     expect(container.querySelector('.gov-nominate-form')).toBeNull();
     expect(container.textContent).toContain('You are registered as a candidate.');
+  });
+
+  it('formatElectionVoteError preserves gameserver detail on reject (LEG-2938)', () => {
+    const err = Object.assign(new Error('Ballot closed early by regional decree'), {
+      status: 400,
+    });
+    expect(formatElectionVoteError(err)).toBe('Ballot closed early by regional decree');
+  });
+
+  it('formatElectionCandidacyError preserves gameserver detail on reject (LEG-2938)', () => {
+    const err = Object.assign(new Error('Reputation floor not met for this region'), {
+      status: 403,
+    });
+    expect(formatElectionCandidacyError(err)).toBe(
+      'Reputation floor not met for this region',
+    );
+  });
+
+  it('formatElectionVoteError uses 429 rate-limit copy when detail absent', () => {
+    const err = Object.assign(new Error('API Error: 429'), { status: 429 });
+    expect(formatElectionVoteError(err)).toBe(
+      'Vote rate limit exceeded — wait a moment and try again.',
+    );
+  });
+
+  it('formatElectionCandidacyError uses 403 fallback when detail absent', () => {
+    const err = Object.assign(new Error('API Error: 403'), { status: 403 });
+    expect(formatElectionCandidacyError(err)).toBe(
+      'You are not allowed to register as a candidate.',
+    );
+  });
+
+  it('surfaces GS vote-reject detail in the validation strip (LEG-2938)', async () => {
+    mockCastElectionVote.mockRejectedValue(
+      Object.assign(new Error('Candidate suspended pending review'), { status: 403 }),
+    );
+
+    await act(async () => {
+      root.render(
+        <ElectionCard
+          election={ACTIVE_ELECTION}
+          regionId="region-1"
+          currentPlayerId="player-c"
+          canVote={true}
+          isCitizen={true}
+          onChanged={() => {}}
+        />
+      );
+    });
+
+    const radio = container.querySelector('input[type="radio"]') as HTMLInputElement;
+    await act(async () => {
+      radio.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    const castBtn = container.querySelector('.gov-btn.primary') as HTMLButtonElement;
+    await act(async () => {
+      castBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    const confirmBtn = container.querySelector('.gov-btn.primary.commit') as HTMLButtonElement;
+    await act(async () => {
+      confirmBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.gov-validation-strip')?.textContent).toBe(
+      'Candidate suspended pending review',
+    );
+  });
+
+  it('surfaces GS candidacy-reject detail in the nominate strip (LEG-2938)', async () => {
+    mockRegisterCandidacy.mockRejectedValue(
+      Object.assign(new Error('Citizenship lapsed — renew before nominating'), {
+        status: 403,
+      }),
+    );
+
+    const pendingElection: Election = {
+      ...ACTIVE_ELECTION,
+      status: 'pending',
+      candidates: [],
+    };
+
+    await act(async () => {
+      root.render(
+        <ElectionCard
+          election={pendingElection}
+          regionId="region-1"
+          currentPlayerId="player-c"
+          canVote={true}
+          isCitizen={true}
+          onChanged={() => {}}
+        />
+      );
+    });
+
+    const nominateBtn = container.querySelector('.gov-btn.primary') as HTMLButtonElement;
+    await act(async () => {
+      nominateBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.gov-validation-strip')?.textContent).toBe(
+      'Citizenship lapsed — renew before nominating',
+    );
   });
 
   it('fetches GET …/results when COMPLETED embed is empty (WO-WIRE-ELECTION-RESULTS-API)', async () => {

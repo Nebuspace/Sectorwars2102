@@ -23,6 +23,8 @@ interface ConfirmDialogProps {
    * Escape / backdrop click invoke onConfirm instead.
    */
   onCancel?: () => void;
+  /** Optional slot below the message (e.g. LEG-117 Planetary Lander install CTA). */
+  extra?: React.ReactNode;
 }
 
 /**
@@ -37,7 +39,8 @@ const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
   confirmLabel = 'Confirm',
   cancelLabel = 'Cancel',
   onConfirm,
-  onCancel
+  onCancel,
+  extra,
 }) => {
   const confirmRef = useRef<HTMLButtonElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
@@ -98,6 +101,7 @@ const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
           <span className="confirm-dialog-title">{title}</span>
         </div>
         <p className="confirm-dialog-message">{message}</p>
+        {extra}
         <div className="confirm-dialog-actions">
           {onCancel && (
             <button
