@@ -252,6 +252,26 @@ describe('AdminContext / AdminProvider', () => {
     );
   });
 
+  it('surfaces loadAdminStats 429 as admin rate-limit (LEG-2963)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    vi.mocked(api.get).mockRejectedValue(httpErr(429));
+    const user = userEvent.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>
+    );
+
+    await user.click(screen.getByText('load-stats'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/rate limit/i),
+    );
+    expect(screen.getByTestId('error').textContent).not.toMatch(
+      /Failed to load admin statistics/,
+    );
+  });
+
   it('surfaces loadUsers 429 as admin rate-limit (LEG-1254)', async () => {
     mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
     vi.mocked(api.get).mockRejectedValue(httpErr(429));
