@@ -29,7 +29,7 @@ docs are explicitly Design-only):
 
 import logging
 import uuid
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 from sqlalchemy import func
@@ -40,8 +40,8 @@ from src.core.game_time import scaled_deadline
 from src.models.faction import Faction, FactionType
 from src.models.galaxy import Galaxy
 from src.models.npc_character import (
-    NPCCharacter,
     NPCArchetype,
+    NPCCharacter,
     NPCDeathLog,
     NPCLifecycleStage,
     NPCStatus,
@@ -960,11 +960,30 @@ def _patrol_route(db: Session, host_sector_id: int) -> List[int]:
     return route
 
 
-def _schedule_template(db: Session, kind: str, host_sector_id: int) -> Dict[str, Any]:
+def _schedule_template(
+    db: Session,
+    kind: str,
+    host_sector_id: int,
+    *,
+    roster_config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """V1 daily_schedule: one all-day patrol block over the host's
     adjacent ring. The full canon daily texture (sleep / dine / train
     blocks) needs the lodging slice for sleep locations — deferred,
-    divergence documented in SYSTEMS/npc-lifecycle.md terms."""
+    divergence documented in SYSTEMS/npc-lifecycle.md terms.
+
+    ``minutes_per_sector`` comes from ``cycle_hours_default`` via
+    ``npc_scheduler_config`` (LEG-78); kind table remains the hard default.
+    """
+    from src.services.npc_scheduler_config import (
+        cycle_minutes,
+        resolve_npc_scheduler_tuning,
+    )
+
+    tuning = resolve_npc_scheduler_tuning(
+        roster_config=roster_config,
+        role=kind,
+    )
     return {
         "timezone": "utc",
         "shift_offset_hours": 0,
@@ -976,7 +995,7 @@ def _schedule_template(db: Session, kind: str, host_sector_id: int) -> Dict[str,
                 "location_type": "patrol_route",
                 "location_ref": {
                     "sectors": _patrol_route(db, host_sector_id),
-                    "minutes_per_sector": PATROL_MINUTES_PER_SECTOR.get(kind, 240),
+                    "minutes_per_sector": cycle_minutes(tuning),
                 },
             }
         ],
@@ -1207,7 +1226,8 @@ def backfill_npc_schedules(db: Session) -> int:
     one. Idempotent — rows with a schedule are untouched by the
     schedule pass, rows with a duty_role by the role pass. Returns the
     number of rows touched."""
-    from sqlalchemy import cast, String as SAString
+    from sqlalchemy import String as SAString
+    from sqlalchemy import cast
 
     from src.models.npc_character import NPCRoster
 
@@ -1273,7 +1293,8 @@ def backfill_orphan_npc_schedules(db: Session) -> int:
     with an empty schedule and a known sector are touched. Returns the
     number repaired.
     """
-    from sqlalchemy import cast, String as SAString
+    from sqlalchemy import String as SAString
+    from sqlalchemy import cast
 
     # Kind only selects PATROL_MINUTES_PER_SECTOR pacing (default 240), so a
     # coarse archetype->kind map is sufficient; unknown kinds fall back.

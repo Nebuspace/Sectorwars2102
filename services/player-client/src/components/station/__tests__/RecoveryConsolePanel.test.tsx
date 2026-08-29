@@ -37,9 +37,35 @@ vi.mock('../../../contexts/GameContext', () => ({
   }),
 }));
 
-import RecoveryConsolePanel from '../RecoveryConsolePanel';
+import RecoveryConsolePanel, { formatRecoveryActionError } from '../RecoveryConsolePanel';
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
+
+describe('formatRecoveryActionError', () => {
+  it('preserves nested structured distress detail from data.detail.detail', () => {
+    const err = new Error('API Error: 400');
+    (err as { status?: number; data?: unknown }).status = 400;
+    (err as { data?: unknown }).data = {
+      detail: {
+        detail: 'You cannot fire a distress beacon while docked -- launch first',
+        cooldown_until: null,
+      },
+    };
+    expect(formatRecoveryActionError(err)).toBe(
+      'You cannot fire a distress beacon while docked -- launch first',
+    );
+  });
+
+  it('preserves plain string 400 detail (slipdrive / escape-pod)', () => {
+    const err = new Error('Slipdrive requires a warp jumper module');
+    (err as { status?: number }).status = 400;
+    expect(formatRecoveryActionError(err)).toBe('Slipdrive requires a warp jumper module');
+  });
+
+  it('falls back when only bare API Error status is present', () => {
+    expect(formatRecoveryActionError(new Error('API Error: 500'))).toBe('Recovery action failed');
+  });
+});
 
 describe('RecoveryConsolePanel', () => {
   let container: HTMLElement;
@@ -51,6 +77,7 @@ describe('RecoveryConsolePanel', () => {
       slipdrive: { charging: false, charge_deadline: null, ready: false },
     });
     mockFireDistress.mockResolvedValue({ ok: true });
+    mockBegin.mockResolvedValue({ ok: true });
     mockRefresh.mockClear();
     mockLoadShips.mockClear();
     container = document.createElement('div');
@@ -97,5 +124,56 @@ describe('RecoveryConsolePanel', () => {
     expect(mockFireDistress).toHaveBeenCalledTimes(1);
     expect(mockRefresh).toHaveBeenCalled();
     expect(mockLoadShips).toHaveBeenCalled();
+  });
+
+  it('surfaces nested structured distress refusal in feedback', async () => {
+    const err = new Error('API Error: 400');
+    (err as { status?: number; data?: unknown }).status = 400;
+    (err as { data?: unknown }).data = {
+      detail: {
+        detail: 'You cannot fire a distress beacon while docked -- launch first',
+      },
+    };
+    mockFireDistress.mockRejectedValueOnce(err);
+
+    await act(async () => {
+      root.render(<RecoveryConsolePanel />);
+      await flush();
+    });
+    await act(async () => {
+      (container.querySelector('[data-testid="recovery-console-open"]') as HTMLButtonElement).click();
+      await flush();
+    });
+    await act(async () => {
+      (container.querySelector('[data-testid="recovery-distress-fire"]') as HTMLButtonElement).click();
+      await flush();
+      await flush();
+    });
+
+    const feedback = container.querySelector('.recovery-console-feedback');
+    expect(feedback?.textContent).toBe(
+      'You cannot fire a distress beacon while docked -- launch first',
+    );
+  });
+
+  it('surfaces plain 400 slipdrive refusal in feedback', async () => {
+    mockBegin.mockRejectedValueOnce(new Error('Slipdrive requires a warp jumper module'));
+
+    await act(async () => {
+      root.render(<RecoveryConsolePanel />);
+      await flush();
+    });
+    await act(async () => {
+      (container.querySelector('[data-testid="recovery-console-open"]') as HTMLButtonElement).click();
+      await flush();
+    });
+    await act(async () => {
+      (container.querySelector('[data-testid="recovery-slipdrive-begin"]') as HTMLButtonElement).click();
+      await flush();
+      await flush();
+    });
+
+    const feedback = container.querySelector('.recovery-console-feedback');
+    expect(feedback?.textContent).toBe('Slipdrive requires a warp jumper module');
   });
 });

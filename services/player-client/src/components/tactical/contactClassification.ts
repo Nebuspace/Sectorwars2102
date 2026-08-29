@@ -18,13 +18,10 @@ import { useGame } from '../../contexts/GameContext';
  * switch lands, any change to either inline source must be mirrored here by
  * hand — flagged, not silently risked.
  *
- * `deriveSectorContacts`/`useSectorContacts` are a byte-equivalent port of
- * GameDashboard.tsx's own `sectorContacts` useMemo (~:869-906) — merges live
- * WebSocket presence (`sectorPlayers`) with the sector snapshot
- * (`currentSector.players_present`), excluding self, de-duplicated.
- * GameDashboard's own inline copy is UNTOUCHED this phase (out of scope —
- * see WO-HUD-LIGHTS dispatch); this export exists so the annunciator (and,
- * later, other consumers) don't need a third copy of the merge.
+ * `deriveSectorContacts`/`useSectorContacts` merge live WebSocket presence
+ * (`sectorPlayers`) with the sector snapshot (`currentSector.players_present`),
+ * excluding self, de-duplicated. GameDashboard imports `deriveSectorContacts`
+ * directly; the annunciator uses `useSectorContacts` — single source of truth.
  */
 
 export interface SectorContact {
@@ -121,10 +118,7 @@ interface SelfIdentity {
 }
 
 /** Pure merge — WS `sectorPlayers` ∪ API `players_present`, de-duplicated,
- *  excluding `self`. Byte-equivalent port of GameDashboard.tsx's
- *  `sectorContacts` useMemo body (~:869-906) — see that file's own
- *  doc-comment for the key-collision rationale (real players surface twice,
- *  NPCs carry no stable username so they key on player_id instead). */
+ *  excluding `self`. See sector-presence.md for key-collision rationale. */
 export function deriveSectorContacts(
   sectorPlayers: SectorContact[] | null | undefined,
   playersPresent: SectorContact[] | null | undefined,
@@ -162,10 +156,9 @@ export function deriveSectorContacts(
 }
 
 /** Hook form — reads `sectorPlayers`/`currentSector`/`playerState` directly
- *  from context (all context-level, per WO-HUD-LIGHTS) for consumers that
- *  don't already have the merged list threaded as a prop (the annunciator).
- *  GameDashboard keeps its own inline useMemo calling the same merge shape
- *  directly (untouched this phase, not switched to this hook). */
+ *  from context for consumers that don't already have the merged list threaded
+ *  as a prop (e.g. the annunciator). GameDashboard calls `deriveSectorContacts`
+ *  directly because it already holds the inputs. */
 export function useSectorContacts(): SectorContact[] {
   const { sectorPlayers } = useWebSocket();
   const { currentSector, playerState } = useGame();
