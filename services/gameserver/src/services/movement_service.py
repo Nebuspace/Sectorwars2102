@@ -897,6 +897,76 @@ class MovementService:
         except Exception as e:
             logger.error("Scanner detection sweep failed during movement: %s", e)
 
+    def _sweep_strategic_analyst_detection(
+        self, player: Player, destination_sector_id: int
+    ) -> None:
+        """Best-effort STRATEGIC_ANALYSTS same-sector early warning (LEG-2757).
+
+        When a hostile ship successfully enters sector ``destination_sector_id``,
+        each owner of a planet in that sector with >=1 Strategic Analyst
+        colonists receives the same ``hostile_detected`` WS frame as scanner-
+        array detection. One notice per owner per move (deduped even when they
+        hold multiple analyst planets in the sector). READ-ONLY, best-effort —
+        mirrors ``_sweep_scanner_detection``."""
+        try:
+            from src.models.colonist_profession import ProfessionType
+            from src.services.profession_service import profession_counts
+
+            dest_sector = (
+                self.db.query(Sector)
+                .filter(Sector.sector_id == destination_sector_id)
+                .first()
+            )
+            if not dest_sector:
+                return
+
+            planets = (
+                self.db.query(Planet)
+                .filter(
+                    Planet.sector_uuid == dest_sector.id,
+                    Planet.owner_id.isnot(None),
+                )
+                .all()
+            )
+            if not planets:
+                return
+
+            ship_id = player.current_ship_id
+            warned_owner_user_ids: Set[str] = set()
+
+            for planet in planets:
+                counts = profession_counts(self.db, planet.id)
+                if counts.get(ProfessionType.STRATEGIC_ANALYSTS, 0) < 1:
+                    continue
+
+                owner = (
+                    self.db.query(Player)
+                    .filter(Player.id == planet.owner_id)
+                    .first()
+                )
+                if owner is None or owner.user_id is None:
+                    continue
+
+                if not self._is_hostile_to_planet(player, owner):
+                    continue
+
+                owner_key = str(owner.user_id)
+                if owner_key in warned_owner_user_ids:
+                    continue
+                warned_owner_user_ids.add(owner_key)
+
+                self._dispatch_hostile_detected(
+                    owner_user_id=owner.user_id,
+                    sector_id=destination_sector_id,
+                    detection_range=0,
+                    ship_id=ship_id,
+                    detected_player_id=player.id,
+                )
+        except Exception as e:
+            logger.error(
+                "Strategic analyst detection sweep failed during movement: %s", e
+            )
+
     def _dispatch_hostile_detected(self, owner_user_id, sector_id: int,
                                    detection_range: int, ship_id,
                                    detected_player_id) -> None:
@@ -1183,6 +1253,9 @@ class MovementService:
                 self._roll_mechanical_failure(player, result)
                 self._roll_hull_condition_failure(player, result)
                 self._sweep_scanner_detection(player, destination_sector_id)
+                self._sweep_strategic_analyst_detection(
+                    player, destination_sector_id
+                )
                 # WO-K2: a player-built gate is still a border crossing — customs
                 # scan the hold. Wired on ALL THREE success paths so a smuggler
                 # can't pick a transport mode to route around the check.
@@ -1219,6 +1292,9 @@ class MovementService:
                 self._roll_hull_condition_failure(player, result)
                 # WO-AY: same success path — sweep for scanner-array detections.
                 self._sweep_scanner_detection(player, destination_sector_id)
+                self._sweep_strategic_analyst_detection(
+                    player, destination_sector_id
+                )
                 # WO-K2: customs scan on a direct warp (see the gate branch).
                 self._roll_contraband_transit_scan(
                     player, current_sector_id, destination_sector_id, result
@@ -1263,6 +1339,9 @@ class MovementService:
                 self._roll_hull_condition_failure(player, result)
                 # WO-AY: same success path — sweep for scanner-array detections.
                 self._sweep_scanner_detection(player, destination_sector_id)
+                self._sweep_strategic_analyst_detection(
+                    player, destination_sector_id
+                )
                 # WO-K2: customs scan on a natural warp tunnel (see the gate branch).
                 self._roll_contraband_transit_scan(
                     player, current_sector_id, destination_sector_id, result
