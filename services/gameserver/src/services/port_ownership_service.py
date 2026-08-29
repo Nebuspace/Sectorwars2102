@@ -318,7 +318,11 @@ FEE_OWNER_PCT_KEY = "fee_owner_pct"
 # ---------------------------------------------------------------------------
 MAINTENANCE_RATE_PER_MONTH = 0.01     # 1% of acquisition cost / canonical month
 DAYS_PER_MONTH = 30                   # canon scaled-month length
-INSOLVENCY_MONTHS = 3                 # consecutive shortfall months -> auto-sell
+INSOLVENCY_MONTHS = 3                 # consecutive shortfall months -> advance then auto-sell
+# Canon FEATURES/economy/port-ownership.md:395 — broadcast sale 7 days in
+# advance before auto-sell (owner inject / rival rescue window).
+INSOLVENCY_ADVANCE_DAYS = 7
+INSOLVENCY_ADVANCE_HOURS = INSOLVENCY_ADVANCE_DAYS * 24.0
 DEPRECIATION_FACTOR = 0.50            # auto-sell to faction at 40-60% (midpoint)
 SECONDS_PER_DAY = 24 * 3600.0
 
@@ -2606,6 +2610,10 @@ def revenue_summary(db: Session, station: Station, days: int = 30) -> Dict[str, 
         "defense_fund": _bucket(station, "defense_fund"),
         "operating_fund": _bucket(station, "operating_fund"),
         "insolvency_months": int((station.ownership or {}).get("insolvency_months", 0) or 0),
+        "insolvency_pending": bool(
+            (station.ownership or {}).get("insolvency_pending")
+        ),
+        "insolvency_sell_at": (station.ownership or {}).get("insolvency_sell_at"),
         "treasury_balance": station.treasury_balance or 0,
     }
 
@@ -2734,8 +2742,9 @@ def accrue_operating_costs(
     elapsed canonical days of maintenance (1% acquisition / month, pro-rated)
     against the operating_fund, overflowing to treasury_balance when the fund
     is short. Tracks consecutive shortfall MONTHS in
-    ownership['insolvency_months']; at INSOLVENCY_MONTHS the station auto-sells
-    to the controlling faction (auto_sell_insolvent).
+    ownership['insolvency_months']; at INSOLVENCY_MONTHS the station enters a
+    canon 7-day advance window (ownership insolvency_pending / insolvency_sell_at)
+    before auto_sell_insolvent runs.
 
     Returns a settlement summary. Unowned stations accrue nothing. No commit;
     caller owns the transaction. A periodic scheduler MAY call this as a public
@@ -2795,6 +2804,11 @@ def accrue_operating_costs(
         shortfall_months = 0
     ledger["insolvency_months"] = shortfall_months
 
+    # Recovery (inject / covered month) cancels any open advance window.
+    if shortfall_months < INSOLVENCY_MONTHS:
+        ledger.pop("insolvency_pending", None)
+        ledger.pop("insolvency_sell_at", None)
+
     # Fair-operation reputation bonus (WO-F12): a sustained low-tariff run earns
     # a one-time positive personal-reputation grant. Settled here, inside the
     # same whole-month tick, reading the CURRENT tariff (historical per-month
@@ -2816,13 +2830,104 @@ def accrue_operating_costs(
         "operating_fund": _bucket(station, "operating_fund"),
         "treasury_balance": station.treasury_balance or 0,
         "insolvency_months": shortfall_months,
+        "insolvency_pending": bool(ledger.get("insolvency_pending")),
+        "insolvency_sell_at": ledger.get("insolvency_sell_at"),
         "fair_ops_months": int(ledger.get("fair_ops_months", 0) or 0),
         "fair_ops_bonus_granted": fair_ops_granted,
         "status": "current" if covered else "shortfall",
     }
     if shortfall_months >= INSOLVENCY_MONTHS:
-        result["insolvency"] = auto_sell_insolvent(db, station, now)
+        result["insolvency"] = _advance_or_sell_insolvent(db, station, ledger, now)
     return result
+
+
+def _broadcast_insolvency_advance(
+    db: Session, station: Station, sell_at: datetime
+) -> None:
+    """Best-effort owner inbox notice that insolvency auto-sale is pending.
+
+    Soft-fail: never breaks the accrual / caller's transaction. Mirrors the
+    medal offline-notice pattern (self-addressed system Message)."""
+    owner_id = station.owner_id
+    if owner_id is None:
+        return
+    try:
+        from src.models.message import Message
+
+        message = Message(
+            sender_id=owner_id,
+            recipient_id=owner_id,
+            subject="Station insolvency — sale in 7 days",
+            content=(
+                f"Station {station.id} cannot cover operating costs. "
+                f"Auto-sale is scheduled for {sell_at.isoformat()}. "
+                "Inject cash into the treasury or accept a rescue offer before then."
+            ),
+            message_type="system",
+            priority="high",
+        )
+        db.add(message)
+        db.flush()
+    except Exception as exc:  # never break insolvency accrual
+        logger.error(
+            "Insolvency advance broadcast failed for station %s: %s",
+            station.id,
+            exc,
+        )
+
+
+def _advance_or_sell_insolvent(
+    db: Session,
+    station: Station,
+    ledger: Dict[str, Any],
+    now: datetime,
+) -> Dict[str, Any]:
+    """Enter / honor the canon 7-day advance window, then auto-sell.
+
+    First hit of INSOLVENCY_MONTHS: set ownership insolvency_pending +
+    insolvency_sell_at, broadcast to the owner, do NOT sell yet.
+    Subsequent ticks before the deadline: return pending (idempotent).
+    After the deadline: clear the window flags and call auto_sell_insolvent.
+    Caller holds the station lock and owns flag_modified / commit."""
+    sell_at_raw = ledger.get("insolvency_sell_at")
+    pending = bool(ledger.get("insolvency_pending")) and bool(sell_at_raw)
+
+    if not pending:
+        sell_at = game_time.scaled_deadline(INSOLVENCY_ADVANCE_HOURS, start=now)
+        ledger["insolvency_pending"] = True
+        ledger["insolvency_sell_at"] = sell_at.isoformat()
+        flag_modified(station, "ownership")
+        _broadcast_insolvency_advance(db, station, sell_at)
+        db.flush()
+        logger.info(
+            "Station %s insolvency advance opened: auto-sell at %s",
+            station.id,
+            sell_at.isoformat(),
+        )
+        return {
+            "status": "pending",
+            "insolvency_sell_at": sell_at.isoformat(),
+            "advance_days": INSOLVENCY_ADVANCE_DAYS,
+        }
+
+    try:
+        sell_at = _aware(datetime.fromisoformat(str(sell_at_raw)))
+    except (ValueError, TypeError):
+        sell_at = game_time.scaled_deadline(INSOLVENCY_ADVANCE_HOURS, start=now)
+        ledger["insolvency_sell_at"] = sell_at.isoformat()
+        flag_modified(station, "ownership")
+
+    if now < sell_at:
+        return {
+            "status": "pending",
+            "insolvency_sell_at": ledger.get("insolvency_sell_at"),
+            "advance_days": INSOLVENCY_ADVANCE_DAYS,
+        }
+
+    ledger.pop("insolvency_pending", None)
+    ledger.pop("insolvency_sell_at", None)
+    flag_modified(station, "ownership")
+    return auto_sell_insolvent(db, station, now)
 
 
 def _accrue_fair_operation_bonus(
@@ -2934,6 +3039,8 @@ def auto_sell_insolvent(
     ledger["defense_fund"] = 0
     ledger["operating_fund"] = 0
     ledger["insolvency_months"] = 0
+    ledger.pop("insolvency_pending", None)
+    ledger.pop("insolvency_sell_at", None)
     ledger.pop("player_id", None)
     ledger["insolvent_at"] = now.isoformat()
     ledger["last_acquisition_cost"] = _acquisition_cost(station)
