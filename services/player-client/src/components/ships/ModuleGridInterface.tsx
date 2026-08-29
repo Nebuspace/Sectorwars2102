@@ -195,6 +195,52 @@ type ModulePreviewPayload = {
   message?: string;
 };
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+/** Surface gameserver detail when module lattice load fails. */
+export function formatModuleGridLoadError(err: unknown): string {
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission to view this ship\'s modules';
+  }
+
+  if (hasServerDetail) return message!;
+  return 'Failed to load module data';
+}
+
+/** Surface gameserver detail when install/remove actions fail. */
+export function formatModuleGridActionError(err: unknown, fallback: string): string {
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (status === 429) {
+    if (hasServerDetail) return message!;
+    return 'Too many module actions — please wait and try again';
+  }
+
+  if (hasServerDetail) return message!;
+  return fallback;
+}
+
 const ModuleGridInterface: React.FC<ModuleGridInterfaceProps> = ({ ship, playerCredits, onChanged }) => {
   const [data, setData] = useState<ModulesResponse | null>(null);
   const [cosmeticCatalog, setCosmeticCatalog] = useState<CosmeticCatalogEntry[]>([]);
@@ -232,8 +278,8 @@ const ModuleGridInterface: React.FC<ModuleGridInterfaceProps> = ({ ship, playerC
       setData(result);
       setCosmeticCatalog(mapCosmeticsCatalog(cosmeticsRes?.catalog));
       setError(null);
-    } catch (err: any) {
-      setError(err.message || 'Failed to load module data');
+    } catch (err: unknown) {
+      setError(formatModuleGridLoadError(err));
     } finally {
       setLoading(false);
     }
@@ -328,8 +374,8 @@ const ModuleGridInterface: React.FC<ModuleGridInterfaceProps> = ({ ship, playerC
         // drawer already disables those, so this is a defensive surface.
         setActionMessage(result.message || 'Install failed');
       }
-    } catch (err: any) {
-      setActionMessage(err.message || 'Install failed');
+    } catch (err: unknown) {
+      setActionMessage(formatModuleGridActionError(err, 'Install failed'));
     } finally {
       setActionLoading(false);
     }
@@ -350,8 +396,8 @@ const ModuleGridInterface: React.FC<ModuleGridInterfaceProps> = ({ ship, playerC
       } else {
         setActionMessage(result.message || 'Remove failed');
       }
-    } catch (err: any) {
-      setActionMessage(err.message || 'Remove failed');
+    } catch (err: unknown) {
+      setActionMessage(formatModuleGridActionError(err, 'Remove failed'));
     } finally {
       setActionLoading(false);
     }

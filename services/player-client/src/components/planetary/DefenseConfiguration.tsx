@@ -19,6 +19,18 @@ interface DefenseType {
   maxUnits: number;
 }
 
+/** Surface gameserver 400 detail on defenses update refusal. */
+export function formatDefenseUpdateError(err: unknown): string {
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (hasServerDetail) return message!;
+  return 'Failed to update defenses';
+}
+
 // WO-FIX-DEFENSE-SHIELDS-CITADEL-PREREQ-BYPASS: 'shields' is intentionally NOT
 // a slider/purchase option here anymore. planet.defenses.shields is the real
 // shield-GENERATOR level (0-SHIELD_GENERATOR_MAX_LEVEL, server-side), upgraded
@@ -220,7 +232,7 @@ export const DefenseConfiguration: React.FC<DefenseConfigurationProps> = ({
         setTimeout(() => setSuccessMessage(null), 3000);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update defenses');
+      setError(formatDefenseUpdateError(err));
     } finally {
       setSaving(false);
     }

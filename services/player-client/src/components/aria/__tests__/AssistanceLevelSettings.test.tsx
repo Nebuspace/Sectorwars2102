@@ -18,6 +18,7 @@ vi.mock('../../../services/aiTradingService', () => ({
 
 import AssistanceLevelSettings, {
   coerceAssistanceLevel,
+  formatAssistanceLevelError,
 } from '../AssistanceLevelSettings';
 import { AI_ASSISTANCE_LEVELS } from '../../ai/types';
 
@@ -148,5 +149,45 @@ describe('AssistanceLevelSettings', () => {
     });
 
     expect(container.textContent).toContain('Failed to fetch trading profile: Unauthorized');
+  });
+
+  it('surfaces load 500 server detail via formatAssistanceLevelError', async () => {
+    const err = new Error('Internal server error: profile unavailable');
+    (err as { status?: number }).status = 500;
+    mockGetTradingProfile.mockRejectedValueOnce(err);
+
+    await act(async () => {
+      root.render(<AssistanceLevelSettings />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('Internal server error: profile unavailable');
+    expect(formatAssistanceLevelError(err, 'load')).toBe(
+      'Internal server error: profile unavailable',
+    );
+  });
+
+  it('surfaces update validation refusal with server detail', async () => {
+    mockUpdateAIPreferences.mockRejectedValueOnce(
+      Object.assign(new Error('Invalid assistance level value'), { status: 400 }),
+    );
+
+    await act(async () => {
+      root.render(<AssistanceLevelSettings />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const select = container.querySelector('#aria-assistance-level') as HTMLSelectElement;
+    await act(async () => {
+      select.value = 'minimal';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('Invalid assistance level value');
   });
 });

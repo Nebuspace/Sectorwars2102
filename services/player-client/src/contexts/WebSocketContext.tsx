@@ -92,6 +92,8 @@ interface WebSocketContextType {
   lastUrgentMessage: {
     message_id: string;
     sender_name: string;
+    sender_pinned_medal_id?: string | null;
+    sender_medal_count?: number | null;
     preview: string;
     sent_at: string | null;
   } | null;
@@ -325,6 +327,8 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
   const [lastUrgentMessage, setLastUrgentMessage] = useState<{
     message_id: string;
     sender_name: string;
+    sender_pinned_medal_id?: string | null;
+    sender_medal_count?: number | null;
     preview: string;
     sent_at: string | null;
   } | null>(null);
@@ -791,9 +795,20 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           }
 
           if (delivery.includes('modal')) {
+            const sender_medal_count =
+              message.sender_medal_count == null
+                ? null
+                : Number(message.sender_medal_count);
             setLastUrgentMessage({
               message_id: String(message.message_id || ''),
               sender_name,
+              sender_pinned_medal_id:
+                message.sender_pinned_medal_id != null
+                  ? String(message.sender_pinned_medal_id)
+                  : null,
+              sender_medal_count: Number.isFinite(sender_medal_count)
+                ? sender_medal_count
+                : null,
               preview,
               sent_at
             });

@@ -33,6 +33,43 @@ interface RankProgressData {
   requirements: RankRequirement[];
 }
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+/** apiRequest throws Error with `.status`; surface gameserver detail on rank progress load. */
+export function formatRankProgressLoadError(err: unknown): string {
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (status === 404) {
+    if (hasServerDetail) return message!;
+    return 'Failed to load rank progress';
+  }
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'Access denied — you cannot view rank progress right now.';
+  }
+
+  if (status === 429) {
+    return 'Rank progress rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (hasServerDetail) return message!;
+  return 'Failed to load rank progress';
+}
+
 const RankProgress: React.FC = () => {
   const [data, setData] = useState<RankProgressData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -45,8 +82,8 @@ const RankProgress: React.FC = () => {
         const result = await rankingAPI.getProgress();
         setData(result);
         setError(null);
-      } catch (err: any) {
-        setError(err.message || 'Failed to load rank progress');
+      } catch (err: unknown) {
+        setError(formatRankProgressLoadError(err));
       } finally {
         setLoading(false);
       }

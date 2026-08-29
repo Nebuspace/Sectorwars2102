@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import ReactDOM from 'react-dom';
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import { useGame } from '../../contexts/GameContext';
+import PlayerNamePlate from '../common/PlayerNamePlate';
 import './priority-hail-consumer.css';
 
 // WO-PUX-UPLINK-HUD: a blip shorter than this never surfaces a toast — most
@@ -257,7 +258,13 @@ const PriorityHailConsumer: React.FC = () => {
                 </span>
               </div>
               <div className="phc-modal-sender">
-                FROM: {(lastUrgentMessage.sender_name || 'UNKNOWN').toUpperCase()}
+                <span className="phc-modal-sender-label">FROM:</span>
+                <PlayerNamePlate
+                  name={lastUrgentMessage.sender_name || 'UNKNOWN'}
+                  size="sm"
+                  pinnedMedalId={lastUrgentMessage.sender_pinned_medal_id}
+                  medalCount={lastUrgentMessage.sender_medal_count}
+                />
               </div>
               <p className="phc-modal-preview">
                 {lastUrgentMessage.preview || 'Urgent transmission received.'}
