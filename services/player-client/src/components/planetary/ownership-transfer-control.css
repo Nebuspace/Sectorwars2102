@@ -1,0 +1,75 @@
+.ownership-transfer-control {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.75rem;
+  width: 100%;
+  margin-top: 0.35rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid rgba(123, 47, 255, 0.35);
+  background: rgba(10, 14, 28, 0.55);
+}
+
+.ownership-transfer-label {
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(200, 210, 255, 0.85);
+  font-weight: 600;
+}
+
+.ownership-transfer-offer-row,
+.ownership-transfer-pending {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.75rem;
+  flex: 1 1 100%;
+}
+
+.ownership-transfer-field-label {
+  font-size: 0.72rem;
+  color: rgba(200, 210, 255, 0.85);
+}
+
+.ownership-transfer-input {
+  min-width: 14rem;
+  max-width: 100%;
+  padding: 0.25rem 0.45rem;
+  font-size: 0.8rem;
+  color: #e8ecff;
+  background: rgba(20, 24, 40, 0.95);
+  border: 1px solid rgba(140, 160, 220, 0.45);
+}
+
+.ownership-transfer-btn {
+  padding: 0.25rem 0.6rem;
+  font-size: 0.78rem;
+  color: #e8ecff;
+  background: rgba(40, 32, 72, 0.95);
+  border: 1px solid rgba(140, 160, 220, 0.55);
+  cursor: pointer;
+}
+
+.ownership-transfer-btn:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.ownership-transfer-status,
+.ownership-transfer-notice {
+  font-size: 0.75rem;
+  color: rgba(120, 220, 160, 0.95);
+}
+
+.ownership-transfer-error {
+  font-size: 0.75rem;
+  color: rgba(255, 120, 120, 0.95);
+}
+
+.ownership-transfer-hint {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 0.68rem;
+  color: rgba(180, 190, 220, 0.7);
+}

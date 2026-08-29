@@ -46,7 +46,7 @@ from src.models.cargo_wreck import CargoWreck, WreckCause
 from src.models.planet import Planet, PlanetStatus, PlanetType
 from src.models.player import Player
 from src.models.sector import Sector
-from src.models.ship import ShipType
+from src.models.ship import Ship, ShipType
 from src.models.special_formation import PlayerFormationKnowledge, SpecialFormation, SpecialFormationType
 from src.models.station import Station
 from src.models.warp_gate import WarpGateBeacon, WarpGateBeaconStatus
@@ -208,6 +208,8 @@ def _session_for(
         PlayerFormationKnowledge: _NoWriteQuery(first=(object() if formation_known else None)),
         WarpGateBeacon: _NoWriteQuery(all_results=beacons or []),
         Player: _NoWriteQuery(first=None),  # beacon/gate owner lookups in list_sector_structures
+        # LEG-333 — list_sector_salvage_breaks queries Ship for in-progress breaks.
+        Ship: _NoWriteQuery(all_results=[]),
         # WarpGate backs both the ACTIVE-gates listing and the beacon-expiry
         # in-progress count -- empty/zero is sufficient for every scenario
         # here (no HARMONIZING/ACTIVE gate fixtures needed to prove

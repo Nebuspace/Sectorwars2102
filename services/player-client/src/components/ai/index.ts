@@ -6,4 +6,11 @@
 // imports directly from ./types.
 
 // Type exports
-export type { TradingRecommendation, MarketAnalysis, PlayerTradingProfile, AIPreferences } from './types';
+export type {
+  TradingRecommendation,
+  MarketAnalysis,
+  PlayerTradingProfile,
+  AIPreferences,
+  AIAssistanceLevel,
+} from './types';
+export { AI_ASSISTANCE_LEVELS } from './types';

@@ -13,6 +13,38 @@ interface TradeBonusRow {
   bonus: string;
 }
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+/** Surface GS propose-policy detail (LEG-2945 Soft-ORDER). */
+export function formatProposePolicyError(err: unknown): string {
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission to propose a policy in this region.';
+  }
+
+  if (status === 429) {
+    return 'Policy proposal rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (hasServerDetail) return message!;
+  return 'Failed to propose policy.';
+}
+
 const ProposePolicyForm: React.FC<ProposePolicyFormProps> = ({ regionId, onCreated, onCancel }) => {
   const [policyType, setPolicyType] = useState<string>(POLICY_TYPE_SUGGESTIONS[0]);
   const [policyTypeCustom, setPolicyTypeCustom] = useState('');
@@ -95,7 +127,7 @@ const ProposePolicyForm: React.FC<ProposePolicyFormProps> = ({ regionId, onCreat
       if (Array.isArray(maybeErrors) && maybeErrors.every((e) => typeof e === 'string')) {
         setFieldErrors(maybeErrors as string[]);
       } else {
-        setSubmitError(err instanceof Error ? err.message : 'Failed to propose policy.');
+        setSubmitError(formatProposePolicyError(err));
       }
     } finally {
       setSubmitting(false);

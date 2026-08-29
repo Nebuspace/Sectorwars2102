@@ -40,18 +40,32 @@ export const TIER_LABEL: Record<string, string> = {
   NONE: 'Uninsured', BASIC: 'Basic', STANDARD: 'Standard', PREMIUM: 'Premium'
 };
 
+/** Preserve gameserver detail on insurance status load refusal. */
+export function formatInsuranceLoadError(err: unknown): string {
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+  if (hasServerDetail) return message!;
+  return 'Insurance is unavailable right now.';
+}
+
 const InsuranceManager: React.FC<InsuranceManagerProps> = ({ shipId, playerCredits, onChanged, onClose }) => {
   const [status, setStatus] = useState<InsuranceStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [busyTier, setBusyTier] = useState<string | null>(null);
   const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
       const data = await shipAPI.getInsurance(shipId) as InsuranceStatus;
       setStatus(data);
+      setLoadError(null);
     } catch (e) {
-      setMsg({ kind: 'err', text: e instanceof Error ? e.message : 'Failed to load insurance.' });
+      setStatus(null);
+      setLoadError(formatInsuranceLoadError(e));
     } finally {
       setLoading(false);
     }
@@ -68,7 +82,15 @@ const InsuranceManager: React.FC<InsuranceManagerProps> = ({ shipId, playerCredi
       await load();
       onChanged?.();
     } catch (e) {
-      setMsg({ kind: 'err', text: e instanceof Error ? e.message : 'Purchase failed.' });
+      const message = e instanceof Error ? e.message : undefined;
+      const hasServerDetail =
+        typeof message === 'string' &&
+        message.trim().length > 0 &&
+        !/^API Error: \d+$/.test(message.trim());
+      setMsg({
+        kind: 'err',
+        text: hasServerDetail ? message! : 'Purchase failed.',
+      });
     } finally {
       setBusyTier(null);
     }
@@ -81,7 +103,9 @@ const InsuranceManager: React.FC<InsuranceManagerProps> = ({ shipId, playerCredi
     return (
       <div className="insurance-manager">
         <div className="ins-header"><h3>Hull Insurance</h3>{onClose && <button className="ins-close" onClick={onClose}>✕</button>}</div>
-        <p className="ins-error">Insurance is unavailable right now.</p>
+        <p className="ins-error" role="alert" data-testid="ins-load-error">
+          {loadError || 'Insurance is unavailable right now.'}
+        </p>
       </div>
     );
   }

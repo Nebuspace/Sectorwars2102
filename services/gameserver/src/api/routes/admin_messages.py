@@ -73,8 +73,21 @@ async def _list_admin_messages(
                       .offset(offset)\
                       .all()
 
+        if flagged:
+            sender_ids = [msg.sender_id for msg in messages if msg.sender_id]
+            block_stats = MessageService.batch_sender_block_stats_30d(db, sender_ids)
+            message_rows = []
+            for msg in messages:
+                row = msg.to_dict()
+                count, escalation = block_stats.get(str(msg.sender_id), (0, False))
+                row["sender_block_count_30d"] = count
+                row["sender_escalation_logged"] = escalation
+                message_rows.append(row)
+        else:
+            message_rows = [msg.to_dict() for msg in messages]
+
         return {
-            "messages": [msg.to_dict() for msg in messages],
+            "messages": message_rows,
             "total": total,
             "page": page,
             "limit": limit,

@@ -23,6 +23,11 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
+const { getModules, installModule } = vi.hoisted(() => ({
+  getModules: vi.fn(),
+  installModule: vi.fn(),
+}));
+
 vi.mock('../../services/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/api')>();
   return {
@@ -36,12 +41,44 @@ vi.mock('../../services/api', async (importOriginal) => {
         sectors: [],
       }),
     },
+    shipUpgradeAPI: {
+      ...actual.shipUpgradeAPI,
+      getModules: (...a: unknown[]) => getModules(...a),
+      installModule: (...a: unknown[]) => installModule(...a),
+    },
   };
 });
 
 vi.mock('./QuantumBearingViewport', () => ({
   default: () => null,
 }));
+
+vi.mock('./CrystalRefiningPanel', () => ({
+  default: () => null,
+}));
+
+const EMPTY_MODULES = {
+  ship_id: 'ship-1',
+  ship_name: 'Jumper One',
+  ship_type: 'WARP_JUMPER',
+  module_slots: {
+    v: 1,
+    cols: 2,
+    rows: 1,
+    slots: [
+      { i: 0, x: 0, y: 0, super: false, class: null, requires: null },
+      { i: 1, x: 1, y: 0, super: false, class: null, requires: null },
+    ],
+  },
+  installed: {},
+};
+
+const FITTED_HARVESTER_MODULES = {
+  ...EMPTY_MODULES,
+  installed: {
+    '0': { class: 'harvester', tier: 1, super_at_install: false, installed_at: '2026-08-27T00:00:00Z' },
+  },
+};
 
 const basePlayerState = {
   id: 'player-1',
@@ -64,6 +101,9 @@ const baseQuantumStatus = {
 
 let mockPlayerState: any = basePlayerState;
 let mockQuantumStatus: any = baseQuantumStatus;
+const updatePlayerCredits = vi.fn();
+const refreshQuantumStatus = vi.fn();
+const harvestNebula = vi.fn();
 
 vi.mock('../../contexts/GameContext', () => ({
   useGame: () => ({
@@ -73,13 +113,17 @@ vi.mock('../../contexts/GameContext', () => ({
     quantumScan: vi.fn(),
     quantumJump: vi.fn(),
     refineQuantumCharge: vi.fn(),
-    harvestNebula: vi.fn(),
+    harvestNebula,
+    refreshQuantumStatus,
+    updatePlayerCredits,
     quantumScanResult: null,
     setQuantumScanResult: vi.fn(),
   }),
 }));
 
 import QuantumDriveConsole from './QuantumDriveConsole';
+
+const flush = () => new Promise((r) => setTimeout(r, 0));
 
 describe('QuantumDriveConsole — server-surfaced turn costs (WO-API-PHASE2)', () => {
   let container: HTMLElement;
@@ -88,6 +132,13 @@ describe('QuantumDriveConsole — server-surfaced turn costs (WO-API-PHASE2)', (
   beforeEach(() => {
     mockPlayerState = { ...basePlayerState };
     mockQuantumStatus = { ...baseQuantumStatus };
+    getModules.mockReset();
+    installModule.mockReset();
+    updatePlayerCredits.mockReset();
+    refreshQuantumStatus.mockReset();
+    harvestNebula.mockReset();
+    getModules.mockResolvedValue(EMPTY_MODULES);
+    installModule.mockResolvedValue({ success: true, remaining_credits: 150000 });
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -168,5 +219,89 @@ describe('QuantumDriveConsole — server-surfaced turn costs (WO-API-PHASE2)', (
     const jumpBtn = container.querySelector('.qd-jump-btn') as HTMLButtonElement;
     expect(jumpBtn.textContent).not.toContain('INSUFFICIENT TURNS');
     expect(jumpBtn.disabled).toBe(false);
+  });
+});
+
+describe('QuantumDriveConsole — Install Quantum Field Harvester CTA (LEG-2484)', () => {
+  let container: HTMLElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    mockPlayerState = { ...basePlayerState, current_ship_id: 'ship-1' };
+    mockQuantumStatus = { ...baseQuantumStatus };
+    getModules.mockReset();
+    installModule.mockReset();
+    updatePlayerCredits.mockReset();
+    refreshQuantumStatus.mockReset();
+    harvestNebula.mockReset();
+    getModules.mockResolvedValue(EMPTY_MODULES);
+    installModule.mockResolvedValue({ success: true, remaining_credits: 150000 });
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+    vi.clearAllMocks();
+  });
+
+  const mount = async () => {
+    await act(async () => {
+      root.render(<QuantumDriveConsole />);
+    });
+    await act(async () => {
+      await flush();
+    });
+  };
+
+  it('renders the Install Quantum Field Harvester CTA with 50,000 cr catalog honesty when unequipped', async () => {
+    await mount();
+    expect(getModules).toHaveBeenCalledWith('ship-1');
+    const cta = container.querySelector('.qd-install-harvester-btn') as HTMLButtonElement;
+    expect(cta).toBeTruthy();
+    expect(cta.textContent).toContain('Install Quantum Field Harvester');
+    expect(cta.textContent).toContain('50,000');
+    expect(cta.getAttribute('aria-label')).toMatch(/Install Quantum Field Harvester/);
+    const actionButtons = container.querySelectorAll('.qd-scan-btn');
+    expect(actionButtons).toHaveLength(2);
+    expect(actionButtons[0].textContent).toContain('ECHO SCAN');
+    expect(actionButtons[1].textContent).toContain('NO NEBULA HERE');
+  });
+
+  it('does not render the CTA when a harvester module is already fitted', async () => {
+    getModules.mockResolvedValue(FITTED_HARVESTER_MODULES);
+    await mount();
+    expect(container.querySelector('.qd-install-harvester-btn')).toBeNull();
+    const actionButtons = container.querySelectorAll('.qd-scan-btn');
+    expect(actionButtons).toHaveLength(2);
+    expect(actionButtons[1].textContent).toContain('NO NEBULA HERE');
+  });
+
+  it('calls installModule with harvester class on the first empty open slot', async () => {
+    await mount();
+    const cta = container.querySelector('.qd-install-harvester-btn') as HTMLButtonElement;
+    await act(async () => {
+      cta.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await flush();
+    });
+    expect(installModule).toHaveBeenCalledWith('ship-1', 0, 'harvester', 1);
+    expect(updatePlayerCredits).toHaveBeenCalledWith(150000);
+    expect(container.querySelector('.qd-install-harvester-btn')).toBeNull();
+  });
+
+  it('surfaces an honest GS venue/shipyard denial on the console', async () => {
+    installModule.mockRejectedValue(new Error('You must be docked at a shipyard to fit modules'));
+    await mount();
+    const cta = container.querySelector('.qd-install-harvester-btn') as HTMLButtonElement;
+    await act(async () => {
+      cta.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await flush();
+    });
+    expect(container.textContent).toContain('You must be docked at a shipyard to fit modules');
+    expect(container.querySelector('.qd-install-harvester-btn')).toBeTruthy();
   });
 });

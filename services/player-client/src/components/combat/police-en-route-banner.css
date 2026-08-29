@@ -1,0 +1,72 @@
+/* PoliceEnRouteBanner — pre-engagement LAW countdown (LEG-902).
+   Stacks below NpcCombatBanner (top ~1rem, z-index 9500); this sits at
+   ~5.5rem with z-index 9450 so both can coexist briefly before combat
+   clears the en-route state. Non-blocking: no backdrop, manual dismiss. */
+
+.police-en-route-banner {
+  position: fixed;
+  top: 5.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9450;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  max-width: 480px;
+  width: min(90vw, 480px);
+  padding: 10px 40px 10px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--cockpit-warning, #ffb020);
+  background: linear-gradient(
+    135deg,
+    rgba(40, 28, 0, 0.92) 0%,
+    rgba(18, 12, 0, 0.94) 100%
+  );
+  box-shadow:
+    0 0 16px rgba(255, 176, 32, 0.28),
+    0 6px 20px rgba(0, 0, 0, 0.5);
+  color: var(--cockpit-text, #eee);
+  animation: police-en-route-banner-in 200ms ease-out;
+}
+
+@keyframes police-en-route-banner-in {
+  from {
+    transform: translateX(-50%) translateY(-12px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(-50%) translateY(0);
+    opacity: 1;
+  }
+}
+
+.police-en-route-banner-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--cockpit-warning, #ffb020);
+  margin-bottom: 4px;
+}
+
+.police-en-route-banner-message {
+  font-size: 0.95rem;
+  line-height: 1.35;
+}
+
+.police-en-route-banner-dismiss {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  border: none;
+  background: transparent;
+  color: var(--cockpit-text-secondary, #aaa);
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px;
+}
+
+.police-en-route-banner-dismiss:hover {
+  color: var(--cockpit-text, #eee);
+}

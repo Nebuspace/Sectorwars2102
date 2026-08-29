@@ -7,6 +7,7 @@ import { formatCredits } from '../../../utils/formatters';
 import ContactActionMenu, { type ContactActionMenuItem } from '../ContactActionMenu';
 import HailComposeDialog from '../HailComposeDialog';
 import PlayerTradeDesk from '../../trade/PlayerTradeDesk';
+import PlayerNamePlate from '../../common/PlayerNamePlate';
 import { repBucket, type RepBucket } from '../contactClassification';
 import { distancePx, REFERENCE_BAND } from '../WindshieldTableau';
 
@@ -130,6 +131,9 @@ export interface TacticalContact {
   /** NPC-only enrichment (npc_spawn_service._presence_entry / player.py). */
   archetype?: string;
   notoriety?: number;
+  /** Medal identity from players_present / enrich_presence_with_live_pose (medals.md §203). */
+  pinned_medal_id?: string | null;
+  medal_count?: number | null;
   /** WO-ISP: authoritative in-system pose/leg plan from the server — same
    *  shape ShipPresence.pose carries (SolarSystemViewscreen.tsx); the raw
    *  players_present row already carries this at runtime, just previously
@@ -443,7 +447,18 @@ const TacticalTargetPage: React.FC<TacticalTargetPageProps> = ({ contacts, selec
                 }
               >
                 {contact.military_rank ? `${contact.military_rank.toUpperCase()} ` : ''}
-                {contactDisplayName(contact)}
+                {contact.is_npc ? (
+                  contactDisplayName(contact)
+                ) : (
+                  <PlayerNamePlate
+                    name={contactDisplayName(contact)}
+                    size="sm"
+                    pinnedMedalId={contact.pinned_medal_id ?? null}
+                    medalCount={
+                      typeof contact.medal_count === 'number' ? contact.medal_count : null
+                    }
+                  />
+                )}
                 {selected && <span className="target-selected-badge" aria-hidden="true"> ◎</span>}
               </span>
             </div>

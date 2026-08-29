@@ -3,3 +3,4 @@
  */
 
 export { CombatInterface } from './CombatInterface';
+export { CombatHistoryPanel } from './CombatHistoryPanel';
