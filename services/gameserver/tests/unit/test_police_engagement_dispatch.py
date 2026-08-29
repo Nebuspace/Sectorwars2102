@@ -99,11 +99,13 @@ class TestPoliceEngagementDispatch:
         sector = make_sector(defenses={"police_patrol_ships": [police_squad()]})
         service, mock_db = build_service(sector)
 
-        with patch(f"{_MODULE}.route_engagement") as mock_route:
+        with patch(f"{_MODULE}.route_engagement") as mock_route, \
+             patch(f"{_MODULE}.dispatch_police_en_route_event") as mock_emit:
             mock_route.return_value = SimpleNamespace(id=uuid.uuid4())
             encounters = service._check_for_encounters(player, sector.sector_id)
 
         mock_route.assert_called_once_with(mock_db, player, "wanted_status", sector)
+        mock_emit.assert_called_once()
         # Detection leg is untouched by the new dispatch side effect --
         # byte-identical to test_patrol_encounters.py's own pin.
         assert patrol_encounter(encounters) == {
@@ -120,11 +122,17 @@ class TestPoliceEngagementDispatch:
         sector = make_sector(defenses={"police_patrol_ships": [police_squad()]})
         service, mock_db = build_service(sector)
 
-        with patch(f"{_MODULE}.route_engagement") as mock_route:
+        order: list[str] = []
+        mock_db.commit.side_effect = lambda: order.append("commit")
+        with patch(f"{_MODULE}.route_engagement") as mock_route, \
+             patch(f"{_MODULE}.dispatch_police_en_route_event") as mock_emit:
             mock_route.return_value = SimpleNamespace(id=uuid.uuid4())
+            mock_emit.side_effect = lambda *a, **k: order.append("emit")
             service._check_for_encounters(player, sector.sector_id)
 
         mock_db.commit.assert_called_once()
+        mock_emit.assert_called_once()
+        assert order == ["commit", "emit"]
 
     def test_no_engagement_returned_skips_commit(self):
         """route_engagement returns None on cooldown / out-of-jurisdiction /
