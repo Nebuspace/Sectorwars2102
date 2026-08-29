@@ -9,6 +9,40 @@ import './recovery-console-panel.css';
  * Wires GET /api/v1/recovery/status + distress / slipdrive / escape-pod
  * POSTs. Collapsed rail by default; expands to the stranding recovery desk.
  */
+
+/**
+ * Surface GS recovery refusal detail.
+ * - Plain string detail (slipdrive / escape-pod `detail=str(e)`).
+ * - Nested structured detail from `_distress_http_error` — FastAPI wraps
+ *   `{detail: str(e), ...payload}` so the client sees `data.detail.detail`.
+ */
+export function formatRecoveryActionError(err: unknown): string {
+  let message = err instanceof Error ? err.message : undefined;
+
+  if (err && typeof err === 'object') {
+    const typed = err as { data?: { detail?: unknown } };
+    const detail = typed.data?.detail;
+    if (typeof detail === 'string' && detail.trim()) {
+      message = detail.trim();
+    } else if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
+      const structured = detail as { detail?: unknown; message?: unknown };
+      if (typeof structured.detail === 'string' && structured.detail.trim()) {
+        message = structured.detail.trim();
+      } else if (typeof structured.message === 'string' && structured.message.trim()) {
+        message = structured.message.trim();
+      }
+    }
+  }
+
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (hasServerDetail) return message!;
+  return 'Recovery action failed';
+}
+
 const RecoveryConsolePanel: React.FC = () => {
   const { refreshPlayerState, loadShips } = useGame();
   const [open, setOpen] = useState(false);
@@ -63,7 +97,7 @@ const RecoveryConsolePanel: React.FC = () => {
       await fn();
       await afterAction(okMsg);
     } catch (err: unknown) {
-      setFeedback(err instanceof Error ? err.message : 'Recovery action failed');
+      setFeedback(formatRecoveryActionError(err));
     } finally {
       setBusy(false);
     }

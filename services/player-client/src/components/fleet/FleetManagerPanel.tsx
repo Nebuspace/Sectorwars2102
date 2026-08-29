@@ -1,14 +1,16 @@
 /**
- * FleetManagerPanel — LEG-INI-01 roster + LEG-2278 / LEG-308 battle viewer
+ * FleetManagerPanel — LEG-INI-01 roster + LEG-133/141 move + LEG-2278 battle viewer
  *
  * Player-facing fleet coordination surface over existing `/api/v1/fleets`
  * endpoints: roster list, composition, create, add/remove ship, formation,
- * disband, resupply, initiateBattle, simulateBattleRound, getBattles, getBattle.
+ * disband, resupply, move-as-one (`POST /fleets/{id}/move`, LEG-49),
+ * initiateBattle, simulateBattleRound, getBattles, getBattle.
  * Roster uses team fleets (`GET /`), not `my-fleets` (member-ship filter
  * would hide a just-created empty formation).
  *
- * Adjacent-hop / `POST /fleets/{id}/move` is a separate leftover (#1230 /
- * LEG-133) — not this surface. Do not invent a client move helper here.
+ * Move destination: Sector row UUID via `fleetAPI.move`. Adjacent hops come
+ * from GameContext `availableMoves` keyed by `MoveOption.id` (LEG-132/133).
+ * LEG-141: refresh available-moves on mount / sector change.
  *
  * LEG-2278 / LEG-308: initiateBattle + simulateBattleRound on existing
  * fleetAPI (no new GS fields). Tip GET /fleets is team-only — defender is a
@@ -16,9 +18,9 @@
  * omits battle_log (LEG-400); rounds from simulate-round are shown locally.
  */
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { fleetAPI } from '../../services/api';
-import { useGame } from '../../contexts/GameContext';
+import { useGame, type MoveOption } from '../../contexts/GameContext';
 import CockpitInstrument from '../cockpit/CockpitInstrument';
 import { useEmbedded } from '../cockpit/EmbeddedContext';
 import './fleet-manager.css';
@@ -149,6 +151,12 @@ const flattenRoundEntry = (entry: BattleLogEntry): FlatRound | null => {
 
 const ROLES = ['attacker', 'defender', 'support', 'scout', 'flagship'] as const;
 
+type HopChoice = {
+  id: string;
+  label: string;
+  kind: 'warp' | 'tunnel';
+};
+
 type Busy =
   | 'load'
   | 'create'
@@ -157,6 +165,7 @@ type Busy =
   | 'remove'
   | 'disband'
   | 'resupply'
+  | 'move'
   | 'initiate'
   | 'simulate'
   | null;
@@ -176,8 +185,24 @@ const FleetShell: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   );
 };
 
+const hopLabel = (kind: 'warp' | 'tunnel', move: MoveOption): string => {
+  const num = move.sector_number ?? move.sector_id;
+  const nameBit = move.name ? ` (${move.name})` : '';
+  const prefix = kind === 'warp' ? 'Warp' : 'Tunnel';
+  return `${prefix} — Sector ${num}${nameBit} · ${move.turn_cost}t`;
+};
+
+const toHopChoice = (kind: 'warp' | 'tunnel', move: MoveOption): HopChoice | null => {
+  if (!move.can_afford) return null;
+  const raw = move.id;
+  if (raw == null) return null;
+  const id = String(raw);
+  if (!isUuid(id)) return null;
+  return { id, label: hopLabel(kind, move), kind };
+};
+
 export const FleetManagerPanel: React.FC = () => {
-  const { ships } = useGame();
+  const { ships, currentSector, availableMoves, getAvailableMoves } = useGame();
   const [fleets, setFleets] = useState<FleetSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [members, setMembers] = useState<FleetMemberRow[]>([]);
@@ -188,6 +213,7 @@ export const FleetManagerPanel: React.FC = () => {
   const [addShipId, setAddShipId] = useState('');
   const [addRole, setAddRole] = useState<string>('attacker');
   const [previewFormation, setPreviewFormation] = useState('standard');
+  const [moveDest, setMoveDest] = useState('');
   const [battleId, setBattleId] = useState<string | null>(null);
   const [battleStatus, setBattleStatus] = useState<BattleStatusSnapshot | null>(null);
   const [defenderFleetId, setDefenderFleetId] = useState('');
@@ -195,6 +221,53 @@ export const FleetManagerPanel: React.FC = () => {
 
   const selected = fleets.find((f) => f.id === selectedId) ?? null;
   const inBattle = selected?.status === 'in_battle';
+
+  const currentSectorUuid = useMemo(() => {
+    const raw = currentSector?.id;
+    if (raw == null) return null;
+    const asStr = String(raw);
+    return isUuid(asStr) ? asStr : null;
+  }, [currentSector?.id]);
+
+  const currentMoveLabel = useMemo(() => {
+    if (!currentSector || !currentSectorUuid) return null;
+    const num = currentSector.sector_number ?? currentSector.sector_id;
+    return `Current — Sector ${num}${currentSector.name ? ` (${currentSector.name})` : ''}`;
+  }, [currentSector, currentSectorUuid]);
+
+  const adjacentHops = useMemo(() => {
+    const warps = (availableMoves?.warps ?? [])
+      .map((m) => toHopChoice('warp', m))
+      .filter((h): h is HopChoice => h != null);
+    const tunnels = (availableMoves?.tunnels ?? [])
+      .map((m) => toHopChoice('tunnel', m))
+      .filter((h): h is HopChoice => h != null);
+    const seen = new Set<string>();
+    const out: HopChoice[] = [];
+    for (const hop of [...warps, ...tunnels]) {
+      if (seen.has(hop.id)) continue;
+      seen.add(hop.id);
+      out.push(hop);
+    }
+    return out;
+  }, [availableMoves]);
+
+  const hasMoveDestinations = adjacentHops.length > 0 || currentSectorUuid != null;
+
+  // LEG-141: context only refreshes moves on sector change / explore / latent-scan.
+  useEffect(() => {
+    void getAvailableMoves();
+  }, [currentSector?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const preferred = adjacentHops[0]?.id ?? currentSectorUuid ?? '';
+    setMoveDest((prev) => {
+      if (prev && (adjacentHops.some((h) => h.id === prev) || prev === currentSectorUuid)) {
+        return prev;
+      }
+      return preferred;
+    });
+  }, [adjacentHops, currentSectorUuid]);
 
   const formationPreviewKey = selected
     ? inBattle
@@ -461,6 +534,76 @@ export const FleetManagerPanel: React.FC = () => {
                 <dd>{selected.commander_name ?? '—'}</dd>
               </div>
             </dl>
+
+            <div className="fleet-manager-row" data-testid="fleet-move-controls">
+              <label className="fleet-manager-label">
+                Move to
+                <select
+                  data-testid="fleet-move-dest"
+                  value={moveDest}
+                  disabled={busy !== null || inBattle || !hasMoveDestinations}
+                  onChange={(e) => setMoveDest(e.target.value)}
+                >
+                  {!hasMoveDestinations ? (
+                    <option value="">No destinations available</option>
+                  ) : (
+                    <>
+                      {currentSectorUuid && currentMoveLabel && (
+                        <option value={currentSectorUuid}>{currentMoveLabel}</option>
+                      )}
+                      {adjacentHops.map((hop) => (
+                        <option
+                          key={`${hop.kind}-${hop.id}`}
+                          value={hop.id}
+                          data-testid={`fleet-move-hop-${hop.kind}-${hop.id}`}
+                        >
+                          {hop.label}
+                        </option>
+                      ))}
+                    </>
+                  )}
+                </select>
+              </label>
+              <button
+                type="button"
+                data-testid="fleet-move-submit"
+                disabled={
+                  busy !== null ||
+                  inBattle ||
+                  !moveDest ||
+                  !isUuid(moveDest) ||
+                  !hasMoveDestinations
+                }
+                onClick={() =>
+                  run('move', async () => {
+                    if (!isUuid(moveDest)) {
+                      throw new Error(
+                        'Move destination needs a Sector UUID (adjacent hop or current sector).'
+                      );
+                    }
+                    await fleetAPI.move(selected.id, moveDest);
+                    await refresh();
+                  })
+                }
+              >
+                {busy === 'move'
+                  ? 'Moving…'
+                  : inBattle
+                    ? 'In battle — cannot move'
+                    : 'Move as one'}
+              </button>
+            </div>
+            {inBattle && (
+              <p className="fleet-manager-muted" data-testid="fleet-move-in-battle">
+                Cannot move a fleet during battle (server rejects IN_BATTLE).
+              </p>
+            )}
+            {!hasMoveDestinations && !inBattle && (
+              <p className="fleet-manager-muted" data-testid="fleet-move-no-sector">
+                No adjacent hops with Sector UUIDs and current sector not loaded —
+                open NAV / wait for available-moves sync, then move the fleet here.
+              </p>
+            )}
 
             <div className="fleet-manager-row">
               <label className="fleet-manager-label">

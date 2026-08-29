@@ -213,4 +213,74 @@ describe('FactionManagement mutation errors (LEG-2610)', () => {
       'Failed to update territory. Check that sector IDs are valid.',
     );
   });
+
+  it('surfaces rate-limit copy on territory PUT 429', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.put).mockRejectedValue(axiosError(429));
+
+    render(<FactionManagement />);
+    await waitFor(() => expect(screen.getByText('Test Faction')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: /^Territory$/i }));
+    await user.click(screen.getByRole('button', { name: /Save Territory/i }));
+
+    await waitFor(() => {
+      expect(api.put).toHaveBeenCalledWith(
+        `/api/v1/admin/factions/${sampleFaction.id}/territory`,
+        expect.objectContaining({ sector_ids: sampleFaction.territory_sectors }),
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/rate limit/i));
+    expect(toastError).not.toHaveBeenCalledWith(
+      'Failed to update territory. Check that sector IDs are valid.',
+    );
+  });
+
+  it('surfaces formatAdminApiError on reputation PUT 403', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.put).mockRejectedValue(
+      axiosError(403, 'Missing scope admin.factions.reputation'),
+    );
+
+    render(<FactionManagement />);
+    await waitFor(() => expect(screen.getByText('Test Faction')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: /^Reputation$/i }));
+    await user.type(screen.getByPlaceholderText('Player UUID'), 'player-1');
+    await user.click(screen.getByRole('button', { name: /Apply Change/i }));
+
+    await waitFor(() => {
+      expect(api.put).toHaveBeenCalledWith(
+        `/api/v1/admin/factions/${sampleFaction.id}/reputation`,
+        expect.objectContaining({
+          player_id: 'player-1',
+          change: 10,
+        }),
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith('Missing scope admin.factions.reputation');
+    expect(toastError).not.toHaveBeenCalledWith(
+      'Failed to adjust reputation. Check the player ID.',
+    );
+  });
+
+  it('surfaces rate-limit copy on reputation PUT 429', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.put).mockRejectedValue(axiosError(429));
+
+    render(<FactionManagement />);
+    await waitFor(() => expect(screen.getByText('Test Faction')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: /^Reputation$/i }));
+    await user.type(screen.getByPlaceholderText('Player UUID'), 'player-1');
+    await user.click(screen.getByRole('button', { name: /Apply Change/i }));
+
+    await waitFor(() => {
+      expect(api.put).toHaveBeenCalled();
+    });
+    expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/rate limit/i));
+    expect(toastError).not.toHaveBeenCalledWith(
+      'Failed to adjust reputation. Check the player ID.',
+    );
+  });
 });

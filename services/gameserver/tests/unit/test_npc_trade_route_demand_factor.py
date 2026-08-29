@@ -112,6 +112,36 @@ def test_resolve_station_reputation_score_owner_standing():
     assert score == pytest.approx(1.0)
 
 
+def test_compose_region_tax_rate_quarter_scales_traffic_by_three_quarters():
+    """port-ownership.md:190 — region.tax_rate=0.25 → traffic ×0.75."""
+    base = 1.0
+    assert npc_trading_service.compose_region_tax_on_traffic(base, 0.25) == pytest.approx(
+        0.75
+    )
+    assert npc_trading_service.compose_region_tax_on_traffic(base, 0.0) == pytest.approx(
+        1.0
+    )
+
+
+def test_compute_npc_route_traffic_weight_applies_region_compose():
+    """Same station tariff; 25% region tax → 0.75× route weight vs 0%."""
+    station_tax = 0.05  # demand_factor 0.75
+    at_zero = npc_trading_service.compute_npc_route_traffic_weight(station_tax, 0.0)
+    at_quarter = npc_trading_service.compute_npc_route_traffic_weight(station_tax, 0.25)
+    assert at_quarter == pytest.approx(at_zero * 0.75)
+
+
+def test_compute_npc_route_traffic_weight_reputation_then_region():
+    """Canon stack: demand × (1+0.10×rep) × (1−region_tax)."""
+    station_tax = 0.05
+    rep = 1.0
+    with_rep = npc_trading_service.compose_npc_traffic_weight(station_tax, rep)
+    final = npc_trading_service.compute_npc_route_traffic_weight(
+        station_tax, 0.25, reputation_score=rep
+    )
+    assert final == pytest.approx(with_rep * 0.75)
+
+
 def _station(station_id, sector_id, *, tax_rate, supplies, wants):
     commodities = {}
     for name in supplies:
@@ -132,6 +162,8 @@ def _station(station_id, sector_id, *, tax_rate, supplies, wants):
         id=station_id,
         sector_id=sector_id,
         tax_rate=tax_rate,
+        owner_id=None,
+        faction_affiliation=None,
         commodities=commodities,
     )
 
@@ -161,10 +193,15 @@ def test_high_tariff_station_selected_less_often():
         sector_query = MagicMock()
         sector_query.filter.return_value.all.return_value = [(2,), (3,), (4,)]
 
+        region_query = MagicMock()
+        region_query.filter.return_value.first.return_value = SimpleNamespace(tax_rate=0.0)
+
         def query_router(model):
             model_str = str(model)
             if "Sector" in model_str:
                 return sector_query
+            if "Region" in model_str:
+                return region_query
             return station_query
 
         mock_query.side_effect = query_router

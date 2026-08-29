@@ -159,10 +159,19 @@
 }
 
 .phc-modal-sender {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
   font-size: 0.7rem;
   letter-spacing: 0.06em;
   opacity: 0.8;
   margin-bottom: 0.5rem;
+}
+
+.phc-modal-sender-label {
+  flex: none;
+  text-transform: uppercase;
 }
 
 .phc-modal-preview {
