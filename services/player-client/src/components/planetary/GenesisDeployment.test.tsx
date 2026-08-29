@@ -88,7 +88,12 @@ vi.mock('../../contexts/GameContext', () => ({
   }),
 }));
 
-import { GenesisDeployment, formatGenesisQuotesLoadError } from './GenesisDeployment';
+import {
+  GenesisDeployment,
+  formatGenesisQuotesLoadError,
+  formatGenesisVerifyError,
+  formatGenesisDeployError,
+} from './GenesisDeployment';
 
 describe('formatGenesisQuotesLoadError', () => {
   it('preserves 400 server detail from get_genesis_quote', () => {
@@ -105,6 +110,32 @@ describe('formatGenesisQuotesLoadError', () => {
 
   it('falls back on non-Error throwables', () => {
     expect(formatGenesisQuotesLoadError('boom')).toBe('Failed to load genesis pricing');
+  });
+});
+
+describe('formatGenesisVerifyError', () => {
+  it('preserves GS detail on verify-pricing reject', () => {
+    expect(formatGenesisVerifyError(new Error('Quote expired'))).toBe('Quote expired');
+  });
+
+  it('falls back when only bare API Error status is present', () => {
+    expect(formatGenesisVerifyError(new Error('API Error: 503'))).toBe(
+      'Failed to verify genesis pricing',
+    );
+  });
+});
+
+describe('formatGenesisDeployError', () => {
+  it('preserves GS detail on deploy reject', () => {
+    expect(formatGenesisDeployError(new Error('Insufficient credits'))).toBe(
+      'Insufficient credits',
+    );
+  });
+
+  it('falls back when only bare API Error status is present', () => {
+    expect(formatGenesisDeployError(new Error('API Error: 500'))).toBe(
+      'Failed to deploy Genesis Device',
+    );
   });
 });
 
