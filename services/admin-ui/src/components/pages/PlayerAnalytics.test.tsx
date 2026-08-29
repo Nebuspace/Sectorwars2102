@@ -219,3 +219,99 @@ describe('PlayerAnalytics session time card (LEG-386)', () => {
     });
   });
 });
+
+describe('PlayerAnalytics regions fetch errors (LEG-2750)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('surfaces regions 403 as admin.galaxy.manage scope denial', async () => {
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url === '/api/v1/admin/regions') {
+        return Promise.reject(
+          Object.assign(new Error('HTTP 403'), { response: { status: 403 } }),
+        );
+      }
+      if (typeof url === 'string' && url.startsWith('/api/v1/admin/players/comprehensive')) {
+        return Promise.resolve({
+          data: { players: [], total_count: 0 },
+        });
+      }
+      if (url === '/api/v1/admin/analytics/real-time') {
+        return Promise.resolve({
+          data: {
+            data: {
+              total_active_players: 10,
+              total_credits_circulation: 1000,
+              new_players_today: 2,
+              players_online_now: 3,
+              total_players: 50,
+              suspicious_activity_alerts: 0,
+            },
+          },
+        });
+      }
+      if (typeof url === 'string' && url.startsWith('/api/v1/admin/re-engagement/summary')) {
+        return Promise.resolve({
+          data: { open: 0, contacted: 0, resolved: 0, total: 0, open_share: null },
+        });
+      }
+      if (typeof url === 'string' && url.startsWith('/api/v1/admin/re-engagement')) {
+        return Promise.resolve({ data: { items: [], total: 0 } });
+      }
+      return Promise.reject(new Error(`unexpected GET ${url}`));
+    });
+
+    render(<PlayerAnalytics />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/admin\.galaxy\.manage/);
+    });
+  });
+
+  it('surfaces regions 429 as admin rate-limit', async () => {
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url === '/api/v1/admin/regions') {
+        return Promise.reject(
+          Object.assign(new Error('HTTP 429'), { response: { status: 429 } }),
+        );
+      }
+      if (typeof url === 'string' && url.startsWith('/api/v1/admin/players/comprehensive')) {
+        return Promise.resolve({
+          data: { players: [], total_count: 0 },
+        });
+      }
+      if (url === '/api/v1/admin/analytics/real-time') {
+        return Promise.resolve({
+          data: {
+            data: {
+              total_active_players: 10,
+              total_credits_circulation: 1000,
+              new_players_today: 2,
+              players_online_now: 3,
+              total_players: 50,
+              suspicious_activity_alerts: 0,
+            },
+          },
+        });
+      }
+      if (typeof url === 'string' && url.startsWith('/api/v1/admin/re-engagement/summary')) {
+        return Promise.resolve({
+          data: { open: 0, contacted: 0, resolved: 0, total: 0, open_share: null },
+        });
+      }
+      if (typeof url === 'string' && url.startsWith('/api/v1/admin/re-engagement')) {
+        return Promise.resolve({ data: { items: [], total: 0 } });
+      }
+      return Promise.reject(new Error(`unexpected GET ${url}`));
+    });
+
+    render(<PlayerAnalytics />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
+    });
+  });
+});
