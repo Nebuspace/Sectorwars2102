@@ -175,8 +175,9 @@ class Planet(Base):
     # remains the SINGLE WRITER of reclaimable_at/abandoned_at and reaches them via
     # raw text() SQL on the same transaction — those raw helpers keep working
     # unchanged now that the columns are also visible on the ORM model.
-    #   tax_rate       — INERT this slice (no taxable event wired yet). NULL ⇒ 0.0;
-    #                    the [0.00, 0.20] clamp lives in planetary_service.clamp_tax_rate.
+    #   tax_rate       — owner-set via PATCH /planets/{id}/tax-rate; NULL ⇒ 0.0;
+    #                    bounded [0.00, 0.20] in planetary_service.clamp_tax_rate;
+    #                    skim on non-owner stockpile withdraw (withdraw_stockpile_to_cargo).
     #   reclaimable_at — inactivity-reclaim flag (NULL ⇒ not flagged).
     #   abandoned_at   — audit stamp for the moment ownership reverted (forensics only).
     tax_rate = Column(Float, nullable=True)
