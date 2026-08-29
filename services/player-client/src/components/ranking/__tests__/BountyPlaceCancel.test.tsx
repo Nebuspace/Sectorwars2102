@@ -24,7 +24,7 @@ vi.mock('../../../contexts/AuthContext', () => ({
   useAuth: () => ({ user: { id: 'placer-1', username: 'Me' } }),
 }));
 
-import BountyPlaceCancel, { formatBountyInspectLoadError } from '../BountyPlaceCancel';
+import BountyPlaceCancel, { formatBountyCancelError, formatBountyInspectLoadError, formatBountyPlaceError } from '../BountyPlaceCancel';
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -211,5 +211,28 @@ describe('BountyPlaceCancel', () => {
 
     expect(container.querySelector('[data-testid="bounty-place-cancel-error"]')?.textContent)
       .toBe('Player not found');
+  });
+
+  it('surfaces cancel 400 server detail', async () => {
+    getOnTarget.mockResolvedValue({
+      success: true, target_id: 't1', target_name: 'Rogue', total_value: 1000,
+      player_bounties: [{ id: 'b-mine', placed_by: 'placer-1', placed_by_name: 'Me', amount: 1000, type: 'player' }],
+      system_bounties: [],
+    });
+    cancel.mockRejectedValue(Object.assign(new Error('Only the placer may cancel this bounty'), { status: 400 }));
+    await act(async () => { root.render(<BountyPlaceCancel />); });
+    const target = container.querySelector('[data-testid="bounty-place-target"]') as HTMLInputElement;
+    await act(async () => { setInputValue(target, 't1'); });
+    await act(async () => { (container.querySelector('[data-testid="bounty-inspect-submit"]') as HTMLButtonElement).click(); await flush(); });
+    await act(async () => { (container.querySelector('[data-testid="bounty-cancel-submit"]') as HTMLButtonElement).click(); await flush(); });
+    expect(container.querySelector('[data-testid="bounty-place-cancel-error"]')?.textContent).toBe('Only the placer may cancel this bounty');
+  });
+
+  it('formatBountyPlaceError falls back when detail absent', () => {
+    expect(formatBountyPlaceError(new Error('API Error: 400'))).toBe('Failed to place bounty');
+  });
+
+  it('formatBountyCancelError falls back when detail absent', () => {
+    expect(formatBountyCancelError(new Error('API Error: 400'))).toBe('Failed to cancel bounty');
   });
 });
