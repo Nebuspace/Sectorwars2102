@@ -110,18 +110,6 @@ export function formatCitadelLoadError(err: unknown): string {
   return 'Failed to load citadel info';
 }
 
-/** Surface gameserver 400 detail on citadel upgrade refusal (prereq, in-progress, etc.). */
-export function formatCitadelUpgradeError(err: unknown): string {
-  const message = err instanceof Error ? err.message : undefined;
-  const hasServerDetail =
-    typeof message === 'string' &&
-    message.trim().length > 0 &&
-    !/^API Error: \d+$/.test(message.trim());
-
-  if (hasServerDetail) return message!;
-  return 'Upgrade failed';
-}
-
 const compact = (n: number): string => {
   if (n >= 1_000_000) return `${n % 1_000_000 === 0 ? n / 1_000_000 : (n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${n % 1_000 === 0 ? n / 1_000 : (n / 1_000).toFixed(1)}k`;
@@ -141,6 +129,90 @@ const formatCountdown = (ms: number): string => {
   parts.push(`${minutes}m`);
   return parts.join(' ');
 };
+
+interface CitadelUpgradeErrorPayload {
+  error_code?: string;
+  reason?: string;
+  building_key?: string;
+  building_name?: string;
+  message?: string;
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function extractCitadelUpgradePayload(data: unknown): CitadelUpgradeErrorPayload | undefined {
+  if (!data || typeof data !== 'object') return undefined;
+  const root = data as Record<string, unknown>;
+  const detail = root.detail;
+  const src =
+    detail && typeof detail === 'object' && !Array.isArray(detail)
+      ? (detail as Record<string, unknown>)
+      : root;
+
+  const payload: CitadelUpgradeErrorPayload = {
+    error_code: readString(src.error_code),
+    reason: readString(src.reason),
+    building_key: readString(src.building_key),
+    building_name: readString(src.building_name),
+    message: readString(src.message),
+  };
+
+  return Object.values(payload).some(Boolean) ? payload : undefined;
+}
+
+function serverUpgradeDetail(err: unknown): string | undefined {
+  if (err && typeof err === 'object') {
+    const data = (err as { data?: unknown }).data;
+    if (data && typeof data === 'object') {
+      const body = data as Record<string, unknown>;
+      if (typeof body.detail === 'string' && body.detail.trim()) return body.detail.trim();
+      if (typeof body.message === 'string' && body.message.trim()) return body.message.trim();
+    }
+  }
+  const message = err instanceof Error ? err.message : undefined;
+  if (
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim())
+  ) {
+    return message.trim();
+  }
+  return undefined;
+}
+
+/** POST /citadel/upgrade refusals — surface GS detail or structured building identity. */
+export function formatCitadelUpgradeError(err: unknown): string {
+  const data = err && typeof err === 'object' ? (err as { data?: unknown }).data : undefined;
+  const payload = extractCitadelUpgradePayload(data);
+
+  if (payload) {
+    const msg = payload.message || serverUpgradeDetail(err);
+    if (msg) return msg;
+
+    const name = payload.building_name;
+    if (name) {
+      if (payload.reason === 'prerequisite_building_offline') {
+        return `${name} must be operational before upgrading your citadel.`;
+      }
+      if (
+        payload.reason === 'prerequisite_building_missing' ||
+        payload.error_code === 'ERR_CITADEL_PREREQUISITE_MISSING'
+      ) {
+        return `Upgrade requires ${name} — build it first.`;
+      }
+      if (payload.error_code === 'ERR_CITADEL_PREREQUISITE_OFFLINE') {
+        return `${name} is not operational yet — finish construction first.`;
+      }
+      return `Upgrade requires ${name}.`;
+    }
+  }
+
+  const detail = serverUpgradeDetail(err);
+  if (detail) return detail;
+  return 'Upgrade failed';
+}
 
 /** Cap on rendered drone pips; above this, each pip represents a share of capacity. */
 const MAX_DRONE_PIPS = 25;

@@ -111,7 +111,16 @@ describe('MaintenanceManager', () => {
       root.render(<MaintenanceManager shipId="ship-1" playerCredits={0} />);
       await flush();
     });
-    expect(container.textContent).toMatch(/Maintenance data is unavailable/);
+    expect(container.querySelector('[data-testid="mnt-load-error"]')?.textContent).toBe(
+      'yard closed',
+    );
+    expect(container.textContent).toMatch(/yard closed/);
+  });
+
+  it('formatMaintenanceLoadError falls back on bare API Error status', async () => {
+    const { formatMaintenanceLoadError } = await import('../MaintenanceManager');
+    const err = Object.assign(new Error('API Error: 500'), { status: 500 });
+    expect(formatMaintenanceLoadError(err)).toBe('Maintenance data is unavailable.');
   });
 
   it('labels unaffordable service as Too costly', async () => {
