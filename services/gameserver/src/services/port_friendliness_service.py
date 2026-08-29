@@ -20,7 +20,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from src.models.faction import Faction
-from src.models.reputation import Reputation, ReputationLevel
+from src.models.reputation import ReputationLevel
 from src.models.station import Station
 
 # ReputationLevel is declared low->high (PUBLIC_ENEMY .. EXALTED), so a
@@ -29,19 +29,21 @@ _REPUTATION_RANK = {level: rank for rank, level in enumerate(ReputationLevel)}
 
 
 def _player_reputation_level_for_faction(db: Session, player_id, faction: Optional[Faction]) -> ReputationLevel:
-    """The player's current ReputationLevel with `faction` (or NEUTRAL if
-    `faction` is None, or the player has no Reputation row for it — the
-    seeded default)."""
+    """Effective ReputationLevel with `faction` (or NEUTRAL if `faction` is
+    None). Uses ``resolve_effective_faction_standing_value`` so teamed players
+    honor team AVERAGE standing (factions-and-teams.md); solo path maps the
+    personal value through FactionService level thresholds (0 → NEUTRAL)."""
     if faction is None:
         return ReputationLevel.NEUTRAL
-    rep = (
-        db.query(Reputation)
-        .filter(Reputation.player_id == player_id, Reputation.faction_id == faction.id)
-        .first()
+    from src.services.faction_service import (
+        FactionService,
+        resolve_effective_faction_standing_value,
     )
-    if rep is None or rep.current_level is None:
-        return ReputationLevel.NEUTRAL
-    return rep.current_level
+
+    value, _source = resolve_effective_faction_standing_value(
+        db, player_id, faction.id
+    )
+    return FactionService(db)._calculate_reputation_level(value)
 
 
 def _station_controlling_faction(db: Session, station: Station) -> Optional[Faction]:
