@@ -20,6 +20,7 @@ from src.models.player import Player
 from src.models.port_ownership import StationGovernanceVote
 from src.models.station import Station
 from src.services.port_ownership_service import (
+    apply_governance_disbandment_listing,
     apply_governance_sale_listing,
     MAX_TAX_RATE,
     MIN_TAX_RATE,
@@ -54,6 +55,14 @@ VOTE_SPECS: Dict[str, Dict[str, Any]] = {
         "window_hours": 96.0,
         "major_upgrade": False,
     },
+    # Vote-threshold table is silent on disbandment (port-ownership.md:138-144);
+    # Soft-ORDER invent=0 mirrors sale specs. Dissolve prose is :453.
+    "disbandment": {
+        "threshold": 0.66,
+        "veto": True,
+        "window_hours": 96.0,
+        "major_upgrade": False,
+    },
     "withdrawal": {
         "threshold": 0.50,
         "veto": False,
@@ -68,6 +77,8 @@ _VOTE_ALIASES = {
     "upgrade": "upgrade",
     "major_upgrade": "upgrade",
     "sale": "sale",
+    "disbandment": "disbandment",
+    "disband": "disbandment",
     "withdrawal": "withdrawal",
     "withdrawal_schedule": "withdrawal",
     "withdrawal-schedule": "withdrawal",
@@ -75,6 +86,7 @@ _VOTE_ALIASES = {
 
 POSITIONS = frozenset({"for", "against", "absent", "veto", "against_veto"})
 INACTIVE_DAYS = 30
+INACTIVE_FORFEIT_DAYS = 90
 QUORUM_FRAC = 0.50
 VETO_HOLDER_FRAC = 0.25
 VETO_OVERRIDE_FRAC = 0.75
@@ -87,8 +99,8 @@ def normalize_vote_type(raw: str) -> str:
     if key not in _VOTE_ALIASES:
         raise PortOwnershipError(
             400,
-            "vote_type must be tariff, upgrade, sale, or withdrawal "
-            "(canon port-ownership.md vote-threshold table)",
+            "vote_type must be tariff, upgrade, sale, disbandment, or withdrawal "
+            "(canon port-ownership.md vote-threshold table + disbandment dissolve)",
         )
     return _VOTE_ALIASES[key]
 
@@ -208,6 +220,23 @@ def _apply_passed_withdrawal(
     )
 
 
+def _apply_passed_disbandment(
+    db: Session,
+    station: Station,
+    row: StationGovernanceVote,
+    now: Optional[datetime] = None,
+) -> None:
+    """Syndicate disbandment: dissolve and list at depreciated value."""
+    listing = apply_governance_disbandment_listing(db, station, now=now)
+    if listing is not None:
+        logger.info(
+            "Governance disbandment applied station=%s vote=%s listing=%s",
+            station.id,
+            row.id,
+            listing.id,
+        )
+
+
 def _apply_passed_vote(
     db: Session,
     station: Station,
@@ -227,6 +256,8 @@ def _apply_passed_vote(
         _apply_passed_withdrawal(
             db, station, row, now or datetime.now(UTC)
         )
+    elif row.vote_type == "disbandment":
+        _apply_passed_disbandment(db, station, row, now=now)
 
 
 def counted_stake(pct: float, inactive: bool) -> float:
@@ -335,13 +366,25 @@ def resolve_governance_ballots(
     return result
 
 
-def _player_inactive(player: Player, now: datetime) -> bool:
-    login = getattr(player, "last_game_login", None) or getattr(
+def _player_last_login(player: Player) -> Optional[datetime]:
+    return getattr(player, "last_game_login", None) or getattr(
         player, "last_activity_at", None
     )
+
+
+def _player_inactive(player: Player, now: datetime) -> bool:
+    login = _player_last_login(player)
     if login is None:
         return True
     return game_time.scaled_elapsed(login, now) >= timedelta(days=INACTIVE_DAYS)
+
+
+def player_forfeit_eligible(player: Player, now: datetime) -> bool:
+    """True when owner has been inactive long enough to forfeit syndicate stake."""
+    login = _player_last_login(player)
+    if login is None:
+        return True
+    return game_time.scaled_elapsed(login, now) >= timedelta(days=INACTIVE_FORFEIT_DAYS)
 
 
 def _require_syndicate_share(station: Station, player: Player) -> Tuple[str, List[Dict[str, Any]]]:

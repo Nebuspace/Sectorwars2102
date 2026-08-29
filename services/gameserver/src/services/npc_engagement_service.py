@@ -526,10 +526,20 @@ def _route_engagement_inner(
     return engagement
 
 
-def engagement_summary(engagement: Optional[PendingEngagement],
-                       db: Optional[Session] = None) -> Optional[Dict[str, Any]]:
-    """Small dict for combat-response payloads ('Marshal Vance is en
-    route — 2 turns to arrival')."""
+def engagement_summary(
+    engagement: Optional[PendingEngagement],
+    db: Optional[Session] = None,
+    player: Optional[Player] = None,
+) -> Optional[Dict[str, Any]]:
+    """Small dict for combat-response payloads and the player GET/WS
+    ('Marshal Vance is en route — 2 turns to arrival').
+
+    ``turns_to_arrival`` is remaining turns on the offender's
+    ``lifetime_turns_spent`` clock (canon Player.cumulative_turn_count):
+    ``arrival_turn_threshold - lifetime_turns_spent``, floored at 0.
+    When ``player`` is omitted, remaining equals the original delay
+    (threshold − offense_at_turn_count), matching the at-commit banner.
+    """
     if engagement is None:
         return None
     names: List[str] = []
@@ -539,14 +549,85 @@ def engagement_summary(engagement: Optional[PendingEngagement],
             npc.display_name
             for npc in db.query(NPCCharacter).filter(NPCCharacter.id.in_(ids)).all()
         ]
+    turns_to_arrival = None
+    if engagement.arrival_turn_threshold is not None:
+        if player is not None:
+            clock = player.lifetime_turns_spent or 0
+        else:
+            clock = engagement.offense_at_turn_count or 0
+        turns_to_arrival = max(0, engagement.arrival_turn_threshold - clock)
     return {
+        "id": str(engagement.id) if getattr(engagement, "id", None) else None,
         "jurisdiction": engagement.jurisdiction,
         "offense_type": engagement.offense_type,
         "squad": names,
-        "turns_to_arrival": ARRIVAL_TURN_DELAY if engagement.npc_squad_ids else None,
+        "officer_names": names,
+        "turns_to_arrival": turns_to_arrival,
         "grace_window": engagement.grace_expires_at.isoformat()
         if engagement.grace_expires_at else None,
     }
+
+
+def list_open_engagement_summaries(
+    db: Session, player: Player,
+) -> List[Dict[str, Any]]:
+    """Caller's PENDING rows only — owner-scoped reconnect GET."""
+    rows = (
+        db.query(PendingEngagement)
+        .filter(
+            PendingEngagement.player_id == player.id,
+            PendingEngagement.status == EngagementStatus.PENDING,
+        )
+        .order_by(PendingEngagement.created_at.asc())
+        .all()
+    )
+    items: List[Dict[str, Any]] = []
+    for row in rows:
+        summary = engagement_summary(row, db, player)
+        if summary is not None:
+            items.append(summary)
+    return items
+
+
+def dispatch_police_en_route_event(
+    player: Player,
+    engagement: Optional[PendingEngagement],
+    db: Optional[Session] = None,
+) -> None:
+    """POST-COMMIT personal WS: same payload as GET. Best-effort; never
+    raises into combat/movement (medal_awarded pattern)."""
+    if engagement is None:
+        return
+    try:
+        user_id = getattr(player, "user_id", None)
+        if not user_id and db is not None:
+            user_id = (
+                db.query(Player.user_id).filter(Player.id == player.id).scalar()
+            )
+        if not user_id:
+            return
+        payload = engagement_summary(engagement, db, player) or {}
+        message = {
+            "type": "police_en_route",
+            **payload,
+        }
+        import asyncio
+        from src.services.enhanced_websocket_service import (
+            get_enhanced_websocket_service,
+        )
+
+        loop = asyncio.get_running_loop()
+        loop.create_task(
+            get_enhanced_websocket_service().connection_manager.send_personal_message(
+                str(user_id), message
+            )
+        )
+    except Exception:
+        logger.debug(
+            "Skipped police_en_route WS notice for player %s (no loop or socket)",
+            getattr(player, "id", None),
+            exc_info=True,
+        )
 
 
 # ---------------------------------------------------------------------------
