@@ -16,7 +16,10 @@ vi.mock('../../../services/api', () => ({
   },
 }));
 
-import LandingRightsControl, { parseUuidList } from '../LandingRightsControl';
+import LandingRightsControl, {
+  formatLandingRightsError,
+  parseUuidList,
+} from '../LandingRightsControl';
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -28,6 +31,29 @@ const apiRequestError = (status: number, message?: string) => {
 
 const UUID_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const UUID_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+
+describe('formatLandingRightsError (LEG-2952)', () => {
+  it('preserves gameserver landing-rights refusal detail', () => {
+    const err = Object.assign(new Error('Only the planet owner may change landing rights.'), {
+      status: 403,
+    });
+    expect(formatLandingRightsError(err)).toBe(
+      'Only the planet owner may change landing rights.',
+    );
+  });
+
+  it('falls back when message is bare API Error: 403', () => {
+    const err = Object.assign(new Error('API Error: 403'), { status: 403 });
+    expect(formatLandingRightsError(err)).toBe(
+      'You do not have permission to change landing rights.',
+    );
+  });
+
+  it('falls back on bare API Error: 429', () => {
+    const err = Object.assign(new Error('API Error: 429'), { status: 429 });
+    expect(formatLandingRightsError(err)).toMatch(/rate limit exceeded/i);
+  });
+});
 
 describe('parseUuidList', () => {
   it('accepts line- and comma-separated UUIDs and drops empties', () => {
