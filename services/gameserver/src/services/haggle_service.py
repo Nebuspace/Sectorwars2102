@@ -255,25 +255,27 @@ def _faction_band_factor(db: Session, player: Player, station: Station) -> float
     across [-1000, 1000]. Wider band (better deal reach) for good standing means a
     multiplier < 1.0 widens via division — but ADR phrases it as "rep multipliers"
     on the band; we apply hostile=harder(×1.05), allied=easier(×0.97) DIRECTLY as a
-    band-width multiplier (>1.0 = harder/narrower). Defensive → neutral on failure."""
+    band-width multiplier (>1.0 = harder/narrower). Defensive → neutral on failure.
+
+    Standing value comes from ``resolve_effective_faction_standing_value`` so
+    teamed players honor team AVERAGE (Soft-ORDER #1989). Lerp endpoints unchanged.
+    """
     try:
         faction_name = getattr(station, "faction_affiliation", None)
         if not faction_name:
             return 1.0
         from src.models.faction import Faction
-        from src.models.reputation import Reputation
+        from src.services.faction_service import (
+            resolve_effective_faction_standing_value,
+        )
 
         faction = db.query(Faction).filter(Faction.name == faction_name).first()
         if faction is None:
             return 1.0
-        rep = (
-            db.query(Reputation)
-            .filter(Reputation.player_id == player.id, Reputation.faction_id == faction.id)
-            .first()
+        raw, _source = resolve_effective_faction_standing_value(
+            db, player.id, faction.id
         )
-        if rep is None:
-            return 1.0
-        value = max(-1000, min(1000, int(rep.current_value)))
+        value = max(-1000, min(1000, int(raw)))
         return _lerp_by_value(value, FACTION_BAND_HOSTILE, FACTION_BAND_ALLIED)
     except Exception:
         logger.warning("haggle faction-band factor failed; using neutral", exc_info=True)
