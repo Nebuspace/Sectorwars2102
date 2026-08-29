@@ -971,6 +971,10 @@ export const miningAPI = {
 
   /** LEG-2574 tip GET — owner claim licenses (active + recently expired). */
   listLicenses: () => apiRequest('/api/v1/mining/licenses'),
+
+  /** LEG-2731 tip GET — poll async harvest row until terminal. */
+  getHarvestStatus: (harvestId: string) =>
+    apiRequest(`/api/v1/mining/harvest/${encodeURIComponent(harvestId)}`),
 };
 
 /** First-login gate / onboarding session (GameContext + FirstLoginContext). */
