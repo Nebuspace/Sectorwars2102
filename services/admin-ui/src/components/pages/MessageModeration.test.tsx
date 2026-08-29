@@ -820,6 +820,32 @@ describe('MessageModeration', () => {
     });
   });
 
+  it('shows rate-limit copy on 429 flagged-message load (LEG-2939)', async () => {
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url.startsWith('/api/v1/admin/messages/flagged')) {
+        return Promise.reject(
+          Object.assign(new Error('HTTP 429'), {
+            response: { status: 429 },
+          }),
+        );
+      }
+      if (url === '/api/v1/admin/messages/stats') {
+        return Promise.resolve({ data: emptyStats });
+      }
+      return Promise.resolve({ data: emptyBeacons });
+    });
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByText(/rate limit/i)).toBeTruthy();
+    });
+    expect(
+      screen.queryByText('Failed to load the flagged-message review queue.'),
+    ).toBeNull();
+    expect(screen.queryByText(/HTTP 429/i)).toBeNull();
+  });
+
   it('shows rate-limit copy on 429 stats load (LEG-967)', async () => {
     vi.mocked(api.get).mockImplementation((url: string) => {
       if (url === '/api/v1/admin/messages/stats') {

@@ -3114,6 +3114,11 @@ class MovementService:
                 team_id=player.team_id,
                 pinned_medal_id=medal_fields["pinned_medal_id"],
                 medal_count=medal_fields["medal_count"],
+                attack_turn_cost=(
+                    getattr(player.current_ship, "attack_turn_cost", None)
+                    if player.current_ship
+                    else None
+                ),
             )
 
             # Check if player is already in the list (shouldn't be, but safety check)

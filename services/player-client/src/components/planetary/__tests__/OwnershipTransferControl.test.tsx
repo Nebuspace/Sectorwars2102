@@ -23,7 +23,9 @@ vi.mock('../../../services/api', () => ({
   },
 }));
 
-import OwnershipTransferControl from '../OwnershipTransferControl';
+import OwnershipTransferControl, {
+  formatOwnershipTransferError,
+} from '../OwnershipTransferControl';
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -41,6 +43,30 @@ const OFFER = {
   offered_at: '2026-08-19T22:00:00+00:00',
   expires_at: '2026-08-20T22:00:00+00:00',
 };
+
+describe('formatOwnershipTransferError (LEG-2954)', () => {
+  it('preserves gameserver transfer refusal detail', () => {
+    const err = Object.assign(new Error('Current owner cannot afford the 5% transfer fee.'), {
+      status: 400,
+    });
+    expect(formatOwnershipTransferError(err)).toBe(
+      'Current owner cannot afford the 5% transfer fee.',
+    );
+  });
+
+  it('falls back when message is bare API Error: 403', () => {
+    const err = Object.assign(new Error('API Error: 403'), { status: 403 });
+    expect(formatOwnershipTransferError(err)).toBe(
+      'You do not have permission for this ownership transfer action.',
+    );
+  });
+
+  it('uses load fallback for bare API Error without status context', () => {
+    expect(formatOwnershipTransferError(new Error('API Error: 500'), 'Failed to load transfer status.')).toBe(
+      'Failed to load transfer status.',
+    );
+  });
+});
 
 describe('OwnershipTransferControl', () => {
   let container: HTMLElement;
