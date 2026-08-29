@@ -310,4 +310,191 @@ describe('TradeDockAdmin', () => {
     expect(await screen.findByText(/rate limit/i)).toBeTruthy();
     expect(screen.queryByText('Failed to load TradeDocks')).toBeNull();
   });
+
+  it('overview GET 403 surfaces scope helper on detailError (LEG-2890)', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.endsWith('/admin/construction/tradedocks')) {
+        return {
+          data: {
+            tradedocks: [
+              {
+                station_id: 'st1',
+                name: 'TradeDock Prime',
+                tradedock_tier: 'A',
+                sector_id: 50,
+              },
+            ],
+          },
+        };
+      }
+      if (url.includes('/admin/construction/tradedocks/st1')) {
+        throw { response: { status: 403, data: {} } };
+      }
+      return { data: {} };
+    });
+
+    render(<TradeDockAdmin />);
+
+    await waitFor(() => {
+      expect(api.get).toHaveBeenCalledWith('/api/v1/admin/construction/tradedocks/st1');
+    });
+
+    expect(await screen.findByText(/PLAYERS_VIEW|Access denied/i)).toBeTruthy();
+    expect(screen.queryByText('Failed to load TradeDock overview')).toBeNull();
+  });
+
+  it('overview GET 429 surfaces rate-limit helper on detailError (LEG-2890)', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.endsWith('/admin/construction/tradedocks')) {
+        return {
+          data: {
+            tradedocks: [
+              {
+                station_id: 'st1',
+                name: 'TradeDock Prime',
+                tradedock_tier: 'A',
+                sector_id: 50,
+              },
+            ],
+          },
+        };
+      }
+      if (url.includes('/admin/construction/tradedocks/st1')) {
+        throw { response: { status: 429, data: {} } };
+      }
+      return { data: {} };
+    });
+
+    render(<TradeDockAdmin />);
+
+    await waitFor(() => {
+      expect(api.get).toHaveBeenCalledWith('/api/v1/admin/construction/tradedocks/st1');
+    });
+
+    expect(await screen.findByText(/rate limit/i)).toBeTruthy();
+    expect(screen.queryByText('Failed to load TradeDock overview')).toBeNull();
+  });
+
+  it('reservation detail GET 403 surfaces scope helper via toast (LEG-2890)', async () => {
+    mockTradeDockGets();
+    render(<TradeDockAdmin />);
+
+    await waitFor(() => {
+      expect(api.get).toHaveBeenCalledWith('/api/v1/admin/construction/tradedocks');
+    });
+
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/admin/construction/reservations/r1')) {
+        throw { response: { status: 403, data: {} } };
+      }
+      if (url.endsWith('/admin/construction/tradedocks')) {
+        return {
+          data: {
+            tradedocks: [
+              {
+                station_id: 'st1',
+                name: 'TradeDock Prime',
+                tradedock_tier: 'A',
+                sector_id: 50,
+              },
+            ],
+          },
+        };
+      }
+      if (url.includes('/admin/construction/tradedocks/st1')) {
+        return {
+          data: {
+            station_id: 'st1',
+            station_name: 'TradeDock Prime',
+            tradedock_tier: 'A',
+            slips: {
+              standard: { capacity: 10, in_use: 1 },
+              specialized: { capacity: 2, in_use: 0 },
+            },
+            queue_length: 0,
+            queue: [],
+            reservations: [
+              {
+                id: 'r1',
+                ship_type: 'WARP_JUMPER',
+                state: 'frame_assembly',
+                uses_specialized_slip: false,
+                overall_progress_percent: 12.5,
+              },
+            ],
+          },
+        };
+      }
+      return { data: {} };
+    });
+
+    fireEvent.click(await screen.findByLabelText('Open reservation r1'));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalled();
+    });
+    expect(String(toastError.mock.calls[0][0])).toMatch(/PLAYERS_VIEW|Access denied/i);
+    expect(String(toastError.mock.calls[0][0])).not.toMatch(/^Failed to load reservation detail$/);
+  });
+
+  it('reservation detail GET 429 surfaces rate-limit helper via toast (LEG-2890)', async () => {
+    mockTradeDockGets();
+    render(<TradeDockAdmin />);
+
+    await waitFor(() => {
+      expect(api.get).toHaveBeenCalledWith('/api/v1/admin/construction/tradedocks');
+    });
+
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/admin/construction/reservations/r1')) {
+        throw { response: { status: 429, data: {} } };
+      }
+      if (url.endsWith('/admin/construction/tradedocks')) {
+        return {
+          data: {
+            tradedocks: [
+              {
+                station_id: 'st1',
+                name: 'TradeDock Prime',
+                tradedock_tier: 'A',
+                sector_id: 50,
+              },
+            ],
+          },
+        };
+      }
+      if (url.includes('/admin/construction/tradedocks/st1')) {
+        return {
+          data: {
+            station_id: 'st1',
+            station_name: 'TradeDock Prime',
+            tradedock_tier: 'A',
+            slips: {
+              standard: { capacity: 10, in_use: 1 },
+              specialized: { capacity: 2, in_use: 0 },
+            },
+            queue_length: 0,
+            queue: [],
+            reservations: [
+              {
+                id: 'r1',
+                ship_type: 'WARP_JUMPER',
+                state: 'frame_assembly',
+                uses_specialized_slip: false,
+                overall_progress_percent: 12.5,
+              },
+            ],
+          },
+        };
+      }
+      return { data: {} };
+    });
+
+    fireEvent.click(await screen.findByLabelText('Open reservation r1'));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/rate limit/i));
+    });
+    expect(String(toastError.mock.calls[0][0])).not.toMatch(/^Failed to load reservation detail$/);
+  });
 });
