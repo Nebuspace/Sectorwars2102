@@ -364,6 +364,9 @@ async def salvage_break_route(
         return  # pragma: no cover -- _raise_for always raises
 
     db.commit()
+    # LEG-333 / ship-registry.md:179 — peers in-sector see the in-progress break.
+    from src.services.ship_registry_service import _dispatch_salvage_break_started
+    _dispatch_salvage_break_started(ship, sector_id=int(ship.sector_id))
     logger.info(
         "Salvage break started on ship %s by %s (completes_at=%s)",
         ship_id, player.id, result["completes_at"],

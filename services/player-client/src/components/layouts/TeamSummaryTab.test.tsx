@@ -35,7 +35,7 @@ vi.mock('../../contexts/GameContext', () => ({
   useGame: () => ({ playerState: mockPlayerState }),
 }));
 
-import TeamSummaryTab from './TeamSummaryTab';
+import TeamSummaryTab, { formatTeamSummaryLoadError } from './TeamSummaryTab';
 
 const TEAM_RESPONSE = {
   id: 'team-1',
@@ -143,6 +143,26 @@ describe('TeamSummaryTab', () => {
     expect(errorEl?.textContent).toBe('Network down');
     // Pixel a11y fix: announce the error on appear.
     expect(errorEl?.getAttribute('role')).toBe('alert');
+  });
+
+  it('surfaces load 403 non-member server detail in the alert (not empty crew)', async () => {
+    mockPlayerState = { team_id: 'team-1' };
+    const err = new Error('You are not a member of this team');
+    (err as { status?: number }).status = 403;
+    mockGetTeam.mockRejectedValue(err);
+    mockGetPermissions.mockResolvedValue(PERMISSIONS_RESPONSE);
+    await mount();
+
+    const errorEl = container.querySelector('.sb-crew-error');
+    expect(errorEl?.getAttribute('role')).toBe('alert');
+    expect(errorEl?.textContent).toBe('You are not a member of this team');
+    expect(container.textContent).not.toContain('No Team');
+  });
+
+  it('formatTeamSummaryLoadError falls back on bare 403 without server detail', () => {
+    const err = new Error('API Error: 403');
+    (err as { status?: number }).status = 403;
+    expect(formatTeamSummaryLoadError(err)).toBe('You are not a member of this team.');
   });
 
   it('shows a status/aria-live loading state before the fetch resolves', async () => {

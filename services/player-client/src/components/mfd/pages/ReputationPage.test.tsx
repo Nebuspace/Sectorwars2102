@@ -45,9 +45,15 @@ vi.mock('../../../contexts/GameContext', () => ({
   useGame: () => ({ playerState: mockPlayerState }),
 }));
 
-import ReputationPage from './ReputationPage';
+import ReputationPage, { formatReputationLoadError } from './ReputationPage';
 import { WebSocketProvider } from '../../../contexts/WebSocketContext';
 import { websocketService, type WebSocketMessage } from '../../../services/websocket';
+
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
 
 // websocketService is a module-level singleton; notifyHandlers is private,
 // reached the same way GameContext.quantumHarvest.test.tsx / websocket.eviction.test.ts do.
@@ -221,6 +227,40 @@ describe('ReputationPage', () => {
     expect(warnline?.textContent).toBe('Network down');
     expect(warnline?.getAttribute('role')).toBe('alert');
     expect(container.querySelector('.mfd-page-faction-row')).toBeNull();
+  });
+
+  it('surfaces load 403 scope denial server detail in the warnline', async () => {
+    mockGetReputation.mockRejectedValue(
+      apiRequestError(403, 'Faction standings require an active ship assignment'),
+    );
+    await mount();
+
+    const warnline = container.querySelector('.mfd-page-warnline');
+    expect(warnline?.getAttribute('role')).toBe('alert');
+    expect(warnline?.textContent).toBe('Faction standings require an active ship assignment');
+    expect(container.querySelector('.mfd-page-faction-row')).toBeNull();
+  });
+
+  it('surfaces 429 rate-limit honest copy when standings load is throttled', async () => {
+    mockGetReputation.mockRejectedValue(apiRequestError(429));
+    await mount();
+
+    const warnline = container.querySelector('.mfd-page-warnline');
+    expect(warnline?.textContent).toBe(
+      'Faction standings rate limit exceeded — wait a moment and try again.',
+    );
+  });
+
+  it('formatReputationLoadError falls back on bare 403 without server detail', () => {
+    expect(formatReputationLoadError(apiRequestError(403))).toBe(
+      'Access denied — faction standings are not available right now.',
+    );
+  });
+
+  it('formatReputationLoadError returns honest 429 copy', () => {
+    expect(formatReputationLoadError(apiRequestError(429))).toBe(
+      'Faction standings rate limit exceeded — wait a moment and try again.',
+    );
   });
 
   it('shows INSUFFICIENT DATA when playerState is unavailable', async () => {
