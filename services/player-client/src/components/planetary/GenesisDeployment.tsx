@@ -9,6 +9,18 @@ interface GenesisDeploymentProps {
   onClose?: () => void;
 }
 
+/** Surface GS genesis quote 400 detail (`detail=str(e)`), else stable fallback. */
+export function formatGenesisQuotesLoadError(err: unknown): string {
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (hasServerDetail) return message!;
+  return 'Failed to load genesis pricing';
+}
+
 interface PlanetTypeInfo {
   type: PlanetType;
   name: string;
@@ -198,7 +210,7 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
         // displayed/clickable, so drop the whole batch and re-disable Deploy
         // (selectedQuote becomes undefined) until the next successful fetch.
         setQuotes({});
-        setQuotesError(err instanceof Error ? err.message : 'Failed to load genesis pricing');
+        setQuotesError(formatGenesisQuotesLoadError(err));
       }
     })();
 
