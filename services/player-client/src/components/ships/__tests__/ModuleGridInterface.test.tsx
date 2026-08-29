@@ -153,6 +153,18 @@ describe('ModuleGridInterface', () => {
     expect(container.querySelector('.mgi-retry-btn')).toBeTruthy();
   });
 
+  it('surfaces getModules 404 Ship not found detail in load error UI', async () => {
+    const err = new Error('Ship not found');
+    (err as { status?: number }).status = 404;
+    getModules.mockRejectedValue(err);
+    await act(async () => {
+      root.render(<ModuleGridInterface ship={{ id: 'ship-1' }} />);
+      await flush();
+    });
+    expect(container.querySelector('.mgi-error')?.textContent).toContain('Ship not found');
+    expect(container.querySelector('.mgi-retry-btn')).toBeTruthy();
+  });
+
   it('opens an empty slot and installs a catalog module', async () => {
     getModules.mockResolvedValue(EMPTY_MODULES);
     installModule.mockResolvedValue({

@@ -1,8 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import PageHeader from '../ui/PageHeader';
 import { api } from '../../utils/auth';
-import { useToast, useConfirm } from '../../contexts/ToastContext';
+import { useToast } from '../../contexts/ToastContext';
 import { formatAdminApiError } from '../../utils/adminApiError';
+import {
+  creditConfirmLabel,
+  useCreditInlineConfirm,
+} from '../../hooks/useCreditInlineConfirm';
 import './trade-dock-admin.css';
 
 /**
@@ -104,9 +108,22 @@ function poolLabel(pool: SlipPool | undefined): string {
   return `${pool.in_use} / ${pool.capacity}`;
 }
 
+function reservationRefundAmount(reservation: ReservationStatus): number {
+  if (typeof reservation.estimated_refund === 'number' && Number.isFinite(reservation.estimated_refund)) {
+    return reservation.estimated_refund;
+  }
+  if (typeof reservation.deposit_paid === 'number' && Number.isFinite(reservation.deposit_paid)) {
+    return reservation.deposit_paid;
+  }
+  if (typeof reservation.credits_paid === 'number' && Number.isFinite(reservation.credits_paid)) {
+    return reservation.credits_paid;
+  }
+  return 0;
+}
+
 const TradeDockAdmin: React.FC = () => {
   const toast = useToast();
-  const confirm = useConfirm();
+  const { isArmed, gateCreditAction } = useCreditInlineConfirm();
   const [docks, setDocks] = useState<TradeDockSummary[]>([]);
   const [selectedId, setSelectedId] = useState('');
   const [overview, setOverview] = useState<TradeDockOverview | null>(null);
@@ -198,17 +215,7 @@ const TradeDockAdmin: React.FC = () => {
     }
   };
 
-  const forceCancelReservation = async (reservationId: string) => {
-    const ok = await confirm({
-      title: 'Force-cancel reservation',
-      message:
-        `Force-cancel reservation ${reservationId}? Credits refund via cancel_refund ` +
-        '(resources never returned). This cannot be undone from Admin UI.',
-      confirmLabel: 'Force-cancel',
-      danger: true,
-    });
-    if (!ok) return;
-
+  const runForceCancelReservation = async (reservationId: string) => {
     setForceCancelling(true);
     try {
       const { data } = await api.post<{
@@ -238,6 +245,12 @@ const TradeDockAdmin: React.FC = () => {
     } finally {
       setForceCancelling(false);
     }
+  };
+
+  const onForceCancelClick = (reservationId: string, refundAmount: number) => {
+    gateCreditAction(`force-cancel-${reservationId}`, refundAmount, () => {
+      void runForceCancelReservation(reservationId);
+    });
   };
 
   const selectedDock = useMemo(
@@ -483,17 +496,30 @@ const TradeDockAdmin: React.FC = () => {
               </p>
             </div>
             <div className="section-actions">
-              {reservation && (
-                <button
-                  type="button"
-                  className="btn btn-sm btn-danger"
-                  disabled={forceCancelling}
-                  aria-label={`Force-cancel reservation ${reservation.id}`}
-                  onClick={() => void forceCancelReservation(reservation.id)}
-                >
-                  {forceCancelling ? 'Force-cancelling…' : 'Force-cancel'}
-                </button>
-              )}
+              {reservation && (() => {
+                const refundAmount = reservationRefundAmount(reservation);
+                const forceCancelKey = `force-cancel-${reservation.id}`;
+                const forceCancelArmed = isArmed(forceCancelKey);
+                return (
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-danger"
+                    disabled={forceCancelling}
+                    aria-label={
+                      forceCancelArmed
+                        ? creditConfirmLabel(refundAmount, 'refund')
+                        : `Force-cancel reservation ${reservation.id}`
+                    }
+                    onClick={() => onForceCancelClick(reservation.id, refundAmount)}
+                  >
+                    {forceCancelling
+                      ? 'Force-cancelling…'
+                      : forceCancelArmed
+                        ? creditConfirmLabel(refundAmount, 'refund')
+                        : 'Force-cancel'}
+                  </button>
+                );
+              })()}
               <button type="button" className="btn btn-sm btn-ghost" onClick={() => setReservation(null)}>
                 Close
               </button>

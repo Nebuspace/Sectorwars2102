@@ -2430,15 +2430,56 @@ def set_fee_distribution(
     return _fee_distribution_payload(station)
 
 
+def _syndicate_withdrawal_payouts(
+    station: Station, amount: int
+) -> List[Tuple[uuid.UUID, int, int]]:
+    """Split ``amount`` across syndicate shares by integer stake pct.
+
+    Floor each share (``amount * pct // 100``); give any remainder to the
+    primary owner so payouts always sum to ``amount`` (invent=0).
+    Returns ``[(player_id, pct, credits), ...]``.
+    """
+    primary = station.owner_id
+    if primary is None:
+        raise PortOwnershipError(400, "Station has no primary owner")
+    shares = _ensure_primary_share(station)
+    rows: List[List[Any]] = []
+    for share in shares:
+        try:
+            pct = int(share.get("pct", 0))
+        except (TypeError, ValueError):
+            continue
+        if pct <= 0:
+            continue
+        try:
+            pid = uuid.UUID(str(share["player_id"]))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        rows.append([pid, pct, (amount * pct) // 100])
+    if not rows:
+        return [(primary, 100, amount)]
+    allocated = sum(int(r[2]) for r in rows)
+    remainder = amount - allocated
+    for row in rows:
+        if row[0] == primary:
+            row[2] = int(row[2]) + remainder
+            break
+    else:
+        rows[0][2] = int(rows[0][2]) + remainder
+    return [(row[0], int(row[1]), int(row[2])) for row in rows]
+
+
 def withdraw_treasury(
     db: Session, station: Station, owner: Player, amount: int
 ) -> Dict[str, Any]:
-    """Withdraw from the station treasury to the owner (solo owner only
-    this pass — no co-ownership shares yet). Canon cushion (port-ownership.md
-    "Owner withdrawals"): the treasury must retain at least a 10% operating
-    cushion on every sweep, so at most 90% of the CURRENT balance may leave
-    in one withdrawal (v1 has no separate scheduled-sweep engine, so manual
-    ad-hoc withdrawals are held to the same 90% cap per canon)."""
+    """Withdraw from the station treasury.
+
+    Initiation remains primary-owner only (``_require_owner``). Solo mode
+    credits the owner 100%. Syndicate mode (``co_ownership_mode=syndicate``)
+    distributes the same withdrawal across share holders by stake pct
+    (canon port-ownership.md Owner withdrawals — per share). Canon cushion:
+    at most 90% of the CURRENT balance may leave in one withdrawal.
+    """
     station = _lock_station(db, station.id)
     _require_owner(station, owner)
     if amount <= 0:
@@ -2452,15 +2493,77 @@ def withdraw_treasury(
             f"cushion must remain, so at most {cap:,} credits (90%) can be "
             f"withdrawn — requested {amount:,}",
         )
-    locked = _lock_players_ascending(db, [owner.id])
+    mode = (station.ownership or {}).get(SYNDICATE_MODE_KEY) or "solo"
+    if mode == "syndicate":
+        payouts = _syndicate_withdrawal_payouts(station, amount)
+    else:
+        payouts = [(owner.id, 100, amount)]
+
+    locked = _lock_players_ascending(db, [pid for pid, _pct, _cr in payouts])
     owner = locked[owner.id]
     station.treasury_balance = balance - amount
-    owner.credits += amount
+    distributions: List[Dict[str, Any]] = []
+    for pid, pct, credits in payouts:
+        player = locked[pid]
+        player.credits = int(player.credits or 0) + credits
+        distributions.append(
+            {
+                "player_id": str(pid),
+                "pct": pct,
+                "credits": credits,
+            }
+        )
     db.flush()
-    logger.info("Treasury withdrawal: %s credits from station %s to %s", amount, station.id, owner.id)
+    logger.info(
+        "Treasury withdrawal: %s credits from station %s (mode=%s, recipients=%s)",
+        amount,
+        station.id,
+        mode,
+        len(distributions),
+    )
     return {
         "station_id": str(station.id),
         "withdrawn": amount,
+        "treasury_balance": station.treasury_balance,
+        "credits": owner.credits,
+        "mode": mode,
+        "distributions": distributions,
+    }
+
+
+def inject_treasury(
+    db: Session, station: Station, owner: Player, amount: int
+) -> Dict[str, Any]:
+    """Owner cash-injection into the station treasury (canon Cash-injection).
+
+    Debits the primary owner's personal credits and credits
+    ``station.treasury_balance``. Injections are not revenue. Compel-injection
+    stake-weighted votes remain Design-only — not implemented here.
+    """
+    station = _lock_station(db, station.id)
+    _require_owner(station, owner)
+    if amount <= 0:
+        raise PortOwnershipError(400, "Injection amount must be positive")
+    locked = _lock_players_ascending(db, [owner.id])
+    owner = locked[owner.id]
+    available = int(owner.credits or 0)
+    if available < amount:
+        raise PortOwnershipError(
+            400,
+            f"Insufficient credits: have {available:,}, need {amount:,}",
+        )
+    owner.credits = available - amount
+    station.treasury_balance = int(station.treasury_balance or 0) + amount
+    db.flush()
+    logger.info(
+        "Treasury injection: %s credits into station %s from %s",
+        amount,
+        station.id,
+        owner.id,
+    )
+    return {
+        "station_id": str(station.id),
+        "injected": amount,
         "treasury_balance": station.treasury_balance,
         "credits": owner.credits,
     }

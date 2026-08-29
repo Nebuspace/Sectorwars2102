@@ -61,8 +61,9 @@ surrender flow ratified 2026-08-06 — DECISIONS.md station-tractor-surrender-ma
     accumulates in station.security["upkeep_collected"] for future
     observability (canon's "security pane... Defense budget current
     balance + 7-day burn rate" is a future lane); it is currently a sink —
-    no consumer spends it yet (STATION_SECURITY guard wages / drone
-    replenishment are 📐 design-only per the canon Status note).
+    no consumer spends it yet (STATION_SECURITY *wages* / drone
+    replenishment remain 📐; named-guard spawn is LEG-299 in
+    station_security_garrison.py).
   * Upgrade cost funding source — deducted from the OWNER's PERSONAL
     credits at initiation (mirrors place_offer's station-purchase escrow
     debit), not from station.treasury_balance. A tier upgrade is modeled as
@@ -327,6 +328,19 @@ def _status_payload(station: Station) -> Dict[str, Any]:
     }
 
 
+def _sync_station_security_garrison(db: Session, station: Station) -> None:
+    """LEG-299: named STATION_SECURITY roster. No-op without region_id so
+    owner-ladder fakes never query NPCBarracks."""
+    if getattr(station, "region_id", None) is None:
+        return
+    from src.services.station_security_garrison import ensure_station_security_garrison
+
+    try:
+        ensure_station_security_garrison(db, station)
+    except ValueError:
+        logger.exception("LEG-299 garrison sync failed for station %s", station.id)
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -343,6 +357,7 @@ def get_security_status(
     if _settle_pending(station, now):
         flag_modified(station, "security")
         db.flush()
+    _sync_station_security_garrison(db, station)
     return _status_payload(station)
 
 
@@ -369,6 +384,7 @@ def upgrade_security_tier(
     if _settle_pending(station, now):
         flag_modified(station, "security")
         db.flush()
+    _sync_station_security_garrison(db, station)
 
     # Read-only validation against the (possibly just-settled) state — no
     # mutable JSONB handle is opened yet, matching set_fee_distribution's
@@ -443,6 +459,7 @@ def downgrade_security_tier(
     if _settle_pending(station, now):
         flag_modified(station, "security")
         db.flush()
+    _sync_station_security_garrison(db, station)
 
     sec_read = station.security if isinstance(station.security, dict) else {}
     current = station.security_level

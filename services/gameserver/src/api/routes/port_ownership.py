@@ -24,6 +24,7 @@ detail) on invalid actions. The router owns commit/rollback:
     set_tax_rate(db, station, player, rate) -> dict
     set_fee_distribution(db, station, player, defense_pct, owner_pct) -> dict
     withdraw_treasury(db, station, player, amount) -> dict
+    inject_treasury(db, station, player, amount) -> dict
     takeover_status(db, station, player) -> dict       # lazy monthly evaluation
     launch_takeover(db, station, player) -> dict
     counter_takeover(db, station, player, action) -> dict
@@ -126,6 +127,10 @@ class FeeDistributionRequest(BaseModel):
 
 
 class WithdrawRequest(BaseModel):
+    amount: int = Field(..., ge=1)
+
+
+class InjectTreasuryRequest(BaseModel):
     amount: int = Field(..., ge=1)
 
 
@@ -757,9 +762,9 @@ async def withdraw_treasury(
     current_user: User = Depends(get_current_user),
     current_player: Player = Depends(get_current_player),
 ):
-    """Withdraw credits from the station treasury (solo owner only this
-    pass; canon caps every withdrawal at 90% of the current balance so a
-    10% operating cushion always remains)."""
+    """Withdraw credits from the station treasury (primary owner initiates;
+    syndicate mode distributes per share). Canon caps every withdrawal at
+    90% of the current balance so a 10% operating cushion always remains."""
     station = _get_station_or_404(db, station_id)
     try:
         result = port_ownership_service.withdraw_treasury(
@@ -771,6 +776,32 @@ async def withdraw_treasury(
         raise HTTPException(status_code=e.status_code, detail=e.detail)
     return {
         "message": f"Withdrew {request.amount:,} credits from {station.name}",
+        **result,
+    }
+
+
+@router.post("/stations/{station_id}/inject")
+async def inject_treasury(
+    station_id: str,
+    request: InjectTreasuryRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player),
+):
+    """Inject personal credits into the station treasury (owner cash-
+    injection). Not counted as revenue. Compel-injection votes remain
+    Design-only."""
+    station = _get_station_or_404(db, station_id)
+    try:
+        result = port_ownership_service.inject_treasury(
+            db, station, current_player, request.amount
+        )
+        db.commit()
+    except PortOwnershipError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return {
+        "message": f"Injected {request.amount:,} credits into {station.name}",
         **result,
     }
 

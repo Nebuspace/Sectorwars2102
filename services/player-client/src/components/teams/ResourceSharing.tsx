@@ -45,6 +45,39 @@ const KIND_META: Record<string, { label: string; sign: '+' | '−' | '' }> = {
 
 type Operation = 'deposit' | 'withdraw' | 'transfer';
 
+/** Normalize GS/API detail from apiRequest Error.message, axios-shaped response, or object detail. */
+function treasuryServerDetail(err: unknown): string | undefined {
+  if (err && typeof err === 'object') {
+    const rawDetail =
+      (err as { response?: { data?: { detail?: unknown } } }).response?.data?.detail ??
+      (err as { data?: { detail?: unknown } }).data?.detail;
+    if (typeof rawDetail === 'string' && rawDetail.trim()) return rawDetail.trim();
+    if (rawDetail && typeof rawDetail === 'object' && !Array.isArray(rawDetail)) {
+      const nested = (rawDetail as { message?: unknown }).message;
+      if (typeof nested === 'string' && nested.trim()) return nested.trim();
+      try {
+        return JSON.stringify(rawDetail);
+      } catch {
+        /* fall through to Error.message */
+      }
+    }
+  }
+  const message = err instanceof Error ? err.message : undefined;
+  if (
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim())
+  ) {
+    return message.trim();
+  }
+  return undefined;
+}
+
+/** Surface gameserver deposit/withdraw/transfer refusal detail (400/403). */
+export function formatTreasuryOpError(err: unknown): string {
+  return treasuryServerDetail(err) ?? 'Operation failed.';
+}
+
 export const ResourceSharing: React.FC<ResourceSharingProps> = ({
   teamId,
   playerId,
@@ -135,7 +168,7 @@ export const ResourceSharing: React.FC<ResourceSharingProps> = ({
       await loadHistory();
       onChanged?.();
     } catch (error) {
-      setStatus({ kind: 'err', text: error instanceof Error ? error.message : 'Operation failed.' });
+      setStatus({ kind: 'err', text: formatTreasuryOpError(error) });
     } finally {
       setLoading(false);
     }

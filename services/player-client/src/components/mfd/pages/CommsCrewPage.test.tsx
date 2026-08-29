@@ -85,7 +85,12 @@ vi.mock('../../../contexts/AuthContext', () => ({
   useAuth: () => ({ user: { id: 'player-1' } }),
 }));
 
-import CommsCrewPage, { FLAG_REASON_BY_CATEGORY } from './CommsCrewPage';
+import CommsCrewPage, {
+  FLAG_REASON_BY_CATEGORY,
+  formatCommsThreadsLoadError,
+  formatCommsFlagError,
+  formatCommsSendError,
+} from './CommsCrewPage';
 
 const apiRequestError = (status: number, message?: string) => {
   const err = new Error(message ?? `API Error: ${status}`);
@@ -232,6 +237,121 @@ describe('CommsCrewPage — MFD-B COMM', () => {
     expect(container.querySelector('.mfd-page-comms-hail-content')).not.toBeNull();
   });
 
+  it('FLAG 403 surfaces permission copy in flag-error alert', async () => {
+    mockFlagMessage.mockRejectedValueOnce(apiRequestError(403));
+    mockInboxMessages = [makeMessage()];
+    await mount();
+    await click(container.querySelector('.mfd-page-comms-hail-summary')!);
+    await click(container.querySelector('[data-testid="comms-flag-hail"]')!);
+    await click(container.querySelector('[data-testid="comms-flag-cat-spam"]')!);
+    await flush();
+    expect(container.querySelector('.mfd-page-comms-flag-error')?.textContent).toBe(
+      'Access denied — you cannot flag transmissions right now.',
+    );
+  });
+
+  it('FLAG 429 surfaces rate-limit copy in flag-error alert', async () => {
+    mockFlagMessage.mockRejectedValueOnce(apiRequestError(429));
+    mockInboxMessages = [makeMessage()];
+    await mount();
+    await click(container.querySelector('.mfd-page-comms-hail-summary')!);
+    await click(container.querySelector('[data-testid="comms-flag-hail"]')!);
+    await click(container.querySelector('[data-testid="comms-flag-cat-other"]')!);
+    await flush();
+    expect(container.querySelector('.mfd-page-comms-flag-error')?.textContent).toBe(
+      'Flag rate limit exceeded — wait a moment and try again.',
+    );
+  });
+
+  it('formatCommsFlagError covers 403/429 refusal paths', () => {
+    expect(formatCommsFlagError(apiRequestError(403))).toBe(
+      'Access denied — you cannot flag transmissions right now.',
+    );
+    expect(formatCommsFlagError(apiRequestError(429))).toBe(
+      'Flag rate limit exceeded — wait a moment and try again.',
+    );
+    expect(
+      formatCommsFlagError(apiRequestError(429, 'Too many flag requests')),
+    ).toBe('Too many flag requests');
+  });
+
+  it('send 429 surfaces rate-limit copy in warnline', async () => {
+    mockInboxMessages = [makeMessage()];
+    mockSendPlayerMessage.mockRejectedValueOnce(
+      apiRequestError(429, 'Too many messages — limit is 5 per 60s. Try again in 12s.'),
+    );
+    await mount();
+    await click(container.querySelector('.mfd-page-comms-hail-summary')!);
+    await click(container.querySelector('.mfd-page-comms-reply-btn')!);
+    const textarea = container.querySelector(
+      '.mfd-page-comms-compose-content',
+    ) as HTMLTextAreaElement;
+    await typeInto(textarea, 'Ping');
+    await click(container.querySelector('.mfd-page-comms-transmit-btn')!);
+    await flush();
+    expect(container.querySelector('.mfd-page-warnline')?.textContent).toBe(
+      'Too many messages — limit is 5 per 60s. Try again in 12s.',
+    );
+  });
+
+  it('send 409 thread_limit_exceeded surfaces archive/new-thread copy', async () => {
+    mockInboxMessages = [makeMessage()];
+    mockSendPlayerMessage.mockRejectedValueOnce(apiRequestError(409, 'thread_limit_exceeded'));
+    await mount();
+    await click(container.querySelector('.mfd-page-comms-hail-summary')!);
+    await click(container.querySelector('.mfd-page-comms-reply-btn')!);
+    const textarea = container.querySelector(
+      '.mfd-page-comms-compose-content',
+    ) as HTMLTextAreaElement;
+    await typeInto(textarea, 'Ping');
+    await click(container.querySelector('.mfd-page-comms-transmit-btn')!);
+    await flush();
+    expect(container.querySelector('.mfd-page-warnline')?.textContent).toBe(
+      'Thread is full (50 messages) — archive or start a new thread.',
+    );
+  });
+
+  it('formatCommsSendError covers 429/409 refusal paths', () => {
+    expect(formatCommsSendError(apiRequestError(429))).toBe(
+      'Too many messages — limit is 5 per 60s. Wait a moment and try again.',
+    );
+    expect(formatCommsSendError(apiRequestError(409, 'thread_limit_exceeded'))).toBe(
+      'Thread is full (50 messages) — archive or start a new thread.',
+    );
+    expect(formatCommsSendError(apiRequestError(500))).toBe('TRANSMISSION FAILED');
+  });
+
+  it('HAILS sender renders PlayerNamePlate medal chrome when fields present', async () => {
+    mockInboxMessages = [
+      makeMessage({
+        sender_pinned_medal_id: 'star_bronze',
+        sender_medal_count: 3,
+      }),
+    ];
+    await mount();
+    const plate = container.querySelector(
+      '.mfd-page-comms-hail-sender [data-testid="player-name-plate"]',
+    );
+    expect(plate).not.toBeNull();
+    expect(plate!.getAttribute('data-pinned-medal')).toBe('star_bronze');
+    expect(plate!.querySelector('[data-testid="player-name-plate-medal"]')?.textContent).toBe(
+      '🏅',
+    );
+    expect(plate!.querySelector('[data-testid="player-name-plate-count"]')?.textContent).toBe(
+      '3',
+    );
+  });
+
+  it('HAILS sender still shows name without medal fields', async () => {
+    mockInboxMessages = [makeMessage({ sender_name: 'Nova' })];
+    await mount();
+    const plate = container.querySelector(
+      '.mfd-page-comms-hail-sender [data-testid="player-name-plate"]',
+    );
+    expect(plate?.textContent).toContain('NOVA');
+    expect(plate!.querySelector('[data-testid="player-name-plate-medal"]')).toBeNull();
+  });
+
   it('shows the honest empty state with no transmissions', async () => {
     await mount();
 
@@ -340,6 +460,46 @@ describe('CommsCrewPage — MFD-B COMM', () => {
     await flush();
     expect(container.querySelector('.mfd-page-warnline')?.textContent).toBe('Uplink timeout');
     expect(container.querySelector('.mfd-page-ops')).not.toBeNull();
+  });
+
+  it('THREADS tab surfaces 403 server detail in warnline', async () => {
+    mockGetConversations.mockRejectedValueOnce(
+      apiRequestError(403, 'Messaging access suspended pending review.'),
+    );
+    await mount();
+    await click(container.querySelectorAll('.mfd-page-comms-mode-tab')[1]!);
+    await flush();
+    expect(container.querySelector('.mfd-page-warnline')?.textContent).toBe(
+      'Messaging access suspended pending review.',
+    );
+  });
+
+  it('THREADS tab surfaces 429 honest copy in warnline', async () => {
+    mockGetConversations.mockRejectedValueOnce(apiRequestError(429));
+    await mount();
+    await click(container.querySelectorAll('.mfd-page-comms-mode-tab')[1]!);
+    await flush();
+    expect(container.querySelector('.mfd-page-warnline')?.textContent).toBe(
+      'Thread lookup rate limit exceeded — wait a moment and try again.',
+    );
+  });
+
+  it('formatCommsThreadsLoadError covers 403/429 refusal paths', () => {
+    expect(
+      formatCommsThreadsLoadError(
+        apiRequestError(403, 'Messaging access suspended pending review.'),
+      ),
+    ).toBe('Messaging access suspended pending review.');
+    expect(formatCommsThreadsLoadError(apiRequestError(403))).toBe(
+      'Access denied — you cannot view threads right now.',
+    );
+    expect(formatCommsThreadsLoadError(apiRequestError(429))).toBe(
+      'Thread lookup rate limit exceeded — wait a moment and try again.',
+    );
+    expect(formatCommsThreadsLoadError(apiRequestError(429, 'Too many requests'))).toBe(
+      'Too many requests',
+    );
+    expect(formatCommsThreadsLoadError(apiRequestError(500))).toBe('Failed to load threads');
   });
 
   it('THREADS tab selecting a thread shows merged messages in the detail pane', async () => {

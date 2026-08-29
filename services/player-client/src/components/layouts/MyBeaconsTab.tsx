@@ -31,6 +31,35 @@ import EmptyState from '../common/EmptyState';
 
 type RowBusy = 'read' | 'salvage' | 'recharge' | 'report' | null;
 
+function serverDetail(err: unknown): string | undefined {
+  if (err && typeof err === 'object') {
+    const rawDetail = (err as { response?: { data?: { detail?: unknown } } }).response?.data
+      ?.detail;
+    if (typeof rawDetail === 'string' && rawDetail.trim()) return rawDetail.trim();
+  }
+  const message = err instanceof Error ? err.message : undefined;
+  if (
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim())
+  ) {
+    return message.trim();
+  }
+  return undefined;
+}
+
+export function formatBeaconDeployError(err: unknown): string {
+  const detail = serverDetail(err);
+  if (detail) return detail;
+  return 'Deploy failed';
+}
+
+export function formatBeaconRowActionError(err: unknown): string {
+  const detail = serverDetail(err);
+  if (detail) return detail;
+  return 'Action failed';
+}
+
 const formatState = (state: string): string => state.replace(/_/g, ' ');
 
 const MyBeaconsTab: React.FC = () => {
@@ -95,7 +124,7 @@ const MyBeaconsTab: React.FC = () => {
         /* deploy already succeeded */
       }
     } catch (err) {
-      setDeployFeedback(err instanceof Error ? err.message : 'Deploy failed');
+      setDeployFeedback(formatBeaconDeployError(err));
     } finally {
       setDeployBusy(false);
     }
@@ -139,7 +168,7 @@ const MyBeaconsTab: React.FC = () => {
         setBeacons((prev) => (prev ? prev.filter((b) => b.id !== beacon.id) : prev));
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Action failed';
+      const msg = formatBeaconRowActionError(err);
       const notFound = /not found/i.test(msg);
       setRowMessage(
         beacon.id,
