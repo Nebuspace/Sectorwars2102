@@ -401,6 +401,13 @@ class Station(Base):
     # capable (specialized construction slips), 'B' = standard construction.
     # NULL = not a TradeDock. TradeDocks are NPC-neutral, never ownable.
     tradedock_tier = Column(String(1), nullable=True)
+    # Shadow Syndicate fence sub-port (FEATURES/economy/black-market.md
+    # Syndicate fence venues; DATA_MODELS/stations.md). Set at galaxy
+    # generation on ~8% of eligible non-Federation / non-Nova / non-TradeDock
+    # hosts. Permanent unless a later raid shutter (out of this slice).
+    has_syndicate_fence = Column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     # Station treasury — docking fees and trade tax accrue here
     # (FEATURES/economy/port-ownership: the station as a small business)
     treasury_balance = Column(Integer, nullable=False, default=0, server_default="0")
