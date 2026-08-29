@@ -32,6 +32,8 @@ def test_canon_thresholds():
     assert VOTE_SPECS["upgrade"]["capex_min"] == 500_000
     assert VOTE_SPECS["sale"]["threshold"] == 0.66
     assert VOTE_SPECS["sale"]["window_hours"] == 96.0
+    # Disbandment mirrors sale (table silent — LEG-2008)
+    assert VOTE_SPECS["disbandment"] == VOTE_SPECS["sale"]
     assert VOTE_SPECS["withdrawal"]["threshold"] == 0.50
     assert VOTE_SPECS["withdrawal"]["veto"] is False
 
@@ -40,6 +42,8 @@ def test_normalize_aliases():
     assert normalize_vote_type("tariff_change") == "tariff"
     assert normalize_vote_type("major_upgrade") == "upgrade"
     assert normalize_vote_type("withdrawal-schedule") == "withdrawal"
+    assert normalize_vote_type("disband") == "disbandment"
+    assert normalize_vote_type("dissolve") == "disbandment"
 
 
 def test_tariff_passes_at_50_with_quorum():
@@ -207,3 +211,196 @@ def test_route_registered():
 
     paths = [getattr(r, "path", None) for r in router.routes]
     assert "/stations/{station_id}/governance/vote" in paths
+
+
+# --- LEG-2007 / LEG-2008 Soft-ORDER: execute on passed sale / disbandment ---
+
+
+def test_execute_sale_lists_when_no_buyer(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+    from uuid import uuid4
+
+    from src.services import station_governance_service as gov
+
+    station_id = uuid4()
+    owner_id = uuid4()
+    station = SimpleNamespace(
+        id=station_id,
+        owner_id=owner_id,
+        ownership={
+            "player_id": str(owner_id),
+            "acquisition_cost": 1_000_000,
+            "co_ownership_mode": "syndicate",
+            "co_ownership_shares": [
+                {"player_id": str(owner_id), "pct": 60, "primary": True},
+                {"player_id": str(uuid4()), "pct": 40},
+            ],
+        },
+    )
+    row = SimpleNamespace(
+        vote_type="sale",
+        proposed_value={"value": None},
+        outcome={"status": "passed", "passed": True},
+    )
+    listing = SimpleNamespace(id=uuid4())
+    db = MagicMock()
+    calls = {"list": 0, "transfer": 0, "clear": 0}
+
+    monkeypatch.setattr(gov, "_cancel_open_campaigns", lambda *a, **k: None)
+    monkeypatch.setattr(
+        gov,
+        "_clear_ownership_for_resale",
+        lambda *a, **k: calls.__setitem__("clear", calls["clear"] + 1),
+    )
+    monkeypatch.setattr(gov, "is_listable", lambda s: True)
+    monkeypatch.setattr(
+        gov,
+        "list_station",
+        lambda db, station, price=None, now=None: (
+            calls.__setitem__("list", calls["list"] + 1) or listing
+        ),
+    )
+    monkeypatch.setattr(
+        gov,
+        "_transfer_station",
+        lambda *a, **k: calls.__setitem__("transfer", calls["transfer"] + 1),
+    )
+    monkeypatch.setattr(gov, "flag_modified", lambda *a, **k: None)
+    monkeypatch.setattr(gov, "_acquisition_cost", lambda s: 1_000_000)
+
+    from datetime import datetime, timezone
+
+    gov._execute_passed_vote(db, station, row, datetime.now(timezone.utc))
+    assert calls["list"] == 1
+    assert calls["clear"] == 1
+    assert calls["transfer"] == 0
+    assert row.outcome["execution"]["action"] == "list"
+    assert row.outcome["execution"]["listing_id"] == str(listing.id)
+
+    # idempotent
+    gov._execute_passed_vote(db, station, row, datetime.now(timezone.utc))
+    assert calls["list"] == 1
+
+
+def test_execute_sale_transfers_when_buyer_present(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+    from uuid import uuid4
+
+    from src.services import station_governance_service as gov
+
+    buyer_id = uuid4()
+    station = SimpleNamespace(
+        id=uuid4(),
+        owner_id=uuid4(),
+        ownership={"acquisition_cost": 800_000},
+    )
+    buyer = SimpleNamespace(id=buyer_id)
+    row = SimpleNamespace(
+        vote_type="sale",
+        proposed_value={"buyer_id": str(buyer_id), "price": 750_000},
+        outcome={"status": "passed", "passed": True},
+    )
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = buyer
+    transferred = {}
+
+    monkeypatch.setattr(gov, "_cancel_open_campaigns", lambda *a, **k: None)
+    monkeypatch.setattr(
+        gov, "_lock_players_ascending", lambda db, ids: {buyer_id: buyer}
+    )
+    monkeypatch.setattr(
+        gov,
+        "_transfer_station",
+        lambda db, station, new_owner, price, now, method: transferred.update(
+            {"buyer": new_owner.id, "price": price, "method": method}
+        ),
+    )
+    monkeypatch.setattr(gov, "flag_modified", lambda *a, **k: None)
+    monkeypatch.setattr(gov, "_acquisition_cost", lambda s: 800_000)
+    monkeypatch.setattr(
+        gov, "list_station", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no list"))
+    )
+
+    from datetime import datetime, timezone
+
+    gov._execute_passed_vote(db, station, row, datetime.now(timezone.utc))
+    assert transferred["buyer"] == buyer_id
+    assert transferred["price"] == 750_000
+    assert transferred["method"] == "governance_sale"
+    assert row.outcome["execution"]["action"] == "transfer"
+
+
+def test_execute_disbandment_lists_at_depreciated(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+    from uuid import uuid4
+
+    from src.services import station_governance_service as gov
+
+    station = SimpleNamespace(
+        id=uuid4(),
+        owner_id=uuid4(),
+        ownership={"acquisition_cost": 1_000_000},
+    )
+    row = SimpleNamespace(
+        vote_type="disbandment",
+        proposed_value={},
+        outcome={"status": "passed", "passed": True},
+    )
+    listing = SimpleNamespace(id=uuid4())
+    listed_price = {}
+
+    monkeypatch.setattr(gov, "_cancel_open_campaigns", lambda *a, **k: None)
+    monkeypatch.setattr(gov, "_clear_ownership_for_resale", lambda *a, **k: None)
+    monkeypatch.setattr(gov, "is_listable", lambda s: True)
+    monkeypatch.setattr(gov, "_acquisition_cost", lambda s: 1_000_000)
+    monkeypatch.setattr(gov, "depreciated_value", lambda acq: int(acq * 0.5))
+    monkeypatch.setattr(
+        gov,
+        "list_station",
+        lambda db, station, price=None, now=None: (
+            listed_price.update({"price": price}) or listing
+        ),
+    )
+    monkeypatch.setattr(gov, "flag_modified", lambda *a, **k: None)
+    monkeypatch.setattr(
+        gov,
+        "_transfer_station",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no transfer")),
+    )
+
+    from datetime import datetime, timezone
+
+    gov._execute_passed_vote(db := MagicMock(), station, row, datetime.now(timezone.utc))
+    assert listed_price["price"] == 500_000
+    assert row.outcome["execution"]["action"] == "depreciated_auto_sell"
+    assert row.outcome["execution"]["depreciated_value"] == 500_000
+
+
+def test_execute_skips_non_passed_sale(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+    from uuid import uuid4
+    from datetime import datetime, timezone
+
+    from src.services import station_governance_service as gov
+
+    row = SimpleNamespace(
+        vote_type="sale",
+        proposed_value={},
+        outcome={"status": "open", "passed": False},
+    )
+    called = {"n": 0}
+    monkeypatch.setattr(
+        gov, "list_station", lambda *a, **k: called.__setitem__("n", called["n"] + 1)
+    )
+    gov._execute_passed_vote(
+        MagicMock(),
+        SimpleNamespace(id=uuid4(), ownership={}),
+        row,
+        datetime.now(timezone.utc),
+    )
+    assert called["n"] == 0
+    assert "execution" not in (row.outcome or {})

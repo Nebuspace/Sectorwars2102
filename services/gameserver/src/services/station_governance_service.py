@@ -17,15 +17,25 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from src.core import game_time
 from src.models.player import Player
-from src.models.port_ownership import StationGovernanceVote
-from src.models.station import Station
+from src.models.port_ownership import StationGovernanceVote, TakeoverCampaign
+from src.models.station import Station, player_stations
 from src.services.port_ownership_service import (
     MAX_TAX_RATE,
     MIN_TAX_RATE,
     PortOwnershipError,
+    SYNDICATE_INVITES_KEY,
     SYNDICATE_MODE_KEY,
+    SYNDICATE_SHARES_KEY,
+    _ACTIVE_CAMPAIGN_STATUSES,
+    _acquisition_cost,
     _ensure_primary_share,
+    _lock_players_ascending,
     _lock_station,
+    _transfer_station,
+    clamp_price,
+    depreciated_value,
+    is_listable,
+    list_station,
 )
 
 logger = logging.getLogger(__name__)
@@ -51,6 +61,13 @@ VOTE_SPECS: Dict[str, Dict[str, Any]] = {
         "window_hours": 96.0,
         "major_upgrade": False,
     },
+    # Table silent on disbandment (port-ownership.md:453) — mirror sale specs.
+    "disbandment": {
+        "threshold": 0.66,
+        "veto": True,
+        "window_hours": 96.0,
+        "major_upgrade": False,
+    },
     "withdrawal": {
         "threshold": 0.50,
         "veto": False,
@@ -65,10 +82,16 @@ _VOTE_ALIASES = {
     "upgrade": "upgrade",
     "major_upgrade": "upgrade",
     "sale": "sale",
+    "disbandment": "disbandment",
+    "disband": "disbandment",
+    "dissolve": "disbandment",
     "withdrawal": "withdrawal",
     "withdrawal_schedule": "withdrawal",
     "withdrawal-schedule": "withdrawal",
 }
+
+# Sale / disbandment execute listing or transfer once the ballot passes.
+_EXECUTABLE_VOTE_TYPES = frozenset({"sale", "disbandment"})
 
 POSITIONS = frozenset({"for", "against", "absent", "veto", "against_veto"})
 INACTIVE_DAYS = 30
@@ -83,8 +106,8 @@ def normalize_vote_type(raw: str) -> str:
     if key not in _VOTE_ALIASES:
         raise PortOwnershipError(
             400,
-            "vote_type must be tariff, upgrade, sale, or withdrawal "
-            "(canon port-ownership.md vote-threshold table)",
+            "vote_type must be tariff, upgrade, sale, disbandment, or withdrawal "
+            "(canon port-ownership.md vote-threshold table; disbandment mirrors sale)",
         )
     return _VOTE_ALIASES[key]
 
@@ -306,6 +329,160 @@ def _ballot_map(ballots: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     return out
 
 
+def _proposed_dict(proposed_value: Any) -> Dict[str, Any]:
+    if isinstance(proposed_value, dict):
+        return dict(proposed_value)
+    return {}
+
+
+def _proposed_buyer_id(proposed: Dict[str, Any]) -> Optional[str]:
+    raw = proposed.get("buyer_id", proposed.get("buyer"))
+    if raw is None:
+        return None
+    return str(raw)
+
+
+def _proposed_sale_price(proposed: Dict[str, Any]) -> Optional[int]:
+    raw = proposed.get("price", proposed.get("amount"))
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        return clamp_price(int(raw))
+    return None
+
+
+def _cancel_open_campaigns(db: Session, station: Station, reason: str) -> None:
+    open_campaigns = (
+        db.query(TakeoverCampaign)
+        .filter(
+            TakeoverCampaign.station_id == station.id,
+            TakeoverCampaign.status.in_(_ACTIVE_CAMPAIGN_STATUSES),
+        )
+        .all()
+    )
+    for c in open_campaigns:
+        c.status = "failed"
+        c.dispute_reason = reason
+        c.counter_expires_at = None
+
+
+def _clear_ownership_for_resale(db: Session, station: Station) -> None:
+    """Release syndicate/solo ownership so list_station can re-list (invent=0)."""
+    db.execute(
+        player_stations.delete().where(player_stations.c.station_id == station.id)
+    )
+    station.owner_id = None
+    ownership = dict(station.ownership or {})
+    ownership.pop("player_id", None)
+    ownership.pop(SYNDICATE_MODE_KEY, None)
+    ownership.pop(SYNDICATE_SHARES_KEY, None)
+    ownership.pop(SYNDICATE_INVITES_KEY, None)
+    station.ownership = ownership
+    flag_modified(station, "ownership")
+
+
+def _execute_passed_vote(
+    db: Session,
+    station: Station,
+    row: StationGovernanceVote,
+    now: datetime,
+) -> None:
+    """On passed sale/disbandment: list or transfer via existing helpers (LEG-2007/2008)."""
+    if row.vote_type not in _EXECUTABLE_VOTE_TYPES:
+        return
+    outcome = dict(row.outcome or {})
+    if not outcome.get("passed"):
+        return
+    if isinstance(outcome.get("execution"), dict):
+        return  # idempotent
+
+    proposed = _proposed_dict(row.proposed_value)
+    acq = _acquisition_cost(station)
+    execution: Dict[str, Any]
+
+    if row.vote_type == "sale":
+        buyer_raw = _proposed_buyer_id(proposed)
+        if buyer_raw:
+            try:
+                buyer_uuid = uuid.UUID(str(buyer_raw))
+            except (ValueError, AttributeError, TypeError):
+                raise PortOwnershipError(400, "proposed_value.buyer_id must be a UUID")
+            buyer = db.query(Player).filter(Player.id == buyer_uuid).first()
+            if buyer is None:
+                raise PortOwnershipError(404, "Sale buyer not found")
+            price = _proposed_sale_price(proposed)
+            if price is None:
+                price = int(acq)
+            _cancel_open_campaigns(
+                db, station, "station sold via syndicate governance vote"
+            )
+            locked = _lock_players_ascending(db, [buyer.id])
+            buyer = locked[buyer.id]
+            _transfer_station(
+                db, station, buyer, int(price), now, method="governance_sale"
+            )
+            execution = {
+                "action": "transfer",
+                "buyer_id": str(buyer.id),
+                "price": int(price),
+            }
+        else:
+            price = _proposed_sale_price(proposed)
+            _cancel_open_campaigns(
+                db, station, "station listed via syndicate governance sale vote"
+            )
+            _clear_ownership_for_resale(db, station)
+            db.flush()
+            listing_id = None
+            if is_listable(station):
+                try:
+                    listing = list_station(db, station, price=price, now=now)
+                    listing_id = str(listing.id)
+                except PortOwnershipError as exc:
+                    logger.warning(
+                        "Governance sale list failed station=%s: %s",
+                        station.id,
+                        exc.detail,
+                    )
+            execution = {
+                "action": "list",
+                "listing_id": listing_id,
+                "price": price,
+            }
+    else:
+        # disbandment — depreciated auto-sell via open-market listing path
+        depreciated = depreciated_value(acq)
+        _cancel_open_campaigns(
+            db, station, "station auto-listed via syndicate disbandment vote"
+        )
+        _clear_ownership_for_resale(db, station)
+        db.flush()
+        listing_id = None
+        if is_listable(station):
+            try:
+                listing = list_station(db, station, price=depreciated, now=now)
+                listing_id = str(listing.id)
+            except PortOwnershipError as exc:
+                logger.warning(
+                    "Governance disbandment list failed station=%s: %s",
+                    station.id,
+                    exc.detail,
+                )
+        execution = {
+            "action": "depreciated_auto_sell",
+            "listing_id": listing_id,
+            "depreciated_value": depreciated,
+        }
+
+    outcome["execution"] = execution
+    row.outcome = outcome
+    flag_modified(row, "outcome")
+    logger.info(
+        "Governance vote executed station=%s type=%s execution=%s",
+        station.id,
+        row.vote_type,
+        execution,
+    )
+
+
 def _maybe_resolve_row(
     db: Session,
     station: Station,
@@ -328,6 +505,8 @@ def _maybe_resolve_row(
     row.outcome = outcome
     flag_modified(row, "outcome")
     _apply_passed_vote(db, station, row, outcome)
+    if row.outcome and row.outcome.get("passed"):
+        _execute_passed_vote(db, station, row, now)
 
 
 def cast_governance_vote(
@@ -375,8 +554,12 @@ def cast_governance_vote(
         )
         .all()
     )
-    for row in open_rows:
-        _maybe_resolve_row(db, station, row, now)
+    resolved_passed: Optional[StationGovernanceVote] = None
+    for existing in open_rows:
+        was_open = existing.status == "open"
+        _maybe_resolve_row(db, station, existing, now)
+        if was_open and existing.outcome and existing.outcome.get("passed"):
+            resolved_passed = existing
 
     row = (
         db.query(StationGovernanceVote)
@@ -389,6 +572,8 @@ def cast_governance_vote(
     )
 
     if row is None:
+        if resolved_passed is not None:
+            return _vote_payload(resolved_passed)
         snapshot = _snapshot_for_open(db, shares, now)
         try:
             claimed = int(voter_stake_pct)
