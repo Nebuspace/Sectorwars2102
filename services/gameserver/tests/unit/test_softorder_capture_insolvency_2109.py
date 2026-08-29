@@ -1,5 +1,9 @@
-"""Soft-ORDER invent=0 #2109–#2112 — post-capture protect/productivity,
-insolvency upgrade block + service-charge revert, upgrade-vote treasury debit.
+"""Soft-ORDER invent=0 #2109–#2111 — post-capture protect/productivity,
+insolvency upgrade block + service-charge revert.
+
+Upgrade-vote treasury debit (#2112 / LEG-2032) lives on PR#969
+(`_apply_passed_upgrade_spend`) — do not call a non-existent
+`_execute_upgrade_capex` from this Soft-ORDER batch.
 """
 from __future__ import annotations
 
@@ -12,7 +16,6 @@ import pytest
 
 from src.services import docking_service as dock
 from src.services import port_ownership_service as pos
-from src.services import station_governance_service as gov
 from src.services import station_security_service as sec
 
 
@@ -145,80 +148,3 @@ def test_upgrade_security_blocked_when_insolvent(monkeypatch):
         sec.upgrade_security_tier(MagicMock(), station, owner, now=FIXED_NOW)
     assert ei.value.status_code == 400
     assert "insolvent" in ei.value.detail.lower()
-
-
-def test_upgrade_vote_debits_treasury(monkeypatch):
-    station_id = uuid4()
-    station = SimpleNamespace(
-        id=station_id,
-        treasury_balance=900_000,
-        ownership={},
-        capital_cost_ledger=None,
-    )
-    row = SimpleNamespace(
-        id=uuid4(),
-        vote_type="upgrade",
-        status="passed",
-        proposed_value={"capex": 600_000},
-        outcome={"passed": True, "status": "passed"},
-    )
-    monkeypatch.setattr(gov, "_lock_station", lambda db, sid: station)
-    monkeypatch.setattr(gov, "flag_modified", lambda *a, **k: None)
-    monkeypatch.setattr(
-        pos,
-        "append_capital_cost",
-        lambda station, source, amount, now=None: None,
-    )
-    # Route append import inside execute
-    monkeypatch.setattr(
-        "src.services.port_ownership_service.append_capital_cost",
-        lambda station, source, amount, now=None: None,
-    )
-    gov._execute_upgrade_capex(MagicMock(), station, row, FIXED_NOW)
-    assert station.treasury_balance == 300_000
-    assert row.outcome["execution"]["capex"] == 600_000
-    assert station.ownership["upgrade_vote_spent"]["capex"] == 600_000
-
-
-def test_upgrade_vote_fail_closed_on_short_treasury(monkeypatch):
-    station = SimpleNamespace(
-        id=uuid4(),
-        treasury_balance=100_000,
-        ownership={},
-        capital_cost_ledger=None,
-    )
-    row = SimpleNamespace(
-        id=uuid4(),
-        vote_type="upgrade",
-        status="passed",
-        proposed_value={"capex": 600_000},
-        outcome={"passed": True, "status": "passed"},
-    )
-    monkeypatch.setattr(gov, "_lock_station", lambda db, sid: station)
-    monkeypatch.setattr(gov, "flag_modified", lambda *a, **k: None)
-    gov._execute_upgrade_capex(MagicMock(), station, row, FIXED_NOW)
-    assert station.treasury_balance == 100_000
-    assert row.status == "failed"
-    assert row.outcome["fail_reason"] == "insufficient_treasury"
-    assert "execution" not in row.outcome
-
-
-def test_upgrade_vote_execute_idempotent(monkeypatch):
-    station = SimpleNamespace(
-        id=uuid4(),
-        treasury_balance=900_000,
-        ownership={},
-    )
-    row = SimpleNamespace(
-        id=uuid4(),
-        vote_type="upgrade",
-        status="passed",
-        proposed_value={"capex": 600_000},
-        outcome={
-            "passed": True,
-            "execution": {"action": "debit_treasury_capex", "capex": 600_000},
-        },
-    )
-    monkeypatch.setattr(gov, "_lock_station", lambda db, sid: station)
-    gov._execute_upgrade_capex(MagicMock(), station, row, FIXED_NOW)
-    assert station.treasury_balance == 900_000  # unchanged
