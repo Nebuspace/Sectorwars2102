@@ -1064,6 +1064,61 @@ def apply_governance_sale_listing(
     return listing
 
 
+def apply_governance_disbandment_listing(
+    db: Session,
+    station: Station,
+    now: Optional[datetime] = None,
+) -> Optional[StationListing]:
+    """Passed syndicate disbandment vote: dissolve and list at depreciated value.
+
+    Canon (port-ownership.md Dissolving co-ownership): disbandment auto-sells
+    at depreciated value. v1 has no NPC-faction wallet (same honesty as
+    ``auto_sell_insolvent``), so the open-market listing path is reused at
+    ``depreciated_value`` — no insolvency reputation penalty."""
+    now = now or datetime.now(UTC)
+    station = _lock_station(db, station.id)
+    depreciated = depreciated_value(_acquisition_cost(station))
+
+    if station.owner_id is not None:
+        db.execute(
+            player_stations.delete().where(player_stations.c.station_id == station.id)
+        )
+        station.owner_id = None
+        ownership = dict(station.ownership or {})
+        ownership.pop("player_id", None)
+        ownership.pop(SYNDICATE_MODE_KEY, None)
+        ownership.pop(SYNDICATE_SHARES_KEY, None)
+        ownership.pop(SYNDICATE_INVITES_KEY, None)
+        station.ownership = ownership
+        flag_modified(station, "ownership")
+        db.flush()
+
+    if not is_listable(station):
+        logger.warning(
+            "Governance disbandment vote passed but station %s is not listable",
+            station.id,
+        )
+        return None
+
+    try:
+        listing = list_station(db, station, price=depreciated, now=now)
+    except PortOwnershipError as exc:
+        logger.warning(
+            "Governance disbandment vote passed but station %s could not be listed: %s",
+            station.id,
+            exc.detail,
+        )
+        return None
+
+    logger.info(
+        "Governance disbandment listing applied station=%s listing=%s price=%s",
+        station.id,
+        listing.id,
+        listing.price,
+    )
+    return listing
+
+
 def place_offer(
     db: Session,
     listing: StationListing,
