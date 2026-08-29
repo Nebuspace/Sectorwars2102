@@ -87,7 +87,7 @@ vi.mock('../../../contexts/GameContext', () => ({
   useGame: () => ({ playerState: mockPlayerState, refreshPlayerState: mockRefreshPlayerState }),
 }));
 
-import { TeamManager } from '../TeamManager';
+import { TeamManager, formatTeamManagerLoadError } from '../TeamManager';
 
 const rawTeam = (overrides: Partial<TeamApiResponse> = {}): TeamApiResponse => ({
   id: 'team-1',
@@ -222,6 +222,48 @@ describe('TeamManager', () => {
     });
     await flush();
     expect(container.querySelector('.team-header')).not.toBeNull();
+  });
+
+  it('formatTeamManagerLoadError preserves 404 server detail', () => {
+    const err = Object.assign(new Error('Team not found'), { status: 404 });
+    expect(formatTeamManagerLoadError(err)).toBe('Team not found');
+  });
+
+  it('formatTeamManagerLoadError falls back on bare 404', () => {
+    const err = Object.assign(new Error('API Error: 404'), { status: 404 });
+    expect(formatTeamManagerLoadError(err)).toBe('Team not found.');
+  });
+
+  it('formatTeamManagerLoadError preserves 403 server detail', () => {
+    const err = Object.assign(new Error('You are not a member of this team'), {
+      status: 403,
+    });
+    expect(formatTeamManagerLoadError(err)).toBe('You are not a member of this team');
+  });
+
+  it('formatTeamManagerLoadError falls back on bare 403', () => {
+    const err = Object.assign(new Error('API Error: 403'), { status: 403 });
+    expect(formatTeamManagerLoadError(err)).toBe('You are not a member of this team.');
+  });
+
+  it('surfaces honest 404 load copy when getTeam rejects with bare status', async () => {
+    mockGetTeam.mockRejectedValue(
+      Object.assign(new Error('API Error: 404'), { status: 404 }),
+    );
+    await mount();
+
+    expect(container.querySelector('.load-error')).not.toBeNull();
+    expect(container.textContent).toContain('Team not found.');
+  });
+
+  it('surfaces honest 403 load copy when getTeam rejects with bare status', async () => {
+    mockGetTeam.mockRejectedValue(
+      Object.assign(new Error('API Error: 403'), { status: 403 }),
+    );
+    await mount();
+
+    expect(container.querySelector('.load-error')).not.toBeNull();
+    expect(container.textContent).toContain('You are not a member of this team.');
   });
 
   it('renders the header with tag/name, member counts, and founded date, and maps combat/trade ratings to 1 decimal', async () => {
