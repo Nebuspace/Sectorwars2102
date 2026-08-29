@@ -658,6 +658,33 @@ async def accept_share_invite(
     }
 
 
+@router.post("/stations/{station_id}/syndicate/buyout")
+async def syndicate_buyout(
+    station_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player),
+):
+    """Shareholder buys out all others at fair value; mode reverts to solo."""
+    station = _get_station_or_404(db, station_id)
+    try:
+        result = port_ownership_service.execute_syndicate_buyout(
+            db, station, current_player
+        )
+        db.commit()
+    except PortOwnershipError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return {
+        "message": (
+            f"Syndicate buyout at {station.name} for "
+            f"{result['total_payout']:,} credits (fair value "
+            f"{result['fair_value']:,})"
+        ),
+        **result,
+    }
+
+
 @router.post("/stations/{station_id}/syndicate/decline")
 async def decline_share_invite(
     station_id: str,

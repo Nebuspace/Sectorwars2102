@@ -76,7 +76,7 @@ No function here commits; the calling route owns the transaction.
 """
 import logging
 import uuid
-from datetime import datetime, UTC
+from datetime import datetime, timedelta, UTC
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from sqlalchemy import func
@@ -177,10 +177,17 @@ MAX_TAX_RATE = 0.25
 
 # Canon "Treasury & cash flow > Owner withdrawals" (port-ownership.md:361-367):
 # every sweep must retain at least 10% of the CURRENT balance as an operating
-# cushion, so at most 90% can leave in one withdrawal. v1 has no separate
-# scheduled-sweep engine, so this cap applies uniformly to manual withdrawals
-# too (canon: "manual ad-hoc withdrawals subject to the same 90% cap").
+# cushion, so at most 90% can leave in one withdrawal. Manual ad-hoc
+# withdrawals and the scheduled-sweep engine (LEG-2014) share this cap.
 TREASURY_CUSHION_PCT = 0.10
+
+# Soft-ORDER invent=0 — withdrawal schedule (port-ownership.md:144 / :381).
+WITHDRAWAL_SCHEDULE_KEY = "withdrawal_schedule"
+WITHDRAWAL_SCHEDULE_SET_AT_KEY = "withdrawal_schedule_set_at"
+WITHDRAWAL_SCHEDULE_LAST_AT_KEY = "withdrawal_schedule_last_at"
+WITHDRAWAL_SCHEDULES = frozenset({"daily", "weekly", "monthly"})
+# Canon schedule words only — daily/weekly/monthly as scaled canonical days.
+WITHDRAWAL_SCHEDULE_DAYS = {"daily": 1, "weekly": 7, "monthly": 30}
 
 # ---------------------------------------------------------------------------
 # Owner revenue-stream levers (canon FEATURES/economy/port-ownership "Revenue
@@ -2407,13 +2414,98 @@ def _ensure_primary_share(station: Station) -> List[Dict[str, Any]]:
     ]
 
 
+def set_withdrawal_schedule(station: Station, schedule: str, now: datetime) -> str:
+    """Persist daily|weekly|monthly on ownership JSONB (LEG-2014 invent=0)."""
+    key = str(schedule or "").strip().lower()
+    if key not in WITHDRAWAL_SCHEDULES:
+        raise PortOwnershipError(
+            400, "withdrawal schedule must be daily, weekly, or monthly"
+        )
+    ownership = _ownership(station)
+    ownership[WITHDRAWAL_SCHEDULE_KEY] = key
+    ownership[WITHDRAWAL_SCHEDULE_SET_AT_KEY] = now.isoformat()
+    # Fresh schedule: next due measured from set_at (clear prior last).
+    ownership.pop(WITHDRAWAL_SCHEDULE_LAST_AT_KEY, None)
+    flag_modified(station, "ownership")
+    return key
+
+
+def maybe_run_scheduled_withdrawal(
+    db: Session, station: Station, now: Optional[datetime] = None
+) -> Optional[Dict[str, Any]]:
+    """Lazy-on-read sweep honoring ownership withdrawal_schedule + 90% cushion."""
+    now = now or datetime.now(UTC)
+    ownership = station.ownership or {}
+    schedule = ownership.get(WITHDRAWAL_SCHEDULE_KEY)
+    if schedule not in WITHDRAWAL_SCHEDULES:
+        return None
+    days = WITHDRAWAL_SCHEDULE_DAYS[schedule]
+    last_raw = ownership.get(WITHDRAWAL_SCHEDULE_LAST_AT_KEY) or ownership.get(
+        WITHDRAWAL_SCHEDULE_SET_AT_KEY
+    )
+    last = _parse_counter_ts(last_raw) if last_raw else None
+    if last is not None and game_time.scaled_elapsed(last, now) < timedelta(days=days):
+        return None
+
+    station = _lock_station(db, station.id)
+    ownership = _ownership(station)
+    balance = station.treasury_balance or 0
+    amount = treasury_withdrawal_cap(balance)
+    mode = ownership.get(SYNDICATE_MODE_KEY) or "solo"
+    payouts: List[Dict[str, Any]] = []
+    if amount > 0:
+        if mode == "syndicate":
+            parts = _syndicate_withdrawal_payouts(station, amount)
+            locked = _lock_players_ascending(db, [pid for pid, _pct, _cr in parts])
+            paid = 0
+            for pid, _pct, part in parts:
+                pl = locked.get(pid)
+                if pl is None or part <= 0:
+                    continue
+                pl.credits = int(pl.credits or 0) + part
+                paid += part
+                payouts.append({"player_id": str(pid), "amount": part})
+            station.treasury_balance = balance - paid
+        else:
+            owner_id = station.owner_id
+            if owner_id is None:
+                ownership[WITHDRAWAL_SCHEDULE_LAST_AT_KEY] = now.isoformat()
+                flag_modified(station, "ownership")
+                db.flush()
+                return {"status": "skipped", "reason": "unowned"}
+            locked = _lock_players_ascending(db, [owner_id])
+            owner = locked[owner_id]
+            owner.credits = int(owner.credits or 0) + amount
+            station.treasury_balance = balance - amount
+            payouts.append({"player_id": str(owner_id), "amount": amount})
+
+    ownership[WITHDRAWAL_SCHEDULE_LAST_AT_KEY] = now.isoformat()
+    flag_modified(station, "ownership")
+    db.flush()
+    result = {
+        "status": "swept" if amount > 0 else "noop",
+        "schedule": schedule,
+        "amount": amount if amount > 0 else 0,
+        "payouts": payouts,
+        "treasury_balance": station.treasury_balance or 0,
+    }
+    logger.info(
+        "Scheduled withdrawal sweep station=%s schedule=%s amount=%s",
+        station.id,
+        schedule,
+        result["amount"],
+    )
+    return result
+
+
 def get_syndicate_status(
     db: Session, station: Station, player: Player, now: Optional[datetime] = None
 ) -> Dict[str, Any]:
-    """Co-ownership status for a station (lazy invite expiry + inactive forfeit)."""
+    """Co-ownership status (lazy invite expiry + schedule sweep + inactive forfeit)."""
     now = now or datetime.now(UTC)
     station = _lock_station(db, station.id)
     _expire_syndicate_invites(station, now)
+    maybe_run_scheduled_withdrawal(db, station, now)
     forfeit_inactive_syndicate_stakes(db, station, now)
     db.flush()
     mode = (station.ownership or {}).get(SYNDICATE_MODE_KEY) or "solo"
@@ -2423,6 +2515,7 @@ def get_syndicate_status(
     visible_invites = invites if is_owner else [
         i for i in invites if str(i.get("invitee_player_id")) == str(player.id)
     ]
+    ownership = station.ownership or {}
     return {
         "station_id": str(station.id),
         "owner_id": str(station.owner_id) if station.owner_id else None,
@@ -2430,6 +2523,7 @@ def get_syndicate_status(
         "shares": shares,
         "pending_invites": visible_invites,
         "is_primary": is_owner,
+        "withdrawal_schedule": ownership.get(WITHDRAWAL_SCHEDULE_KEY),
     }
 
 
@@ -2604,6 +2698,93 @@ def decline_share_invite(
     return {
         "station_id": str(station.id),
         "declined_invite_id": str(invite_id),
+    }
+
+
+def execute_syndicate_buyout(
+    db: Session,
+    station: Station,
+    buyer: Player,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """One shareholder buys out all others at fair value; mode reverts to solo.
+
+    Fair value reuses forced_sale_price (canon port-ownership.md buyout path).
+    Each non-buying shareholder receives int(fair_value * pct / 100) credits.
+    """
+    now = now or datetime.now(UTC)
+    station = _lock_station(db, station.id)
+    _expire_syndicate_invites(station, now)
+
+    mode = (station.ownership or {}).get(SYNDICATE_MODE_KEY) or "solo"
+    if mode != "syndicate":
+        raise PortOwnershipError(
+            400, "Buyout is only available for syndicate co-ownership"
+        )
+    if station.owner_id is None:
+        raise PortOwnershipError(400, "Station has no primary owner")
+
+    shares = _ensure_primary_share(station)
+    buyer_id = str(buyer.id)
+    buyer_share = next(
+        (s for s in shares if str(s.get("player_id")) == buyer_id), None
+    )
+    if buyer_share is None:
+        raise PortOwnershipError(403, "Only a syndicate shareholder can buy out")
+
+    others = [
+        {"player_id": str(s["player_id"]), "pct": int(s["pct"])}
+        for s in shares
+        if str(s.get("player_id")) != buyer_id and int(s.get("pct", 0)) > 0
+    ]
+    if not others:
+        raise PortOwnershipError(400, "No other shareholders to buy out")
+
+    fair_value = forced_sale_price(db, station, now)
+    payouts: List[Dict[str, Any]] = []
+    total_payout = 0
+    for s in others:
+        payout = int(fair_value * int(s["pct"]) / 100)
+        payouts.append(
+            {"player_id": s["player_id"], "pct": s["pct"], "payout": payout}
+        )
+        total_payout += payout
+
+    player_ids = [buyer.id] + [p["player_id"] for p in payouts]
+    players = _lock_players_ascending(db, player_ids)
+    buyer_locked = players[buyer.id]
+    if buyer_locked.credits < total_payout:
+        raise PortOwnershipError(
+            400,
+            f"Insufficient credits: need {total_payout:,} for buyout "
+            f"(have {buyer_locked.credits:,})",
+        )
+
+    buyer_locked.credits -= total_payout
+    for row in payouts:
+        pid = uuid.UUID(row["player_id"])
+        players[pid].credits += row["payout"]
+
+    if station.owner_id != buyer.id:
+        station.owner_id = buyer.id
+
+    solo_shares = [{"player_id": buyer_id, "pct": 100}]
+    _set_syndicate_state(
+        station, mode="solo", shares=solo_shares, invites=[]
+    )
+    db.flush()
+    logger.info(
+        "Station %s syndicate buyout by %s: fair_value=%s total=%s",
+        station.id, buyer.id, fair_value, total_payout,
+    )
+    return {
+        "station_id": str(station.id),
+        "mode": "solo",
+        "owner_id": buyer_id,
+        "fair_value": fair_value,
+        "total_payout": total_payout,
+        "payouts": payouts,
+        "shares": solo_shares,
     }
 
 
