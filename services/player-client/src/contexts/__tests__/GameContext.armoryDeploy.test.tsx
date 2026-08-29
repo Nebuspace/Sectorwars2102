@@ -132,11 +132,19 @@ describe('GameContext armoryAPI.deploy', () => {
       result = await captured!.deployMines(3);
       await flush();
     });
-    expect(mockDeploy).toHaveBeenCalledWith(3);
+    expect(mockDeploy).toHaveBeenCalledWith(3, 'armored_mine');
     expect(result).toEqual({ success: true, deployed: 3 });
     const rawPosts = mockPost.mock.calls.filter((c) =>
       String(c[0]).includes('/armory/deploy'),
     );
     expect(rawPosts).toHaveLength(0);
+  });
+
+  it('deployMines passes limpet_mine through to armoryAPI.deploy', async () => {
+    await act(async () => {
+      await captured!.deployMines(2, 'limpet_mine');
+      await flush();
+    });
+    expect(mockDeploy).toHaveBeenCalledWith(2, 'limpet_mine');
   });
 });

@@ -273,11 +273,11 @@ class PlayerActivityService:
         details : dict, optional
             Additional context (e.g. commodity, quantity, sector_id).
         db : Session, optional
-            Sync SQLAlchemy session. When provided for ``trade_buy`` /
-            ``trade_sell``, also inserts a durable ``PlayerActivity`` row
-            (WO-BUILD-RETENTION-SIGNALS-TRADE-SQL-INSERT) so retention's
-            ``economic_loss_streak`` can see credit flow. Caller owns commit;
-            insert uses a savepoint so failure cannot poison the trade txn.
+            Sync SQLAlchemy session. When provided for trade or gameplay
+            event types (combat/move/dock/land/warp), also inserts a durable
+            ``PlayerActivity`` row (LEG-338) so retention/region activity is
+            not Redis-only. Caller owns commit; insert uses a savepoint so
+            failure cannot poison the caller's transaction.
         """
         redis = await self._get_redis()
 
@@ -296,7 +296,10 @@ class PlayerActivityService:
             if event_type in (ActivityEventType.COMBAT_ATTACK, ActivityEventType.COMBAT_DEFEND):
                 session["combat_events"] = session.get("combat_events", 0) + 1
 
-            if event_type == ActivityEventType.SECTOR_MOVE:
+            if event_type in (
+                ActivityEventType.SECTOR_MOVE,
+                ActivityEventType.WARP,
+            ):
                 sector = (details or {}).get("sector_id")
                 visited = session.get("sectors_visited", [])
                 if sector and str(sector) not in visited:
@@ -309,11 +312,19 @@ class PlayerActivityService:
         # Record individual event (Redis)
         await self._record_event(player_id, event_type, details)
 
-        # Durable trade mirror for economic_loss_streak (Postgres)
-        if (
-            db is not None
-            and event_type in (ActivityEventType.TRADE_BUY, ActivityEventType.TRADE_SELL)
-        ):
+        # Durable mirror for trade + gameplay events (Postgres)
+        _DURABLE_EVENT_TYPES = (
+            ActivityEventType.TRADE_BUY,
+            ActivityEventType.TRADE_SELL,
+            ActivityEventType.COMBAT_ATTACK,
+            ActivityEventType.COMBAT_DEFEND,
+            ActivityEventType.SECTOR_MOVE,
+            ActivityEventType.DOCK,
+            ActivityEventType.UNDOCK,
+            ActivityEventType.PLANET_LAND,
+            ActivityEventType.WARP,
+        )
+        if db is not None and event_type in _DURABLE_EVENT_TYPES:
             try:
                 from src.models.player_analytics import PlayerActivity
 
@@ -331,6 +342,19 @@ class PlayerActivityService:
                         sector_id = int(sector_id)
                     except (TypeError, ValueError):
                         sector_id = None
+                trade_item_keys = ("commodity", "quantity", "station_id")
+                gameplay_item_keys = (
+                    "target_type",
+                    "planet_id",
+                    "station_id",
+                    "travel_mode",
+                )
+                item_keys = (
+                    trade_item_keys
+                    if event_type
+                    in (ActivityEventType.TRADE_BUY, ActivityEventType.TRADE_SELL)
+                    else gameplay_item_keys
+                )
                 with db.begin_nested():
                     db.add(
                         PlayerActivity(
@@ -341,7 +365,7 @@ class PlayerActivityService:
                             credits_involved=credits,
                             items_involved={
                                 k: (details or {}).get(k)
-                                for k in ("commodity", "quantity", "station_id")
+                                for k in item_keys
                                 if (details or {}).get(k) is not None
                             }
                             or None,
@@ -350,7 +374,8 @@ class PlayerActivityService:
                     )
             except Exception as e:
                 logger.warning(
-                    "Could not persist trade PlayerActivity for %s: %s",
+                    "Could not persist PlayerActivity (%s) for %s: %s",
+                    event_type,
                     player_id,
                     e,
                 )

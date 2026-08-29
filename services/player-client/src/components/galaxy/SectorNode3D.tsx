@@ -5,6 +5,10 @@ import { Color } from 'three';
 import * as THREE from 'three';
 
 import { Sector } from '../../contexts/GameContext';
+import {
+  formatNebulaHoverLabel,
+  isNebulaSectorType,
+} from './nebulaChartDisplay';
 
 /** Fog-of-war / chart knowledge for NAV 3D styling. */
 export type SectorKnowledge =
@@ -48,6 +52,9 @@ export default function SectorNode3D({
 
   // Sector type visual configuration
   const sectorConfig = useMemo(() => {
+    const nebulaTint = isNebulaSectorType(sector.type) && sector.color_hex
+      ? sector.color_hex
+      : '#ff6644';
     const configs = {
       'normal': {
         color: '#4488ff',
@@ -57,7 +64,7 @@ export default function SectorNode3D({
         glow: false
       },
       'nebula': {
-        color: '#ff6644',
+        color: nebulaTint,
         emissive: '#220011',
         geometry: 'sphere',
         scale: 1.2,
@@ -94,7 +101,7 @@ export default function SectorNode3D({
     };
 
     return configs[sector.type as keyof typeof configs] || configs.normal;
-  }, [sector.type]);
+  }, [sector.type, sector.color_hex]);
 
   // Activity-based color intensity
   const activityIntensity = useMemo(() => {
@@ -186,11 +193,25 @@ export default function SectorNode3D({
     if (knowledge === 'known') {
       return new Color('#3a4a63');
     }
+    if (
+      knowledge === 'visited'
+      && isNebulaSectorType(sector.type)
+      && sector.color_hex
+    ) {
+      const nebula = new Color(sector.color_hex);
+      if (hovered) return nebula.clone().lerp(new Color('#ffffff'), 0.25);
+      return nebula;
+    }
     // visited — steel blue fog trail (been there, not a current exit)
     const visited = new Color('#6aa8e8');
     if (hovered) return visited.clone().lerp(new Color('#ffffff'), 0.25);
     return visited;
-  }, [isCurrent, isSelected, hovered, activityIntensity, knowledge]);
+  }, [isCurrent, isSelected, hovered, activityIntensity, knowledge, sector.type, sector.color_hex]);
+
+  const nebulaHoverLabel = useMemo(() => {
+    if (knowledge === 'frontier') return null;
+    return formatNebulaHoverLabel(sector.nebula_type, sector.quantum_field_strength);
+  }, [knowledge, sector.nebula_type, sector.quantum_field_strength]);
 
   const emissiveColor = useMemo(() => {
     if (knowledge === 'frontier') return new Color('#1a0033');
@@ -375,6 +396,23 @@ export default function SectorNode3D({
 
       {/* Sector label */}
       {renderLabel()}
+
+      {hovered && nebulaHoverLabel && lodLevel.showLabels && (
+        <Html
+          position={[0, sectorConfig.scale + 1.4, 0]}
+          center
+          transform={false}
+          style={{ pointerEvents: 'none' }}
+          zIndexRange={[9, 2]}
+        >
+          <div
+            className="sector-node-nebula-hover"
+            style={{ color: '#e8d4ff', fontSize: '11px', whiteSpace: 'nowrap' }}
+          >
+            {nebulaHoverLabel}
+          </div>
+        </Html>
+      )}
 
       {/* Feature indicators */}
       {renderFeatureIndicators()}

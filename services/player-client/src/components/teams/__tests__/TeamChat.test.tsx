@@ -47,6 +47,8 @@ const members: TeamMember[] = [
     location: { sectorId: 's1', sectorName: 'Alpha' },
     shipType: 'Hauler',
     combatRating: 1,
+    pinnedMedalId: 'star_silver',
+    medalCount: 3,
   },
 ];
 
@@ -121,6 +123,22 @@ describe('TeamChat', () => {
     expect(container.textContent).toContain('👑');
     expect(container.textContent).toContain('⭐');
     expect(container.querySelector('.chat-message.own')).toBeTruthy();
+  });
+
+  it('renders sender via PlayerNamePlate with roster medal pin/count', async () => {
+    getMessages.mockResolvedValue([
+      msg({ id: '1', sender_id: 'p2', sender_name: 'Nova', content: 'pinned hello' }),
+    ]);
+
+    await act(async () => {
+      root.render(<TeamChat teamId="t1" playerId="p1" members={members} />);
+    });
+
+    const plate = container.querySelector('.message-sender [data-testid="player-name-plate"]') as HTMLElement;
+    expect(plate).not.toBeNull();
+    expect(plate.getAttribute('data-pinned-medal')).toBe('star_silver');
+    expect(plate.querySelector('[data-testid="player-name-plate-count"]')?.textContent).toBe('3');
+    expect(container.textContent).toContain('pinned hello');
   });
 
   const typeInto = async (input: HTMLInputElement, value: string) => {

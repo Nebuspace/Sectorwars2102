@@ -1,5 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import FactionManagement from './FactionManagement';
 import { api } from '../../utils/auth';
 
@@ -12,14 +13,16 @@ vi.mock('../../utils/auth', () => ({
   },
 }));
 
+const toastError = vi.fn();
+
 vi.mock('../../contexts/ToastContext', () => ({
   useToast: () => ({
     success: vi.fn(),
-    error: vi.fn(),
+    error: toastError,
     info: vi.fn(),
     warning: vi.fn(),
   }),
-  useConfirm: () => vi.fn().mockResolvedValue(false),
+  useConfirm: () => vi.fn(async () => true),
 }));
 
 vi.mock('../ui/PageHeader', () => ({
@@ -30,6 +33,37 @@ const axiosError = (status: number, detail?: string) =>
   Object.assign(new Error(`HTTP ${status}`), {
     response: { status, data: detail ? { detail } : {} },
   });
+
+const sampleFaction = {
+  id: 'faction-1',
+  name: 'Test Faction',
+  faction_type: 'Federation',
+  description: 'Test',
+  territory_sectors: ['sector-1'],
+  home_sector_id: null,
+  base_pricing_modifier: 1.0,
+  trade_specialties: ['ore'],
+  aggression_level: 5,
+  diplomacy_stance: 'neutral',
+  color_primary: '#3b82f6',
+  color_secondary: '#1e3a8a',
+  logo_url: null,
+  created_at: '2026-01-01T00:00:00Z',
+  updated_at: '2026-01-01T00:00:00Z',
+};
+
+function mockSuccessfulLoad() {
+  vi.mocked(api.get).mockResolvedValue({ data: [sampleFaction] });
+}
+
+function createModalRoot() {
+  const heading = screen.getByRole('heading', { name: 'Create Faction' });
+  const modal = heading.closest('.modal');
+  if (!modal) {
+    throw new Error('Create faction modal not found');
+  }
+  return modal as HTMLElement;
+}
 
 describe('FactionManagement scope errors (LEG-968)', () => {
   beforeEach(() => {
@@ -57,5 +91,126 @@ describe('FactionManagement scope errors (LEG-968)', () => {
     await waitFor(() => {
       expect(screen.getByText(/rate limit/i)).toBeTruthy();
     });
+  });
+});
+
+describe('FactionManagement mutation errors (LEG-2610)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    vi.mocked(api.put).mockReset();
+    toastError.mockReset();
+    mockSuccessfulLoad();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('surfaces formatAdminApiError on create POST 403', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.post).mockRejectedValue(
+      axiosError(403, 'Missing scope admin.factions.manage'),
+    );
+
+    render(<FactionManagement />);
+    await waitFor(() => expect(screen.getByText('Test Faction')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: /\+ Create Faction/i }));
+    const modal = createModalRoot();
+    await user.type(within(modal).getAllByRole('textbox')[0], 'New Faction');
+    await user.click(within(modal).getByRole('button', { name: /^Create Faction$/i }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/factions/',
+        expect.objectContaining({ name: 'New Faction' }),
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith('Missing scope admin.factions.manage');
+    expect(toastError).not.toHaveBeenCalledWith('Failed to create faction.');
+  });
+
+  it('surfaces rate-limit copy on create POST 429', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.post).mockRejectedValue(axiosError(429));
+
+    render(<FactionManagement />);
+    await waitFor(() => expect(screen.getByText('Test Faction')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: /\+ Create Faction/i }));
+    const modal = createModalRoot();
+    await user.type(within(modal).getAllByRole('textbox')[0], 'New Faction');
+    await user.click(within(modal).getByRole('button', { name: /^Create Faction$/i }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalled();
+    });
+    expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/rate limit/i));
+    expect(toastError).not.toHaveBeenCalledWith('Failed to create faction.');
+  });
+
+  it('surfaces formatAdminApiError on edit PUT 403', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.put).mockRejectedValue(
+      axiosError(403, 'Missing scope admin.factions.manage'),
+    );
+
+    render(<FactionManagement />);
+    await waitFor(() => expect(screen.getByText('Test Faction')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: /^Edit$/i }));
+    await user.click(screen.getByRole('button', { name: /Save Changes/i }));
+
+    await waitFor(() => {
+      expect(api.put).toHaveBeenCalledWith(
+        `/api/v1/admin/factions/${sampleFaction.id}`,
+        expect.objectContaining({ name: sampleFaction.name }),
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith('Missing scope admin.factions.manage');
+    expect(toastError).not.toHaveBeenCalledWith('Failed to update faction.');
+  });
+
+  it('surfaces rate-limit copy on edit PUT 429', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.put).mockRejectedValue(axiosError(429));
+
+    render(<FactionManagement />);
+    await waitFor(() => expect(screen.getByText('Test Faction')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: /^Edit$/i }));
+    await user.click(screen.getByRole('button', { name: /Save Changes/i }));
+
+    await waitFor(() => {
+      expect(api.put).toHaveBeenCalled();
+    });
+    expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/rate limit/i));
+    expect(toastError).not.toHaveBeenCalledWith('Failed to update faction.');
+  });
+
+  it('surfaces formatAdminApiError on territory PUT 403', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.put).mockRejectedValue(
+      axiosError(403, 'Missing scope admin.factions.territory'),
+    );
+
+    render(<FactionManagement />);
+    await waitFor(() => expect(screen.getByText('Test Faction')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: /^Territory$/i }));
+    await user.click(screen.getByRole('button', { name: /Save Territory/i }));
+
+    await waitFor(() => {
+      expect(api.put).toHaveBeenCalledWith(
+        `/api/v1/admin/factions/${sampleFaction.id}/territory`,
+        expect.objectContaining({ sector_ids: sampleFaction.territory_sectors }),
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith('Missing scope admin.factions.territory');
+    expect(toastError).not.toHaveBeenCalledWith(
+      'Failed to update territory. Check that sector IDs are valid.',
+    );
   });
 });

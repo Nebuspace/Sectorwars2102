@@ -175,3 +175,225 @@ describe('FleetManagement emergency repair/refuel (LEG-1651)', () => {
     expect(api.post).not.toHaveBeenCalled();
   });
 });
+
+describe('FleetManagement ship registry backfill (LEG-1682)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    toastSuccess.mockReset();
+    toastError.mockReset();
+    confirmMock.mockReset();
+    confirmMock.mockResolvedValue(true);
+  });
+
+  it('exposes backfill registry control', async () => {
+    mockFleetGets();
+    render(<FleetManagement />);
+
+    expect(await screen.findByLabelText('Backfill ship registry')).toBeTruthy();
+  });
+
+  it('posts tip registry/backfill path and toasts backfilled count', async () => {
+    mockFleetGets();
+    vi.mocked(api.post).mockResolvedValue({ data: { backfilled: 3 } });
+    render(<FleetManagement />);
+
+    fireEvent.click(await screen.findByLabelText('Backfill ship registry'));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith('/api/v1/admin/ships/registry/backfill');
+    });
+    expect(toastSuccess).toHaveBeenCalledWith('Backfilled 3 ship registry row(s)');
+  });
+
+  it('backfill 403 surfaces formatAdminApiError SHIPS_MANAGE scope copy', async () => {
+    mockFleetGets();
+    vi.mocked(api.post).mockRejectedValue({
+      response: { status: 403, data: {} },
+    });
+    render(<FleetManagement />);
+
+    fireEvent.click(await screen.findByLabelText('Backfill ship registry'));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalled();
+    });
+    expect(String(toastError.mock.calls[0][0])).toMatch(/SHIPS_MANAGE|Access denied/i);
+  });
+
+  it('backfill 429 surfaces admin rate-limit helper copy', async () => {
+    mockFleetGets();
+    vi.mocked(api.post).mockRejectedValue({
+      response: { status: 429, data: {} },
+    });
+    render(<FleetManagement />);
+
+    fireEvent.click(await screen.findByLabelText('Backfill ship registry'));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/rate limit/i));
+    });
+  });
+
+  it('skips backfill POST when operator cancels confirm', async () => {
+    mockFleetGets();
+    confirmMock.mockResolvedValue(false);
+    render(<FleetManagement />);
+
+    fireEvent.click(await screen.findByLabelText('Backfill ship registry'));
+
+    await waitFor(() => {
+      expect(confirmMock).toHaveBeenCalled();
+    });
+    expect(api.post).not.toHaveBeenCalled();
+  });
+});
+
+function modalForm(title: string | RegExp): HTMLFormElement {
+  const heading = screen.getByRole('heading', { name: title });
+  const form = heading.closest('.modal')?.querySelector('form');
+  if (!form) {
+    throw new Error('modal form not found');
+  }
+  return form;
+}
+
+describe('FleetManagement ship CRUD+teleport formatAdminApiError (LEG-2395)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    vi.mocked(api.put).mockReset();
+    vi.mocked(api.delete).mockReset();
+    toastSuccess.mockReset();
+    toastError.mockReset();
+    confirmMock.mockReset();
+    confirmMock.mockResolvedValue(true);
+  });
+
+  async function readyFleet() {
+    mockFleetGets();
+    render(<FleetManagement />);
+    await screen.findByText('Nebula Runner');
+  }
+
+  it('create 403 surfaces formatAdminApiError fleet-manage scope copy', async () => {
+    await readyFleet();
+    vi.mocked(api.post).mockRejectedValue({
+      response: { status: 403, data: {} },
+    });
+    fireEvent.click(screen.getByText('+ Create Ship'));
+    const form = modalForm('Create New Ship');
+    fireEvent.change(form.querySelector('input[type="text"]') as HTMLInputElement, {
+      target: { value: 'New Hull' },
+    });
+    fireEvent.change(form.querySelectorAll('select')[1] as HTMLSelectElement, {
+      target: { value: 'p1' },
+    });
+    fireEvent.submit(form);
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalled();
+    });
+    const message = String(toastError.mock.calls[0][0]);
+    expect(message).toMatch(/admin\.ships\.manage|Access denied/i);
+    expect(message).not.toBe('Failed to create ship');
+  });
+
+  it('create 429 surfaces admin rate-limit helper copy', async () => {
+    await readyFleet();
+    vi.mocked(api.post).mockRejectedValue({
+      response: { status: 429, data: {} },
+    });
+    fireEvent.click(screen.getByText('+ Create Ship'));
+    fireEvent.submit(modalForm('Create New Ship'));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/rate limit/i));
+    });
+  });
+
+  it('update 403 surfaces formatAdminApiError fleet-manage scope copy', async () => {
+    await readyFleet();
+    vi.mocked(api.put).mockRejectedValue({
+      response: { status: 403, data: {} },
+    });
+    fireEvent.click(screen.getByLabelText('Edit Ship'));
+    fireEvent.submit(modalForm(/Edit Ship/));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalled();
+    });
+    const message = String(toastError.mock.calls[0][0]);
+    expect(message).toMatch(/admin\.ships\.manage|Access denied/i);
+    expect(message).not.toBe('Failed to update ship');
+  });
+
+  it('update 429 surfaces admin rate-limit helper copy', async () => {
+    await readyFleet();
+    vi.mocked(api.put).mockRejectedValue({
+      response: { status: 429, data: {} },
+    });
+    fireEvent.click(screen.getByLabelText('Edit Ship'));
+    fireEvent.submit(modalForm(/Edit Ship/));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/rate limit/i));
+    });
+  });
+
+  it('delete 403 surfaces formatAdminApiError fleet-manage scope copy', async () => {
+    await readyFleet();
+    vi.mocked(api.delete).mockRejectedValue({
+      response: { status: 403, data: {} },
+    });
+    fireEvent.click(screen.getByLabelText('Delete Ship'));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalled();
+    });
+    const message = String(toastError.mock.calls[0][0]);
+    expect(message).toMatch(/admin\.ships\.manage|Access denied/i);
+    expect(message).not.toBe('Failed to delete ship');
+  });
+
+  it('delete 429 surfaces admin rate-limit helper copy', async () => {
+    await readyFleet();
+    vi.mocked(api.delete).mockRejectedValue({
+      response: { status: 429, data: {} },
+    });
+    fireEvent.click(screen.getByLabelText('Delete Ship'));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/rate limit/i));
+    });
+  });
+
+  it('teleport 403 surfaces formatAdminApiError fleet-manage scope copy', async () => {
+    await readyFleet();
+    vi.mocked(api.post).mockRejectedValue({
+      response: { status: 403, data: {} },
+    });
+    fireEvent.click(screen.getByLabelText('Teleport Ship'));
+    fireEvent.submit(modalForm(/Teleport Ship/));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalled();
+    });
+    const message = String(toastError.mock.calls[0][0]);
+    expect(message).toMatch(/admin\.ships\.manage|Access denied/i);
+    expect(message).not.toBe('Failed to teleport ship');
+  });
+
+  it('teleport 429 surfaces admin rate-limit helper copy', async () => {
+    await readyFleet();
+    vi.mocked(api.post).mockRejectedValue({
+      response: { status: 429, data: {} },
+    });
+    fireEvent.click(screen.getByLabelText('Teleport Ship'));
+    fireEvent.submit(modalForm(/Teleport Ship/));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/rate limit/i));
+    });
+  });
+});

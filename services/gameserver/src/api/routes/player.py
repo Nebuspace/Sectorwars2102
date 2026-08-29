@@ -1,5 +1,6 @@
 from typing import Dict, Any, List
 from uuid import UUID
+import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -16,6 +17,8 @@ from src.services.ship_service import ShipService
 from src.services.bounty_service import BountyService
 from src.services import turn_service
 from src.services.ship_ownership_query import owned_ships_filter
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/player",
@@ -492,6 +495,11 @@ async def repair_player_ship(
     if service_mult != 1.0:
         cost = int(round(cost * service_mult))
 
+    from src.services.profession_service import space_engineer_repair_multiplier_for_station
+    repair_mult = space_engineer_repair_multiplier_for_station(db, locked_player.id, station)
+    if repair_mult != 1.0:
+        cost = int(round(cost / repair_mult))
+
     if locked_player.credits < cost:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -726,6 +734,30 @@ async def move_to_sector(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=result["message"]
         )
+
+    # LEG-338: durable + Redis activity for sector_move / warp
+    try:
+        from src.services.player_activity_service import (
+            ActivityEventType,
+            get_player_activity_service,
+        )
+        event_type = (
+            ActivityEventType.WARP
+            if result.get("travel_mode") == "warp"
+            else ActivityEventType.SECTOR_MOVE
+        )
+        activity_service = await get_player_activity_service()
+        await activity_service.track_activity(
+            str(player.id),
+            event_type,
+            {
+                "sector_id": sector_id,
+                "travel_mode": result.get("travel_mode", "sector"),
+            },
+            db=db,
+        )
+    except Exception:
+        logger.warning("activity tracking failed (move)", exc_info=True)
 
     # Return the movement response with turn cost and remaining turns.
     # Forward the encounter/tunnel events the MovementService attached to its

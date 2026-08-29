@@ -20,6 +20,8 @@ from src.models.player import Player
 from src.models.port_ownership import StationGovernanceVote
 from src.models.station import Station
 from src.services.port_ownership_service import (
+    MAX_TAX_RATE,
+    MIN_TAX_RATE,
     PortOwnershipError,
     SYNDICATE_MODE_KEY,
     _ensure_primary_share,
@@ -95,6 +97,56 @@ def _capex_from_proposed(proposed_value: Any) -> Optional[int]:
         if isinstance(raw, (int, float)) and not isinstance(raw, bool):
             return int(raw)
     return None
+
+
+def _tariff_rate_from_proposed(proposed_value: Any) -> Optional[float]:
+    """Extract a station trade-tariff fraction from a tariff motion payload."""
+    if isinstance(proposed_value, (int, float)) and not isinstance(proposed_value, bool):
+        return float(proposed_value)
+    if isinstance(proposed_value, dict):
+        raw = proposed_value.get("tax_rate", proposed_value.get("value"))
+        if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+            return float(raw)
+    return None
+
+
+def _clamp_tariff_rate(rate: float) -> float:
+    return max(MIN_TAX_RATE, min(float(rate), MAX_TAX_RATE))
+
+
+def _apply_passed_tariff(
+    db: Session, station: Station, row: StationGovernanceVote
+) -> None:
+    """Syndicate tariff motion: persist the passed rate on the station."""
+    rate = _tariff_rate_from_proposed(row.proposed_value)
+    if rate is None:
+        logger.warning(
+            "Passed tariff vote %s has no parseable rate in proposed_value",
+            row.id,
+        )
+        return
+    clamped = _clamp_tariff_rate(rate)
+    locked = _lock_station(db, station.id)
+    locked.tax_rate = clamped
+    db.flush()
+    logger.info(
+        "Governance tariff applied station=%s rate=%.4f vote=%s",
+        locked.id,
+        clamped,
+        row.id,
+    )
+
+
+def _apply_passed_vote(
+    db: Session,
+    station: Station,
+    row: StationGovernanceVote,
+    outcome: Dict[str, Any],
+) -> None:
+    if not outcome.get("passed"):
+        return
+    if row.vote_type == "tariff":
+        _apply_passed_tariff(db, station, row)
 
 
 def counted_stake(pct: float, inactive: bool) -> float:
@@ -254,7 +306,12 @@ def _ballot_map(ballots: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     return out
 
 
-def _maybe_resolve_row(row: StationGovernanceVote, now: datetime) -> None:
+def _maybe_resolve_row(
+    db: Session,
+    station: Station,
+    row: StationGovernanceVote,
+    now: datetime,
+) -> None:
     if row.status != "open":
         return
     closed = now >= row.window_ends_at
@@ -270,6 +327,7 @@ def _maybe_resolve_row(row: StationGovernanceVote, now: datetime) -> None:
     row.status = outcome["status"]
     row.outcome = outcome
     flag_modified(row, "outcome")
+    _apply_passed_vote(db, station, row, outcome)
 
 
 def cast_governance_vote(
@@ -318,7 +376,7 @@ def cast_governance_vote(
         .all()
     )
     for row in open_rows:
-        _maybe_resolve_row(row, now)
+        _maybe_resolve_row(db, station, row, now)
 
     row = (
         db.query(StationGovernanceVote)
@@ -356,7 +414,7 @@ def cast_governance_vote(
         )
         db.add(row)
         db.flush()
-        _maybe_resolve_row(row, now)
+        _maybe_resolve_row(db, station, row, now)
         logger.info(
             "Governance vote opened station=%s type=%s by %s",
             station.id, vote_type, pid,
@@ -383,7 +441,7 @@ def cast_governance_vote(
     row.ballots = list(by_p.values())
     flag_modified(row, "ballots")
     db.flush()
-    _maybe_resolve_row(row, now)
+    _maybe_resolve_row(db, station, row, now)
     return _vote_payload(row)
 
 
