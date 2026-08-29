@@ -375,6 +375,9 @@ MIN_BUYER_TIER = "Heroic"
 # ---------------------------------------------------------------------------
 MILITARY_DECLARATION_HOURS = 24.0     # canon galaxy-wide notice before siege
 MILITARY_PROTECTION_HOURS = 7 * 24.0  # canon post-capture immunity window
+MILITARY_PRODUCTIVITY_HOURS = 3 * 24.0  # canon post-capture -50% productivity
+PRODUCTIVITY_UNTIL_KEY = "productivity_until"
+PRODUCTIVITY_MULT = 0.5  # invent=0 half-rate during disruption window
 MILITARY_REPUTATION_PENALTY = -300    # canon "severe" penalty with prior faction
 # Per-attempt garrison hardening: each prior military attempt by the same
 # challenger on the same station within 90 days raises effective defender
@@ -2691,6 +2694,77 @@ def _ledger(station: Station) -> Dict[str, Any]:
     return _ownership(station)
 
 
+def _parse_ownership_deadline(raw: Any) -> Optional[datetime]:
+    if raw is None:
+        return None
+    if isinstance(raw, datetime):
+        return _aware(raw)
+    if isinstance(raw, str):
+        try:
+            return _aware(datetime.fromisoformat(raw.replace("Z", "+00:00")))
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
+def _ownership_dict(station: Station) -> dict:
+    """Safe ownership JSONB read for ORM rows and lightweight test stand-ins."""
+    return getattr(station, "ownership", None) or {}
+
+
+def assert_not_post_capture_protected(
+    station: Station, now: Optional[datetime] = None
+) -> None:
+    """Canon port-ownership.md:100-104 — 7-day post-capture immunity."""
+    now = now or datetime.now(UTC)
+    until = _parse_ownership_deadline(_ownership_dict(station).get("protected_until"))
+    if until is not None and now < until:
+        raise PortOwnershipError(
+            403,
+            "Station is under post-capture protection until "
+            f"{until.isoformat()}; counter-takeover is blocked",
+        )
+
+
+def station_productivity_multiplier(
+    station: Station, now: Optional[datetime] = None
+) -> float:
+    """Canon post-capture -50% productivity while productivity_until is future."""
+    now = now or datetime.now(UTC)
+    until = _parse_ownership_deadline(
+        _ownership_dict(station).get(PRODUCTIVITY_UNTIL_KEY)
+    )
+    if until is not None and now < until:
+        return float(PRODUCTIVITY_MULT)
+    return 1.0
+
+
+def assert_upgrades_allowed_during_solvency(station: Station) -> None:
+    """Canon port-ownership.md:391-395 — insolvency stops all upgrades."""
+    months = int(_ownership_dict(station).get("insolvency_months", 0) or 0)
+    if months >= 1:
+        raise PortOwnershipError(
+            400,
+            "Station is insolvent; upgrades and construction spend are blocked "
+            f"until operating costs are covered (insolvency_months={months})",
+        )
+
+
+def _revert_service_charge_to_baseline(station: Station) -> bool:
+    """Force service_charge_multiplier to 1.0 (baseline). Returns True if changed."""
+    modifiers = _price_modifiers(station)
+    cur = modifiers.get(SERVICE_CHARGE_KEY)
+    try:
+        cur_f = float(cur) if cur is not None else 1.0
+    except (TypeError, ValueError):
+        cur_f = 1.0
+    if abs(cur_f - 1.0) < 1e-9:
+        return False
+    modifiers[SERVICE_CHARGE_KEY] = 1.0
+    flag_modified(station, "price_modifiers")
+    return True
+
+
 def _bucket(station: Station, key: str) -> int:
     return int((station.ownership or {}).get(key, 0) or 0)
 
@@ -2852,8 +2926,16 @@ def accrue_operating_costs(
     ).isoformat()
 
     months_elapsed = elapsed_days // DAYS_PER_MONTH
+    prior_shortfall = shortfall_months
     if not covered:
         shortfall_months += max(1, months_elapsed)
+        # Canon: during insolvency, revert service charges to baseline (1.0x).
+        if prior_shortfall == 0 and shortfall_months >= 1:
+            if _revert_service_charge_to_baseline(station):
+                logger.info(
+                    "Station %s service charge reverted to baseline on insolvency",
+                    station.id,
+                )
     elif months_elapsed >= 1:
         # A covered month resets the consecutive-shortfall streak.
         shortfall_months = 0
@@ -3182,6 +3264,7 @@ def launch_campaign(
         )
     if station.owner_id == challenger.id:
         raise PortOwnershipError(400, "You cannot launch a takeover of your own station")
+    assert_not_post_capture_protected(station, now)
     active = (
         db.query(TakeoverCampaign)
         .filter(
@@ -3691,6 +3774,7 @@ def declare_military_takeover(
         )
     if station.owner_id == challenger.id:
         raise PortOwnershipError(400, "You cannot besiege your own station")
+    assert_not_post_capture_protected(station, now)
     if _defender_strength(station) < 0:
         raise PortOwnershipError(
             400, "This station holds a Military Contract and is immune to military takeover"
@@ -3760,6 +3844,7 @@ def siege_military_takeover(
     visible on the station)."""
     now = now or datetime.now(UTC)
     station = _lock_station(db, station.id)
+    assert_not_post_capture_protected(station, now)
     campaign = (
         db.query(TakeoverCampaign)
         .filter(
@@ -3911,6 +3996,9 @@ def occupy_military_takeover(
     ledger["protected_until"] = game_time.scaled_deadline(
         MILITARY_PROTECTION_HOURS, start=now
     ).isoformat()
+    ledger[PRODUCTIVITY_UNTIL_KEY] = game_time.scaled_deadline(
+        MILITARY_PRODUCTIVITY_HOURS, start=now
+    ).isoformat()
     ledger["captured_at"] = now.isoformat()
     flag_modified(station, "ownership")
 
@@ -3935,6 +4023,7 @@ def occupy_military_takeover(
         "prior_owner_id": str(prior_owner_id),
         "treasury_forfeited": forfeited,
         "protected_until": ledger["protected_until"],
+        "productivity_until": ledger.get(PRODUCTIVITY_UNTIL_KEY),
     }
 
 
