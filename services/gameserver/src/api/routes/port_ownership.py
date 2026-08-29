@@ -134,6 +134,17 @@ class InjectTreasuryRequest(BaseModel):
     amount: int = Field(..., ge=1)
 
 
+class BindTeamRequest(BaseModel):
+    """Soft-ORDER LEG-2033: bind solo station to an existing Team."""
+    team_id: str
+    member_share_pct: int = Field(0, ge=0, le=100)
+
+
+class TeamMemberShareRequest(BaseModel):
+    """Soft-ORDER LEG-2033: LEADER|OFFICER set member revenue-share pct."""
+    member_share_pct: int = Field(..., ge=0, le=100)
+
+
 class CounterRequest(BaseModel):
     action: Literal["accept", "match", "dispute"]
 
@@ -671,6 +682,83 @@ async def decline_share_invite(
     }
 
 
+
+@router.get("/stations/{station_id}/team")
+async def get_team_ownership_status(
+    station_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player),
+):
+    """Team-owned station status (mode / team_id / member_share_pct)."""
+    station = _get_station_or_404(db, station_id)
+    try:
+        result = port_ownership_service.get_team_ownership_status(db, station)
+        db.commit()
+    except PortOwnershipError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return result
+
+
+@router.post("/stations/{station_id}/team/bind")
+async def bind_station_to_team(
+    station_id: str,
+    request: BindTeamRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player),
+):
+    """LEADER binds a solo-owned station to their Team (invent=0 Soft-ORDER)."""
+    station = _get_station_or_404(db, station_id)
+    try:
+        team_id = _uuid.UUID(request.team_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="team_id must be a UUID")
+    try:
+        result = port_ownership_service.bind_station_to_team(
+            db,
+            station,
+            current_player,
+            team_id,
+            request.member_share_pct,
+        )
+        db.commit()
+    except PortOwnershipError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return {
+        "message": f"Station {station.name} bound to team {request.team_id}",
+        **result,
+    }
+
+
+@router.post("/stations/{station_id}/team/member-share")
+async def set_team_member_share(
+    station_id: str,
+    request: TeamMemberShareRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player),
+):
+    """LEADER|OFFICER sets member revenue-share percent on a team-owned station."""
+    station = _get_station_or_404(db, station_id)
+    try:
+        result = port_ownership_service.set_team_member_share_pct(
+            db, station, current_player, request.member_share_pct
+        )
+        db.commit()
+    except PortOwnershipError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return {
+        "message": (
+            f"Team member share at {station.name} set to "
+            f"{request.member_share_pct}%"
+        ),
+        **result,
+    }
+
 @router.post("/stations/{station_id}/service-charge")
 async def set_service_charge(
     station_id: str,
@@ -762,9 +850,9 @@ async def withdraw_treasury(
     current_user: User = Depends(get_current_user),
     current_player: Player = Depends(get_current_player),
 ):
-    """Withdraw credits from the station treasury (primary owner initiates;
-    syndicate mode distributes per share). Canon caps every withdrawal at
-    90% of the current balance so a 10% operating cushion always remains."""
+    """Withdraw credits from the station treasury (solo/syndicate primary
+    owner, or team LEADER|OFFICER with member-share split). Canon caps every
+    withdrawal at 90% of the current balance so a 10% operating cushion remains."""
     station = _get_station_or_404(db, station_id)
     try:
         result = port_ownership_service.withdraw_treasury(
