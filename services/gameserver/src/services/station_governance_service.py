@@ -140,7 +140,6 @@ def _apply_passed_tariff(
     )
 
 
-<<<<<<< HEAD
 def _apply_passed_sale(
     db: Session,
     station: Station,
@@ -156,7 +155,8 @@ def _apply_passed_sale(
             row.id,
             listing.id,
         )
-=======
+
+
 def _withdrawal_schedule_from_proposed(proposed_value: Any) -> Optional[str]:
     """Parse daily|weekly|monthly from a withdrawal motion payload (LEG-2014)."""
     if isinstance(proposed_value, str):
@@ -205,7 +205,6 @@ def _apply_passed_withdrawal(
         schedule,
         row.id,
     )
->>>>>>> 66cca5afb (feat(gameserver): withdrawal-schedule vote + lazy sweep (LEG-2014))
 
 
 def _apply_passed_vote(
@@ -221,15 +220,12 @@ def _apply_passed_vote(
         return  # idempotent
     if row.vote_type == "tariff":
         _apply_passed_tariff(db, station, row)
-<<<<<<< HEAD
     elif row.vote_type == "sale":
         _apply_passed_sale(db, station, row, now=now)
-=======
     elif row.vote_type == "withdrawal":
         _apply_passed_withdrawal(
             db, station, row, now or datetime.now(UTC)
         )
->>>>>>> 66cca5afb (feat(gameserver): withdrawal-schedule vote + lazy sweep (LEG-2014))
 
 
 def counted_stake(pct: float, inactive: bool) -> float:
