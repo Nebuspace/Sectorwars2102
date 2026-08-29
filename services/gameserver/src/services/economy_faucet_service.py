@@ -210,16 +210,56 @@ def daily_stipend_amount(player) -> int:
     here because the caller already holds the row and the relationship would
     lazy-load on the same session.
 
+    When the player has ``team_id``, eligibility/level per faction uses
+    ``resolve_effective_faction_standing_value`` → FactionService level
+    thresholds (Soft-ORDER #1990) — PER_FACTION_DAILY_BY_LEVEL +
+    GLOBAL_DAILY_STIPEND_CAP magnitudes stay invent=0 unchanged.
+
     Pure of MUTATION (no credit change, no anchor write); does a READ only.
     Returns 0 when the player has no good-standing faction (the common new-player
     case)."""
     reps = _good_standing_reputations(player)
+    session = object_session(player)
+    team_id = getattr(player, "team_id", None)
 
     total = 0
     for rep in reps:
-        level = getattr(rep, "current_level", None)
-        # numeric_level: NEUTRAL=0, RECOGNIZED=+1 … EXALTED=+8 / negatives < 0.
-        numeric = _reputation_numeric_level(rep)
+        level = None
+        numeric = None
+        # Team standing for faction *interaction* economics when teamed.
+        if (
+            team_id is not None
+            and session is not None
+            and getattr(rep, "faction_id", None) is not None
+        ):
+            try:
+                from src.services.faction_service import (
+                    FactionService,
+                    resolve_effective_faction_standing_value,
+                )
+
+                value, _source = resolve_effective_faction_standing_value(
+                    session,
+                    player.id,
+                    rep.faction_id,
+                    team_id=team_id,
+                )
+                level = FactionService(session)._calculate_reputation_level(value)
+                numeric = _reputation_level_ordinal(level)
+            except Exception:
+                logger.exception(
+                    "daily-stipend: team standing resolve failed for player %s "
+                    "faction %s; falling back to personal Reputation row",
+                    getattr(player, "id", "?"),
+                    getattr(rep, "faction_id", "?"),
+                )
+                level = getattr(rep, "current_level", None)
+                numeric = _reputation_numeric_level(rep)
+        else:
+            level = getattr(rep, "current_level", None)
+            # numeric_level: NEUTRAL=0, RECOGNIZED=+1 … EXALTED=+8 / negatives < 0.
+            numeric = _reputation_numeric_level(rep)
+
         if numeric is None or numeric < _GOOD_STANDING_MIN_NUMERIC_LEVEL:
             continue
         level_name = getattr(level, "value", None) or getattr(level, "name", None)
@@ -228,6 +268,36 @@ def daily_stipend_amount(player) -> int:
         total += PER_FACTION_DAILY_BY_LEVEL.get(level_name, 0)
 
     return min(total, GLOBAL_DAILY_STIPEND_CAP)
+
+
+def _reputation_level_ordinal(level) -> int | None:
+    """Ordinal standing for a ReputationLevel: NEUTRAL=0, RECOGNIZED=+1 …
+    EXALTED=+8, negatives < 0. Same map as Reputation.numeric_level."""
+    from src.models.reputation import ReputationLevel
+
+    level_map = {
+        ReputationLevel.PUBLIC_ENEMY: -8,
+        ReputationLevel.CRIMINAL: -7,
+        ReputationLevel.OUTLAW: -6,
+        ReputationLevel.PIRATE: -5,
+        ReputationLevel.SMUGGLER: -4,
+        ReputationLevel.UNTRUSTWORTHY: -3,
+        ReputationLevel.SUSPICIOUS: -2,
+        ReputationLevel.QUESTIONABLE: -1,
+        ReputationLevel.NEUTRAL: 0,
+        ReputationLevel.RECOGNIZED: 1,
+        ReputationLevel.ACKNOWLEDGED: 2,
+        ReputationLevel.TRUSTED: 3,
+        ReputationLevel.RESPECTED: 4,
+        ReputationLevel.VALUED: 5,
+        ReputationLevel.HONORED: 6,
+        ReputationLevel.REVERED: 7,
+        ReputationLevel.EXALTED: 8,
+    }
+    try:
+        return level_map[level]
+    except Exception:
+        return None
 
 
 def _reputation_numeric_level(rep) -> int | None:
