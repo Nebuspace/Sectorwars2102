@@ -310,6 +310,7 @@ describe('BountyAdminPanel', () => {
   });
 
   it('surfaces formatAdminApiError on faction-bounty POST 403 (LEG-2880)', async () => {
+    // Amount = 1000 posts in one click (no confirm gate); mirrors success-path harness.
     vi.mocked(api.post).mockRejectedValue(axiosError(403));
 
     render(<BountyAdminPanel />);
@@ -317,19 +318,16 @@ describe('BountyAdminPanel', () => {
     fireEvent.change(screen.getByLabelText('NPC UUID'), {
       target: { value: 'npc-1' },
     });
-    fireEvent.change(screen.getByLabelText('Amount (≥ 1000)'), {
-      target: { value: '2000' },
-    });
     fireEvent.change(screen.getByLabelText('Reason'), {
-      target: { value: 'Pirate captain' },
+      target: { value: 'Minimum stake' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Place faction bounty' }));
 
     await waitFor(() => {
       expect(api.post).toHaveBeenCalledWith('/api/v1/admin/npcs/npc-1/faction-bounty', {
         faction_type: 'Federation',
-        amount: 2000,
-        reason: 'Pirate captain',
+        amount: 1000,
+        reason: 'Minimum stake',
       });
     });
     expect(String(toastError.mock.calls[0][0])).toMatch(/ECONOMY_INTERVENE|Access denied/i);
@@ -344,19 +342,16 @@ describe('BountyAdminPanel', () => {
     fireEvent.change(screen.getByLabelText('NPC UUID'), {
       target: { value: 'npc-1' },
     });
-    fireEvent.change(screen.getByLabelText('Amount (≥ 1000)'), {
-      target: { value: '2000' },
-    });
     fireEvent.change(screen.getByLabelText('Reason'), {
-      target: { value: 'Pirate captain' },
+      target: { value: 'Minimum stake' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Place faction bounty' }));
 
     await waitFor(() => {
       expect(api.post).toHaveBeenCalledWith('/api/v1/admin/npcs/npc-1/faction-bounty', {
         faction_type: 'Federation',
-        amount: 2000,
-        reason: 'Pirate captain',
+        amount: 1000,
+        reason: 'Minimum stake',
       });
     });
     expect(toastError).toHaveBeenCalledWith(
