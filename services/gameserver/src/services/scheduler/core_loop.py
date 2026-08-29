@@ -34,6 +34,7 @@ from src.services.scheduler._common import (
     ECONOMY_SNAPSHOT_CHECK_SECONDS,
     IDLE_INCOME_CHECK_SECONDS,
     DAILY_STIPEND_CHECK_SECONDS,
+    SFI_DECAY_CHECK_SECONDS,
     BOUNTY_ACCRUAL_CHECK_SECONDS,
     STOLEN_SHIP_REP_PENALTY_CHECK_SECONDS,
     TRANSFER_CLAIM_AUTOCOMPLETE_CHECK_SECONDS,
@@ -59,6 +60,8 @@ from src.services.scheduler.presence_helpers import (
     _repair_orphan_schedules_sync,
     _seed_trader_rosters_sync,
     _bulk_fill_traders_sync,
+    _seed_researcher_rosters_sync,
+    _bulk_fill_researchers_sync,
     _assign_trader_notoriety_sync,
     _assign_trader_missions_sync,
     _relocate_stranded_npcs_sync,
@@ -96,6 +99,9 @@ from src.services.scheduler.economy_sweeps import (
     _run_price_alert_sweep_sync,
     _run_price_history_sweep_sync,
 )
+from src.services.scheduler.faction_influence_sweeps import (
+    _run_sector_faction_influence_decay_sync,
+)
 from src.services.scheduler.reputation_team_sweeps import (
     _run_weekly_decay_sync,
     _run_sustained_reputation_drip_sweep_sync,
@@ -110,7 +116,10 @@ from src.services.scheduler.contract_sweeps import (
     _run_contract_expire_sweep_sync,
 )
 from src.services.scheduler.beacon_sweeps import _run_beacon_expire_sweep_sync
-from src.services.scheduler.mining_sweeps import _run_mining_harvest_resolve_sync
+from src.services.scheduler.mining_sweeps import (
+    _run_mining_harvest_resolve_sync,
+    _run_mining_license_expiry_warn_sync,
+)
 from src.services.scheduler.ship_registry_sweeps import _run_abandonment_archive_sweep_sync
 
 logger = logging.getLogger(__name__)
@@ -212,6 +221,22 @@ async def npc_scheduler_loop() -> None:
             logger.info("NPC scheduler: bulk-spawned %d trader(s) to target", filled)
     except Exception:
         logger.exception("NPC scheduler: trader bulk-fill failed")
+    # LEG-108: seed + bulk-fill RESEARCHER (nebula_surveyor) so the Rogue
+    # Scientist quantum-drop row is live — same boot shape as traders.
+    try:
+        seeded_r = await asyncio.to_thread(_seed_researcher_rosters_sync)
+        if seeded_r:
+            logger.info("NPC scheduler: seeded %d researcher roster(s)", seeded_r)
+    except Exception:
+        logger.exception("NPC scheduler: researcher roster seeding failed")
+    try:
+        filled_r = await asyncio.to_thread(_bulk_fill_researchers_sync)
+        if filled_r:
+            logger.info(
+                "NPC scheduler: bulk-spawned %d researcher(s) to target", filled_r
+            )
+    except Exception:
+        logger.exception("NPC scheduler: researcher bulk-fill failed")
     # Backfill notoriety onto traders that predate the column.
     try:
         scored = await asyncio.to_thread(_assign_trader_notoriety_sync)
@@ -312,6 +337,26 @@ async def _npc_scheduler_main_loop() -> None:
             except Exception:
                 logger.exception(
                     "NPC scheduler: mining harvest resolve sweep crashed "
+                    "(loop continues)"
+                )
+
+        if elapsed % MINING_HARVEST_SWEEP_SECONDS == 0:
+            try:
+                warned, expiry_events = await asyncio.to_thread(
+                    _run_mining_license_expiry_warn_sync
+                )
+                if warned:
+                    logger.info(
+                        "NPC scheduler: sent %d mining license expiry warning(s)",
+                        warned,
+                    )
+                if expiry_events:
+                    await _broadcast_events(expiry_events)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "NPC scheduler: mining license expiry warn sweep crashed "
                     "(loop continues)"
                 )
 
@@ -573,6 +618,24 @@ async def _npc_scheduler_main_loop() -> None:
                 raise
             except Exception:
                 logger.exception("NPC scheduler: daily rep-stipend faucet crashed (loop continues)")
+
+        # SectorFactionInfluence idle decay (LEG-INI-05 / LEG-65) — −0.5 pp per
+        # idle UTC day after 3d idle. Own session, own advisory lock, once-per-
+        # UTC-day Galaxy.state anchor.
+        if elapsed % SFI_DECAY_CHECK_SECONDS == 0:
+            try:
+                decayed = await asyncio.to_thread(
+                    _run_sector_faction_influence_decay_sync
+                )
+                if decayed.get("rows"):
+                    logger.info(
+                        "NPC scheduler: SFI idle decay — updated %d/%d row(s)",
+                        decayed.get("rows", 0), decayed.get("scanned", 0),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("NPC scheduler: SFI idle decay crashed (loop continues)")
 
         # System-bounty pot accrual (WO-BN) — grow each criminal's STORED system-
         # bounty pot once per canonical day (base rate scaled by negative-rep

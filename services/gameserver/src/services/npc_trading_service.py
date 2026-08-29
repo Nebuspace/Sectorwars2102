@@ -65,6 +65,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from src.models.docking import DockingSlipOccupancy
 from src.models.market_transaction import MarketPrice, MarketTransaction, TransactionType
 from src.models.npc_character import NPCCharacter, NPCLifecycleStage
+from src.models.region import Region
 from src.models.sector import Sector
 from src.models.ship import Ship
 from src.models.station import Station, StationType
@@ -94,6 +95,9 @@ SURPLUS_RATIO = 0.5          # sells + stock above this = surplus seller
 DEFICIT_RATIO = 0.5          # buys + stock below this = deficit buyer
 DEMAND_SCORE_MIN = 0.0
 DEMAND_SCORE_MAX = 2.0
+# port-ownership.md § Tariff impact — NPC traders apply the same elasticity.
+TARIFF_DEMAND_FLOOR = 0.10
+TARIFF_ELASTICITY_PER_PCT = 0.05
 
 # --- Notoriety drift (npc-traders.md § Notoriety) --------------------------
 # Canon: "Notoriety drifts dynamically: a trader caught smuggling rises toward
@@ -178,10 +182,76 @@ NPC_HOSTILITY_CAP = 1000.0               # NO-CANON: hard ceiling on accumulated
 # be the ONLY real release trigger, leaving the ceiling a dead safety net.
 TRADER_SLIP_TENURE_CEILING_HOURS = 2.0   # NO-CANON: conservative anti-camp bound
 
+# --- Visible supply-delivery restock (npc-traders.md § Restock by delivery) --
+# Canon: when a station runs low, a supply trader spawns in an empty sector
+# carrying goods and delivers them to sell — not invisible regen. Thresholds
+# and cargo fractions are gameserver-tunable (npc-traders.md § Tunables), not
+# player-facing canon. Cargo on this spawn is the documented "one step further
+# back" haul abstraction (visible interceptable product), not a parallel
+# invisible restock path.
+SUPPLY_DELIVERY_MISSION = "supply_delivery"
+SUPPLY_DELIVERY_DEMAND_THRESHOLD = 1.2   # NO-CANON: npc_restock_demand trigger
+SUPPLY_DELIVERY_MAX_CARGO_FRACTION = 0.25  # NO-CANON: fraction of hull capacity
+SUPPLY_DELIVERY_MAX_PER_SCAN = 3         # NO-CANON: cap dispatches per Loop A pass
+SUPPLY_DELIVERY_SCHEDULE_MISSION_KEY = "mission"
+SUPPLY_DELIVERY_SCHEDULE_TARGET_KEY = "supply_delivery"
+
 
 # ---------------------------------------------------------------------------
 # Route generation
 # ---------------------------------------------------------------------------
+
+def compute_tariff_demand_factor(tax_rate: Optional[float]) -> float:
+    """Canon tariff elasticity for NPC (and player) traffic weighting.
+
+    port-ownership.md: demand_factor = max(min(1.0 - 0.05 × tariff_pct, 1.0), 0.10)
+    where tariff_pct = tax_rate × 100 (Station.tax_rate is a 0–1 fraction).
+    Unowned / unset tax_rate is treated as 0% → demand_factor 1.0."""
+    rate = float(tax_rate or 0.0)
+    tariff_pct = rate * 100.0
+    raw = 1.0 - TARIFF_ELASTICITY_PER_PCT * tariff_pct
+    return max(min(raw, 1.0), TARIFF_DEMAND_FLOOR)
+
+
+REGION_TAX_RATE_MIN = 0.0
+REGION_TAX_RATE_MAX = 0.25
+
+
+def clamp_region_tax_rate(region_tax_rate: Optional[float]) -> float:
+    """Clamp region.tax_rate to canon [0.0, 0.25] (port-ownership.md AU3-10)."""
+    rate = float(region_tax_rate or 0.0)
+    return max(REGION_TAX_RATE_MIN, min(REGION_TAX_RATE_MAX, rate))
+
+
+def compose_region_tax_on_traffic(
+    traffic_with_rep: float,
+    region_tax_rate: Optional[float],
+) -> float:
+    """Apply regional tax to traffic weight (port-ownership.md:190).
+
+    traffic_final = traffic_with_rep × (1 - region.tax_rate)."""
+    if traffic_with_rep <= 0:
+        return 0.0
+    rate = clamp_region_tax_rate(region_tax_rate)
+    return traffic_with_rep * (1.0 - rate)
+
+
+def compute_npc_route_traffic_weight(
+    station_tax_rate: Optional[float],
+    region_tax_rate: Optional[float],
+) -> float:
+    """NPC route pick weight: station tariff elasticity × regional tax compose."""
+    demand = compute_tariff_demand_factor(station_tax_rate)
+    return compose_region_tax_on_traffic(demand, region_tax_rate)
+
+
+def _region_tax_rate(db: Session, region_id) -> float:
+    """Read region.tax_rate once per route generation (missing → 0.0)."""
+    region = db.query(Region).filter(Region.id == region_id).first()
+    if region is None:
+        return 0.0
+    return clamp_region_tax_rate(float(region.tax_rate or 0.0))
+
 
 def _station_profile(station: Station) -> Dict[str, List[str]]:
     """Commodities this station can supply (sells, surplus stock) and
@@ -225,6 +295,8 @@ def generate_trade_route(
     if not region_sector_ids:
         return None
 
+    region_tax_rate = _region_tax_rate(db, region_id)
+
     stations = [
         s for s in db.query(Station).all()
         if s.sector_id in region_sector_ids and (s.commodities or {})
@@ -253,7 +325,14 @@ def generate_trade_route(
         return None
 
     route: List[Dict[str, Any]] = []
-    current = random.choice(candidates)
+    current = random.choices(
+        candidates,
+        weights=[
+            compute_npc_route_traffic_weight(s.tax_rate, region_tax_rate)
+            for s in candidates
+        ],
+        k=1,
+    )[0]
     visited = {current.id}
 
     while len(route) < ROUTE_MAX_STOPS:
@@ -273,7 +352,14 @@ def generate_trade_route(
                 options.append((nxt, goods))
         if not options:
             break
-        best, best_goods = random.choice(options)
+        best, best_goods = random.choices(
+            options,
+            weights=[
+                compute_npc_route_traffic_weight(nxt.tax_rate, region_tax_rate)
+                for nxt, _ in options
+            ],
+            k=1,
+        )[0]
         route.append({
             "station_id": str(current.id),
             "sector_id": current.sector_id,
@@ -865,3 +951,363 @@ def release_stale_trader_slips(db: Session) -> int:
     if released:
         db.flush()
     return released
+
+
+# ---------------------------------------------------------------------------
+# Visible supply-delivery (LEG-394 / npc-traders.md § Restock by delivery)
+# ---------------------------------------------------------------------------
+
+def _commodity_stock_ratio(cfg: Dict[str, Any]) -> Optional[float]:
+    capacity = cfg.get("capacity", 0) or 0
+    if capacity <= 0:
+        return None
+    return (cfg.get("quantity", 0) or 0) / capacity
+
+
+def iter_low_stock_deficits(
+    station: Station,
+) -> List[Dict[str, Any]]:
+    """Commodities this station buys that are below the deficit floor or
+    have elevated ``npc_restock_demand``.
+
+    Returns dicts ``{commodity, quantity, capacity, ratio, demand, fill}``
+    where ``fill`` is units needed to reach DEFICIT_RATIO (gameserver-tunable
+    floor shared with route pairing). Empty when the station is not low.
+    """
+    deficits: List[Dict[str, Any]] = []
+    for name, cfg in (station.commodities or {}).items():
+        if not cfg.get("buys"):
+            continue
+        capacity = int(cfg.get("capacity", 0) or 0)
+        if capacity <= 0:
+            continue
+        quantity = int(cfg.get("quantity", 0) or 0)
+        ratio = quantity / capacity
+        demand = float(cfg.get("npc_restock_demand", 1.0) or 1.0)
+        low_stock = ratio <= DEFICIT_RATIO
+        high_demand = demand >= SUPPLY_DELIVERY_DEMAND_THRESHOLD
+        if not (low_stock or high_demand):
+            continue
+        target_qty = int(capacity * DEFICIT_RATIO)
+        fill = max(0, target_qty - quantity)
+        if fill <= 0 and not high_demand:
+            continue
+        if fill <= 0:
+            # Demand-only trigger: deliver a small haul toward the floor.
+            fill = max(1, int(capacity * SUPPLY_DELIVERY_MAX_CARGO_FRACTION))
+        deficits.append({
+            "commodity": name,
+            "quantity": quantity,
+            "capacity": capacity,
+            "ratio": ratio,
+            "demand": demand,
+            "fill": fill,
+        })
+    return deficits
+
+
+def _empty_sectors_in_region(
+    db: Session,
+    region_id,
+    *,
+    exclude_sector_ids: Optional[set] = None,
+) -> List[Sector]:
+    """Sectors in ``region_id`` that have no station (haul spawn points)."""
+    exclude_sector_ids = exclude_sector_ids or set()
+    station_sector_ids = {
+        row[0]
+        for row in db.query(Station.sector_id).all()
+        if row[0] is not None
+    }
+    sectors = (
+        db.query(Sector)
+        .filter(Sector.region_id == region_id)
+        .all()
+    )
+    return [
+        s for s in sectors
+        if s.sector_id not in station_sector_ids
+        and s.sector_id not in exclude_sector_ids
+    ]
+
+
+def _active_supply_delivery_targets(db: Session) -> set:
+    """Set of (station_id_str, commodity) already in flight."""
+    from src.models.npc_character import NPCArchetype, NPCStatus
+
+    live = (
+        db.query(NPCCharacter)
+        .filter(
+            NPCCharacter.archetype == NPCArchetype.TRADER,
+            NPCCharacter.status == NPCStatus.ON_DUTY,
+        )
+        .all()
+    )
+    targets: set = set()
+    for npc in live:
+        schedule = npc.daily_schedule or {}
+        if schedule.get(SUPPLY_DELIVERY_SCHEDULE_MISSION_KEY) != SUPPLY_DELIVERY_MISSION:
+            continue
+        meta = schedule.get(SUPPLY_DELIVERY_SCHEDULE_TARGET_KEY) or {}
+        station_id = meta.get("station_id")
+        commodity = meta.get("commodity")
+        if station_id and commodity:
+            targets.add((str(station_id), str(commodity)))
+    return targets
+
+
+def build_supply_delivery_schedule(
+    *,
+    station_id: str,
+    sector_id: int,
+    commodity: str,
+    quantity: int,
+) -> Dict[str, Any]:
+    """Minimal sell-only schedule targeting the needy station.
+
+    Shape mirrors ``build_trader_schedule`` so Loop A ``_drive_trade_stop``
+    resolves the stop. Supply haulers only sell — ``buy_here`` stays empty.
+    """
+    stop = {
+        "station_id": station_id,
+        "sector_id": sector_id,
+        "buy_here": [],
+    }
+    # All-day work_station block so a dispatch is actionable on the next
+    # Loop A tick once the hauler reaches the station sector. Minute bounds
+    # are schedule shape (gameserver-tunable), not player-facing canon.
+    days = {
+        "0": [
+            {
+                "start_minute": 0,
+                "end_minute": 1440,
+                "activity": "work_station",
+                "location_type": "station",
+                "location_ref": {
+                    "station_id": station_id,
+                    "sector_id": sector_id,
+                    "stop_index": 0,
+                    "buy_here": [],
+                },
+            }
+        ]
+    }
+    return {
+        SUPPLY_DELIVERY_SCHEDULE_MISSION_KEY: SUPPLY_DELIVERY_MISSION,
+        SUPPLY_DELIVERY_SCHEDULE_TARGET_KEY: {
+            "station_id": station_id,
+            "sector_id": sector_id,
+            "commodity": commodity,
+            "quantity": quantity,
+        },
+        "route_cycle": {"cycle_days": 1, "days": days},
+        "trade_route": [stop],
+    }
+
+
+def dispatch_visible_supply_delivery(
+    db: Session,
+    station: Station,
+    commodity: str,
+    quantity: int,
+    *,
+    spawn_sector: Optional[Sector] = None,
+) -> Optional[Dict[str, Any]]:
+    """Spawn a goods-carrying TRADER in an empty sector bound for ``station``.
+
+    Returns ``{npc_id, ship_id, spawn_sector_id, stop, quantity}`` or None when
+    spawn is impossible (no empty sector / no hull spec / non-positive qty).
+    Does not invent a parallel invisible restock — stock moves only when
+    ``run_trade_stop`` sells the carried cargo at the destination.
+    """
+    from src.models.npc_character import (
+        NPCActivity,
+        NPCArchetype,
+        NPCLifecycleStage,
+        NPCStatus,
+    )
+    from src.models.ship import Ship, ShipSpecification, ShipStatus, ShipType
+    from src.services import npc_movement_service
+    from src.services.npc_spawn_service import TRADER_STARTING_CREDITS, _build_npc_ship
+
+    quantity = int(quantity or 0)
+    if quantity <= 0 or station is None:
+        return None
+
+    region_id = None
+    station_sector = (
+        db.query(Sector).filter(Sector.sector_id == station.sector_id).first()
+    )
+    if station_sector is not None:
+        region_id = station_sector.region_id
+    if region_id is None:
+        return None
+
+    if spawn_sector is None:
+        empties = _empty_sectors_in_region(
+            db, region_id, exclude_sector_ids={station.sector_id},
+        )
+        if not empties:
+            return None
+        spawn_sector = random.choice(empties)
+
+    spec = (
+        db.query(ShipSpecification)
+        .filter(ShipSpecification.type == ShipType.CARGO_HAULER)
+        .first()
+    )
+    if spec is None:
+        spec = (
+            db.query(ShipSpecification)
+            .filter(ShipSpecification.type == ShipType.LIGHT_FREIGHTER)
+            .first()
+        )
+
+    capacity = 100
+    if spec is not None:
+        capacity = int(getattr(spec, "max_cargo", 0) or 0) or 100
+        ship = _build_npc_ship(
+            spec,
+            name=f"Supply Hauler → {station.name}",
+            sector_id=spawn_sector.sector_id,
+        )
+    else:
+        # Sparse test DBs may lack ShipSpecification rows — still allow the
+        # delivery path (hull stats are not the Accept criterion).
+        ship = Ship(
+            name=f"Supply Hauler → {station.name}",
+            type=ShipType.CARGO_HAULER,
+            owner_id=None,
+            is_npc=True,
+            sector_id=spawn_sector.sector_id,
+            base_speed=1.0,
+            current_speed=1.0,
+            turn_cost=1,
+            warp_capable=True,
+            is_active=True,
+            status=ShipStatus.IN_SPACE,
+            maintenance={"condition": 100.0},
+            cargo={"capacity": capacity, "used": 0, "contents": {}},
+            combat={
+                "hull": 100, "max_hull": 100,
+                "shields": 50, "max_shields": 50,
+            },
+            attack_turn_cost=1,
+            genesis_devices=0,
+            max_genesis_devices=0,
+            mines=0,
+            max_mines=0,
+            is_destroyed=False,
+            is_flagship=False,
+            purchase_value=0,
+            current_value=0,
+            upgrades={},
+            equipment_slots={},
+            insurance=None,
+        )
+
+    haul = min(
+        quantity,
+        max(1, int(capacity * SUPPLY_DELIVERY_MAX_CARGO_FRACTION)),
+        capacity,
+    )
+    ship.cargo = {
+        "capacity": capacity,
+        "used": haul,
+        "contents": {commodity: haul},
+    }
+    db.add(ship)
+    db.flush()
+
+    stop = {
+        "station_id": str(station.id),
+        "sector_id": station.sector_id,
+        "buy_here": [],
+    }
+    schedule = build_supply_delivery_schedule(
+        station_id=str(station.id),
+        sector_id=station.sector_id,
+        commodity=commodity,
+        quantity=haul,
+    )
+
+    now = datetime.now(UTC)
+    npc = NPCCharacter(
+        name=f"Supply-{uuid.uuid4().hex[:8]}",
+        title="Supply Runner",
+        faction_code="merchants",
+        archetype=NPCArchetype.TRADER,
+        status=NPCStatus.ON_DUTY,
+        current_sector_id=spawn_sector.sector_id,
+        ship_id=ship.id,
+        home_region_id=region_id,
+        current_activity=NPCActivity.COMMUTE,
+        lifecycle_stage=NPCLifecycleStage.ACTIVE,
+        duty_role=None,
+        daily_schedule=schedule,
+        credits=TRADER_STARTING_CREDITS,
+        notoriety=0,
+        spawned_at=now,
+        last_seen_at=now,
+    )
+    db.add(npc)
+    db.flush()
+
+    npc_movement_service.add_npc_presence(spawn_sector, npc, ship)
+    db.flush()
+
+    logger.info(
+        "supply_delivery: spawned %s with %s×%s for station %s from sector %s",
+        npc.name, haul, commodity, station.name, spawn_sector.sector_id,
+    )
+    return {
+        "npc_id": str(npc.id),
+        "ship_id": str(ship.id),
+        "spawn_sector_id": spawn_sector.sector_id,
+        "stop": stop,
+        "quantity": haul,
+        "commodity": commodity,
+        "station_id": str(station.id),
+    }
+
+
+def scan_and_dispatch_supply_deliveries(
+    db: Session,
+    *,
+    limit: int = SUPPLY_DELIVERY_MAX_PER_SCAN,
+) -> List[Dict[str, Any]]:
+    """Scan stations for low-stock deficits and dispatch visible haulers.
+
+    Idempotent per (station, commodity) while a supply_delivery trader is
+    still ON_DUTY for that target. Called from Loop A — best-effort, never
+    raises into the scheduler.
+    """
+    if limit <= 0:
+        return []
+
+    in_flight = _active_supply_delivery_targets(db)
+    dispatched: List[Dict[str, Any]] = []
+
+    stations = db.query(Station).all()
+    random.shuffle(stations)
+    for station in stations:
+        if len(dispatched) >= limit:
+            break
+        for deficit in iter_low_stock_deficits(station):
+            if len(dispatched) >= limit:
+                break
+            key = (str(station.id), deficit["commodity"])
+            if key in in_flight:
+                continue
+            result = dispatch_visible_supply_delivery(
+                db,
+                station,
+                deficit["commodity"],
+                deficit["fill"],
+            )
+            if result is None:
+                continue
+            in_flight.add(key)
+            dispatched.append(result)
+
+    return dispatched

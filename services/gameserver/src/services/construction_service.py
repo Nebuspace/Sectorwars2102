@@ -363,20 +363,23 @@ def apply_premium_floor(total_cost: int) -> int:
 # ---------------------------------------------------------------------------
 
 def _tradedock_player_rep(db: Session, player_id, station: Station) -> int:
-    """Numeric reputation current_value toward the station's controlling
-    faction; 0 when unaffiliated or no record.  Mirrors _faction_rep_tier
-    but returns current_value (an integer score) instead of the numeric tier.
+    """Effective standing toward the station's controlling faction.
+
+    Uses ``resolve_effective_faction_standing_value`` so TradeDock gates honor
+    team aggregate standing when the player belongs to a team. Returns 0 when
+    the station is unaffiliated or the faction row is missing.
     """
     if not station.faction_affiliation:
         return 0
     faction = db.query(Faction).filter(Faction.name == station.faction_affiliation).first()
     if faction is None:
         return 0
-    rep = db.query(Reputation).filter(
-        Reputation.player_id == player_id,
-        Reputation.faction_id == faction.id,
-    ).first()
-    return rep.current_value if rep is not None else 0
+    from src.services.faction_service import resolve_effective_faction_standing_value
+
+    value, _source = resolve_effective_faction_standing_value(
+        db, player_id, faction.id
+    )
+    return value
 
 
 def tradedock_access(
@@ -1987,3 +1990,123 @@ def status_payload(
         ]
 
     return payload
+
+
+# ---------------------------------------------------------------------------
+# Admin read surface (LEG-40) — reuse advance / status_payload / quote pieces
+# ---------------------------------------------------------------------------
+
+def admin_list_tradedocks(db: Session) -> Dict[str, Any]:
+    """List every station with a non-null ``tradedock_tier`` (A/B)."""
+    rows = (
+        db.query(Station)
+        .filter(Station.tradedock_tier.isnot(None))
+        .order_by(Station.name.asc())
+        .all()
+    )
+    return {
+        "tradedocks": [
+            {
+                "station_id": str(s.id),
+                "name": s.name,
+                "tradedock_tier": s.tradedock_tier,
+                "sector_id": s.sector_id,
+            }
+            for s in rows
+        ]
+    }
+
+
+def admin_station_overview(
+    db: Session, station_id, now: Optional[datetime] = None
+) -> Dict[str, Any]:
+    """Slip pools + queue + active reservations for one TradeDock (lazy-advance).
+
+    Reuses ``quote()`` for the slip/queue picture, then attaches reservation
+    status payloads (ownership-agnostic — admin visibility).
+    """
+    station = db.query(Station).filter(Station.id == station_id).first()
+    if station is None:
+        raise ConstructionError(404, "station not found")
+    q = quote(db, station, now=now)
+    # Drop the heavy per-ship quote catalog for the admin overview.
+    q.pop("quotes", None)
+
+    reservations = (
+        db.query(ConstructionReservation)
+        .filter(ConstructionReservation.station_id == station.id)
+        .order_by(ConstructionReservation.created_at.desc())
+        .all()
+    )
+    active = [r for r in reservations if r.state not in TERMINAL_STATES]
+    queued = [r for r in active if r.state == "queued"]
+    order = _sorted_queue(db, station, queued) if queued else []
+
+    return {
+        **q,
+        "queue": [
+            {
+                "position": i + 1,
+                "reservation_id": str(r.id),
+                "player_id": str(r.player_id),
+                "ship_type": r.ship_type,
+                "priority_bumps_count": r.priority_bumps_count or 0,
+            }
+            for i, r in enumerate(order)
+        ],
+        "reservations": [status_payload(db, r, now=now) for r in active],
+        "reservation_count_active": len(active),
+        "reservation_count_total": len(reservations),
+    }
+
+
+def admin_reservation_detail(
+    db: Session, reservation_id, now: Optional[datetime] = None
+) -> Dict[str, Any]:
+    """Single reservation detail for admin (lazy-advance, no ownership gate)."""
+    reservation = (
+        db.query(ConstructionReservation)
+        .filter(ConstructionReservation.id == reservation_id)
+        .first()
+    )
+    if reservation is None:
+        raise ConstructionError(404, "reservation not found")
+    if reservation.state not in TERMINAL_STATES:
+        advance(db, reservation, now=now)
+    return status_payload(db, reservation, now=now)
+
+
+def admin_force_cancel(
+    db: Session, reservation_id, now: Optional[datetime] = None
+) -> Dict[str, Any]:
+    """Admin force-cancel a construction reservation (LEG-339).
+
+    Loads the reservation without a player ownership gate, then reuses
+    :func:`cancel` so refund math stays identical to the player path
+    (``cancel_refund`` / ADR-0039 — credits refunded, resources never).
+    Idempotent safety is cancel()'s: a second call on a terminal state
+    raises ``ConstructionError(400, ...)``.
+    """
+    reservation = (
+        db.query(ConstructionReservation)
+        .filter(ConstructionReservation.id == reservation_id)
+        .first()
+    )
+    if reservation is None:
+        raise ConstructionError(404, "reservation not found")
+
+    player = (
+        db.query(Player)
+        .filter(Player.id == reservation.player_id)
+        .first()
+    )
+    if player is None:
+        raise ConstructionError(404, "Player not found")
+
+    result = cancel(db, reservation, player, now=now)
+    return {
+        **result,
+        "reservation_id": str(reservation.id),
+        "player_id": str(player.id),
+        "state": reservation.state,
+    }

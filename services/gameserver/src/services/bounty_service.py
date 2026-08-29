@@ -193,21 +193,26 @@ def place_faction_bounty(
 
 
 def _collector_passes_faction_gate(db: Session, collector: Player, faction_type: FactionType) -> bool:
-    """True iff the collector's reputation with the issuing faction is at
-    least FACTION_BOUNTY_GATE_LEVEL. Mirrors contraband_service._passes_rep_gate:
-    a missing Faction row or missing Reputation row both read as below-gate."""
+    """True iff the collector's effective standing with the issuing faction is at
+    least FACTION_BOUNTY_GATE_LEVEL.
+
+    Uses ``resolve_effective_faction_standing_value`` (team aggregate when the
+    collector belongs to a team) — same resolver as docking reputation gates.
+    A missing Faction row reads as below-gate."""
+    from src.services.faction_service import (
+        FactionService,
+        resolve_effective_faction_standing_value,
+    )
+
     faction = db.query(Faction).filter(Faction.faction_type == faction_type).first()
     if faction is None:
         return False
-    reputation = (
-        db.query(Reputation)
-        .filter(Reputation.player_id == collector.id, Reputation.faction_id == faction.id)
-        .first()
+    value, _source = resolve_effective_faction_standing_value(
+        db, collector.id, faction.id
     )
-    if reputation is None:
-        return False
+    level = FactionService(db)._calculate_reputation_level(value)
     return (
-        _REPUTATION_LEVEL_RANK.get(reputation.current_level, -99)
+        _REPUTATION_LEVEL_RANK.get(level, -99)
         >= _REPUTATION_LEVEL_RANK[FACTION_BOUNTY_GATE_LEVEL]
     )
 
@@ -1058,9 +1063,9 @@ class BountyService:
             # regenerating a pot for a colluding "hunter" to farm forever.
             self._restore_target_rep_after_system_payout(target)
 
-        total = total_player + total_system
+        total_raw = total_player + total_system
 
-        if total == 0:
+        if total_raw == 0:
             # No payout. Under the stored-pot model this is normally the
             # "no bounty on this head" case (had_bounty False — pot 0 and no
             # player-placed entries). The had_bounty-True-but-total-0 branch is
@@ -1090,6 +1095,11 @@ class BountyService:
                 "total_collected": 0,
                 "new_credits": collector.credits,
             }
+
+        # Lifecycle balancing lever — global faucet throttle (in-process).
+        from src.services.economy_balancing_levers import apply_bounty_payout_ratio
+
+        total = apply_bounty_payout_ratio(total_raw)
 
         # Award credits
         collector.credits += total
@@ -1257,7 +1267,10 @@ class BountyService:
             # bounties, so clear it now that the designated member has claimed it.
             self._set_bounties(target, [])
 
-        total = system_paid + player_paid
+        total_raw = system_paid + player_paid
+        from src.services.economy_balancing_levers import apply_bounty_payout_ratio
+
+        total = apply_bounty_payout_ratio(total_raw) if total_raw > 0 else 0
         if total > 0:
             hunter.credits += total
 
@@ -1362,6 +1375,76 @@ class BountyService:
             "reason": f"Criminal reputation ({target.personal_reputation})",
         }]
 
+    def _recent_pvp_kills_for_target(
+        self, player_id: uuid.UUID, kill_limit: int = 5
+    ) -> List[Dict[str, Any]]:
+        """Recent PvP wins by ``player_id`` from durable CombatLog rows (LEG-173).
+
+        Portrait has no durable User/Player avatar column today (OAuth
+        ``avatar_url`` is ephemeral) — callers emit ``portrait_url: null``.
+        Kill entries reuse existing CombatLog columns only; empty list is OK.
+        """
+        from sqlalchemy import and_, or_
+
+        from src.models.combat_log import CombatLog
+
+        logs = (
+            self.db.query(CombatLog)
+            .filter(
+                or_(
+                    and_(
+                        CombatLog.attacker_id == player_id,
+                        CombatLog.outcome == "attacker_win",
+                        CombatLog.defender_id.isnot(None),
+                    ),
+                    and_(
+                        CombatLog.defender_id == player_id,
+                        CombatLog.outcome == "defender_win",
+                        CombatLog.attacker_id.isnot(None),
+                    ),
+                )
+            )
+            .order_by(CombatLog.timestamp.desc())
+            .limit(kill_limit)
+            .all()
+        )
+        if not logs:
+            return []
+
+        victim_ids = []
+        for log in logs:
+            if log.attacker_id == player_id:
+                victim_ids.append(log.defender_id)
+            else:
+                victim_ids.append(log.attacker_id)
+        victims = {
+            p.id: p
+            for p in self.db.query(Player).filter(Player.id.in_(victim_ids)).all()
+        }
+
+        out: List[Dict[str, Any]] = []
+        for log in logs:
+            if log.attacker_id == player_id:
+                victim_id = log.defender_id
+            else:
+                victim_id = log.attacker_id
+            victim = victims.get(victim_id) if victim_id else None
+            ts = log.timestamp or log.ended_at or log.started_at
+            if victim is not None:
+                victim_name = getattr(victim, "nickname", None) or getattr(
+                    victim, "username", None
+                )
+            else:
+                victim_name = None
+            out.append({
+                "combat_id": str(log.id),
+                "victim_id": str(victim_id) if victim_id else None,
+                "victim_name": victim_name,
+                "sector_id": log.sector_id,
+                "timestamp": ts.isoformat() if ts is not None else None,
+            })
+        return out
+
     def get_available_bounties(self, limit: int = 20) -> Dict[str, Any]:
         """List all players who currently have bounties on them."""
         # Find all players with non-empty bounties in settings
@@ -1384,13 +1467,23 @@ class BountyService:
                     "total_bounty": total,
                     "bounty_count": len(player_bounties) + len(system_bounties),
                     "current_sector": player.current_sector_id,
+                    # LEG-173 / LEG-156 contract: keys required; null/empty OK.
+                    # No durable portrait store (LEG-DEC-33); CombatLog for kills.
+                    "portrait_url": None,
+                    "recent_kills": [],  # filled after top-N cut to avoid N+1 on full scan
+                    "_player_id": player.id,
                 })
 
         # Sort by total bounty descending
         bounty_targets.sort(key=lambda x: x["total_bounty"], reverse=True)
 
+        trimmed = bounty_targets[:limit]
+        for row in trimmed:
+            pid = row.pop("_player_id")
+            row["recent_kills"] = self._recent_pvp_kills_for_target(pid)
+
         return {
             "success": True,
-            "bounties": bounty_targets[:limit],
+            "bounties": trimmed,
             "total_targets": len(bounty_targets),
         }

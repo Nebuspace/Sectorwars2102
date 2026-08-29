@@ -417,6 +417,51 @@ def dominant_reputation_faction_id(db: Session, player_id: UUID) -> Optional[UUI
     return top.faction_id
 
 
+# Canon dynamic-influence deltas (factions-and-teams.md influence action table).
+# KEEP-slice companion for port_ownership_service / combat_service imports
+# (promo LEG-2726 CI: FAIR_OPS_SECTOR_INFLUENCE_DELTA was omitted from
+# master-era faction_service while callers arrived via path-checkout).
+RIVAL_KILL_INFLUENCE_DELTA = -2.0
+DEFEND_SECTOR_INFLUENCE_DELTA = 1.0
+FAIR_OPS_SECTOR_INFLUENCE_DELTA = 2.0
+
+
+def faction_id_for_station_affiliation(db: Session, station) -> Optional[UUID]:
+    """Resolve a station's display-name faction affiliation to a Faction.id."""
+    name = getattr(station, "faction_affiliation", None)
+    if not name:
+        return None
+    faction = db.query(Faction).filter(Faction.name == name).first()
+    return faction.id if faction else None
+
+
+def apply_rival_kill_sector_influence(
+    db: Session,
+    sector_id: Optional[UUID],
+    killer_player_id: UUID,
+    victim_player_id: UUID,
+) -> None:
+    """On a resolved rival-faction ship kill, −2% influence for the victim's dominant faction."""
+    if sector_id is None:
+        return
+    killer_faction = dominant_reputation_faction_id(db, killer_player_id)
+    victim_faction = dominant_reputation_faction_id(db, victim_player_id)
+    if killer_faction is None or victim_faction is None or killer_faction == victim_faction:
+        return
+    adjust_sector_influence(db, sector_id, victim_faction, RIVAL_KILL_INFLUENCE_DELTA)
+
+
+def apply_defense_survived_sector_influence(
+    db: Session,
+    sector_id: Optional[UUID],
+    defended_faction_id: Optional[UUID],
+) -> None:
+    """When faction-flagged sector drone defense survives an attack, +1% for that faction."""
+    if sector_id is None or defended_faction_id is None:
+        return
+    adjust_sector_influence(db, sector_id, defended_faction_id, DEFEND_SECTOR_INFLUENCE_DELTA)
+
+
 class FactionService:
     """Service for managing faction-related operations."""
 

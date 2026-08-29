@@ -86,11 +86,13 @@ ALL_STATIC_KEYS = {
     "_ROUTE_RUNS_RETENTION_LOCK_KEY": sched._ROUTE_RUNS_RETENTION_LOCK_KEY,
     "_ORPHAN_SCHEDULE_REPAIR_LOCK_KEY": sched._ORPHAN_SCHEDULE_REPAIR_LOCK_KEY,
     "_SEED_TRADER_ROSTERS_LOCK_KEY": sched._SEED_TRADER_ROSTERS_LOCK_KEY,
+    "_SEED_RESEARCHER_ROSTERS_LOCK_KEY": sched._SEED_RESEARCHER_ROSTERS_LOCK_KEY,
     "_LAW_PATROL_DISPERSAL_LOCK_KEY": sched._LAW_PATROL_DISPERSAL_LOCK_KEY,
     "_STRANDED_RELOCATE_LOCK_KEY": sched._STRANDED_RELOCATE_LOCK_KEY,
     "_TRADER_NOTORIETY_LOCK_KEY": sched._TRADER_NOTORIETY_LOCK_KEY,
     "_TRADER_MISSION_LOCK_KEY": sched._TRADER_MISSION_LOCK_KEY,
     "_BULK_FILL_TRADERS_LOCK_KEY": sched._BULK_FILL_TRADERS_LOCK_KEY,
+    "_BULK_FILL_RESEARCHERS_LOCK_KEY": sched._BULK_FILL_RESEARCHERS_LOCK_KEY,
     "_RETENTION_SWEEP_LOCK_KEY": sched._RETENTION_SWEEP_LOCK_KEY,
     # WO-CMB-SUSPECT-LIFE-1 / WO-PIRATE-ECO-2 held-sweep wiring — two more
     # own-key sweeps. (WO-RT-TEAM-REP's TEAM_REPUTATION_SWEEP_LOCK_KEY is
@@ -138,15 +140,19 @@ EXPECTED_NAME_SITE_MAP = {
     "_run_station_recovery_sync": "_STATION_RECOVERY_LOCK_KEY",
     "_run_reclaim_flag_sweep_sync": "_RECLAIM_FLAG_LOCK_KEY",
     "_run_price_history_sweep_sync": "_PRICE_HISTORY_LOCK_KEY",
+    # LEG-INI-05 / SectorFactionInfluence UTC idle decay (faction_influence_sweeps).
+    "_run_sector_faction_influence_decay_sync": "_SFI_DECAY_LOCK_KEY",
     "_run_route_runs_retention_sync": "_ROUTE_RUNS_RETENTION_LOCK_KEY",
     "_run_due_ticks_sync": "_ADVISORY_LOCK_KEY",  # the main tick -- KEEPS the global key
     "_repair_orphan_schedules_sync": "_ORPHAN_SCHEDULE_REPAIR_LOCK_KEY",
     "_seed_trader_rosters_sync": "_SEED_TRADER_ROSTERS_LOCK_KEY",
+    "_seed_researcher_rosters_sync": "_SEED_RESEARCHER_ROSTERS_LOCK_KEY",
     "_disperse_law_patrols_sync": "_LAW_PATROL_DISPERSAL_LOCK_KEY",
     "_relocate_stranded_npcs_sync": "_STRANDED_RELOCATE_LOCK_KEY",
     "_assign_trader_notoriety_sync": "_TRADER_NOTORIETY_LOCK_KEY",
     "_assign_trader_missions_sync": "_TRADER_MISSION_LOCK_KEY",
     "_bulk_fill_traders_sync": "_BULK_FILL_TRADERS_LOCK_KEY",
+    "_bulk_fill_researchers_sync": "_BULK_FILL_RESEARCHERS_LOCK_KEY",
     "_run_retention_sweep_sync": "_RETENTION_SWEEP_LOCK_KEY",
     "_run_multi_account_detection_sweep_sync": "_MULTI_ACCOUNT_DETECTION_LOCK_KEY",
     "_run_citizen_rebake_sweep_sync": "_CITIZEN_REBAKE_LOCK_KEY",
@@ -184,6 +190,7 @@ EXPECTED_NAME_SITE_MAP = {
     "_run_bounty_expire_sweep_sync": "_BOUNTY_EXPIRE_LOCK_KEY",
     "_run_wanted_clear_sweep_sync": "_WANTED_CLEAR_LOCK_KEY",
     "_run_mining_harvest_resolve_sync": "_MINING_HARVEST_LOCK_KEY",
+    "_run_mining_license_expiry_warn_sync": "_MINING_LICENSE_EXPIRY_LOCK_KEY",
     "_run_abandonment_archive_sweep_sync": "_ABANDONMENT_ARCHIVE_LOCK_KEY",
     # ADR-0050 SK22 — Phase-14 (Nexus cross-region attachment) retry sweep.
     "_run_phase14_attachment_retry_sweep_sync": "_PHASE14_ATTACHMENT_RETRY_LOCK_KEY",
@@ -325,9 +332,8 @@ def test_all_static_keys_pairwise_distinct():
         seen[value] = name
     assert not dupes, f"colliding lock keys: {dupes}"
     assert len(values) == len(set(values))
-    # 1 global + 2 legacy + 27 new sweep-type keys + 1 (WO-P4-play-beacon-kernel)
-    # + 1 (P9-realtime-npc-crash-watermark) + 1 (ADR-0054 X-D3 gc-lapse-window)
-    assert len(ALL_STATIC_KEYS) == 33
+    # 1 global + 2 legacy + sweep-type keys (incl. LEG-108 researcher seed/bulk-fill)
+    assert len(ALL_STATIC_KEYS) == 35
 
 
 def test_all_static_keys_nonnegative_and_63bit_safe():

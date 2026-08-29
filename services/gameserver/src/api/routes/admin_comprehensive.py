@@ -28,9 +28,9 @@ from src.models.user import User
 from src.services.admin_action_log_service import log_admin_action
 from src.services.admin_action_attempt import admin_action_attempt
 from src.models.player import Player
-from src.models.ship import Ship
-from src.models.planet import Planet
-from src.models.station import Station, StationStatus
+from src.models.ship import Ship, ShipType
+from src.models.planet import Planet, PlanetType, PlanetStatus
+from src.models.station import Station, StationClass, StationStatus, StationType
 from src.models.sector import Sector
 from src.models.cluster import Cluster
 from src.models.region import Region
@@ -507,7 +507,6 @@ async def get_ships_comprehensive(
         # Apply filters
         if filter_type:
             try:
-                from src.models.ship import ShipType
                 ship_type_enum = ShipType(filter_type)
                 query = query.filter(Ship.type == ship_type_enum)
             except ValueError:
@@ -665,7 +664,6 @@ async def create_ship(
             if not sector:
                 raise HTTPException(status_code=404, detail="Sector not found")
 
-            from src.models.ship import ShipType
             new_ship = Ship(
                 id=new_ship_id,
                 name=ship_data.name,
@@ -1611,7 +1609,7 @@ async def create_analytics_snapshot(
         
         return {
             "success": True,
-            "message": f"Analytics snapshot created successfully",
+            "message": "Analytics snapshot created successfully",
             "snapshot_id": str(snapshot.id),
             "timestamp": snapshot.snapshot_time.isoformat()
         }
@@ -1631,8 +1629,6 @@ async def update_all_port_stock_levels(
     This ensures ports have appropriate inventory for the commodities they trade.
     """
     try:
-        from src.models.station import Station
-        
         # Get all ports
         ports = db.query(Station).all()
         
@@ -1941,27 +1937,6 @@ async def get_ports(
         db=db
     )
 
-@router.get("/sectors", response_model=Dict[str, Any])
-async def get_sectors(
-    page: int = Query(1, ge=1),
-    limit: int = Query(100, ge=1, le=500),
-    filter_type: Optional[str] = None,
-    filter_region: Optional[str] = None,
-    filter_discovered: Optional[bool] = None,
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
-    db: Session = Depends(get_db)
-):
-    """Simple sectors endpoint that redirects to comprehensive endpoint"""
-    return await get_sectors_comprehensive(
-        page=page,
-        limit=limit,
-        filter_type=filter_type,
-        filter_region=filter_region,
-        filter_discovered=filter_discovered,
-        current_admin=current_admin,
-        db=db
-    )
-
 @router.put("/sectors/{sector_id}", response_model=Dict[str, Any])
 async def update_sector(
     sector_id: str,
@@ -2091,9 +2066,6 @@ async def create_planet_in_sector(
             if existing_planet:
                 raise HTTPException(status_code=400, detail="Sector already has a planet")
         
-            # Import and validate planet type
-            from src.models.planet import Planet, PlanetType, PlanetStatus
-        
             try:
                 planet_type = PlanetType(planet_data.type)
             except ValueError:
@@ -2149,6 +2121,9 @@ class PlanetUpdateRequest(BaseModel):
     habitability_score: Optional[int] = Field(None, ge=0, le=100)
     resource_richness: Optional[float] = Field(None, ge=0.0, le=3.0)
     defense_level: Optional[int] = Field(None, ge=0, le=100)
+    # LEG-1446: optional ownership mutation; explicit null clears (uncolonized).
+    # Omitted field leaves owner_id unchanged (exclude_unset).
+    owner_id: Optional[str] = None
 
 
 @router.patch("/planets/{planet_id}", response_model=Dict[str, Any])
@@ -2177,11 +2152,17 @@ async def update_planet(
 
             for field, value in update_data.items():
                 if field == "type" and value:
-                    from src.models.planet import PlanetType
                     try:
                         planet.type = PlanetType(value)
                     except ValueError:
                         raise HTTPException(status_code=400, detail=f"Invalid planet type: {value}")
+                elif field == "owner_id":
+                    # Explicit null clears ownership; set requires an existing player.
+                    if value is not None:
+                        player = db.query(Player).filter(Player.id == value).first()
+                        if not player:
+                            raise HTTPException(status_code=404, detail="Player not found")
+                    planet.owner_id = value
                 else:
                     setattr(planet, field, value)
 
@@ -2230,7 +2211,6 @@ async def delete_planet(
             if not planet:
                 raise HTTPException(status_code=404, detail="Planet not found")
 
-            from src.models.planet import PlanetStatus
             _inhabited = {
                 PlanetStatus.COLONIZED,
                 PlanetStatus.DEVELOPED,
@@ -2322,9 +2302,6 @@ async def create_port_in_sector(
             if existing_station:
                 raise HTTPException(status_code=400, detail="Sector already has a port")
 
-            # Import and validate enums
-            from src.models.station import Station, StationClass, StationType, StationStatus
-
             try:
                 port_class = StationClass(station_data.station_class)
                 port_type = StationType(station_data.type)
@@ -2367,146 +2344,6 @@ async def create_port_in_sector(
             db.rollback()
             logger.error(f"Error creating port in sector {sector_id}: {e}")
             raise HTTPException(status_code=500, detail=f"Failed to create port: {str(e)}")
-
-@router.get("/sectors/{sector_id}/planet")
-async def get_sector_planet(
-    sector_id: str,
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
-    db: Session = Depends(get_db)
-):
-    """Get detailed planet information for a specific sector"""
-    logger.info(f"Getting planet for sector {sector_id}")
-    try:
-        # Find the sector - try UUID first, fallback to integer sector_id
-        sector = None
-        try:
-            # Try as UUID first (UUIDs are 36 characters with hyphens)
-            sector_uuid = uuid.UUID(sector_id)
-            sector = db.query(Sector).filter(Sector.id == sector_uuid).first()
-        except ValueError:
-            # If UUID parsing fails, try as integer sector_id
-            try:
-                sector_int = int(sector_id)
-                sector = db.query(Sector).filter(Sector.sector_id == sector_int).first()
-            except ValueError:
-                raise HTTPException(status_code=400, detail="Invalid sector ID format")
-        
-        if not sector:
-            raise HTTPException(status_code=404, detail="Sector not found")
-        
-        # Find the planet in this sector
-        logger.info(f"Looking for planet in sector with id: {sector.id}")
-        planet = db.query(Planet).filter(Planet.sector_uuid == sector.id).first()
-        logger.info(f"Found planet: {planet}")
-        
-        if not planet:
-            return {"has_planet": False, "planet": None}
-        
-        # Get owner information if planet is owned
-        owner_name = None
-        if planet.owner_id:
-            owner = db.query(Player).join(User).filter(Player.id == planet.owner_id).first()
-            if owner:
-                owner_name = owner.user.username
-        
-        return {
-            "has_planet": True,
-            "planet": {
-                "id": str(planet.id),
-                "name": planet.name,
-                "type": planet.type.value if planet.type else None,
-                "status": planet.status.value if planet.status else None,
-                "size": planet.size,
-                "position": planet.position,
-                "gravity": planet.gravity,
-                "temperature": planet.temperature,
-                "water_coverage": planet.water_coverage,
-                "habitability_score": planet.habitability_score,
-                "radiation_level": planet.radiation_level,
-                "resource_richness": planet.resource_richness,
-                "population": planet.population,
-                "max_population": planet.max_population,
-                "defense_level": planet.defense_level,
-                "owner_id": str(planet.owner_id) if planet.owner_id else None,
-                "owner_name": owner_name,
-                "colonized_at": planet.colonized_at.isoformat() if planet.colonized_at else None,
-                "created_at": planet.created_at.isoformat()
-            }
-        }
-        
-    except ValueError as ve:
-        logger.error(f"Validation error getting planet for sector {sector_id}: {ve}")
-        raise HTTPException(status_code=422, detail=f"Validation error: {str(ve)}")
-    except Exception as e:
-        logger.error(f"Error getting planet for sector {sector_id}: {e}")
-        import traceback
-        logger.error(f"Full traceback: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"Failed to get sector planet: {str(e)}")
-
-@router.get("/sectors/{sector_id}/port")
-async def get_sector_port(
-    sector_id: str,
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
-    db: Session = Depends(get_db)
-):
-    """Get detailed port information for a specific sector"""
-    try:
-        # Find the sector - try UUID first, fallback to integer sector_id
-        sector = None
-        try:
-            # Try as UUID first (UUIDs are 36 characters with hyphens)
-            sector_uuid = uuid.UUID(sector_id)
-            sector = db.query(Sector).filter(Sector.id == sector_uuid).first()
-        except ValueError:
-            # If UUID parsing fails, try as integer sector_id
-            try:
-                sector_int = int(sector_id)
-                sector = db.query(Sector).filter(Sector.sector_id == sector_int).first()
-            except ValueError:
-                raise HTTPException(status_code=400, detail="Invalid sector ID format")
-        
-        if not sector:
-            raise HTTPException(status_code=404, detail="Sector not found")
-        
-        # Find the port in this sector
-        station = db.query(Station).filter(Station.sector_uuid == sector.id).first()
-
-        if not station:
-            return {"has_station": False, "station": None}
-        
-        # Get owner information if port is owned
-        owner_name = None
-        if station.owner_id:
-            owner = db.query(Player).join(User).filter(Player.id == station.owner_id).first()
-            if owner:
-                owner_name = owner.user.username
-        
-        return {
-            "has_port": True,
-            "station": {
-                "id": str(station.id),
-                "name": station.name,
-                "station_class": station.station_class.value,
-                "type": station.type.value,
-                "status": station.status.value,
-                "size": station.size,
-                "faction_affiliation": station.faction_affiliation,
-                "trade_volume": station.trade_volume,
-                "market_volatility": station.market_volatility,
-                "owner_id": str(station.owner_id) if station.owner_id else None,
-                "owner_name": owner_name,
-                "created_at": station.created_at.isoformat()
-            }
-        }
-        
-    except ValueError as ve:
-        logger.error(f"Validation error getting port for sector {sector_id}: {ve}")
-        raise HTTPException(status_code=422, detail=f"Validation error: {str(ve)}")
-    except Exception as e:
-        logger.error(f"Error getting port for sector {sector_id}: {e}")
-        import traceback
-        logger.error(f"Full traceback: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"Failed to get sector port: {str(e)}")
 
 @router.get("/sectors/{sector_id}/warp-tunnels")
 async def get_sector_warp_tunnels(
@@ -2956,9 +2793,6 @@ async def create_port(
         payload={},
     ) as attempt:
         try:
-            # Import and validate enums
-            from src.models.station import Station, StationClass, StationType, StationStatus
-
             # Validate required fields
             if not port_data.get("name"):
                 raise HTTPException(status_code=400, detail="Station name is required")
