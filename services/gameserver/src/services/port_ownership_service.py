@@ -2161,10 +2161,11 @@ def _ensure_primary_share(station: Station) -> List[Dict[str, Any]]:
 def get_syndicate_status(
     db: Session, station: Station, player: Player, now: Optional[datetime] = None
 ) -> Dict[str, Any]:
-    """Co-ownership status for a station (lazy invite expiry)."""
+    """Co-ownership status for a station (lazy invite expiry + inactive forfeit)."""
     now = now or datetime.now(UTC)
     station = _lock_station(db, station.id)
     _expire_syndicate_invites(station, now)
+    forfeit_inactive_syndicate_stakes(db, station, now)
     db.flush()
     mode = (station.ownership or {}).get(SYNDICATE_MODE_KEY) or "solo"
     shares = _ensure_primary_share(station) if station.owner_id else []
@@ -2354,6 +2355,135 @@ def decline_share_invite(
     return {
         "station_id": str(station.id),
         "declined_invite_id": str(invite_id),
+    }
+
+
+def _redistribute_forfeited_pct(
+    active_shares: List[Dict[str, Any]], forfeited_total: int
+) -> List[Dict[str, Any]]:
+    """Allocate forfeited stake pct proportionally among active shareholders."""
+    if forfeited_total <= 0 or not active_shares:
+        return active_shares
+    base_total = sum(int(s["pct"]) for s in active_shares)
+    if base_total <= 0:
+        return active_shares
+    additions = []
+    allocated = 0
+    for s in active_shares:
+        share = int(s["pct"])
+        add = int(forfeited_total * share / base_total)
+        additions.append(add)
+        allocated += add
+    remainder = forfeited_total - allocated
+    if remainder > 0:
+        ranked = sorted(
+            range(len(active_shares)),
+            key=lambda i: (-int(active_shares[i]["pct"]), str(active_shares[i]["player_id"])),
+        )
+        for idx in ranked:
+            if remainder <= 0:
+                break
+            additions[idx] += 1
+            remainder -= 1
+    return [
+        {
+            "player_id": str(s["player_id"]),
+            "pct": int(s["pct"]) + additions[i],
+        }
+        for i, s in enumerate(active_shares)
+    ]
+
+
+def forfeit_inactive_syndicate_stakes(
+    db: Session,
+    station: Station,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Forfeit ≥90-day inactive co-owner stakes to the controlling faction.
+
+    Removed pct is rebalanced proportionally among remaining active owners
+    (canon port-ownership.md:455). Caller holds the station lock. No commit.
+    """
+    from src.services.station_governance_service import player_forfeit_eligible
+
+    now = now or datetime.now(UTC)
+    mode = (station.ownership or {}).get(SYNDICATE_MODE_KEY) or "solo"
+    if mode != "syndicate" or station.owner_id is None:
+        return {"forfeited": 0, "records": []}
+
+    shares = _ensure_primary_share(station)
+    if len(shares) <= 1:
+        return {"forfeited": 0, "records": []}
+
+    player_ids = [uuid.UUID(str(s["player_id"])) for s in shares]
+    players = {
+        str(p.id): p
+        for p in db.query(Player).filter(Player.id.in_(player_ids)).all()
+    }
+
+    forfeited_rows: List[Dict[str, Any]] = []
+    active_rows: List[Dict[str, Any]] = []
+    forfeited_total = 0
+    for s in shares:
+        pid = str(s["player_id"])
+        pct = int(s["pct"])
+        pl = players.get(pid)
+        if pl is not None and not player_forfeit_eligible(pl, now):
+            active_rows.append({"player_id": pid, "pct": pct})
+            continue
+        if pct <= 0:
+            continue
+        forfeited_rows.append({"player_id": pid, "pct": pct})
+        forfeited_total += pct
+
+    if forfeited_total <= 0 or not active_rows:
+        return {"forfeited": 0, "records": []}
+
+    new_shares = _redistribute_forfeited_pct(active_rows, forfeited_total)
+    controlling_faction = getattr(station, "faction_affiliation", None)
+    ownership = _ownership(station)
+    ledger = ownership.get("co_ownership_forfeitures")
+    if not isinstance(ledger, list):
+        ledger = []
+    for row in forfeited_rows:
+        ledger.append(
+            {
+                "player_id": row["player_id"],
+                "pct": row["pct"],
+                "forfeited_at": now.isoformat(),
+                "controlling_faction": controlling_faction,
+            }
+        )
+    ownership["co_ownership_forfeitures"] = ledger[-50:]
+
+    new_mode = "syndicate"
+    if len(new_shares) == 1 and int(new_shares[0]["pct"]) == 100:
+        new_mode = "solo"
+
+    primary_id = str(station.owner_id)
+    if any(r["player_id"] == primary_id for r in forfeited_rows):
+        ranked = sorted(
+            new_shares,
+            key=lambda s: (-int(s["pct"]), str(s["player_id"])),
+        )
+        station.owner_id = uuid.UUID(str(ranked[0]["player_id"]))
+
+    _set_syndicate_state(station, mode=new_mode, shares=new_shares)
+    db.flush()
+    logger.info(
+        "Station %s forfeited %d%% inactive syndicate stake(s) to faction %s; "
+        "rebalanced among %d active owner(s)",
+        station.id,
+        forfeited_total,
+        controlling_faction,
+        len(new_shares),
+    )
+    return {
+        "forfeited": forfeited_total,
+        "records": forfeited_rows,
+        "shares": new_shares,
+        "mode": new_mode,
+        "controlling_faction": controlling_faction,
     }
 
 
