@@ -57,8 +57,11 @@ DOCUMENTED INTERPRETATIONS (where canon is summarized or silent):
     challenger — comparing against a finished month made the match
     unwinnable). Success resets the campaign clock (status 'countered',
     months_satisfied 0) and evaluation continues from the NEXT month.
-  * Forced-sale condition_multiplier is 1.0 in v1 (station condition is
-    not modeled yet).
+  * Forced-sale condition_multiplier (port-ownership.md:60-66): penalises
+    recent defense incidents (within 7 days, up to −10%) and stations with
+    security tier ``none`` (−15%). Reads
+    ``ownership['last_defense_incident_at']`` (ISO UTC, stamped on port
+    defense engagements).
   * acquisition_cost reads from station.ownership['acquisition_cost']
     (written on every transfer here); stations owned before this feature
     fall back to acquisition_requirements['base_price'].
@@ -158,7 +161,10 @@ MONTH_HOURS = 30 * 24.0             # 1 scaled month = 30 canonical days
 TAKEOVER_SHARE_THRESHOLD = 0.5      # challenger needs >50% of monthly volume
 TAKEOVER_MONTHS_REQUIRED = 3        # consecutive satisfied months
 BOT_FARM_FRACTION = 0.8             # >80% self-cancelling volume = bot farming
-CONDITION_MULTIPLIER = 1.0          # v1: station condition not modeled
+LAST_DEFENSE_INCIDENT_KEY = "last_defense_incident_at"
+DEFENSE_INCIDENT_LOOKBACK_DAYS = 7
+DEFENSE_INCIDENT_MAX_PENALTY = 0.10
+SECURITY_NONE_PENALTY = 0.15
 HOSTILE_UNDERCUT_FACTOR = 0.97      # selling >=3% under the station-pays price
 CATCHUP_EVAL_LIMIT = 3              # lazy month catch-up: evaluate at most the
                                     # trailing N months individually; older
@@ -607,10 +613,67 @@ def depreciated_value(acquisition_cost: int) -> int:
     return int(max(0, acquisition_cost) * DEPRECIATION_FACTOR)
 
 
-def forced_sale_value(avg_monthly_revenue: float, acquisition_cost: int) -> int:
+def stamp_defense_incident(
+    station: Station, now: Optional[datetime] = None
+) -> None:
+    """Record a port-defense engagement on ``station.ownership`` (LEG-2060)."""
+    now = now or datetime.now(UTC)
+    ownership = _ownership(station)
+    ownership[LAST_DEFENSE_INCIDENT_KEY] = now.isoformat()
+    if getattr(station, "_sa_instance_state", None):
+        flag_modified(station, "ownership")
+
+
+def _parse_defense_incident_at(raw: Any) -> Optional[datetime]:
+    if raw is None:
+        return None
+    if isinstance(raw, datetime):
+        incident_at = raw
+    elif isinstance(raw, str):
+        try:
+            incident_at = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    if incident_at.tzinfo is None:
+        incident_at = incident_at.replace(tzinfo=UTC)
+    return incident_at
+
+
+def compute_condition_multiplier(
+    station: Station, now: Optional[datetime] = None
+) -> float:
+    """Canon condition_multiplier for forced-sale pricing (LEG-2055)."""
+    now = now or datetime.now(UTC)
+    ownership = station.ownership or {}
+    incident_at = _parse_defense_incident_at(
+        ownership.get(LAST_DEFENSE_INCIDENT_KEY)
+    )
+    if incident_at is None:
+        days_since = DEFENSE_INCIDENT_LOOKBACK_DAYS
+    else:
+        days_since = int((now - incident_at).total_seconds() // 86400)
+
+    defense_term = (
+        DEFENSE_INCIDENT_MAX_PENALTY
+        * max(0, DEFENSE_INCIDENT_LOOKBACK_DAYS - days_since)
+        / DEFENSE_INCIDENT_LOOKBACK_DAYS
+    )
+    security_level = getattr(station, "security_level", "none")
+    security_term = SECURITY_NONE_PENALTY if security_level == "none" else 0.0
+    return max(0.0, 1.0 - defense_term - security_term)
+
+
+def forced_sale_value(
+    avg_monthly_revenue: float,
+    acquisition_cost: int,
+    *,
+    condition_multiplier: float = 1.0,
+) -> int:
     """Canon forced-sale price: clamp(avg-monthly-revenue x 12 x
     condition_multiplier, acquisition_cost, 2 x acquisition_cost)."""
-    raw = avg_monthly_revenue * 12 * CONDITION_MULTIPLIER
+    raw = avg_monthly_revenue * 12 * condition_multiplier
     return int(max(acquisition_cost, min(2 * acquisition_cost, raw)))
 
 
@@ -3200,12 +3263,14 @@ def _owner_at_eligibility(campaign: TakeoverCampaign) -> Optional[str]:
 
 def forced_sale_price(db: Session, station: Station, now: Optional[datetime] = None) -> int:
     """Canon forced-sale price: clamp(90-day-average monthly revenue x 12 x
-    condition_multiplier, acquisition_cost, 2 x acquisition_cost).
-    condition_multiplier is 1.0 in v1 (station condition not modeled)."""
+    condition_multiplier, acquisition_cost, 2 x acquisition_cost)."""
     now = now or datetime.now(UTC)
     revenue_90 = _station_revenue(db, station.id, _wall_cutoff(REVENUE_WINDOW_DAYS, now))
     avg_monthly = revenue_90 / 3.0  # 90 canonical days = 3 scaled months
-    return forced_sale_value(avg_monthly, _acquisition_cost(station))
+    multiplier = compute_condition_multiplier(station, now)
+    return forced_sale_value(
+        avg_monthly, _acquisition_cost(station), condition_multiplier=multiplier
+    )
 
 
 def _settle_forced_sale(

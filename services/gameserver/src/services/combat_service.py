@@ -2741,6 +2741,10 @@ class CombatService:
         # Resolve combat against port
         combat_result = self._resolve_port_combat(attacker, station, port_owner)
 
+        from src.services.port_ownership_service import stamp_defense_incident
+
+        stamp_defense_incident(station)
+
         # Consume turns
         spend_turns(attacker, turn_cost)
 
