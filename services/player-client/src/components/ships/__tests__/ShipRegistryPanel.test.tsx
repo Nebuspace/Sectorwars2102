@@ -36,7 +36,33 @@ vi.mock('../../../services/api', () => ({
   },
 }));
 
-import ShipRegistryPanel from '../ShipRegistryPanel';
+import ShipRegistryPanel, { formatShipRegistryActionError } from '../ShipRegistryPanel';
+
+describe('formatShipRegistryActionError', () => {
+  it('preserves 404 Ship not found detail', () => {
+    const err = new Error('Ship not found.');
+    (err as { status?: number }).status = 404;
+    expect(formatShipRegistryActionError(err)).toBe('Ship not found.');
+  });
+
+  it('preserves structured code/message detail', () => {
+    const err = new Error('Not the registered owner.');
+    (err as { status?: number; code?: string; data?: unknown }).status = 403;
+    (err as { code?: string }).code = 'ERR_NOT_REGISTERED_OWNER';
+    (err as { data?: unknown }).data = {
+      detail: { code: 'ERR_NOT_REGISTERED_OWNER', message: 'Not the registered owner.' },
+    };
+    expect(formatShipRegistryActionError(err)).toBe(
+      'Not the registered owner. [ERR_NOT_REGISTERED_OWNER]'
+    );
+  });
+
+  it('falls back when only bare API Error status is present', () => {
+    expect(formatShipRegistryActionError(new Error('API Error: 500'))).toBe(
+      'Registry action failed'
+    );
+  });
+});
 
 describe('ShipRegistryPanel', () => {
   let container: HTMLDivElement;
@@ -100,5 +126,40 @@ describe('ShipRegistryPanel', () => {
       ).click();
     });
     expect(fileTransferClaim).toHaveBeenCalledWith('ship-9', 'port-1');
+  });
+
+  it('surfaces GS 404 Ship not found on report failure', async () => {
+    const err = new Error('Ship not found.');
+    (err as { status?: number }).status = 404;
+    reportStolen.mockRejectedValueOnce(err);
+
+    await act(async () => {
+      root.render(<ShipRegistryPanel shipId="ship-9" shipName="Rusty" portId="port-1" />);
+    });
+
+    await act(async () => {
+      (container.querySelector('[data-testid="ship-registry-report-stolen"]') as HTMLButtonElement).click();
+    });
+
+    const feedback = container.querySelector('[data-testid="ship-registry-feedback"]');
+    expect(feedback?.textContent).toBe('Ship not found.');
+  });
+
+  it('surfaces structured code/message on claim failure', async () => {
+    const err = new Error('Hull already claimed.');
+    (err as { status?: number; code?: string }).status = 409;
+    (err as { code?: string }).code = 'ERR_ALREADY_CLAIMED';
+    claim.mockRejectedValueOnce(err);
+
+    await act(async () => {
+      root.render(<ShipRegistryPanel shipId="ship-9" portId="port-1" />);
+    });
+
+    await act(async () => {
+      (container.querySelector('[data-testid="ship-registry-claim"]') as HTMLButtonElement).click();
+    });
+
+    const feedback = container.querySelector('[data-testid="ship-registry-feedback"]');
+    expect(feedback?.textContent).toBe('Hull already claimed. [ERR_ALREADY_CLAIMED]');
   });
 });
