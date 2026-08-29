@@ -26,7 +26,10 @@ from src.services.ship_registry_service import (
     SALVAGE_BREAK_DURATIONS,
     ShipRegistryError,
     _complete_salvage_break,
+    build_salvage_break_started_event,
     cancel_salvage_break_for_salvager,
+    list_sector_salvage_breaks,
+    serialize_salvage_break_public,
     start_salvage_break,
 )
 
@@ -66,12 +69,14 @@ def make_player(**overrides):
 def make_ship(**overrides):
     defaults = dict(
         id=uuid.uuid4(),
+        name="Hull",
         type=ShipType.LIGHT_FREIGHTER,
         status=None,
         is_destroyed=False,
         sector_id=5,
         current_pilot_id=None,
         hatch_pin_code="ABC123",
+        registration_number="REG-A47B-2103",
         salvage_break_in_progress_by_id=None,
         salvage_break_started_at=None,
     )
@@ -237,3 +242,72 @@ def test_cancel_is_a_noop_when_no_break_found():
     db = _FakeSession(ship_result=None)
     cancel_salvage_break_for_salvager(db, uuid.uuid4(), reason="test")  # must not raise
     assert db.flushed is False
+
+
+# --- LEG-333 peer visibility -------------------------------------------------
+
+
+class _ListQuery:
+    def __init__(self, rows):
+        self._rows = list(rows)
+
+    def filter(self, *args, **kwargs):
+        return self
+
+    def all(self):
+        return self._rows
+
+
+class _ListSession:
+    def __init__(self, ships):
+        self._ships = ships
+
+    def query(self, entity):
+        return _ListQuery(self._ships)
+
+
+def test_serialize_salvage_break_public_none_when_idle():
+    assert serialize_salvage_break_public(make_ship()) is None
+
+
+def test_peer_in_sector_sees_in_progress_break_and_eta():
+    """Second player observes another hull's in-progress salvage-break via the
+    sector presence contract (`list_sector_salvage_breaks`)."""
+    salvager_id = uuid.uuid4()
+    started = datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)
+    target = make_ship(
+        type=ShipType.CARGO_HAULER,
+        registration_number="REG-PEER-2102",
+        salvage_break_in_progress_by_id=salvager_id,
+        salvage_break_started_at=started,
+        sector_id=42,
+    )
+    idle = make_ship(sector_id=42, registration_number="REG-IDLE-2102")
+    db = _ListSession([target, idle])
+
+    visible = list_sector_salvage_breaks(db, 42)
+
+    assert len(visible) == 1
+    peer_view = visible[0]
+    assert peer_view["registration_number"] == "REG-PEER-2102"
+    assert peer_view["salvage_break_in_progress_by_id"] == str(salvager_id)
+    assert peer_view["eta_hours"] == 4.0
+    assert peer_view["completes_at"] == (started + timedelta(hours=4)).isoformat()
+    assert peer_view["ship_id"] == str(target.id)
+
+
+def test_salvage_break_started_ws_event_carries_peer_fields():
+    salvager_id = uuid.uuid4()
+    started = datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)
+    ship = make_ship(
+        salvage_break_in_progress_by_id=salvager_id,
+        salvage_break_started_at=started,
+        registration_number="REG-WS-2102",
+    )
+    event = build_salvage_break_started_event(ship, sector_id=7)
+    assert event["type"] == "salvage_break_started"
+    assert event["sector_id"] == 7
+    assert event["registration_number"] == "REG-WS-2102"
+    assert event["salvage_break_in_progress_by_id"] == str(salvager_id)
+    assert "completes_at" in event
+    assert "eta_hours" in event
