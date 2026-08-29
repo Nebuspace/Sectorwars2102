@@ -31,6 +31,9 @@ from src.models.profession_training_queue import (
 MIN_CITADEL_FOR_TRAINING = 3
 # Research Scientists require Research Lab L3 (Planet.research_level; professions.md L40).
 MIN_RESEARCH_LAB_FOR_RESEARCH_SCIENTISTS = 3
+MIN_ORBITAL_SHIPYARD_FOR_SPACE_ENGINEERS = 2  # professions.md Space Engineers
+MIN_MILITARY_ACADEMY_FOR_COMBAT_PILOTS = 2  # professions.md Combat Pilots
+MIN_TERRAFORMING_LAB_FOR_TERRAFORM_ENGINEERS = 3  # professions.md Terraform Engineers
 
 # Numeric bonus multipliers from professions.md (non-TBD cells only).
 PRODUCTION_BONUS: dict[ProfessionType, dict[str, float]] = {
@@ -248,22 +251,55 @@ class ProfessionService:
         if (planet.citadel_level or 0) < MIN_CITADEL_FOR_TRAINING:
             raise ValueError("citadel_level_too_low")
 
+    def _building_kind_level(self, planet: Planet, kind: str) -> int:
+        """Max operational level of ``kind`` on planet.structures (D#594 — no proxy invent)."""
+        from src.services.structures import max_kind_level
+
+        return max_kind_level(getattr(planet, "structures", None) or {}, kind)
+
     def _assert_profession_training_gate(self, planet: Planet, prof: ProfessionType) -> None:
         self._assert_training_gate(planet)
         if prof == ProfessionType.RESEARCH_SCIENTISTS:
             if (planet.research_level or 0) < MIN_RESEARCH_LAB_FOR_RESEARCH_SCIENTISTS:
                 raise ValueError("research_lab_level_too_low")
+        elif prof == ProfessionType.SPACE_ENGINEERS:
+            if self._building_kind_level(planet, "ORBITAL_SHIPYARD") < MIN_ORBITAL_SHIPYARD_FOR_SPACE_ENGINEERS:
+                raise ValueError("orbital_shipyard_level_too_low")
+        elif prof == ProfessionType.COMBAT_PILOTS:
+            if self._building_kind_level(planet, "MILITARY_ACADEMY") < MIN_MILITARY_ACADEMY_FOR_COMBAT_PILOTS:
+                raise ValueError("military_academy_level_too_low")
+        elif prof == ProfessionType.TERRAFORM_ENGINEERS:
+            if self._building_kind_level(planet, "TERRAFORMING_LAB") < MIN_TERRAFORMING_LAB_FOR_TERRAFORM_ENGINEERS:
+                raise ValueError("terraforming_lab_level_too_low")
 
     def training_eligibility(self, planet: Planet) -> Dict[str, bool]:
-        """Per-profession eligibility for GET /planets/{id}/professions (building gates partial)."""
+        """Per-profession eligibility for GET /planets/{id}/professions (building gates)."""
         citadel_ok = (planet.citadel_level or 0) >= MIN_CITADEL_FOR_TRAINING
         research_lab_ok = (
             (planet.research_level or 0) >= MIN_RESEARCH_LAB_FOR_RESEARCH_SCIENTISTS
+        )
+        shipyard_ok = (
+            self._building_kind_level(planet, "ORBITAL_SHIPYARD")
+            >= MIN_ORBITAL_SHIPYARD_FOR_SPACE_ENGINEERS
+        )
+        academy_ok = (
+            self._building_kind_level(planet, "MILITARY_ACADEMY")
+            >= MIN_MILITARY_ACADEMY_FOR_COMBAT_PILOTS
+        )
+        terra_lab_ok = (
+            self._building_kind_level(planet, "TERRAFORMING_LAB")
+            >= MIN_TERRAFORMING_LAB_FOR_TERRAFORM_ENGINEERS
         )
         out: Dict[str, bool] = {}
         for prof in ProfessionType:
             if prof == ProfessionType.RESEARCH_SCIENTISTS:
                 out[prof.value] = citadel_ok and research_lab_ok
+            elif prof == ProfessionType.SPACE_ENGINEERS:
+                out[prof.value] = citadel_ok and shipyard_ok
+            elif prof == ProfessionType.COMBAT_PILOTS:
+                out[prof.value] = citadel_ok and academy_ok
+            elif prof == ProfessionType.TERRAFORM_ENGINEERS:
+                out[prof.value] = citadel_ok and terra_lab_ok
             else:
                 out[prof.value] = citadel_ok
         return out
