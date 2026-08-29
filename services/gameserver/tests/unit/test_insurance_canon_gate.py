@@ -104,8 +104,37 @@ def _faction(*, id=None, name="Terran Federation") -> Faction:
     return Faction(id=id or uuid.uuid4(), name=name, faction_type=FactionType.FEDERATION)
 
 
+# Representative numeric values inside each ReputationLevel band
+# (FactionService._calculate_reputation_level thresholds). Soft-ORDER
+# friendly-port path now resolves via current_value → level.
+_LEVEL_VALUE = {
+    ReputationLevel.PUBLIC_ENEMY: -750,
+    ReputationLevel.CRIMINAL: -650,
+    ReputationLevel.OUTLAW: -550,
+    ReputationLevel.PIRATE: -450,
+    ReputationLevel.SMUGGLER: -350,
+    ReputationLevel.UNTRUSTWORTHY: -250,
+    ReputationLevel.SUSPICIOUS: -150,
+    ReputationLevel.QUESTIONABLE: -75,
+    ReputationLevel.NEUTRAL: 0,
+    ReputationLevel.RECOGNIZED: 50,
+    ReputationLevel.ACKNOWLEDGED: 100,
+    ReputationLevel.TRUSTED: 200,
+    ReputationLevel.RESPECTED: 300,
+    ReputationLevel.VALUED: 400,
+    ReputationLevel.HONORED: 500,
+    ReputationLevel.REVERED: 600,
+    ReputationLevel.EXALTED: 700,
+}
+
+
 def _reputation(*, player_id, faction_id, level: ReputationLevel) -> Reputation:
-    return Reputation(player_id=player_id, faction_id=faction_id, current_level=level)
+    return Reputation(
+        player_id=player_id,
+        faction_id=faction_id,
+        current_level=level,
+        current_value=_LEVEL_VALUE[level],
+    )
 
 
 class _FakeQuery:

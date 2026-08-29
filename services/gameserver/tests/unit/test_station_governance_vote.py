@@ -32,6 +32,10 @@ def test_canon_thresholds():
     assert VOTE_SPECS["upgrade"]["capex_min"] == 500_000
     assert VOTE_SPECS["sale"]["threshold"] == 0.66
     assert VOTE_SPECS["sale"]["window_hours"] == 96.0
+    # Disbandment mirrors sale (vote table silent; Soft-ORDER invent=0).
+    assert VOTE_SPECS["disbandment"]["threshold"] == 0.66
+    assert VOTE_SPECS["disbandment"]["veto"] is True
+    assert VOTE_SPECS["disbandment"]["window_hours"] == 96.0
     assert VOTE_SPECS["withdrawal"]["threshold"] == 0.50
     assert VOTE_SPECS["withdrawal"]["veto"] is False
 
@@ -40,6 +44,7 @@ def test_normalize_aliases():
     assert normalize_vote_type("tariff_change") == "tariff"
     assert normalize_vote_type("major_upgrade") == "upgrade"
     assert normalize_vote_type("withdrawal-schedule") == "withdrawal"
+    assert normalize_vote_type("disband") == "disbandment"
 
 
 def test_tariff_passes_at_50_with_quorum():
