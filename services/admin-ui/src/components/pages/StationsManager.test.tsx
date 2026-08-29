@@ -11,6 +11,8 @@ vi.mock('../../utils/auth', () => ({
   api: {
     get: vi.fn(),
     post: vi.fn(),
+    patch: vi.fn(),
+    delete: vi.fn(),
   },
 }));
 
@@ -68,6 +70,8 @@ describe('StationsManager Soft-ORDER Add Port station_class (LEG-1461)', () => {
   beforeEach(() => {
     vi.mocked(api.get).mockReset();
     vi.mocked(api.post).mockReset();
+    toastSuccess.mockReset();
+    toastError.mockReset();
     confirmMock.mockReset();
     confirmMock.mockResolvedValue(false);
     vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -136,6 +140,116 @@ describe('StationsManager Soft-ORDER Add Port station_class (LEG-1461)', () => {
     expect(payload).not.toHaveProperty('max_capacity');
     expect(payload).not.toHaveProperty('security_level');
     expect(payload).not.toHaveProperty('docking_fee');
+  });
+
+  it('create POST 403 surfaces formatAdminApiError scope copy (LEG-2884)', async () => {
+    vi.mocked(api.post).mockRejectedValue(
+      axiosError(403, 'Missing scope admin.universe.stations'),
+    );
+
+    render(<StationsManager />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /Add New Station/i })).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Add New Station/i }));
+    await waitFor(() => {
+      expect(screen.getByText(/Add New Port/i )).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByPlaceholderText(/Enter port name/i), {
+      target: { value: 'New Port' },
+    });
+    fireEvent.change(screen.getByDisplayValue(/Select a sector/i), {
+      target: { value: '42' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /^Create Port$/i }));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalled();
+    });
+    const msg = String(toastError.mock.calls[0][0]);
+    expect(msg).toMatch(/admin\.universe\.stations|station management|Access denied/i);
+    expect(msg).not.toMatch(/^Failed to create port:/);
+  });
+
+  it('create POST 429 surfaces admin rate-limit copy (LEG-2884)', async () => {
+    vi.mocked(api.post).mockRejectedValue(axiosError(429));
+
+    render(<StationsManager />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /Add New Station/i })).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Add New Station/i }));
+    await waitFor(() => {
+      expect(screen.getByText(/Add New Port/i)).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByPlaceholderText(/Enter port name/i), {
+      target: { value: 'New Port' },
+    });
+    fireEvent.change(screen.getByDisplayValue(/Select a sector/i), {
+      target: { value: '42' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /^Create Port$/i }));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/rate limit/i));
+    });
+    expect(String(toastError.mock.calls[0][0])).not.toMatch(/^Failed to create port:/);
+  });
+});
+
+const sampleStation = {
+  id: 's1',
+  name: 'Alpha Dock',
+  sector_id: '42',
+  sector_name: 'Alpha',
+  station_type: 'CLASS_1',
+  trade_volume: 1000,
+  max_capacity: null,
+  security_level: null,
+  docking_fee: 50,
+  owner_id: null,
+  owner_name: null,
+  created_at: '2026-01-01T00:00:00Z',
+  is_operational: true,
+  commodities: [],
+};
+
+describe('StationsManager delete/edit formatAdminApiError (LEG-2884)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    vi.mocked(api.patch).mockReset();
+    vi.mocked(api.delete).mockReset();
+    toastSuccess.mockReset();
+    toastError.mockReset();
+    confirmMock.mockReset();
+    confirmMock.mockResolvedValue(true);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(api.get).mockResolvedValue({
+      data: { stations: [sampleStation], total: 1 },
+    });
+  });
+
+  it('delete DELETE 403 surfaces formatAdminApiError scope copy (LEG-2884)', async () => {
+    vi.mocked(api.delete).mockRejectedValue(
+      axiosError(403, 'Missing scope admin.universe.stations'),
+    );
+
+    render(<StationsManager />);
+
+    expect(await screen.findByRole('button', { name: /^Delete$/i })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /^Delete$/i }));
+
+    await waitFor(() => {
+      expect(api.delete).toHaveBeenCalledWith('/api/v1/admin/ports/s1');
+    });
+    const msg = String(toastError.mock.calls[0][0]);
+    expect(msg).toMatch(/admin\.universe\.stations|station management|Access denied/i);
+    expect(msg).not.toMatch(/^Failed to delete station:/);
   });
 });
 
