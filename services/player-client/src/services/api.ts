@@ -971,6 +971,10 @@ export const miningAPI = {
 
   /** LEG-2574 tip GET — owner claim licenses (active + recently expired). */
   listLicenses: () => apiRequest('/api/v1/mining/licenses'),
+
+  /** LEG-2731 tip GET — poll async harvest row until terminal. */
+  getHarvestStatus: (harvestId: string) =>
+    apiRequest(`/api/v1/mining/harvest/${encodeURIComponent(harvestId)}`),
 };
 
 /** First-login gate / onboarding session (GameContext + FirstLoginContext). */
@@ -2701,5 +2705,58 @@ export type AriaMarketIntelList = {
 export const ariaMarketAPI = {
   getMarketIntelligence: (stationId: string): Promise<AriaMarketIntelList> =>
     apiRequest(`/api/v1/ai/market-intelligence/${encodeURIComponent(stationId)}`),
+};
+
+/** LEG-725 — ARIA explored-sector trade cascade (POST /ai/trade-cascade). */
+export type TradeCascadeRequest = {
+  start_sector_id: string;
+  target_profit: number;
+  max_jumps?: number;
+};
+
+export type TradeCascadeStep = {
+  step: number;
+  sector: string;
+  station: string;
+  action: string;
+  commodity: string;
+  expected_price: number;
+  confidence: number;
+  based_on: string;
+};
+
+export type TradeCascadePlan = {
+  cascade_id: string;
+  player_id: string;
+  total_profit: number;
+  total_jumps: number;
+  profit_per_jump: number;
+  confidence: number;
+  steps: TradeCascadeStep[];
+};
+
+export type TradeCascadeRefusal = {
+  error: string;
+  message: string;
+  explored_sectors?: number;
+  suggestion?: string;
+};
+
+export type TradeCascadeResponse = TradeCascadePlan | TradeCascadeRefusal;
+
+export const isTradeCascadeRefusal = (
+  payload: TradeCascadeResponse,
+): payload is TradeCascadeRefusal => 'error' in payload && typeof payload.error === 'string';
+
+export const ariaTradeCascadeAPI = {
+  planTradeCascade: (body: TradeCascadeRequest): Promise<TradeCascadeResponse> =>
+    apiRequest('/api/v1/ai/trade-cascade', {
+      method: 'POST',
+      body: JSON.stringify({
+        start_sector_id: body.start_sector_id,
+        target_profit: body.target_profit,
+        max_jumps: body.max_jumps ?? 5,
+      }),
+    }),
 };
 
