@@ -15,7 +15,7 @@ vi.mock('../../../services/api', () => ({
   },
 }));
 
-import TerraformingPanel from '../TerraformingPanel';
+import TerraformingPanel, { formatTerraformingStartError } from '../TerraformingPanel';
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -112,5 +112,28 @@ describe('TerraformingPanel — start money path', () => {
     const [, init] = call;
     expect(JSON.parse(init?.body as string)).toEqual({ target_level: 2 });
     expect((init?.headers as Record<string, string>).Authorization).toBe('Bearer tok-test');
+  });
+
+  it('surfaces start 400 server detail in action message', async () => {
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes('/terraforming/status')) {
+        return { ok: true, json: async () => ({ active: false, currentHabitability: 40, availableLevels: { '2': LEVEL } }) };
+      }
+      if (u.includes('/terraforming/start') && init?.method === 'POST') {
+        return { ok: false, status: 400, json: async () => ({ detail: 'Insufficient organics for terraforming level 2' }) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    await act(async () => { root.render(<TerraformingPanel planetId="planet-1" playerCredits={100_000} habitabilityScore={40} planetType="DESERT" />); });
+    await act(async () => { await flush(); await flush(); });
+    await vi.waitFor(() => { expect(container.querySelector('.terraforming-btn.start-btn')).toBeTruthy(); });
+    const startBtn = container.querySelector('.terraforming-btn.start-btn') as HTMLButtonElement;
+    await act(async () => { startBtn.click(); await flush(); await flush(); });
+    await vi.waitFor(() => { expect(container.textContent).toContain('Insufficient organics for terraforming level 2'); });
+  });
+
+  it('formatTerraformingStartError falls back when detail absent', () => {
+    expect(formatTerraformingStartError(new Error('API Error: 400'))).toBe('Failed to start terraforming');
   });
 });
