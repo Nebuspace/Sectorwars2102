@@ -96,6 +96,12 @@ const sampleFleet = {
   member_count: 0,
 };
 
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
+
 const selectFleet = async (container: HTMLDivElement) => {
   await act(async () => {
     (container.querySelector(
@@ -327,6 +333,98 @@ describe('FleetManagerPanel', () => {
     });
 
     expect(initiateBattle).toHaveBeenCalledWith('fleet-1', DEFENDER_FLEET_UUID);
+  });
+
+  it('surfaces createFleet 403 refusal in fleet-manager-error', async () => {
+    getFleets.mockResolvedValue([]);
+    createFleet.mockRejectedValue(
+      apiRequestError(403, 'Galactic Citizen membership required to create fleets.'),
+    );
+
+    await act(async () => {
+      root.render(<FleetManagerPanel />);
+    });
+
+    const nameInput = container.querySelector(
+      '[data-testid="fleet-create-name"]',
+    ) as HTMLInputElement;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        'value',
+      )?.set;
+      setter?.call(nameInput, 'New Wing');
+      nameInput.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    await act(async () => {
+      (container.querySelector(
+        '[data-testid="fleet-create-submit"]',
+      ) as HTMLButtonElement).click();
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const alert = container.querySelector('[data-testid="fleet-manager-error"]');
+    expect(alert?.getAttribute('role')).toBe('alert');
+    expect(alert?.textContent).toContain('Galactic Citizen membership required to create fleets.');
+  });
+
+  it('surfaces createFleet 429 rate-limit copy in fleet-manager-error', async () => {
+    getFleets.mockResolvedValue([]);
+    createFleet.mockRejectedValue(
+      apiRequestError(429, 'Rate limit exceeded — try again shortly.'),
+    );
+
+    await act(async () => {
+      root.render(<FleetManagerPanel />);
+    });
+
+    const nameInput = container.querySelector(
+      '[data-testid="fleet-create-name"]',
+    ) as HTMLInputElement;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        'value',
+      )?.set;
+      setter?.call(nameInput, 'New Wing');
+      nameInput.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    await act(async () => {
+      (container.querySelector(
+        '[data-testid="fleet-create-submit"]',
+      ) as HTMLButtonElement).click();
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const alert = container.querySelector('[data-testid="fleet-manager-error"]');
+    expect(alert?.getAttribute('role')).toBe('alert');
+    expect(alert?.textContent).toMatch(/rate limit exceeded/i);
+  });
+
+  it('surfaces getFleets 403 load error in fleet-manager-error on mount', async () => {
+    getFleets.mockRejectedValue(
+      apiRequestError(403, 'Team membership required to view fleet roster.'),
+    );
+
+    await act(async () => {
+      root.render(<FleetManagerPanel />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const alert = container.querySelector('[data-testid="fleet-manager-error"]');
+    expect(alert?.getAttribute('role')).toBe('alert');
+    expect(alert?.textContent).toContain('Team membership required to view fleet roster.');
   });
 
   it('surfaces initiateBattle API errors in the panel alert', async () => {

@@ -24,7 +24,7 @@ vi.mock('../../../contexts/AuthContext', () => ({
   useAuth: () => ({ user: { id: 'placer-1', username: 'Me' } }),
 }));
 
-import BountyPlaceCancel from '../BountyPlaceCancel';
+import BountyPlaceCancel, { formatBountyInspectLoadError } from '../BountyPlaceCancel';
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -182,5 +182,34 @@ describe('BountyPlaceCancel', () => {
 
     expect(container.querySelector('[data-testid="bounty-place-cancel-error"]')?.textContent)
       .toMatch(/Need 1100 credits/i);
+  });
+
+  it('formatBountyInspectLoadError falls back on bare 404 without server detail', () => {
+    const err = Object.assign(new Error('API Error: 404'), { status: 404 });
+    expect(formatBountyInspectLoadError(err)).toBe('Target player not found.');
+  });
+
+  it('surfaces inspect 404 player-not-found server detail', async () => {
+    getOnTarget.mockRejectedValueOnce(
+      Object.assign(new Error('Player not found'), { status: 404 }),
+    );
+
+    await act(async () => {
+      root.render(<BountyPlaceCancel />);
+    });
+
+    const target = container.querySelector(
+      '[data-testid="bounty-place-target"]',
+    ) as HTMLInputElement;
+    await act(async () => {
+      setInputValue(target, 'missing-player');
+    });
+    await act(async () => {
+      (container.querySelector('[data-testid="bounty-inspect-submit"]') as HTMLButtonElement).click();
+      await flush();
+    });
+
+    expect(container.querySelector('[data-testid="bounty-place-cancel-error"]')?.textContent)
+      .toBe('Player not found');
   });
 });

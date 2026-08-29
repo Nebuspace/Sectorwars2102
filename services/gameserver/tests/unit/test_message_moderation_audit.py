@@ -138,6 +138,12 @@ class FakeGroupQuery:
     def group_by(self, *cols):
         return self
 
+    def all(self):
+        # Medal batch-count queries (MessageService._enrich_message_dicts_with_sender_medals)
+        # use the same multi-column db.query(...) shape as get_conversations' group-by;
+        # moderation-audit fakes have no PlayerMedal rows — empty aggregate is correct.
+        return []
+
     def subquery(self):
         matching = [r for r in self._store if all(_eval_clause(r, c) for c in self._conditions)]
         groups: dict = {}

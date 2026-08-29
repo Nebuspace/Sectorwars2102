@@ -46,6 +46,54 @@ const mapWar = (raw: WarEntryApiResponse): TeamWar => ({
 const shortId = (id: string): string =>
   id.length > 12 ? `${id.slice(0, 8)}…` : id;
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+function serverDetail(err: unknown): string | undefined {
+  if (err && typeof err === 'object') {
+    const rawDetail = (err as { response?: { data?: { detail?: unknown } } }).response?.data
+      ?.detail;
+    if (typeof rawDetail === 'string' && rawDetail.trim()) return rawDetail.trim();
+  }
+  const message = err instanceof Error ? err.message : undefined;
+  if (
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim())
+  ) {
+    return message.trim();
+  }
+  return undefined;
+}
+
+/** apiRequest throws Error with `.status`; teams.py surfaces 404 detail on war list. */
+export function formatTeamWarLoadError(err: unknown): string {
+  const status = httpStatus(err);
+  const detail = serverDetail(err);
+
+  if (status === 404) {
+    if (detail) return detail;
+    return 'Failed to load wars';
+  }
+
+  if (detail) return detail;
+  return 'Failed to load wars';
+}
+
+/** Declare/ceasefire refusals — surface gameserver detail (403/404/400). */
+export function formatTeamWarActionError(err: unknown): string {
+  const detail = serverDetail(err);
+  if (detail) return detail;
+  return 'Action failed';
+}
+
 export const TeamWarPanel: React.FC<TeamWarPanelProps> = ({
   teamId,
   isLeader,
@@ -71,7 +119,7 @@ export const TeamWarPanel: React.FC<TeamWarPanelProps> = ({
       const raw = (await teamAPI.listWars(teamId, status)) as WarEntryApiResponse[];
       setWars(Array.isArray(raw) ? raw.map(mapWar) : []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load wars');
+      setError(formatTeamWarLoadError(err));
       setWars([]);
     } finally {
       setLoading(false);
@@ -109,7 +157,7 @@ export const TeamWarPanel: React.FC<TeamWarPanelProps> = ({
       setReason('');
       await loadWars();
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Failed to declare war');
+      setActionError(formatTeamWarActionError(err));
     } finally {
       setDeclaring(false);
     }
@@ -127,7 +175,7 @@ export const TeamWarPanel: React.FC<TeamWarPanelProps> = ({
       await teamAPI.ceasefire(teamId, targetId);
       await loadWars();
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Failed to request ceasefire');
+      setActionError(formatTeamWarActionError(err));
     }
   };
 
