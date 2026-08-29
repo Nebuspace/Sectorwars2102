@@ -220,6 +220,35 @@ def test_new_upgrade_attempt_blocked_with_error_code_when_prereq_offline():
     assert "Defense Grid L1" in failure["message"]  # first "any"-mode requirement, both legs offline
 
 
+def test_new_upgrade_attempt_blocked_with_error_code_when_prereq_missing():
+    """A building that is absent (not in buildings or queue) is "missing" --
+    returned payload must carry ERR_CITADEL_PREREQUISITE_MISSING plus building identity."""
+    owner = uuid.uuid4()
+    planet = SimpleNamespace(
+        id=uuid.uuid4(),
+        owner_id=owner,
+        citadel_level=3,
+        active_events={
+            "defense_buildings": {
+                "planetary_defense_grid": 2,
+                "turret_network": 1,
+            },
+            "defense_build_queue": [],
+        },
+        defense_shields=0,  # Shield Generator L4 required for L4, absent
+    )
+    svc = CitadelService(_FakeSession(planet, None))
+
+    failure = svc._check_upgrade_prereqs(planet, 4)
+
+    assert failure is not None
+    assert failure["reason"] == "prerequisite_building_missing"
+    assert failure["error_code"] == "ERR_CITADEL_PREREQUISITE_MISSING"
+    assert "ERR_CITADEL_PREREQUISITE_MISSING" in failure["message"]
+    assert failure["building_key"] == "shield_generator"
+    assert "Shield Generator L4" in failure["building_name"]
+
+
 # --------------------------------------------------------------------------- #
 # (c) Citadel level does NOT downgrade on auto-cancel.
 # --------------------------------------------------------------------------- #

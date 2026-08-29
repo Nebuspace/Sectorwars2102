@@ -937,6 +937,25 @@ def _operational(b: dict) -> bool:
     return isinstance(b, dict) and b.get("complete_at") is None and not b.get("browned_out")
 
 
+
+
+def max_kind_level(structures: dict, kind: str) -> int:
+    """Highest operational level of ``kind`` on the grid, or 0 if absent (D#594 / LEG-2840).
+
+    Reads planet ``structures`` buildings only — no legacy column proxies. Under-construction
+    (``complete_at`` set) and browned-out buildings do not count.
+    """
+    if not isinstance(structures, dict) or not kind:
+        return 0
+    best = 0
+    for b in structures.get("buildings", []) or []:
+        if not _operational(b):
+            continue
+        if b.get("kind") != kind:
+            continue
+        best = max(best, int(b.get("level") or 0))
+    return best
+
 def powered_floor_area(structures: dict) -> int:
     """Σ (footprint cells × level) over operational, not-browned-out economy/civic buildings
     (spec §1.2). A browned-out grid derives DOWN — a legible penalty."""

@@ -29,6 +29,15 @@ from src.services import notification_service
 from src.services.notification_service import NotificationService, delivery_surfaces_for
 
 
+@pytest.fixture(autouse=True)
+def _stub_count_earned_medals(monkeypatch):
+    """notify_new_message counts sender medals; keep notify tests DB-free."""
+    monkeypatch.setattr(
+        "src.services.medal_service.count_earned_medals",
+        lambda _db, _player_id: 0,
+    )
+
+
 class _FakeQuery:
     def __init__(self, value):
         self._value = value
@@ -69,13 +78,31 @@ class _User:
         self.is_admin = is_admin
 
 
-def _player(id=None, user_id=None, nickname="Nova", team_id=None, is_active=True, user=None):
+def _player(
+    id=None,
+    user_id=None,
+    nickname="Nova",
+    team_id=None,
+    is_active=True,
+    user=None,
+    pinned_medal_id=None,
+    show_count_publicly=True,
+):
     p = Player()
     p.id = id or uuid4()
     p.user_id = user_id
     p.nickname = nickname
     p.team_id = team_id
     p.is_active = is_active
+    privacy = {}
+    if pinned_medal_id is not None:
+        privacy["pinned_medal_id"] = pinned_medal_id
+    if show_count_publicly is not False:
+        privacy["show_count_publicly"] = True
+    else:
+        privacy["show_count_publicly"] = False
+    if privacy:
+        p.settings = {"medal_privacy": privacy}
     # Bypass the mapped relationship's instrumented setter (it expects a
     # mapped instance) -- write straight into the instance dict so a plain
     # _User stand-in is readable back via getattr(sender, "user", None).
@@ -144,6 +171,34 @@ class TestBuildFrame:
         assert frame["sent_at"] is None
         assert frame["priority"] == "high"
         assert frame["delivery"] == ["inbox", "toast", "push"]
+        assert frame["sender_pinned_medal_id"] is None
+        assert frame["sender_medal_count"] is None
+
+    def test_sender_medal_fields_on_frame(self):
+        sender = _player(pinned_medal_id="bronze_cluster")
+        msg = _message()
+        frame = NotificationService.build_frame(
+            msg,
+            sender,
+            ["inbox"],
+            sender_pinned_medal_id="bronze_cluster",
+            sender_medal_count=3,
+        )
+        assert frame["sender_pinned_medal_id"] == "bronze_cluster"
+        assert frame["sender_medal_count"] == 3
+
+    def test_sender_medal_count_hidden_when_privacy_disabled(self):
+        sender = _player(pinned_medal_id="silver_star", show_count_publicly=False)
+        msg = _message()
+        frame = NotificationService.build_frame(
+            msg,
+            sender,
+            ["inbox"],
+            sender_pinned_medal_id="silver_star",
+            sender_medal_count=None,
+        )
+        assert frame["sender_pinned_medal_id"] == "silver_star"
+        assert frame["sender_medal_count"] is None
 
     def test_preview_truncates_to_100_chars(self):
         sender = _player()
@@ -182,6 +237,20 @@ class TestNotifyNewMessageDirect:
         sent_user_id, frame = manager.sent[0]
         assert sent_user_id == str(recipient.user_id)
         assert frame["delivery"] == ["inbox", "toast"]
+
+    @pytest.mark.asyncio
+    async def test_dispatched_frame_includes_sender_medal_fields(self):
+        recipient = _player(user_id=uuid4())
+        sender = _player(pinned_medal_id="bronze_cluster")
+        msg = _message(recipient_id=recipient.id)
+        db = _FakeDb(results={Player: [recipient]})
+        manager = _FakeManager()
+
+        await NotificationService.notify_new_message(db, msg, sender, manager)
+
+        _, frame = manager.sent[0]
+        assert frame["sender_pinned_medal_id"] == "bronze_cluster"
+        assert frame["sender_medal_count"] == 0
 
     @pytest.mark.asyncio
     async def test_recipient_with_no_user_id_skips_dispatch(self):

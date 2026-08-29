@@ -748,6 +748,23 @@ class TerraformingService:
         # changes are approximated by the current rate (same simplification
         # the lazy colonist-growth path makes for habitability changes).
         increment = self._calculate_increment(planet)
+        try:
+            from src.services.profession_service import (
+                profession_counts,
+                ProfessionType,
+                terraform_engineer_bonus_for_tick,
+            )
+            engineer_count = profession_counts(self.db, planet.id).get(
+                ProfessionType.TERRAFORM_ENGINEERS, 0
+            )
+            increment += int(
+                round(terraform_engineer_bonus_for_tick(engineer_count, tick_period_hours))
+            )
+        except Exception:
+            logger.debug(
+                "Terraform engineer bonus skipped on planet %s (non-fatal)",
+                getattr(planet, "id", "?"), exc_info=True,
+            )
         old_habitability = planet.habitability_score
         new_habitability = min(target, old_habitability + ticks * increment)
         planet.habitability_score = new_habitability

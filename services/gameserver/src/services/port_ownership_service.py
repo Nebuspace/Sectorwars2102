@@ -57,8 +57,11 @@ DOCUMENTED INTERPRETATIONS (where canon is summarized or silent):
     challenger — comparing against a finished month made the match
     unwinnable). Success resets the campaign clock (status 'countered',
     months_satisfied 0) and evaluation continues from the NEXT month.
-  * Forced-sale condition_multiplier is 1.0 in v1 (station condition is
-    not modeled yet).
+  * Forced-sale condition_multiplier (port-ownership.md:60-66): penalises
+    recent defense incidents (within 7 days, up to −10%) and stations with
+    security tier ``none`` (−15%). Reads
+    ``ownership['last_defense_incident_at']`` (ISO UTC, stamped on port
+    defense engagements).
   * acquisition_cost reads from station.ownership['acquisition_cost']
     (written on every transfer here); stations owned before this feature
     fall back to acquisition_requirements['base_price'].
@@ -73,7 +76,7 @@ No function here commits; the calling route owns the transaction.
 """
 import logging
 import uuid
-from datetime import datetime, UTC
+from datetime import datetime, timedelta, UTC
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from sqlalchemy import func
@@ -87,6 +90,8 @@ from src.models.player import Player
 from src.models.port_ownership import PurchaseOffer, StationListing, TakeoverCampaign
 from src.models.sector import Sector
 from src.models.station import Station, player_stations
+from src.models.team import Team
+from src.models.team_member import TeamMember, TeamRole
 from src.services.faction_service import (
     FAIR_OPS_SECTOR_INFLUENCE_DELTA,
     adjust_sector_influence,
@@ -158,7 +163,10 @@ MONTH_HOURS = 30 * 24.0             # 1 scaled month = 30 canonical days
 TAKEOVER_SHARE_THRESHOLD = 0.5      # challenger needs >50% of monthly volume
 TAKEOVER_MONTHS_REQUIRED = 3        # consecutive satisfied months
 BOT_FARM_FRACTION = 0.8             # >80% self-cancelling volume = bot farming
-CONDITION_MULTIPLIER = 1.0          # v1: station condition not modeled
+LAST_DEFENSE_INCIDENT_KEY = "last_defense_incident_at"
+DEFENSE_INCIDENT_LOOKBACK_DAYS = 7
+DEFENSE_INCIDENT_MAX_PENALTY = 0.10
+SECURITY_NONE_PENALTY = 0.15
 HOSTILE_UNDERCUT_FACTOR = 0.97      # selling >=3% under the station-pays price
 CATCHUP_EVAL_LIMIT = 3              # lazy month catch-up: evaluate at most the
                                     # trailing N months individually; older
@@ -169,10 +177,17 @@ MAX_TAX_RATE = 0.25
 
 # Canon "Treasury & cash flow > Owner withdrawals" (port-ownership.md:361-367):
 # every sweep must retain at least 10% of the CURRENT balance as an operating
-# cushion, so at most 90% can leave in one withdrawal. v1 has no separate
-# scheduled-sweep engine, so this cap applies uniformly to manual withdrawals
-# too (canon: "manual ad-hoc withdrawals subject to the same 90% cap").
+# cushion, so at most 90% can leave in one withdrawal. Manual ad-hoc
+# withdrawals and the scheduled-sweep engine (LEG-2014) share this cap.
 TREASURY_CUSHION_PCT = 0.10
+
+# Soft-ORDER invent=0 — withdrawal schedule (port-ownership.md:144 / :381).
+WITHDRAWAL_SCHEDULE_KEY = "withdrawal_schedule"
+WITHDRAWAL_SCHEDULE_SET_AT_KEY = "withdrawal_schedule_set_at"
+WITHDRAWAL_SCHEDULE_LAST_AT_KEY = "withdrawal_schedule_last_at"
+WITHDRAWAL_SCHEDULES = frozenset({"daily", "weekly", "monthly"})
+# Canon schedule words only — daily/weekly/monthly as scaled canonical days.
+WITHDRAWAL_SCHEDULE_DAYS = {"daily": 1, "weekly": 7, "monthly": 30}
 
 # ---------------------------------------------------------------------------
 # Owner revenue-stream levers (canon FEATURES/economy/port-ownership "Revenue
@@ -261,6 +276,13 @@ SYNDICATE_CONVERSION_FEE_PCT = 0.01
 SYNDICATE_MAX_MEMBERS = 10
 SYNDICATE_MAX_INVITEE_PCT = 99  # primary keeps ≥1%
 
+# Soft-ORDER LEG-2033 — team-owned station (invent=0). Station treasury stays
+# station-scoped; LEADER|OFFICER configure; members get configured revenue share.
+TEAM_MODE = "team"
+TEAM_ID_KEY = "co_ownership_team_id"
+TEAM_MEMBER_SHARE_PCT_KEY = "team_member_share_pct"
+_TEAM_CONFIG_ROLES = frozenset({TeamRole.LEADER.value, TeamRole.OFFICER.value})
+
 # Campaign statuses considered "active" (a live takeover attempt). Hoisted here
 # so both the economic and military engines reference one source of truth.
 _ACTIVE_CAMPAIGN_STATUSES = ("building", "eligible", "countered", "disputed")
@@ -312,7 +334,11 @@ FEE_OWNER_PCT_KEY = "fee_owner_pct"
 # ---------------------------------------------------------------------------
 MAINTENANCE_RATE_PER_MONTH = 0.01     # 1% of acquisition cost / canonical month
 DAYS_PER_MONTH = 30                   # canon scaled-month length
-INSOLVENCY_MONTHS = 3                 # consecutive shortfall months -> auto-sell
+INSOLVENCY_MONTHS = 3                 # consecutive shortfall months -> advance then auto-sell
+# Canon FEATURES/economy/port-ownership.md:395 — broadcast sale 7 days in
+# advance before auto-sell (owner inject / rival rescue window).
+INSOLVENCY_ADVANCE_DAYS = 7
+INSOLVENCY_ADVANCE_HOURS = INSOLVENCY_ADVANCE_DAYS * 24.0
 DEPRECIATION_FACTOR = 0.50            # auto-sell to faction at 40-60% (midpoint)
 SECONDS_PER_DAY = 24 * 3600.0
 
@@ -365,6 +391,9 @@ MIN_BUYER_TIER = "Heroic"
 # ---------------------------------------------------------------------------
 MILITARY_DECLARATION_HOURS = 24.0     # canon galaxy-wide notice before siege
 MILITARY_PROTECTION_HOURS = 7 * 24.0  # canon post-capture immunity window
+MILITARY_PRODUCTIVITY_HOURS = 3 * 24.0  # canon post-capture -50% productivity
+PRODUCTIVITY_UNTIL_KEY = "productivity_until"
+PRODUCTIVITY_MULT = 0.5  # invent=0 half-rate during disruption window
 MILITARY_REPUTATION_PENALTY = -300    # canon "severe" penalty with prior faction
 # Per-attempt garrison hardening: each prior military attempt by the same
 # challenger on the same station within 90 days raises effective defender
@@ -540,6 +569,27 @@ def split_revenue(
     return defense, owner, operating
 
 
+def expected_revenue_per_day(
+    traffic_final: float,
+    per_trade_revenue_avg: float,
+    region_tax_rate: float,
+    owner_pct: float,
+) -> int:
+    """Per-day owner revenue projection (port-ownership.md:195-205).
+
+    Pure planning helper — callers supply already-composed traffic and split
+    inputs (no NPC traffic simulation here). Returns integer credits/day."""
+    if traffic_final <= 0 or per_trade_revenue_avg <= 0 or owner_pct <= 0:
+        return 0
+    gross = (
+        traffic_final
+        * per_trade_revenue_avg
+        * (1.0 - region_tax_rate)
+        * (owner_pct / 100.0)
+    )
+    return int(round(gross))
+
+
 def _effective_fee_split_pcts(station: Station) -> Tuple[float, float, float]:
     """Effective (defense_pct, owner_pct, operating_pct) fee-split for THIS
     station: reads the owner's rebalanced price_modifiers override (canon
@@ -586,10 +636,67 @@ def depreciated_value(acquisition_cost: int) -> int:
     return int(max(0, acquisition_cost) * DEPRECIATION_FACTOR)
 
 
-def forced_sale_value(avg_monthly_revenue: float, acquisition_cost: int) -> int:
+def stamp_defense_incident(
+    station: Station, now: Optional[datetime] = None
+) -> None:
+    """Record a port-defense engagement on ``station.ownership`` (LEG-2060)."""
+    now = now or datetime.now(UTC)
+    ownership = _ownership(station)
+    ownership[LAST_DEFENSE_INCIDENT_KEY] = now.isoformat()
+    if getattr(station, "_sa_instance_state", None):
+        flag_modified(station, "ownership")
+
+
+def _parse_defense_incident_at(raw: Any) -> Optional[datetime]:
+    if raw is None:
+        return None
+    if isinstance(raw, datetime):
+        incident_at = raw
+    elif isinstance(raw, str):
+        try:
+            incident_at = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    if incident_at.tzinfo is None:
+        incident_at = incident_at.replace(tzinfo=UTC)
+    return incident_at
+
+
+def compute_condition_multiplier(
+    station: Station, now: Optional[datetime] = None
+) -> float:
+    """Canon condition_multiplier for forced-sale pricing (LEG-2055)."""
+    now = now or datetime.now(UTC)
+    ownership = station.ownership or {}
+    incident_at = _parse_defense_incident_at(
+        ownership.get(LAST_DEFENSE_INCIDENT_KEY)
+    )
+    if incident_at is None:
+        days_since = DEFENSE_INCIDENT_LOOKBACK_DAYS
+    else:
+        days_since = int((now - incident_at).total_seconds() // 86400)
+
+    defense_term = (
+        DEFENSE_INCIDENT_MAX_PENALTY
+        * max(0, DEFENSE_INCIDENT_LOOKBACK_DAYS - days_since)
+        / DEFENSE_INCIDENT_LOOKBACK_DAYS
+    )
+    security_level = getattr(station, "security_level", "none")
+    security_term = SECURITY_NONE_PENALTY if security_level == "none" else 0.0
+    return max(0.0, 1.0 - defense_term - security_term)
+
+
+def forced_sale_value(
+    avg_monthly_revenue: float,
+    acquisition_cost: int,
+    *,
+    condition_multiplier: float = 1.0,
+) -> int:
     """Canon forced-sale price: clamp(avg-monthly-revenue x 12 x
     condition_multiplier, acquisition_cost, 2 x acquisition_cost)."""
-    raw = avg_monthly_revenue * 12 * CONDITION_MULTIPLIER
+    raw = avg_monthly_revenue * 12 * condition_multiplier
     return int(max(acquisition_cost, min(2 * acquisition_cost, raw)))
 
 
@@ -928,6 +1035,113 @@ def list_station(
     return listing
 
 
+
+def apply_governance_sale_listing(
+    db: Session,
+    station: Station,
+    now: Optional[datetime] = None,
+) -> Optional[StationListing]:
+    """Passed syndicate sale vote: release ownership and list at canon price.
+
+    Treasury conveys with the listing per standard port-ownership rules.
+    Reuses ``list_station`` — no insolvency reputation penalty."""
+    now = now or datetime.now(UTC)
+    station = _lock_station(db, station.id)
+
+    if station.owner_id is not None:
+        db.execute(
+            player_stations.delete().where(player_stations.c.station_id == station.id)
+        )
+        station.owner_id = None
+        ownership = dict(station.ownership or {})
+        ownership.pop("player_id", None)
+        ownership.pop(SYNDICATE_MODE_KEY, None)
+        ownership.pop(SYNDICATE_SHARES_KEY, None)
+        ownership.pop(SYNDICATE_INVITES_KEY, None)
+        station.ownership = ownership
+        flag_modified(station, "ownership")
+        db.flush()
+
+    if not is_listable(station):
+        logger.warning(
+            "Governance sale vote passed but station %s is not listable", station.id
+        )
+        return None
+
+    try:
+        listing = list_station(db, station, now=now)
+    except PortOwnershipError as exc:
+        logger.warning(
+            "Governance sale vote passed but station %s could not be listed: %s",
+            station.id,
+            exc.detail,
+        )
+        return None
+
+    logger.info(
+        "Governance sale listing applied station=%s listing=%s price=%s",
+        station.id,
+        listing.id,
+        listing.price,
+    )
+    return listing
+
+
+def apply_governance_disbandment_listing(
+    db: Session,
+    station: Station,
+    now: Optional[datetime] = None,
+) -> Optional[StationListing]:
+    """Passed syndicate disbandment vote: dissolve and list at depreciated value.
+
+    Canon (port-ownership.md Dissolving co-ownership): disbandment auto-sells
+    at depreciated value. v1 has no NPC-faction wallet (same honesty as
+    ``auto_sell_insolvent``), so the open-market listing path is reused at
+    ``depreciated_value`` — no insolvency reputation penalty."""
+    now = now or datetime.now(UTC)
+    station = _lock_station(db, station.id)
+    depreciated = depreciated_value(_acquisition_cost(station))
+
+    if station.owner_id is not None:
+        db.execute(
+            player_stations.delete().where(player_stations.c.station_id == station.id)
+        )
+        station.owner_id = None
+        ownership = dict(station.ownership or {})
+        ownership.pop("player_id", None)
+        ownership.pop(SYNDICATE_MODE_KEY, None)
+        ownership.pop(SYNDICATE_SHARES_KEY, None)
+        ownership.pop(SYNDICATE_INVITES_KEY, None)
+        station.ownership = ownership
+        flag_modified(station, "ownership")
+        db.flush()
+
+    if not is_listable(station):
+        logger.warning(
+            "Governance disbandment vote passed but station %s is not listable",
+            station.id,
+        )
+        return None
+
+    try:
+        listing = list_station(db, station, price=depreciated, now=now)
+    except PortOwnershipError as exc:
+        logger.warning(
+            "Governance disbandment vote passed but station %s could not be listed: %s",
+            station.id,
+            exc.detail,
+        )
+        return None
+
+    logger.info(
+        "Governance disbandment listing applied station=%s listing=%s price=%s",
+        station.id,
+        listing.id,
+        listing.price,
+    )
+    return listing
+
+
 def place_offer(
     db: Session,
     listing: StationListing,
@@ -1097,10 +1311,250 @@ def _require_owner(station: Station, owner: Player) -> None:
         raise PortOwnershipError(403, "Only the station owner can do that")
 
 
+def _co_ownership_mode(station: Station) -> str:
+    return (station.ownership or {}).get(SYNDICATE_MODE_KEY) or "solo"
+
+
+def _team_id_from_ownership(station: Station) -> Optional[uuid.UUID]:
+    raw = (station.ownership or {}).get(TEAM_ID_KEY)
+    if raw is None:
+        return None
+    try:
+        return uuid.UUID(str(raw))
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def _team_member_share_pct(station: Station) -> int:
+    raw = (station.ownership or {}).get(TEAM_MEMBER_SHARE_PCT_KEY, 0)
+    try:
+        pct = int(raw)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(100, pct))
+
+
+def _require_config_authority(db: Session, station: Station, actor: Player) -> None:
+    """Solo/syndicate: primary owner. Team mode: LEADER|OFFICER of bound team."""
+    if _co_ownership_mode(station) != TEAM_MODE:
+        _require_owner(station, actor)
+        return
+    team_id = _team_id_from_ownership(station)
+    if team_id is None:
+        raise PortOwnershipError(400, "team-owned station missing co_ownership_team_id")
+    row = (
+        db.query(TeamMember)
+        .filter(
+            TeamMember.team_id == team_id,
+            TeamMember.player_id == actor.id,
+        )
+        .first()
+    )
+    if row is None or str(row.role) not in _TEAM_CONFIG_ROLES:
+        raise PortOwnershipError(
+            403, "Only team LEADER or OFFICER can configure this station"
+        )
+
+
+def bind_station_to_team(
+    db: Session,
+    station: Station,
+    leader: Player,
+    team_id: uuid.UUID,
+    member_share_pct: int = 0,
+) -> Dict[str, Any]:
+    """LEADER converts a solo-owned station to team-owned (invent=0 Soft-ORDER).
+
+    Station treasury remains on ``station.treasury_balance``. ``owner_id`` stays
+    the binding LEADER (primary contact). Mode flips to ``team``.
+    """
+    station = _lock_station(db, station.id)
+    _require_owner(station, leader)
+    mode = _co_ownership_mode(station)
+    if mode not in ("solo", TEAM_MODE):
+        raise PortOwnershipError(
+            400, f"cannot bind team ownership while mode is {mode}"
+        )
+    if not (0 <= int(member_share_pct) <= 100):
+        raise PortOwnershipError(400, "member_share_pct must be between 0 and 100")
+    team = db.query(Team).filter(Team.id == team_id).first()
+    if team is None:
+        raise PortOwnershipError(404, "Team not found")
+    membership = (
+        db.query(TeamMember)
+        .filter(
+            TeamMember.team_id == team_id,
+            TeamMember.player_id == leader.id,
+        )
+        .first()
+    )
+    if membership is None or str(membership.role) != TeamRole.LEADER.value:
+        raise PortOwnershipError(403, "Only the team LEADER can bind a station to the team")
+    ownership = _ownership(station)
+    ownership[SYNDICATE_MODE_KEY] = TEAM_MODE
+    ownership[TEAM_ID_KEY] = str(team_id)
+    ownership[TEAM_MEMBER_SHARE_PCT_KEY] = int(member_share_pct)
+    # Clear syndicate share state — team roster is live, not share invites.
+    ownership.pop(SYNDICATE_SHARES_KEY, None)
+    ownership.pop(SYNDICATE_INVITES_KEY, None)
+    flag_modified(station, "ownership")
+    db.flush()
+    logger.info(
+        "Station %s bound to team %s (member_share_pct=%s) by %s",
+        station.id, team_id, member_share_pct, leader.id,
+    )
+    return get_team_ownership_status(db, station)
+
+
+def set_team_member_share_pct(
+    db: Session, station: Station, actor: Player, pct: int
+) -> Dict[str, Any]:
+    """LEADER|OFFICER sets the member revenue-share percent (0–100)."""
+    station = _lock_station(db, station.id)
+    _require_config_authority(db, station, actor)
+    if _co_ownership_mode(station) != TEAM_MODE:
+        raise PortOwnershipError(400, "station is not team-owned")
+    if not (0 <= int(pct) <= 100):
+        raise PortOwnershipError(400, "member_share_pct must be between 0 and 100")
+    ownership = _ownership(station)
+    ownership[TEAM_MEMBER_SHARE_PCT_KEY] = int(pct)
+    flag_modified(station, "ownership")
+    db.flush()
+    return get_team_ownership_status(db, station)
+
+
+def get_team_ownership_status(db: Session, station: Station) -> Dict[str, Any]:
+    mode = _co_ownership_mode(station)
+    team_id = _team_id_from_ownership(station)
+    return {
+        "station_id": str(station.id),
+        "mode": mode,
+        "team_id": str(team_id) if team_id else None,
+        "member_share_pct": _team_member_share_pct(station) if mode == TEAM_MODE else None,
+        "owner_id": str(station.owner_id) if station.owner_id else None,
+    }
+
+
+def _team_member_player_ids(db: Session, team_id: uuid.UUID) -> List[uuid.UUID]:
+    """Active roster members entitled to revenue share (MEMBER + RECRUIT)."""
+    rows = (
+        db.query(TeamMember)
+        .filter(
+            TeamMember.team_id == team_id,
+            TeamMember.role.in_([TeamRole.MEMBER.value, TeamRole.RECRUIT.value]),
+        )
+        .all()
+    )
+    return [r.player_id for r in rows]
+
+
+def _team_withdrawal_payouts(
+    db: Session, station: Station, actor: Player, amount: int
+) -> List[Tuple[uuid.UUID, int, int]]:
+    """Split withdrawal: member_share_pct pool → equal among MEMBER/RECRUIT;
+    remainder → acting LEADER|OFFICER. Live roster = membership-loss auto-clear.
+    """
+    team_id = _team_id_from_ownership(station)
+    if team_id is None:
+        return [(actor.id, 100, amount)]
+    share_pct = _team_member_share_pct(station)
+    member_ids = _team_member_player_ids(db, team_id)
+    member_pool = (amount * share_pct) // 100 if member_ids else 0
+    actor_cut = amount - member_pool
+    payouts: List[Tuple[uuid.UUID, int, int]] = []
+    if member_pool > 0 and member_ids:
+        n = len(member_ids)
+        base = member_pool // n
+        rem = member_pool - base * n
+        for i, pid in enumerate(sorted(member_ids, key=lambda x: str(x))):
+            credits = base + (1 if i < rem else 0)
+            if credits > 0:
+                payouts.append((pid, share_pct, credits))
+    if actor_cut > 0:
+        payouts.append((actor.id, max(0, 100 - share_pct), actor_cut))
+    if not payouts:
+        payouts = [(actor.id, 100, amount)]
+    total = sum(p[2] for p in payouts)
+    if total != amount and payouts:
+        pid, pct, cr = payouts[-1]
+        payouts[-1] = (pid, pct, cr + (amount - total))
+    return payouts
+
+
+def _release_ownership_for_relist(db: Session, station: Station, reason: str) -> None:
+    """Clear owner so list_station can re-list (no insolvency reputation hit)."""
+    execute = getattr(db, "execute", None)
+    if callable(execute):
+        execute(
+            player_stations.delete().where(player_stations.c.station_id == station.id)
+        )
+    station.owner_id = None
+    ownership = _ownership(station)
+    ownership.pop(SYNDICATE_MODE_KEY, None)
+    ownership.pop(SYNDICATE_SHARES_KEY, None)
+    ownership.pop(SYNDICATE_INVITES_KEY, None)
+    ownership.pop(TEAM_ID_KEY, None)
+    ownership.pop(TEAM_MEMBER_SHARE_PCT_KEY, None)
+    ownership["released_reason"] = reason
+    flag_modified(station, "ownership")
+    db.flush()
+
+
+def force_sell_stations_for_team_disband(
+    db: Session, team_id: uuid.UUID, now: Optional[datetime] = None
+) -> List[Dict[str, Any]]:
+    """Team disband → forced sale at depreciated value (canon invent=0 path).
+
+    Does not apply insolvency reputation penalty. Returns one result dict per
+    team-owned station touched.
+    """
+    now = now or datetime.now(UTC)
+    tid = str(team_id)
+    # Portable scan — FakeSession cannot interpret isnot filters.
+    candidates = db.query(Station).all()
+    results: List[Dict[str, Any]] = []
+    for station in candidates:
+        ownership = station.ownership or {}
+        if ownership.get(SYNDICATE_MODE_KEY) != TEAM_MODE:
+            continue
+        if str(ownership.get(TEAM_ID_KEY)) != tid:
+            continue
+        station = _lock_station(db, station.id)
+        ownership = station.ownership or {}
+        if ownership.get(SYNDICATE_MODE_KEY) != TEAM_MODE:
+            continue
+        if str(ownership.get(TEAM_ID_KEY)) != tid:
+            continue
+        depreciated = depreciated_value(_acquisition_cost(station))
+        _release_ownership_for_relist(
+            db, station, "station auto-listed via team disband"
+        )
+        listing_id = None
+        if is_listable(station):
+            try:
+                listing = list_station(db, station, price=depreciated, now=now)
+                listing_id = str(listing.id)
+            except PortOwnershipError as exc:
+                logger.warning(
+                    "Team-disband station %s could not be relisted: %s",
+                    station.id,
+                    exc.detail,
+                )
+        results.append(
+            {
+                "station_id": str(station.id),
+                "action": "depreciated_auto_sell",
+                "depreciated_value": depreciated,
+                "listing_id": listing_id,
+            }
+        )
+    return results
+
+
 def set_tax_rate(db: Session, station: Station, owner: Player, rate: float) -> Dict[str, Any]:
     """Owner lever: trade tax rate within canon bounds [0.0, 0.25]."""
     station = _lock_station(db, station.id)
-    _require_owner(station, owner)
+    _require_config_authority(db, station, owner)
     if not (MIN_TAX_RATE <= rate <= MAX_TAX_RATE):
         raise PortOwnershipError(
             400, f"Tax rate must be between {MIN_TAX_RATE:.2f} and {MAX_TAX_RATE:.2f}"
@@ -1134,7 +1588,7 @@ def set_price_lever(
     negative lever lowers it (tighter margin, more traffic). Owner-gated under
     the station lock; no commit (the router owns the transaction)."""
     station = _lock_station(db, station.id)
-    _require_owner(station, owner)
+    _require_config_authority(db, station, owner)
     if not (-PRICE_LEVER_BOUND <= pct <= PRICE_LEVER_BOUND):
         raise PortOwnershipError(
             400,
@@ -1164,7 +1618,7 @@ def set_docking_fee(
     only SETS the value (owner-gated + clamped), it does not edit the charging
     sites. No commit."""
     station = _lock_station(db, station.id)
-    _require_owner(station, owner)
+    _require_config_authority(db, station, owner)
     if not (DOCKING_FEE_MIN <= amount <= DOCKING_FEE_MAX):
         raise PortOwnershipError(
             400,
@@ -1960,13 +2414,99 @@ def _ensure_primary_share(station: Station) -> List[Dict[str, Any]]:
     ]
 
 
+def set_withdrawal_schedule(station: Station, schedule: str, now: datetime) -> str:
+    """Persist daily|weekly|monthly on ownership JSONB (LEG-2014 invent=0)."""
+    key = str(schedule or "").strip().lower()
+    if key not in WITHDRAWAL_SCHEDULES:
+        raise PortOwnershipError(
+            400, "withdrawal schedule must be daily, weekly, or monthly"
+        )
+    ownership = _ownership(station)
+    ownership[WITHDRAWAL_SCHEDULE_KEY] = key
+    ownership[WITHDRAWAL_SCHEDULE_SET_AT_KEY] = now.isoformat()
+    # Fresh schedule: next due measured from set_at (clear prior last).
+    ownership.pop(WITHDRAWAL_SCHEDULE_LAST_AT_KEY, None)
+    flag_modified(station, "ownership")
+    return key
+
+
+def maybe_run_scheduled_withdrawal(
+    db: Session, station: Station, now: Optional[datetime] = None
+) -> Optional[Dict[str, Any]]:
+    """Lazy-on-read sweep honoring ownership withdrawal_schedule + 90% cushion."""
+    now = now or datetime.now(UTC)
+    ownership = station.ownership or {}
+    schedule = ownership.get(WITHDRAWAL_SCHEDULE_KEY)
+    if schedule not in WITHDRAWAL_SCHEDULES:
+        return None
+    days = WITHDRAWAL_SCHEDULE_DAYS[schedule]
+    last_raw = ownership.get(WITHDRAWAL_SCHEDULE_LAST_AT_KEY) or ownership.get(
+        WITHDRAWAL_SCHEDULE_SET_AT_KEY
+    )
+    last = _parse_counter_ts(last_raw) if last_raw else None
+    if last is not None and game_time.scaled_elapsed(last, now) < timedelta(days=days):
+        return None
+
+    station = _lock_station(db, station.id)
+    ownership = _ownership(station)
+    balance = station.treasury_balance or 0
+    amount = treasury_withdrawal_cap(balance)
+    mode = ownership.get(SYNDICATE_MODE_KEY) or "solo"
+    payouts: List[Dict[str, Any]] = []
+    if amount > 0:
+        if mode == "syndicate":
+            parts = _syndicate_withdrawal_payouts(station, amount)
+            locked = _lock_players_ascending(db, [pid for pid, _pct, _cr in parts])
+            paid = 0
+            for pid, _pct, part in parts:
+                pl = locked.get(pid)
+                if pl is None or part <= 0:
+                    continue
+                pl.credits = int(pl.credits or 0) + part
+                paid += part
+                payouts.append({"player_id": str(pid), "amount": part})
+            station.treasury_balance = balance - paid
+        else:
+            owner_id = station.owner_id
+            if owner_id is None:
+                ownership[WITHDRAWAL_SCHEDULE_LAST_AT_KEY] = now.isoformat()
+                flag_modified(station, "ownership")
+                db.flush()
+                return {"status": "skipped", "reason": "unowned"}
+            locked = _lock_players_ascending(db, [owner_id])
+            owner = locked[owner_id]
+            owner.credits = int(owner.credits or 0) + amount
+            station.treasury_balance = balance - amount
+            payouts.append({"player_id": str(owner_id), "amount": amount})
+
+    ownership[WITHDRAWAL_SCHEDULE_LAST_AT_KEY] = now.isoformat()
+    flag_modified(station, "ownership")
+    db.flush()
+    result = {
+        "status": "swept" if amount > 0 else "noop",
+        "schedule": schedule,
+        "amount": amount if amount > 0 else 0,
+        "payouts": payouts,
+        "treasury_balance": station.treasury_balance or 0,
+    }
+    logger.info(
+        "Scheduled withdrawal sweep station=%s schedule=%s amount=%s",
+        station.id,
+        schedule,
+        result["amount"],
+    )
+    return result
+
+
 def get_syndicate_status(
     db: Session, station: Station, player: Player, now: Optional[datetime] = None
 ) -> Dict[str, Any]:
-    """Co-ownership status for a station (lazy invite expiry)."""
+    """Co-ownership status (lazy invite expiry + schedule sweep + inactive forfeit)."""
     now = now or datetime.now(UTC)
     station = _lock_station(db, station.id)
     _expire_syndicate_invites(station, now)
+    maybe_run_scheduled_withdrawal(db, station, now)
+    forfeit_inactive_syndicate_stakes(db, station, now)
     db.flush()
     mode = (station.ownership or {}).get(SYNDICATE_MODE_KEY) or "solo"
     shares = _ensure_primary_share(station) if station.owner_id else []
@@ -1975,6 +2515,7 @@ def get_syndicate_status(
     visible_invites = invites if is_owner else [
         i for i in invites if str(i.get("invitee_player_id")) == str(player.id)
     ]
+    ownership = station.ownership or {}
     return {
         "station_id": str(station.id),
         "owner_id": str(station.owner_id) if station.owner_id else None,
@@ -1982,6 +2523,7 @@ def get_syndicate_status(
         "shares": shares,
         "pending_invites": visible_invites,
         "is_primary": is_owner,
+        "withdrawal_schedule": ownership.get(WITHDRAWAL_SCHEDULE_KEY),
     }
 
 
@@ -2159,6 +2701,222 @@ def decline_share_invite(
     }
 
 
+def execute_syndicate_buyout(
+    db: Session,
+    station: Station,
+    buyer: Player,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """One shareholder buys out all others at fair value; mode reverts to solo.
+
+    Fair value reuses forced_sale_price (canon port-ownership.md buyout path).
+    Each non-buying shareholder receives int(fair_value * pct / 100) credits.
+    """
+    now = now or datetime.now(UTC)
+    station = _lock_station(db, station.id)
+    _expire_syndicate_invites(station, now)
+
+    mode = (station.ownership or {}).get(SYNDICATE_MODE_KEY) or "solo"
+    if mode != "syndicate":
+        raise PortOwnershipError(
+            400, "Buyout is only available for syndicate co-ownership"
+        )
+    if station.owner_id is None:
+        raise PortOwnershipError(400, "Station has no primary owner")
+
+    shares = _ensure_primary_share(station)
+    buyer_id = str(buyer.id)
+    buyer_share = next(
+        (s for s in shares if str(s.get("player_id")) == buyer_id), None
+    )
+    if buyer_share is None:
+        raise PortOwnershipError(403, "Only a syndicate shareholder can buy out")
+
+    others = [
+        {"player_id": str(s["player_id"]), "pct": int(s["pct"])}
+        for s in shares
+        if str(s.get("player_id")) != buyer_id and int(s.get("pct", 0)) > 0
+    ]
+    if not others:
+        raise PortOwnershipError(400, "No other shareholders to buy out")
+
+    fair_value = forced_sale_price(db, station, now)
+    payouts: List[Dict[str, Any]] = []
+    total_payout = 0
+    for s in others:
+        payout = int(fair_value * int(s["pct"]) / 100)
+        payouts.append(
+            {"player_id": s["player_id"], "pct": s["pct"], "payout": payout}
+        )
+        total_payout += payout
+
+    player_ids = [buyer.id] + [p["player_id"] for p in payouts]
+    players = _lock_players_ascending(db, player_ids)
+    buyer_locked = players[buyer.id]
+    if buyer_locked.credits < total_payout:
+        raise PortOwnershipError(
+            400,
+            f"Insufficient credits: need {total_payout:,} for buyout "
+            f"(have {buyer_locked.credits:,})",
+        )
+
+    buyer_locked.credits -= total_payout
+    for row in payouts:
+        pid = uuid.UUID(row["player_id"])
+        players[pid].credits += row["payout"]
+
+    if station.owner_id != buyer.id:
+        station.owner_id = buyer.id
+
+    solo_shares = [{"player_id": buyer_id, "pct": 100}]
+    _set_syndicate_state(
+        station, mode="solo", shares=solo_shares, invites=[]
+    )
+    db.flush()
+    logger.info(
+        "Station %s syndicate buyout by %s: fair_value=%s total=%s",
+        station.id, buyer.id, fair_value, total_payout,
+    )
+    return {
+        "station_id": str(station.id),
+        "mode": "solo",
+        "owner_id": buyer_id,
+        "fair_value": fair_value,
+        "total_payout": total_payout,
+        "payouts": payouts,
+        "shares": solo_shares,
+    }
+
+
+def _redistribute_forfeited_pct(
+    active_shares: List[Dict[str, Any]], forfeited_total: int
+) -> List[Dict[str, Any]]:
+    """Allocate forfeited stake pct proportionally among active shareholders."""
+    if forfeited_total <= 0 or not active_shares:
+        return active_shares
+    base_total = sum(int(s["pct"]) for s in active_shares)
+    if base_total <= 0:
+        return active_shares
+    additions = []
+    allocated = 0
+    for s in active_shares:
+        share = int(s["pct"])
+        add = int(forfeited_total * share / base_total)
+        additions.append(add)
+        allocated += add
+    remainder = forfeited_total - allocated
+    if remainder > 0:
+        ranked = sorted(
+            range(len(active_shares)),
+            key=lambda i: (-int(active_shares[i]["pct"]), str(active_shares[i]["player_id"])),
+        )
+        for idx in ranked:
+            if remainder <= 0:
+                break
+            additions[idx] += 1
+            remainder -= 1
+    return [
+        {
+            "player_id": str(s["player_id"]),
+            "pct": int(s["pct"]) + additions[i],
+        }
+        for i, s in enumerate(active_shares)
+    ]
+
+
+def forfeit_inactive_syndicate_stakes(
+    db: Session,
+    station: Station,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Forfeit ≥90-day inactive co-owner stakes to the controlling faction.
+
+    Removed pct is rebalanced proportionally among remaining active owners
+    (canon port-ownership.md:455). Caller holds the station lock. No commit.
+    """
+    from src.services.station_governance_service import player_forfeit_eligible
+
+    now = now or datetime.now(UTC)
+    mode = (station.ownership or {}).get(SYNDICATE_MODE_KEY) or "solo"
+    if mode != "syndicate" or station.owner_id is None:
+        return {"forfeited": 0, "records": []}
+
+    shares = _ensure_primary_share(station)
+    if len(shares) <= 1:
+        return {"forfeited": 0, "records": []}
+
+    player_ids = [uuid.UUID(str(s["player_id"])) for s in shares]
+    players = {
+        str(p.id): p
+        for p in db.query(Player).filter(Player.id.in_(player_ids)).all()
+    }
+
+    forfeited_rows: List[Dict[str, Any]] = []
+    active_rows: List[Dict[str, Any]] = []
+    forfeited_total = 0
+    for s in shares:
+        pid = str(s["player_id"])
+        pct = int(s["pct"])
+        pl = players.get(pid)
+        if pl is not None and not player_forfeit_eligible(pl, now):
+            active_rows.append({"player_id": pid, "pct": pct})
+            continue
+        if pct <= 0:
+            continue
+        forfeited_rows.append({"player_id": pid, "pct": pct})
+        forfeited_total += pct
+
+    if forfeited_total <= 0 or not active_rows:
+        return {"forfeited": 0, "records": []}
+
+    new_shares = _redistribute_forfeited_pct(active_rows, forfeited_total)
+    controlling_faction = getattr(station, "faction_affiliation", None)
+    ownership = _ownership(station)
+    ledger = ownership.get("co_ownership_forfeitures")
+    if not isinstance(ledger, list):
+        ledger = []
+    for row in forfeited_rows:
+        ledger.append(
+            {
+                "player_id": row["player_id"],
+                "pct": row["pct"],
+                "forfeited_at": now.isoformat(),
+                "controlling_faction": controlling_faction,
+            }
+        )
+    ownership["co_ownership_forfeitures"] = ledger[-50:]
+
+    new_mode = "syndicate"
+    if len(new_shares) == 1 and int(new_shares[0]["pct"]) == 100:
+        new_mode = "solo"
+
+    primary_id = str(station.owner_id)
+    if any(r["player_id"] == primary_id for r in forfeited_rows):
+        ranked = sorted(
+            new_shares,
+            key=lambda s: (-int(s["pct"]), str(s["player_id"])),
+        )
+        station.owner_id = uuid.UUID(str(ranked[0]["player_id"]))
+
+    _set_syndicate_state(station, mode=new_mode, shares=new_shares)
+    db.flush()
+    logger.info(
+        "Station %s forfeited %d%% inactive syndicate stake(s) to faction %s; "
+        "rebalanced among %d active owner(s)",
+        station.id,
+        forfeited_total,
+        controlling_faction,
+        len(new_shares),
+    )
+    return {
+        "forfeited": forfeited_total,
+        "records": forfeited_rows,
+        "shares": new_shares,
+        "mode": new_mode,
+        "controlling_faction": controlling_faction,
+    }
+
+
 def set_service_charge(
     db: Session, station: Station, owner: Player, multiplier: float
 ) -> Dict[str, Any]:
@@ -2169,7 +2927,7 @@ def set_service_charge(
     Persists into price_modifiers; the service-charging sites read the override
     when wired. Owner-gated + clamped; no commit."""
     station = _lock_station(db, station.id)
-    _require_owner(station, owner)
+    _require_config_authority(db, station, owner)
     if not (SERVICE_CHARGE_MIN <= multiplier <= SERVICE_CHARGE_MAX):
         raise PortOwnershipError(
             400,
@@ -2199,7 +2957,7 @@ def set_storage_rental(
     future storage-rental ledger reads the override when wired. Owner-gated +
     clamped; no commit."""
     station = _lock_station(db, station.id)
-    _require_owner(station, owner)
+    _require_config_authority(db, station, owner)
     if not (STORAGE_RENTAL_MIN <= per_day <= STORAGE_RENTAL_MAX):
         raise PortOwnershipError(
             400,
@@ -2246,7 +3004,7 @@ def set_fee_distribution(
     station's override via _effective_fee_split_pcts wherever revenue is
     realized or reported. Owner-gated under the station lock; no commit."""
     station = _lock_station(db, station.id)
-    _require_owner(station, owner)
+    _require_config_authority(db, station, owner)
     if not (FEE_DEFENSE_PCT_MIN <= defense_pct <= FEE_DEFENSE_PCT_MAX):
         raise PortOwnershipError(
             400,
@@ -2279,17 +3037,58 @@ def set_fee_distribution(
     return _fee_distribution_payload(station)
 
 
+def _syndicate_withdrawal_payouts(
+    station: Station, amount: int
+) -> List[Tuple[uuid.UUID, int, int]]:
+    """Split ``amount`` across syndicate shares by integer stake pct.
+
+    Floor each share (``amount * pct // 100``); give any remainder to the
+    primary owner so payouts always sum to ``amount`` (invent=0).
+    Returns ``[(player_id, pct, credits), ...]``.
+    """
+    primary = station.owner_id
+    if primary is None:
+        raise PortOwnershipError(400, "Station has no primary owner")
+    shares = _ensure_primary_share(station)
+    rows: List[List[Any]] = []
+    for share in shares:
+        try:
+            pct = int(share.get("pct", 0))
+        except (TypeError, ValueError):
+            continue
+        if pct <= 0:
+            continue
+        try:
+            pid = uuid.UUID(str(share["player_id"]))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        rows.append([pid, pct, (amount * pct) // 100])
+    if not rows:
+        return [(primary, 100, amount)]
+    allocated = sum(int(r[2]) for r in rows)
+    remainder = amount - allocated
+    for row in rows:
+        if row[0] == primary:
+            row[2] = int(row[2]) + remainder
+            break
+    else:
+        rows[0][2] = int(rows[0][2]) + remainder
+    return [(row[0], int(row[1]), int(row[2])) for row in rows]
+
+
 def withdraw_treasury(
     db: Session, station: Station, owner: Player, amount: int
 ) -> Dict[str, Any]:
-    """Withdraw from the station treasury to the owner (solo owner only
-    this pass — no co-ownership shares yet). Canon cushion (port-ownership.md
-    "Owner withdrawals"): the treasury must retain at least a 10% operating
-    cushion on every sweep, so at most 90% of the CURRENT balance may leave
-    in one withdrawal (v1 has no separate scheduled-sweep engine, so manual
-    ad-hoc withdrawals are held to the same 90% cap per canon)."""
+    """Withdraw from the station treasury.
+
+    Solo/syndicate: primary owner initiates (``_require_config_authority``).
+    Solo credits the owner 100%. Syndicate distributes by stake pct.
+    Team mode (LEG-2033): LEADER|OFFICER initiates; ``team_member_share_pct``
+    splits equally among live MEMBER/RECRUIT; remainder to the actor.
+    Canon cushion: at most 90% of the CURRENT balance may leave in one withdrawal.
+    """
     station = _lock_station(db, station.id)
-    _require_owner(station, owner)
+    _require_config_authority(db, station, owner)
     if amount <= 0:
         raise PortOwnershipError(400, "Withdrawal amount must be positive")
     balance = station.treasury_balance or 0
@@ -2301,15 +3100,79 @@ def withdraw_treasury(
             f"cushion must remain, so at most {cap:,} credits (90%) can be "
             f"withdrawn — requested {amount:,}",
         )
-    locked = _lock_players_ascending(db, [owner.id])
+    mode = _co_ownership_mode(station)
+    if mode == TEAM_MODE:
+        payouts = _team_withdrawal_payouts(db, station, owner, amount)
+    elif mode == "syndicate":
+        payouts = _syndicate_withdrawal_payouts(station, amount)
+    else:
+        payouts = [(owner.id, 100, amount)]
+
+    locked = _lock_players_ascending(db, [pid for pid, _pct, _cr in payouts])
     owner = locked[owner.id]
     station.treasury_balance = balance - amount
-    owner.credits += amount
+    distributions: List[Dict[str, Any]] = []
+    for pid, pct, credits in payouts:
+        player = locked[pid]
+        player.credits = int(player.credits or 0) + int(credits)
+        distributions.append(
+            {
+                "player_id": str(pid),
+                "pct": int(pct),
+                "credits": int(credits),
+            }
+        )
     db.flush()
-    logger.info("Treasury withdrawal: %s credits from station %s to %s", amount, station.id, owner.id)
+    logger.info(
+        "Treasury withdrawal: %s credits from station %s (mode=%s, recipients=%s)",
+        amount,
+        station.id,
+        mode,
+        len(distributions),
+    )
     return {
         "station_id": str(station.id),
         "withdrawn": amount,
+        "treasury_balance": station.treasury_balance,
+        "credits": owner.credits,
+        "mode": mode,
+        "distributions": distributions,
+    }
+
+
+def inject_treasury(
+    db: Session, station: Station, owner: Player, amount: int
+) -> Dict[str, Any]:
+    """Owner cash-injection into the station treasury (canon Cash-injection).
+
+    Debits the primary owner's personal credits and credits
+    ``station.treasury_balance``. Injections are not revenue. Compel-injection
+    stake-weighted votes remain Design-only — not implemented here.
+    """
+    station = _lock_station(db, station.id)
+    _require_owner(station, owner)
+    if amount <= 0:
+        raise PortOwnershipError(400, "Injection amount must be positive")
+    locked = _lock_players_ascending(db, [owner.id])
+    owner = locked[owner.id]
+    available = int(owner.credits or 0)
+    if available < amount:
+        raise PortOwnershipError(
+            400,
+            f"Insufficient credits: have {available:,}, need {amount:,}",
+        )
+    owner.credits = available - amount
+    station.treasury_balance = int(station.treasury_balance or 0) + amount
+    db.flush()
+    logger.info(
+        "Treasury injection: %s credits into station %s from %s",
+        amount,
+        station.id,
+        owner.id,
+    )
+    return {
+        "station_id": str(station.id),
+        "injected": amount,
         "treasury_balance": station.treasury_balance,
         "credits": owner.credits,
     }
@@ -2367,6 +3230,10 @@ def revenue_summary(db: Session, station: Station, days: int = 30) -> Dict[str, 
         "defense_fund": _bucket(station, "defense_fund"),
         "operating_fund": _bucket(station, "operating_fund"),
         "insolvency_months": int((station.ownership or {}).get("insolvency_months", 0) or 0),
+        "insolvency_pending": bool(
+            (station.ownership or {}).get("insolvency_pending")
+        ),
+        "insolvency_sell_at": (station.ownership or {}).get("insolvency_sell_at"),
         "treasury_balance": station.treasury_balance or 0,
     }
 
@@ -2387,6 +3254,77 @@ def _ledger(station: Station) -> Dict[str, Any]:
     """Mutable handle on station.ownership (created if absent). Caller MUST
     flag_modified(station, 'ownership') after mutating. Alias of _ownership."""
     return _ownership(station)
+
+
+def _parse_ownership_deadline(raw: Any) -> Optional[datetime]:
+    if raw is None:
+        return None
+    if isinstance(raw, datetime):
+        return _aware(raw)
+    if isinstance(raw, str):
+        try:
+            return _aware(datetime.fromisoformat(raw.replace("Z", "+00:00")))
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
+def _ownership_dict(station: Station) -> dict:
+    """Safe ownership JSONB read for ORM rows and lightweight test stand-ins."""
+    return getattr(station, "ownership", None) or {}
+
+
+def assert_not_post_capture_protected(
+    station: Station, now: Optional[datetime] = None
+) -> None:
+    """Canon port-ownership.md:100-104 — 7-day post-capture immunity."""
+    now = now or datetime.now(UTC)
+    until = _parse_ownership_deadline(_ownership_dict(station).get("protected_until"))
+    if until is not None and now < until:
+        raise PortOwnershipError(
+            403,
+            "Station is under post-capture protection until "
+            f"{until.isoformat()}; counter-takeover is blocked",
+        )
+
+
+def station_productivity_multiplier(
+    station: Station, now: Optional[datetime] = None
+) -> float:
+    """Canon post-capture -50% productivity while productivity_until is future."""
+    now = now or datetime.now(UTC)
+    until = _parse_ownership_deadline(
+        _ownership_dict(station).get(PRODUCTIVITY_UNTIL_KEY)
+    )
+    if until is not None and now < until:
+        return float(PRODUCTIVITY_MULT)
+    return 1.0
+
+
+def assert_upgrades_allowed_during_solvency(station: Station) -> None:
+    """Canon port-ownership.md:391-395 — insolvency stops all upgrades."""
+    months = int(_ownership_dict(station).get("insolvency_months", 0) or 0)
+    if months >= 1:
+        raise PortOwnershipError(
+            400,
+            "Station is insolvent; upgrades and construction spend are blocked "
+            f"until operating costs are covered (insolvency_months={months})",
+        )
+
+
+def _revert_service_charge_to_baseline(station: Station) -> bool:
+    """Force service_charge_multiplier to 1.0 (baseline). Returns True if changed."""
+    modifiers = _price_modifiers(station)
+    cur = modifiers.get(SERVICE_CHARGE_KEY)
+    try:
+        cur_f = float(cur) if cur is not None else 1.0
+    except (TypeError, ValueError):
+        cur_f = 1.0
+    if abs(cur_f - 1.0) < 1e-9:
+        return False
+    modifiers[SERVICE_CHARGE_KEY] = 1.0
+    flag_modified(station, "price_modifiers")
+    return True
 
 
 def _bucket(station: Station, key: str) -> int:
@@ -2495,8 +3433,9 @@ def accrue_operating_costs(
     elapsed canonical days of maintenance (1% acquisition / month, pro-rated)
     against the operating_fund, overflowing to treasury_balance when the fund
     is short. Tracks consecutive shortfall MONTHS in
-    ownership['insolvency_months']; at INSOLVENCY_MONTHS the station auto-sells
-    to the controlling faction (auto_sell_insolvent).
+    ownership['insolvency_months']; at INSOLVENCY_MONTHS the station enters a
+    canon 7-day advance window (ownership insolvency_pending / insolvency_sell_at)
+    before auto_sell_insolvent runs.
 
     Returns a settlement summary. Unowned stations accrue nothing. No commit;
     caller owns the transaction. A periodic scheduler MAY call this as a public
@@ -2549,12 +3488,25 @@ def accrue_operating_costs(
     ).isoformat()
 
     months_elapsed = elapsed_days // DAYS_PER_MONTH
+    prior_shortfall = shortfall_months
     if not covered:
         shortfall_months += max(1, months_elapsed)
+        # Canon: during insolvency, revert service charges to baseline (1.0x).
+        if prior_shortfall == 0 and shortfall_months >= 1:
+            if _revert_service_charge_to_baseline(station):
+                logger.info(
+                    "Station %s service charge reverted to baseline on insolvency",
+                    station.id,
+                )
     elif months_elapsed >= 1:
         # A covered month resets the consecutive-shortfall streak.
         shortfall_months = 0
     ledger["insolvency_months"] = shortfall_months
+
+    # Recovery (inject / covered month) cancels any open advance window.
+    if shortfall_months < INSOLVENCY_MONTHS:
+        ledger.pop("insolvency_pending", None)
+        ledger.pop("insolvency_sell_at", None)
 
     # Fair-operation reputation bonus (WO-F12): a sustained low-tariff run earns
     # a one-time positive personal-reputation grant. Settled here, inside the
@@ -2577,13 +3529,104 @@ def accrue_operating_costs(
         "operating_fund": _bucket(station, "operating_fund"),
         "treasury_balance": station.treasury_balance or 0,
         "insolvency_months": shortfall_months,
+        "insolvency_pending": bool(ledger.get("insolvency_pending")),
+        "insolvency_sell_at": ledger.get("insolvency_sell_at"),
         "fair_ops_months": int(ledger.get("fair_ops_months", 0) or 0),
         "fair_ops_bonus_granted": fair_ops_granted,
         "status": "current" if covered else "shortfall",
     }
     if shortfall_months >= INSOLVENCY_MONTHS:
-        result["insolvency"] = auto_sell_insolvent(db, station, now)
+        result["insolvency"] = _advance_or_sell_insolvent(db, station, ledger, now)
     return result
+
+
+def _broadcast_insolvency_advance(
+    db: Session, station: Station, sell_at: datetime
+) -> None:
+    """Best-effort owner inbox notice that insolvency auto-sale is pending.
+
+    Soft-fail: never breaks the accrual / caller's transaction. Mirrors the
+    medal offline-notice pattern (self-addressed system Message)."""
+    owner_id = station.owner_id
+    if owner_id is None:
+        return
+    try:
+        from src.models.message import Message
+
+        message = Message(
+            sender_id=owner_id,
+            recipient_id=owner_id,
+            subject="Station insolvency — sale in 7 days",
+            content=(
+                f"Station {station.id} cannot cover operating costs. "
+                f"Auto-sale is scheduled for {sell_at.isoformat()}. "
+                "Inject cash into the treasury or accept a rescue offer before then."
+            ),
+            message_type="system",
+            priority="high",
+        )
+        db.add(message)
+        db.flush()
+    except Exception as exc:  # never break insolvency accrual
+        logger.error(
+            "Insolvency advance broadcast failed for station %s: %s",
+            station.id,
+            exc,
+        )
+
+
+def _advance_or_sell_insolvent(
+    db: Session,
+    station: Station,
+    ledger: Dict[str, Any],
+    now: datetime,
+) -> Dict[str, Any]:
+    """Enter / honor the canon 7-day advance window, then auto-sell.
+
+    First hit of INSOLVENCY_MONTHS: set ownership insolvency_pending +
+    insolvency_sell_at, broadcast to the owner, do NOT sell yet.
+    Subsequent ticks before the deadline: return pending (idempotent).
+    After the deadline: clear the window flags and call auto_sell_insolvent.
+    Caller holds the station lock and owns flag_modified / commit."""
+    sell_at_raw = ledger.get("insolvency_sell_at")
+    pending = bool(ledger.get("insolvency_pending")) and bool(sell_at_raw)
+
+    if not pending:
+        sell_at = game_time.scaled_deadline(INSOLVENCY_ADVANCE_HOURS, start=now)
+        ledger["insolvency_pending"] = True
+        ledger["insolvency_sell_at"] = sell_at.isoformat()
+        flag_modified(station, "ownership")
+        _broadcast_insolvency_advance(db, station, sell_at)
+        db.flush()
+        logger.info(
+            "Station %s insolvency advance opened: auto-sell at %s",
+            station.id,
+            sell_at.isoformat(),
+        )
+        return {
+            "status": "pending",
+            "insolvency_sell_at": sell_at.isoformat(),
+            "advance_days": INSOLVENCY_ADVANCE_DAYS,
+        }
+
+    try:
+        sell_at = _aware(datetime.fromisoformat(str(sell_at_raw)))
+    except (ValueError, TypeError):
+        sell_at = game_time.scaled_deadline(INSOLVENCY_ADVANCE_HOURS, start=now)
+        ledger["insolvency_sell_at"] = sell_at.isoformat()
+        flag_modified(station, "ownership")
+
+    if now < sell_at:
+        return {
+            "status": "pending",
+            "insolvency_sell_at": ledger.get("insolvency_sell_at"),
+            "advance_days": INSOLVENCY_ADVANCE_DAYS,
+        }
+
+    ledger.pop("insolvency_pending", None)
+    ledger.pop("insolvency_sell_at", None)
+    flag_modified(station, "ownership")
+    return auto_sell_insolvent(db, station, now)
 
 
 def _accrue_fair_operation_bonus(
@@ -2695,6 +3738,8 @@ def auto_sell_insolvent(
     ledger["defense_fund"] = 0
     ledger["operating_fund"] = 0
     ledger["insolvency_months"] = 0
+    ledger.pop("insolvency_pending", None)
+    ledger.pop("insolvency_sell_at", None)
     ledger.pop("player_id", None)
     ledger["insolvent_at"] = now.isoformat()
     ledger["last_acquisition_cost"] = _acquisition_cost(station)
@@ -2781,6 +3826,7 @@ def launch_campaign(
         )
     if station.owner_id == challenger.id:
         raise PortOwnershipError(400, "You cannot launch a takeover of your own station")
+    assert_not_post_capture_protected(station, now)
     active = (
         db.query(TakeoverCampaign)
         .filter(
@@ -3024,12 +4070,14 @@ def _owner_at_eligibility(campaign: TakeoverCampaign) -> Optional[str]:
 
 def forced_sale_price(db: Session, station: Station, now: Optional[datetime] = None) -> int:
     """Canon forced-sale price: clamp(90-day-average monthly revenue x 12 x
-    condition_multiplier, acquisition_cost, 2 x acquisition_cost).
-    condition_multiplier is 1.0 in v1 (station condition not modeled)."""
+    condition_multiplier, acquisition_cost, 2 x acquisition_cost)."""
     now = now or datetime.now(UTC)
     revenue_90 = _station_revenue(db, station.id, _wall_cutoff(REVENUE_WINDOW_DAYS, now))
     avg_monthly = revenue_90 / 3.0  # 90 canonical days = 3 scaled months
-    return forced_sale_value(avg_monthly, _acquisition_cost(station))
+    multiplier = compute_condition_multiplier(station, now)
+    return forced_sale_value(
+        avg_monthly, _acquisition_cost(station), condition_multiplier=multiplier
+    )
 
 
 def _settle_forced_sale(
@@ -3288,6 +4336,7 @@ def declare_military_takeover(
         )
     if station.owner_id == challenger.id:
         raise PortOwnershipError(400, "You cannot besiege your own station")
+    assert_not_post_capture_protected(station, now)
     if _defender_strength(station) < 0:
         raise PortOwnershipError(
             400, "This station holds a Military Contract and is immune to military takeover"
@@ -3357,6 +4406,7 @@ def siege_military_takeover(
     visible on the station)."""
     now = now or datetime.now(UTC)
     station = _lock_station(db, station.id)
+    assert_not_post_capture_protected(station, now)
     campaign = (
         db.query(TakeoverCampaign)
         .filter(
@@ -3508,6 +4558,9 @@ def occupy_military_takeover(
     ledger["protected_until"] = game_time.scaled_deadline(
         MILITARY_PROTECTION_HOURS, start=now
     ).isoformat()
+    ledger[PRODUCTIVITY_UNTIL_KEY] = game_time.scaled_deadline(
+        MILITARY_PRODUCTIVITY_HOURS, start=now
+    ).isoformat()
     ledger["captured_at"] = now.isoformat()
     flag_modified(station, "ownership")
 
@@ -3532,6 +4585,7 @@ def occupy_military_takeover(
         "prior_owner_id": str(prior_owner_id),
         "treasury_forfeited": forfeited,
         "protected_until": ledger["protected_until"],
+        "productivity_until": ledger.get(PRODUCTIVITY_UNTIL_KEY),
     }
 
 
@@ -3685,6 +4739,8 @@ def my_stations(db: Session, player: Player) -> Dict[str, Any]:
             "treasury_balance": station.treasury_balance or 0,
             "acquisition_cost": _acquisition_cost(station),
             "revenue": revenue_summary(db, station),
+            # invent=0: helper exists; populated when elasticity spine feeds inputs.
+            "expected_revenue_per_day": None,
         }
         row.update(_owner_price_lever_fields(station))
         out.append(row)

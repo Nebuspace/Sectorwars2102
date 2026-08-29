@@ -31,6 +31,40 @@ interface CitizenshipBadgeProps {
  * WO-WIRE-CLAIM-COLONY-CITIZENSHIP: when the player owns a colony here but is
  * not yet a stored citizen, a Claim button POSTs /citizenship/colony-claim.
  */
+
+/** Normalize GS/API detail from apiRequest Error.message, axios-shaped response, or object detail. */
+function citizenshipClaimServerDetail(err: unknown): string | undefined {
+  if (err && typeof err === 'object') {
+    const rawDetail =
+      (err as { response?: { data?: { detail?: unknown } } }).response?.data?.detail ??
+      (err as { data?: { detail?: unknown } }).data?.detail;
+    if (typeof rawDetail === 'string' && rawDetail.trim()) return rawDetail.trim();
+    if (rawDetail && typeof rawDetail === 'object' && !Array.isArray(rawDetail)) {
+      const nested = (rawDetail as { message?: unknown }).message;
+      if (typeof nested === 'string' && nested.trim()) return nested.trim();
+      try {
+        return JSON.stringify(rawDetail);
+      } catch {
+        /* fall through */
+      }
+    }
+  }
+  const message = err instanceof Error ? err.message : undefined;
+  if (
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim())
+  ) {
+    return message.trim();
+  }
+  return undefined;
+}
+
+/** Surface gameserver colony-citizenship claim refusal detail. */
+export function formatCitizenshipClaimError(err: unknown): string {
+  return citizenshipClaimServerDetail(err) ?? 'Claim failed';
+}
+
 const CitizenshipBadge: React.FC<CitizenshipBadgeProps> = ({ regionId, regionName }) => {
   const [status, setStatus] = useState<MembershipStatus | null>(null);
   const [loading, setLoading] = useState(false);
@@ -87,8 +121,7 @@ const CitizenshipBadge: React.FC<CitizenshipBadgeProps> = ({ regionId, regionNam
       await governanceAPI.claimColonyCitizenship(regionId);
       await refresh();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Claim failed';
-      setClaimError(msg);
+      setClaimError(formatCitizenshipClaimError(err));
     } finally {
       setClaiming(false);
     }

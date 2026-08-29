@@ -26,6 +26,7 @@ from src.services.planetary_service import (
     max_colonists_for,
     max_population_for,
     defense_unit_price,
+    clamp_tax_rate,
 )
 
 router = APIRouter(prefix="/planets", tags=["planets"])
@@ -231,6 +232,18 @@ class LandingRightsResponse(BaseModel):
     mode: str
     whitelist: List[str]
     denylist: List[str]
+
+
+class PlanetTaxRateRequest(BaseModel):
+    """Owner-only planet production tax rate (colonization.md Tax rate)."""
+    tax_rate: float
+
+
+class PlanetTaxRateResponse(BaseModel):
+    success: bool
+    message: str
+    planet_id: str
+    tax_rate: float
 
 
 def _check_landing_allowed(planet: Planet, player: Player, db: Session) -> Optional[str]:
@@ -1625,6 +1638,43 @@ async def set_landing_rights(
     )
 
 
+@router.patch("/{planet_id}/tax-rate", response_model=PlanetTaxRateResponse)
+async def set_planet_tax_rate(
+    planet_id: str,
+    request: PlanetTaxRateRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Set a planet's production tax rate (LEG-525; colonization.md Tax rate).
+
+    Owner-only. Rate is clamped to [0.00, 0.20] via planetary_service.clamp_tax_rate.
+    Skim applies on non-owner stockpile withdrawals only."""
+    try:
+        pid = UUID(planet_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid planet ID format")
+
+    planet = db.query(Planet).filter(Planet.id == pid).with_for_update().first()
+    if not planet:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Planet not found")
+    if planet.owner_id is None or planet.owner_id != player.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the planet's owner can set the tax rate.",
+        )
+
+    rate = clamp_tax_rate(request.tax_rate)
+    planet.tax_rate = rate
+    db.commit()
+
+    return PlanetTaxRateResponse(
+        success=True,
+        message=f"Tax rate for {planet.name} set to {rate:.2%}.",
+        planet_id=str(planet.id),
+        tax_rate=rate,
+    )
+
+
 @router.post("/land", response_model=LandResponse)
 async def land_on_planet(
     request: LandRequest,
@@ -1743,6 +1793,25 @@ async def land_on_planet(
 
     db.commit()
     db.refresh(player)
+
+    # LEG-338: planet_land activity
+    try:
+        from src.services.player_activity_service import (
+            ActivityEventType,
+            get_player_activity_service,
+        )
+        activity_service = await get_player_activity_service()
+        await activity_service.track_activity(
+            str(player.id),
+            ActivityEventType.PLANET_LAND,
+            {
+                "sector_id": player.current_sector_id,
+                "planet_id": str(planet.id),
+            },
+            db=db,
+        )
+    except Exception:
+        logger.warning("activity tracking failed (planet_land)", exc_info=True)
 
     # Determine if player owns this planet
     is_owned_by_player = planet.owner_id == player.id if planet.owner_id else False
@@ -2549,3 +2618,81 @@ async def confirm_biome_reclass(
         "new_type": new_type,
         "message": f"Biome confirmed — planet reclassified to {new_type}",
     }
+
+
+class ProfessionTrainRequest(BaseModel):
+    profession: str = Field(..., min_length=1)
+    trainee_count: int = Field(..., ge=1)
+
+
+@router.get("/{planet_id}/professions")
+async def get_planet_professions(
+    planet_id: str,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """List profession headcounts and owner training queue (LEG-2253 kernel)."""
+    from src.services.profession_service import ProfessionService
+
+    try:
+        pid = UUID(planet_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid planet ID format")
+
+    planet = db.query(Planet).filter(Planet.id == pid).with_for_update().first()
+    if planet is None:
+        raise HTTPException(status_code=404, detail="Planet not found")
+
+    svc = ProfessionService(db)
+    try:
+        state = svc.get_state(planet, player.id)
+    except ValueError as exc:
+        code = str(exc)
+        if code == "not_owner":
+            raise HTTPException(status_code=403, detail="Only the planet owner can view professions")
+        raise HTTPException(status_code=400, detail=code)
+    db.commit()
+    return state
+
+
+@router.post("/{planet_id}/professions/train")
+async def train_planet_profession(
+    planet_id: str,
+    body: ProfessionTrainRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Queue profession training without charging TBD costs (DECISION-NEEDED)."""
+    from src.services.profession_service import ProfessionService
+
+    try:
+        pid = UUID(planet_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid planet ID format")
+
+    planet = db.query(Planet).filter(Planet.id == pid).with_for_update().first()
+    if planet is None:
+        raise HTTPException(status_code=404, detail="Planet not found")
+
+    svc = ProfessionService(db)
+    try:
+        result = svc.queue_training(
+            planet,
+            player.id,
+            body.profession,
+            body.trainee_count,
+        )
+    except ValueError as exc:
+        code = str(exc)
+        status_map = {
+            "not_owner": status.HTTP_403_FORBIDDEN,
+            "citadel_level_too_low": status.HTTP_400_BAD_REQUEST,
+            "research_lab_level_too_low": status.HTTP_400_BAD_REQUEST,
+            "insufficient_generic_colonists": status.HTTP_400_BAD_REQUEST,
+            "invalid_trainee_count": status.HTTP_400_BAD_REQUEST,
+        }
+        if code.startswith("unknown_profession:"):
+            raise HTTPException(status_code=400, detail=code)
+        raise HTTPException(status_code=status_map.get(code, 400), detail=code)
+    db.commit()
+    return result

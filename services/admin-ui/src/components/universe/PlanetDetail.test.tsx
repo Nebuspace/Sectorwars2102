@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import PlanetDetail, { buildPlanetPatchPayload } from './PlanetDetail';
 import { api } from '../../utils/auth';
@@ -16,6 +16,12 @@ vi.mock('../../hooks/useResourceCatalog', () => ({
     getLabel: (k: string) => k,
   }),
 }));
+
+function httpErr(status: number, detail?: string) {
+  return Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: detail ? { detail } : {} },
+  });
+}
 
 const basePlanet = {
   id: 'planet-1',
@@ -42,6 +48,18 @@ describe('buildPlanetPatchPayload (Soft-ORDER honesty)', () => {
       buildPlanetPatchPayload('owner_id', 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
     ).toEqual({ owner_id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' });
     expect(buildPlanetPatchPayload('owner_id', '  ')).toEqual({ owner_id: null });
+  });
+
+  it('maps residual PlanetUpdateRequest schema fields (LEG-1489)', () => {
+    expect(buildPlanetPatchPayload('size', 5)).toEqual({ size: 5 });
+    expect(buildPlanetPatchPayload('position', 3)).toEqual({ position: 3 });
+    expect(buildPlanetPatchPayload('gravity', 1.25)).toEqual({ gravity: 1.25 });
+    expect(buildPlanetPatchPayload('habitability_score', 80)).toEqual({
+      habitability_score: 80,
+    });
+    expect(buildPlanetPatchPayload('resource_richness', 2.5)).toEqual({
+      resource_richness: 2.5,
+    });
   });
 });
 
@@ -102,6 +120,121 @@ describe('PlanetDetail Soft-ORDER non-PATCHABLE honesty', () => {
       expect(api.patch).toHaveBeenCalledWith('/api/v1/admin/planets/planet-1', {
         name: 'Renamed World',
       });
+    });
+  });
+
+  it('saving size / gravity / habitability_score posts PlanetUpdateRequest keys (LEG-1489)', async () => {
+    const user = userEvent.setup();
+    render(
+      <PlanetDetail
+        planet={{
+          ...basePlanet,
+          size: 2,
+          gravity: 1,
+          habitability_score: 40,
+        }}
+        onBack={() => undefined}
+      />,
+    );
+
+    const sizeLabel = screen.getByText('Size:');
+    const sizeRow = sizeLabel.closest('.info-item');
+    await user.click(sizeRow!.querySelector('.editable-field.clickable') as HTMLElement);
+    const sizeInput = screen.getByRole('spinbutton');
+    fireEvent.change(sizeInput, { target: { value: '7' } });
+    await user.click(screen.getByRole('button', { name: '✓' }));
+
+    await waitFor(() => {
+      expect(api.patch).toHaveBeenCalledWith('/api/v1/admin/planets/planet-1', { size: 7 });
+    });
+
+    vi.mocked(api.patch).mockClear();
+    const gravLabel = screen.getByText('Gravity:');
+    const gravRow = gravLabel.closest('.info-item');
+    await user.click(gravRow!.querySelector('.editable-field.clickable') as HTMLElement);
+    const gravInput = screen.getByRole('spinbutton');
+    fireEvent.change(gravInput, { target: { value: '1.8' } });
+    await user.click(screen.getByRole('button', { name: '✓' }));
+
+    await waitFor(() => {
+      expect(api.patch).toHaveBeenCalledWith('/api/v1/admin/planets/planet-1', {
+        gravity: 1.8,
+      });
+    });
+
+    vi.mocked(api.patch).mockClear();
+    const habLabel = screen.getByText('Habitability:');
+    const habRow = habLabel.closest('.info-item');
+    await user.click(habRow!.querySelector('.editable-field.clickable') as HTMLElement);
+    const habInput = screen.getByRole('spinbutton');
+    fireEvent.change(habInput, { target: { value: '95' } });
+    await user.click(screen.getByRole('button', { name: '✓' }));
+
+    await waitFor(() => {
+      expect(api.patch).toHaveBeenCalledWith('/api/v1/admin/planets/planet-1', {
+        habitability_score: 95,
+      });
+    });
+
+    const lastBodies = vi.mocked(api.patch).mock.calls.map((c) => JSON.stringify(c[1]));
+    expect(lastBodies.join('|')).not.toMatch(/owner_name|drones|colonists/);
+  });
+});
+
+describe('PlanetDetail PATCH errors (LEG-2616)', () => {
+  beforeEach(() => {
+    vi.mocked(api.patch).mockReset();
+  });
+
+  it('surfaces formatAdminApiError on name PATCH 403', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.patch).mockRejectedValue(
+      httpErr(403, 'Missing scope admin.universe.manage'),
+    );
+
+    render(<PlanetDetail planet={basePlanet} onBack={() => undefined} />);
+
+    const nameLabel = screen.getByText('Name:');
+    const row = nameLabel.closest('.info-item');
+    await user.click(row!.querySelector('.editable-field.clickable') as HTMLElement);
+
+    const input = screen.getByRole('textbox');
+    await user.clear(input);
+    await user.type(input, 'Forbidden Rename');
+    await user.click(screen.getByRole('button', { name: '✓' }));
+
+    await waitFor(() => {
+      expect(api.patch).toHaveBeenCalledWith('/api/v1/admin/planets/planet-1', {
+        name: 'Forbidden Rename',
+      });
+    });
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(
+        /Missing scope admin\.universe\.manage/i,
+      );
+    });
+  });
+
+  it('surfaces rate-limit copy on name PATCH 429', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.patch).mockRejectedValue(httpErr(429));
+
+    render(<PlanetDetail planet={basePlanet} onBack={() => undefined} />);
+
+    const nameLabel = screen.getByText('Name:');
+    const row = nameLabel.closest('.info-item');
+    await user.click(row!.querySelector('.editable-field.clickable') as HTMLElement);
+
+    const input = screen.getByRole('textbox');
+    await user.clear(input);
+    await user.type(input, 'Rate Limited');
+    await user.click(screen.getByRole('button', { name: '✓' }));
+
+    await waitFor(() => {
+      expect(api.patch).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
     });
   });
 });

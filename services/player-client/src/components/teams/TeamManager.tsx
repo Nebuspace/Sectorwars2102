@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { teamAPI } from '../../services/api';
+import { medalsAPI, teamAPI } from '../../services/api';
 import { useGame } from '../../contexts/GameContext';
 import type {
   Team,
@@ -12,9 +12,47 @@ import type {
 import CockpitInstrument from '../cockpit/CockpitInstrument';
 import EmptyState from '../common/EmptyState';
 import LoadingState from '../common/LoadingState';
+import PlayerNamePlate from '../common/PlayerNamePlate';
 import { ResourceSharing } from './ResourceSharing';
 import { TeamChat } from './TeamChat';
+import { TeamWarPanel } from './TeamWarPanel';
 import './team-manager.css';
+
+type MedalCatalogEntry = { icon: string; name: string };
+
+type MedalApiRow = {
+  key: string;
+  name: string;
+  icon?: string | null;
+};
+
+function buildMedalCatalog(
+  earned: MedalApiRow[] = [],
+  available: MedalApiRow[] = [],
+): Map<string, MedalCatalogEntry> {
+  const map = new Map<string, MedalCatalogEntry>();
+  const add = (row: MedalApiRow) => {
+    if (!row.key) return;
+    map.set(row.key, {
+      name: row.name || row.key,
+      icon: row.icon || '🏅',
+    });
+  };
+  earned.forEach(add);
+  available.forEach(add);
+  return map;
+}
+
+function resolvePinnedMedal(
+  catalog: Map<string, MedalCatalogEntry>,
+  medalId: string | null | undefined,
+): { icon: string | null; name: string | null } {
+  if (!medalId) return { icon: null, name: null };
+  const hit = catalog.get(medalId);
+  return hit
+    ? { icon: hit.icon, name: hit.name }
+    : { icon: '🏅', name: medalId };
+}
 
 /**
  * TeamManager — full CREW MANIFEST console (invite/kick/promote/treasury/
@@ -36,6 +74,62 @@ const CrewShell: React.FC<{ children: React.ReactNode }> = ({ children }) => (
     {children}
   </CockpitInstrument>
 );
+
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+/** Surface gameserver 404/403 detail on team load failure. */
+export function formatTeamManagerLoadError(err: unknown): string {
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You are not a member of this team.';
+  }
+
+  if (status === 404) {
+    if (hasServerDetail) return message!;
+    return 'Team not found.';
+  }
+
+  if (hasServerDetail) return message!;
+  return 'Failed to load team data';
+}
+
+
+/** Surface gameserver detail on team mutation failures (create/update/promote/kick/leave). */
+export function formatTeamManagerMutationError(err: unknown, fallback: string): string {
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission for this team action.';
+  }
+
+  if (status === 429) {
+    return 'Team action rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (hasServerDetail) return message!;
+  return fallback;
+}
 
 // --- Wire mappers ----------------------------------------------------------
 // The gameserver speaks snake_case (teams.py response models); the UI types
@@ -114,7 +208,9 @@ const mapMember = (raw: TeamMemberApiResponse): TeamMember => {
     },
     // Canon gap: member ship type is not exposed by the teams API
     shipType: '',
-    combatRating: raw.combat_rating
+    combatRating: raw.combat_rating,
+    pinnedMedalId: raw.pinned_medal_id ?? null,
+    medalCount: raw.medal_count ?? null
   };
 };
 
@@ -156,7 +252,7 @@ export const TeamManager: React.FC = () => {
   const [permissions, setPermissions] = useState<TeamPermissions | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'overview' | 'members' | 'treasury' | 'chat' | 'settings'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'members' | 'treasury' | 'chat' | 'wars' | 'settings'>('overview');
   const [editingInfo, setEditingInfo] = useState(false);
   const [teamInfo, setTeamInfo] = useState<{ description: string; recruitmentStatus: Team['recruitmentStatus'] }>({
     description: '',
@@ -175,6 +271,41 @@ export const TeamManager: React.FC = () => {
   // Two-step inline confirmations (no native dialogs)
   const [confirmingLeave, setConfirmingLeave] = useState(false);
   const [confirmingKickId, setConfirmingKickId] = useState<string | null>(null);
+
+  // LEG-357 / LEG-33 / LEG-2652 — medal catalog from GET /medals/me for roster pin identity.
+  // Roster rows carry pinned_medal_id + medal_count from the teams API for every member.
+  const [medalCatalog, setMedalCatalog] = useState<Map<string, MedalCatalogEntry>>(
+    () => new Map(),
+  );
+  const [selfMedalCount, setSelfMedalCount] = useState<number | null>(null);
+  const [selfPinnedId, setSelfPinnedId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = (await medalsAPI.getMe()) as {
+          earned?: MedalApiRow[];
+          available?: MedalApiRow[];
+          pinned_medal_id?: string | null;
+          total_earned?: number;
+        };
+        if (cancelled) return;
+        const earned = data.earned ?? [];
+        const available = data.available ?? [];
+        setMedalCatalog(buildMedalCatalog(earned, available));
+        setSelfMedalCount(
+          typeof data.total_earned === 'number' ? data.total_earned : earned.length,
+        );
+        setSelfPinnedId(data.pinned_medal_id ?? null);
+      } catch {
+        /* roster still renders without medals */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const loadTeamData = useCallback(async (id: string | null) => {
     if (!id) {
@@ -204,7 +335,7 @@ export const TeamManager: React.FC = () => {
       });
     } catch (error) {
       console.error('Failed to load team data:', error);
-      setLoadError(error instanceof Error ? error.message : 'Failed to load team data');
+      setLoadError(formatTeamManagerLoadError(error));
     } finally {
       setLoading(false);
     }
@@ -229,7 +360,7 @@ export const TeamManager: React.FC = () => {
       setEditingInfo(false);
     } catch (error) {
       console.error('Failed to update team info:', error);
-      setSaveError(error instanceof Error ? error.message : 'Failed to update team info');
+      setSaveError(formatTeamManagerMutationError(error, 'Failed to update team info'));
     }
   };
 
@@ -244,7 +375,7 @@ export const TeamManager: React.FC = () => {
     } catch (error) {
       console.error('Failed to update member role:', error);
       setConfirmingKickId(null);
-      setMemberActionError(error instanceof Error ? error.message : 'Failed to update member role');
+      setMemberActionError(formatTeamManagerMutationError(error, 'Failed to update member role'));
     }
   };
 
@@ -264,7 +395,7 @@ export const TeamManager: React.FC = () => {
       setTeam(prev => prev ? { ...prev, memberCount: prev.memberCount - 1 } : prev);
     } catch (error) {
       console.error('Failed to kick member:', error);
-      setMemberActionError(error instanceof Error ? error.message : 'Failed to kick member');
+      setMemberActionError(formatTeamManagerMutationError(error, 'Failed to kick member'));
     }
   };
 
@@ -282,7 +413,7 @@ export const TeamManager: React.FC = () => {
       await refreshPlayerState();
     } catch (error) {
       console.error('Failed to leave team:', error);
-      setLeaveError(error instanceof Error ? error.message : 'Failed to leave team');
+      setLeaveError(formatTeamManagerMutationError(error, 'Failed to leave team'));
     }
   };
 
@@ -351,7 +482,7 @@ export const TeamManager: React.FC = () => {
     } catch (error) {
       // Surface backend 400s honestly: duplicate name, insufficient credits
       // for the 10,000-credit creation cost, or already in a team
-      setCreateError(error instanceof Error ? error.message : 'Failed to create team');
+      setCreateError(formatTeamManagerMutationError(error, 'Failed to create team'));
     } finally {
       setCreating(false);
     }
@@ -538,6 +669,13 @@ export const TeamManager: React.FC = () => {
             Chat
           </button>
           <button
+            className={activeTab === 'wars' ? 'active' : ''}
+            onClick={() => setActiveTab('wars')}
+            data-testid="team-tab-wars"
+          >
+            Wars
+          </button>
+          <button
             className={activeTab === 'settings' ? 'active' : ''}
             onClick={() => setActiveTab('settings')}
           >
@@ -596,12 +734,29 @@ export const TeamManager: React.FC = () => {
             {memberActionError && <div className="form-error" role="alert">{memberActionError}</div>}
 
             <div className="members-list">
-              {members.map(member => (
+              {members.map(member => {
+                const pinId =
+                  member.playerId === playerState.id
+                    ? (selfPinnedId ?? member.pinnedMedalId)
+                    : member.pinnedMedalId;
+                const pinResolved = resolvePinnedMedal(medalCatalog, pinId);
+                return (
                 <div key={member.id} className="member-item">
                   <div className="member-info">
                     <div className="member-name">
                       <span className={`role-badge ${member.role}`}>{member.role}</span>
-                      {member.playerName}
+                      <PlayerNamePlate
+                        name={member.playerName}
+                        size="sm"
+                        pinnedMedalId={pinId}
+                        pinnedMedalIcon={pinResolved.icon}
+                        pinnedMedalName={pinResolved.name}
+                        medalCount={
+                          member.playerId === playerState.id
+                            ? (selfMedalCount ?? member.medalCount)
+                            : member.medalCount
+                        }
+                      />
                     </div>
                     <div className="member-details">
                       <span>📍 {member.location.sectorName}</span>
@@ -640,7 +795,8 @@ export const TeamManager: React.FC = () => {
                     </div>
                   )}
                 </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}
@@ -667,6 +823,13 @@ export const TeamManager: React.FC = () => {
             teamId={team.id}
             playerId={playerState.id}
             members={members}
+          />
+        )}
+
+        {activeTab === 'wars' && (
+          <TeamWarPanel
+            teamId={team.id}
+            isLeader={permissions?.canPromote === true}
           />
         )}
 

@@ -22,7 +22,7 @@ vi.mock('../../services/api', () => ({
   },
 }));
 
-import RankProgress from './RankProgress';
+import RankProgress, { formatRankProgressLoadError } from './RankProgress';
 
 const FULL_PROGRESS = {
   player_id: 'p1',
@@ -105,5 +105,43 @@ describe('RankProgress', () => {
     await mount();
 
     expect(container.querySelector('.rank-progress-error')?.textContent).toBe('Network down');
+  });
+
+  it('surfaces 404 server detail on rank progress load failure', async () => {
+    const err = new Error('Rank information not found');
+    (err as { status?: number }).status = 404;
+    mockGetProgress.mockRejectedValue(err);
+    await mount();
+
+    expect(container.querySelector('.rank-progress-error')?.textContent).toBe(
+      'Rank information not found',
+    );
+  });
+
+  it('formatRankProgressLoadError falls back on bare 404 without server detail', () => {
+    const err = new Error('API Error: 404');
+    (err as { status?: number }).status = 404;
+    expect(formatRankProgressLoadError(err)).toBe('Failed to load rank progress');
+  });
+
+  it('renders compact rank insignia when rank_level and rank_tier are present', async () => {
+    mockGetProgress.mockResolvedValue(FULL_PROGRESS);
+    await mount();
+
+    const badge = container.querySelector('.rank-badge--compact');
+    expect(badge).not.toBeNull();
+    expect(badge?.querySelector('.rank-level')?.textContent).toBe('5');
+    expect(container.textContent).toContain('Commander');
+  });
+
+  it('omits compact insignia when rank_level is missing', async () => {
+    mockGetProgress.mockResolvedValue({
+      ...FULL_PROGRESS,
+      rank_level: undefined,
+    });
+    await mount();
+
+    expect(container.querySelector('.rank-badge--compact')).toBeNull();
+    expect(container.textContent).toContain('Commander');
   });
 });

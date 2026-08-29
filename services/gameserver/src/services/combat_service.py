@@ -1372,21 +1372,26 @@ class CombatService:
         # with no bounty on the defender). route_engagement is
         # best-effort and never raises into combat resolution.
         police_response = None
+        routed_engagements = []
         try:
             from src.services import npc_engagement_service
             if (attacker.personal_reputation or 0) <= -500:
                 engagement = npc_engagement_service.route_engagement(
                     self.db, attacker, "wanted_status", sector
                 )
+                if engagement is not None:
+                    routed_engagements.append(engagement)
                 police_response = npc_engagement_service.engagement_summary(
-                    engagement, self.db
+                    engagement, self.db, attacker
                 ) or police_response
             if attacked_innocent:
                 engagement = npc_engagement_service.route_engagement(
                     self.db, attacker, "attack_innocent", sector
                 )
+                if engagement is not None:
+                    routed_engagements.append(engagement)
                 police_response = npc_engagement_service.engagement_summary(
-                    engagement, self.db
+                    engagement, self.db, attacker
                 ) or police_response
         except Exception as e:
             logger.error("Failed police engagement routing after combat: %s", e)
@@ -1411,6 +1416,17 @@ class CombatService:
         # Commit changes
         self.db.commit()
         outbox.flush()
+        try:
+            from src.services import npc_engagement_service
+            for engagement in routed_engagements:
+                npc_engagement_service.dispatch_police_en_route_event(
+                    attacker, engagement, self.db
+                )
+        except Exception:
+            logger.debug(
+                "police_en_route emit after PvP combat failed (non-fatal)",
+                exc_info=True,
+            )
 
         # Defensive team notification (WO-RT-TEAM-DEFENSE / factions-and-
         # teams.md "Combat advantages: Defensive notifications when any
@@ -1441,7 +1457,8 @@ class CombatService:
             "combat_details": combat_result["combat_details"],
             "turns_consumed": turn_cost,
             "turns_remaining": attacker.turns,
-            "combat_log_id": str(combat_log.id)
+            "combat_log_id": str(combat_log.id),
+            "defender_id": str(defender.id),
         }
         if police_response:
             result_dict["police_response"] = police_response
@@ -1996,6 +2013,7 @@ class CombatService:
         # Marshal-Captain personally; killing a Sentinel escalates the
         # response squad from 4 to 6. Best-effort — never breaks combat.
         police_response = None
+        routed_engagement = None
         try:
             from src.models.npc_character import NPCArchetype as _NPCArchetype
             from src.models.npc_character import NPCCharacter as _NPCCharacter
@@ -2014,7 +2032,7 @@ class CombatService:
                     combat_result["defender_ship_destroyed"]
                     and target_npc.faction_code == "galactic_concord"
                 )
-                engagement = npc_engagement_service.route_engagement(
+                routed_engagement = npc_engagement_service.route_engagement(
                     self.db,
                     attacker,
                     "sentinel_killed" if sentinel_killed else "attack_police",
@@ -2023,7 +2041,7 @@ class CombatService:
                     include_captain=True,
                 )
                 police_response = npc_engagement_service.engagement_summary(
-                    engagement, self.db
+                    routed_engagement, self.db, attacker
                 )
         except Exception as e:
             logger.error("Failed police engagement routing after NPC combat: %s", e)
@@ -2031,6 +2049,16 @@ class CombatService:
         # Commit changes
         self.db.commit()
         outbox.flush()
+        try:
+            from src.services import npc_engagement_service
+            npc_engagement_service.dispatch_police_en_route_event(
+                attacker, routed_engagement, self.db
+            )
+        except Exception:
+            logger.debug(
+                "police_en_route emit after NPC combat failed (non-fatal)",
+                exc_info=True,
+            )
 
         # Granular phase WS events (WO-DBB-RT3 / combat-resolver.md "Events
         # emitted"): combat_started → combat_round(s) → combat_resolved. The
@@ -2739,6 +2767,10 @@ class CombatService:
         
         # Resolve combat against port
         combat_result = self._resolve_port_combat(attacker, station, port_owner)
+
+        from src.services.port_ownership_service import stamp_defense_incident
+
+        stamp_defense_incident(station)
 
         # Consume turns
         spend_turns(attacker, turn_cost)
@@ -5413,6 +5445,23 @@ class CombatService:
             drone_damage_bonus = 0.15
         else:
             drone_damage_bonus = 0.0
+
+        try:
+            from src.services.profession_service import (
+                combat_pilot_drone_multiplier,
+                defense_coordinator_multiplier,
+            )
+            pilot_mult = combat_pilot_drone_multiplier(self.db, planet.id)
+            if pilot_mult != 1.0:
+                drone_damage_bonus *= pilot_mult
+            coord_mult = defense_coordinator_multiplier(self.db, planet.id)
+            if coord_mult != 1.0:
+                turret_reduction *= coord_mult
+                gen_reduction *= coord_mult
+                shield_hp_base = int(shield_hp_base * coord_mult)
+                orbital_shield_hp = int(orbital_shield_hp * coord_mult)
+        except Exception:
+            pass
         # ----------------------------------------------------------------------
 
         # WO-FIX-DEFENSE-TURRETS-FIGHTERS-NO-COMBAT-EFFECT: defense_turrets and

@@ -8,7 +8,8 @@
  *
  * 1. Scans src/**‌/*.{ts,tsx} for t('…') calls and collects used keys.
  * 2. Checks that every used key is within a known namespace
- *    (common | game | auth) — keys that look like unknown namespaces are flagged.
+ *    (common | game | auth | ai | marketing | errors | validation) — keys that
+ *    look like unknown namespaces are flagged.
  * 3. Checks the shared seed file (gameserver/i18n/en/) for structural validity
  *    if it can be located relative to this repo root.
  * 4. Exits with code 1 if any hard errors are found; 0 otherwise (warnings
@@ -22,7 +23,15 @@ const fs   = require('fs');
 const path = require('path');
 
 // ─── Config ──────────────────────────────────────────────────────────────────
-const KNOWN_NAMESPACES = new Set(['common', 'game', 'auth']);
+const KNOWN_NAMESPACES = new Set([
+  'common',
+  'game',
+  'auth',
+  'ai',
+  'marketing',
+  'errors',
+  'validation',
+]);
 const SRC_DIR = path.join(__dirname, '..', 'src');
 
 // Relative to repo root (two levels up from player-client/)

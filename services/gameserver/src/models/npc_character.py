@@ -37,20 +37,20 @@ Canon gaps flagged for the docs repo (declared here, NOT resolved):
   pending decision; only contract escrow is specified ("infinite").
 """
 
-import uuid
 import enum
+import uuid
 
 from sqlalchemy import (
     Column,
     DateTime,
-    String,
-    Integer,
-    ForeignKey,
     Enum,
+    ForeignKey,
     Index,
+    Integer,
+    String,
     func,
 )
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
 
 from src.core.database import Base
@@ -311,6 +311,10 @@ class NPCRoster(Base):
     # divergence note). Gameserver-seeded rosters (traders) synthesize
     # their own refs.
     bang_roster_ref = Column(String(80), nullable=False, unique=True)
+    # SYSTEMS/npc-scheduler.md § Configuration — per-faction/role tuning
+    # overrides (LEG-78). Empty object when unset; resolved via
+    # npc_scheduler_config.resolve_npc_scheduler_tuning.
+    config = Column(JSONB, nullable=False, default=dict)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(
         DateTime(timezone=True),

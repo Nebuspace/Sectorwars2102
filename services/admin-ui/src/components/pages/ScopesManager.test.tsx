@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { ScopesManager } from './ScopesManager';
@@ -26,10 +26,60 @@ const holders = [
     scopes: [{ scope: 'admin.scopes.grant' }],
   },
 ];
+
+const holdersWithRevocable = [
+  {
+    user_id: 'u1',
+    username: 'alice',
+    is_admin: true,
+    scopes: [
+      { scope: 'admin.scopes.grant' },
+      { scope: 'admin.galaxy.manage' },
+    ],
+  },
+];
+
 const catalog = [
   { scope: 'admin.scopes.grant', description: 'Grant scopes' },
   { scope: 'admin.galaxy.manage', description: 'Manage galaxy' },
 ];
+
+const axiosError = (status: number, detail?: string) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: detail ? { detail } : {} },
+  });
+
+function mockSuccessfulLoad(holderList = holders) {
+  vi.mocked(api.get).mockImplementation((url: string) => {
+    if (url.includes('holders')) return Promise.resolve({ data: holderList });
+    return Promise.resolve({ data: catalog });
+  });
+}
+
+async function selectAliceForGrant(user: ReturnType<typeof userEvent.setup>) {
+  renderScopes();
+  await waitFor(() => expect(screen.getByText('alice')).toBeInTheDocument());
+  await user.click(screen.getByText('alice'));
+  await user.selectOptions(
+    screen.getByLabelText('Grant scope'),
+    'admin.galaxy.manage',
+  );
+}
+
+async function openRevokeConfirm(user: ReturnType<typeof userEvent.setup>) {
+  mockSuccessfulLoad(holdersWithRevocable);
+  renderScopes();
+  await waitFor(() => expect(screen.getByText('alice')).toBeInTheDocument());
+  await user.click(screen.getByText('alice'));
+  const enabledRevoke = screen
+    .getAllByRole('button', { name: /^Revoke$/i })
+    .find((btn) => !btn.hasAttribute('disabled'));
+  expect(enabledRevoke).toBeTruthy();
+  await user.click(enabledRevoke!);
+  await waitFor(() =>
+    expect(screen.getByText('Confirm revoke')).toBeInTheDocument(),
+  );
+}
 
 function renderScopes() {
   return render(
@@ -102,20 +152,10 @@ describe('ScopesManager', () => {
 
   it('grants a scope and reloads holders on success', async () => {
     const user = userEvent.setup();
-    vi.mocked(api.get).mockImplementation((url: string) => {
-      if (url.includes('holders')) return Promise.resolve({ data: holders });
-      return Promise.resolve({ data: catalog });
-    });
+    mockSuccessfulLoad();
     vi.mocked(api.post).mockResolvedValue({ data: {} });
 
-    renderScopes();
-    await waitFor(() => expect(screen.getByText('alice')).toBeInTheDocument());
-    await user.click(screen.getByText('alice'));
-
-    await user.selectOptions(
-      screen.getByLabelText('Grant scope'),
-      'admin.galaxy.manage'
-    );
+    await selectAliceForGrant(user);
     await user.click(screen.getByRole('button', { name: 'Grant' }));
 
     await waitFor(() =>
@@ -124,5 +164,102 @@ describe('ScopesManager', () => {
         scope: 'admin.galaxy.manage',
       })
     );
+  });
+});
+
+describe('ScopesManager grant/revoke mutation errors (LEG-2627)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('surfaces formatAdminApiError on grant POST 403', async () => {
+    const user = userEvent.setup();
+    mockSuccessfulLoad();
+    vi.mocked(api.post).mockRejectedValue(
+      axiosError(403, 'Missing scope admin.scopes.grant'),
+    );
+
+    await selectAliceForGrant(user);
+    await user.click(screen.getByRole('button', { name: 'Grant' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith('/api/v1/admin/scopes/grant', {
+        user_id: 'u1',
+        scope: 'admin.galaxy.manage',
+      });
+    });
+
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveTextContent(/Missing scope admin\.scopes\.grant/i);
+    expect(alert).not.toHaveTextContent('Grant failed');
+  });
+
+  it('shows rate-limit copy on grant POST 429', async () => {
+    const user = userEvent.setup();
+    mockSuccessfulLoad();
+    vi.mocked(api.post).mockRejectedValue(axiosError(429));
+
+    await selectAliceForGrant(user);
+    await user.click(screen.getByRole('button', { name: 'Grant' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalled();
+    });
+
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveTextContent(/rate limit/i);
+    expect(alert).not.toHaveTextContent('Grant failed');
+  });
+
+  it('surfaces formatAdminApiError on revoke POST 403', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.post).mockRejectedValue(
+      axiosError(403, 'Missing scope admin.scopes.revoke'),
+    );
+
+    await openRevokeConfirm(user);
+    const dialog = screen.getByRole('dialog');
+    await user.click(
+      within(dialog).getByRole('button', { name: /^Revoke$/i }),
+    );
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith('/api/v1/admin/scopes/revoke', {
+        user_id: 'u1',
+        scope: 'admin.galaxy.manage',
+      });
+    });
+
+    const alerts = screen.getAllByRole('alert');
+    const actionAlert = alerts.find((el) =>
+      /Missing scope admin\.scopes\.revoke/i.test(el.textContent ?? ''),
+    );
+    expect(actionAlert).toBeTruthy();
+    expect(actionAlert).not.toHaveTextContent('Revoke failed');
+  });
+
+  it('shows rate-limit copy on revoke POST 429', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.post).mockRejectedValue(axiosError(429));
+
+    await openRevokeConfirm(user);
+    const dialog = screen.getByRole('dialog');
+    await user.click(
+      within(dialog).getByRole('button', { name: /^Revoke$/i }),
+    );
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith('/api/v1/admin/scopes/revoke', {
+        user_id: 'u1',
+        scope: 'admin.galaxy.manage',
+      });
+    });
+
+    const alerts = screen.getAllByRole('alert');
+    const actionAlert = alerts.find((el) => /rate limit/i.test(el.textContent ?? ''));
+    expect(actionAlert).toBeTruthy();
+    expect(actionAlert).not.toHaveTextContent('Revoke failed');
   });
 });

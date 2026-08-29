@@ -1,23 +1,75 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { towAPI, type TowStatus } from '../../services/api';
+import { useGame } from '../../contexts/GameContext';
 import { useSectorContacts } from '../tactical/contactClassification';
+import TractorBeamInstallCta from './TractorBeamInstallCta';
 import './tow-consent-panel.css';
 
+function serverDetail(err: unknown): string | undefined {
+  if (err && typeof err === 'object') {
+    const rawDetail = (err as { response?: { data?: { detail?: unknown } } }).response?.data
+      ?.detail;
+    if (typeof rawDetail === 'string' && rawDetail.trim()) return rawDetail.trim();
+  }
+  const message = err instanceof Error ? err.message : undefined;
+  if (
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim())
+  ) {
+    return message.trim();
+  }
+  return undefined;
+}
+
+export function formatTowActionError(err: unknown): string {
+  const detail = serverDetail(err);
+  if (detail) return detail;
+  return 'Tow action failed';
+}
+
 /**
- * TowConsentPanel — WO-WIRE-TOW-CONSENT-UI.
+ * TowConsentPanel — WO-WIRE-TOW-CONSENT-UI + LEG-120 Tractor Beam install CTA.
  *
  * Polls GET /tow/status. Surfaces:
  * - pending_incoming → Accept / Decline (cancel)
  * - pending_outgoing → Cancel request
  * - active tow (towing / being_towed_by) → Detach
  * - otherwise → Request tow against sector contacts with a ship_id
+ *
+ * Compatible haulers without equipment_slots.tractor_beam get Install Tractor Beam
+ * (catalog 40k) via shipUpgradeAPI.installEquipment — not ModuleGrid tractor family.
  */
 const TowConsentPanel: React.FC = () => {
   const contacts = useSectorContacts();
+  const { currentShip, refreshPlayerState, updatePlayerCredits } = useGame();
   const [status, setStatus] = useState<TowStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [openRequest, setOpenRequest] = useState(false);
+
+  const handleTractorInstalled = useCallback(
+    async (result: { remainingCredits?: number }) => {
+      if (typeof result.remainingCredits === 'number') {
+        updatePlayerCredits(result.remainingCredits);
+      }
+      try {
+        await refreshPlayerState();
+      } catch {
+        /* non-fatal */
+      }
+    },
+    [refreshPlayerState, updatePlayerCredits],
+  );
+
+  const tractorCta = (
+    <TractorBeamInstallCta
+      shipId={currentShip?.id ?? null}
+      shipType={currentShip?.type ?? null}
+      compact
+      onInstalled={handleTractorInstalled}
+    />
+  );
 
   const refresh = useCallback(async () => {
     try {
@@ -56,7 +108,7 @@ const TowConsentPanel: React.FC = () => {
       setFeedback(okMsg);
       await refresh();
     } catch (err: unknown) {
-      setFeedback(err instanceof Error ? err.message : 'Tow action failed');
+      setFeedback(formatTowActionError(err));
     } finally {
       setBusy(false);
     }
@@ -73,6 +125,7 @@ const TowConsentPanel: React.FC = () => {
     if (towTargets.length === 0) return null;
     return (
       <div className="tow-consent-rail" data-testid="tow-consent-rail">
+        {tractorCta}
         <button
           type="button"
           data-testid="tow-consent-open-request"
@@ -99,6 +152,8 @@ const TowConsentPanel: React.FC = () => {
     >
       <div className="tow-consent-card">
         <h3 id="tow-consent-title">Tractor tow</h3>
+
+        {tractorCta}
 
         {incoming && (
           <div className="tow-consent-block" data-testid="tow-consent-incoming">

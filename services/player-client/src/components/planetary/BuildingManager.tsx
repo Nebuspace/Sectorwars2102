@@ -34,6 +34,18 @@ interface BuildingInfo {
   };
 }
 
+/** Surface gameserver 400 detail on building upgrade refusal (ownership / unknown type / in-progress). */
+export function formatBuildingUpgradeError(err: unknown): string {
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (hasServerDetail) return message!;
+  return 'Failed to upgrade building';
+}
+
 const BUILDING_INFO: Record<BuildingType, BuildingInfo> = {
   factory: {
     type: 'factory',
@@ -212,7 +224,7 @@ export const BuildingManager: React.FC<BuildingManagerProps> = ({
         setTimeout(() => setSuccessMessage(null), 3000);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to upgrade building');
+      setError(formatBuildingUpgradeError(err));
     } finally {
       setUpgrading(null);
     }

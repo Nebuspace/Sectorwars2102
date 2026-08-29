@@ -12,6 +12,17 @@ vi.mock('../../planetary/CitadelManager', () => ({
   default: () => <div data-testid="citadel-manager" />,
 }));
 
+const MockProfessionsPanel = vi.fn(
+  ({ citadelLevel }: { citadelLevel?: number | null }) => (
+    <div data-testid="professions-panel" data-citadel-level={String(citadelLevel ?? '')} />
+  ),
+);
+
+vi.mock('../../planetary/ProfessionsPanel', () => ({
+  default: (props: { planetId: string; citadelLevel?: number | null; onUpdate: () => void }) =>
+    MockProfessionsPanel(props),
+}));
+
 import CitadelPanel from '../CitadelPanel';
 
 describe('CitadelPanel', () => {
@@ -19,6 +30,7 @@ describe('CitadelPanel', () => {
   let root: ReturnType<typeof createRoot>;
 
   beforeEach(() => {
+    MockProfessionsPanel.mockClear();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -54,6 +66,10 @@ describe('CitadelPanel', () => {
     expect(container.textContent).toContain('Lv 3');
     expect(container.querySelector('.cp-siege-flag')).toBeNull();
     expect(container.querySelector('[data-testid="citadel-manager"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="professions-panel"]')).toBeTruthy();
+    expect(MockProfessionsPanel).toHaveBeenCalledWith(
+      expect.objectContaining({ planetId: 'p1', citadelLevel: 3, onUpdate: expect.any(Function) }),
+    );
 
     const buttons = Array.from(container.querySelectorAll('.cp-action-btn')) as HTMLButtonElement[];
     expect(buttons).toHaveLength(3);

@@ -21,7 +21,13 @@ vi.mock('../../services/api', () => ({
   },
 }));
 
-import RankDisplay from './RankDisplay';
+import RankDisplay, { formatRankDisplayLoadError } from './RankDisplay';
+
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
 
 const FULL_RANK = {
   player_id: 'p1',
@@ -105,5 +111,22 @@ describe('RankDisplay', () => {
     await mount();
 
     expect(container.querySelector('.rank-error')?.textContent).toBe('Network down');
+  });
+
+  it('surfaces 404 server detail from rank load refusal', async () => {
+    mockGetRank.mockRejectedValue(
+      apiRequestError(404, 'Rank information not found'),
+    );
+    await mount();
+
+    expect(container.querySelector('.rank-error')?.textContent).toBe(
+      'Rank information not found',
+    );
+  });
+
+  it('formatRankDisplayLoadError hides bare API Error status codes', () => {
+    expect(formatRankDisplayLoadError(apiRequestError(404))).toBe(
+      'Failed to load rank info',
+    );
   });
 });

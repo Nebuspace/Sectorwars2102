@@ -27,8 +27,6 @@ Canon mechanics implemented here:
     2-turn layer — ADR-0042).
 
 Documented v1 deferrals (flagged, not invented):
-  - Anonymous Defender escorts for High/Public-Enemy Federation tiers
-    (only NAMED officers dispatch — escort hulls are a later slice).
   - Post-arrival pursuit (chasing a player who moves within
     jurisdiction) — the squad releases when the offender leaves the
     encounter sector.
@@ -50,23 +48,31 @@ npc_movement_service and the combat path.
 """
 
 import logging
-import random
 import uuid
 from collections import deque
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from sqlalchemy.orm import Session
 
 from src.core.game_time import scaled_deadline
-from src.models.npc_character import NPCCharacter, NPCArchetype, NPCStatus
-from src.models.pending_engagement import PendingEngagement, EngagementStatus
+from src.models.npc_character import NPCArchetype, NPCCharacter, NPCStatus
+from src.models.pending_engagement import EngagementStatus, PendingEngagement
 from src.models.player import Player
 from src.models.region import Region
 from src.models.sector import Sector, sector_warps
 from src.models.ship import Ship
 from src.models.warp_tunnel import WarpTunnel, WarpTunnelStatus
 from src.services import npc_movement_service
+from src.services.npc_scheduler_config import (
+    CAPTAIN_MAX_HOPS,
+    MARSHAL_MAX_HOPS,
+    PIRATE_LORD_MAX_HOPS,
+    hop_cap_or_default,
+    resolve_npc_scheduler_tuning,
+    sample_grace_seconds,
+)
+from src.services.npc_spawn_service import POLICE_PATROL_DEFENSES_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -74,15 +80,13 @@ logger = logging.getLogger(__name__)
 ARRIVAL_TURN_DELAY = 2
 OFFENSE_COOLDOWN_TURNS = 5
 ENGAGEMENT_EXPIRY_HOURS = 24
+# Grace band endpoints — also mirrored in npc_scheduler_config (LEG-78).
 GRACE_MIN_MINUTES = 5
 GRACE_MAX_MINUTES = 15
 
 # ADR-0063 N-I1 routing caps (warp-graph hops; no QJ pursuit).
 # npc-scheduler.md NPC_CLASS_ROUTING_DISTANCE defaults.
-MARSHAL_MAX_HOPS = 5
-CAPTAIN_MAX_HOPS = 8
-PIRATE_LORD_MAX_HOPS = 3
-
+# Overridable per roster/env via route_engagement_max_distance_hops (LEG-78).
 NPC_CLASS_ROUTING_DISTANCE = {
     "sector_marshal": MARSHAL_MAX_HOPS,
     "faction_patrol_captain": CAPTAIN_MAX_HOPS,
@@ -98,6 +102,9 @@ FEDERATION = "federation"
 SENTINEL = "sentinel"
 
 _FORCE_FACTION = {FEDERATION: "terran_federation", SENTINEL: "galactic_concord"}
+
+# police-forces.md:74-96 — anonymous Defender escorts (not named Marshals).
+FEDERATION_ESCORT_DUTY_ROLE = "federation_defender_escort"
 
 
 # ---------------------------------------------------------------------------
@@ -215,27 +222,200 @@ def _is_pirate_lord(npc: NPCCharacter) -> bool:
     return (npc.title or "") == "Pirate Lord"
 
 
-def hop_cap_for_npc(npc: NPCCharacter) -> int:
-    """Per-class pursuit hop cap from ``NPC_CLASS_ROUTING_DISTANCE``."""
+def hop_cap_for_npc(
+    npc: NPCCharacter,
+    *,
+    roster_config: Optional[Dict[str, Any]] = None,
+    role: Optional[str] = None,
+) -> int:
+    """Per-class pursuit hop cap, optionally overridden via LEG-78 tuning."""
     if _is_pirate_lord(npc):
-        return PIRATE_LORD_MAX_HOPS
-    if _is_captain(npc):
-        return CAPTAIN_MAX_HOPS
-    return MARSHAL_MAX_HOPS
+        class_default = PIRATE_LORD_MAX_HOPS
+    elif _is_captain(npc):
+        class_default = CAPTAIN_MAX_HOPS
+    else:
+        class_default = MARSHAL_MAX_HOPS
+    tuning = resolve_npc_scheduler_tuning(
+        roster_config=roster_config,
+        role=role,
+    )
+    return hop_cap_or_default(tuning, class_default)
 
 
-def _federation_squad_size(player: Player) -> Tuple[int, bool]:
-    """(named officer count, captain joins) per police-forces.md threat
-    tiers, mapped onto this codebase's REPUTATION_TIERS bands (code wins
-    on numbers; canon's 7-name scale is flagged for the docs repo)."""
+def _federation_squad_size(player: Player) -> Tuple[int, bool, int]:
+    """(named officer count, captain joins, anonymous Defender escorts).
+
+    Named counts + captain flag match police-forces.md:88-92. Escort
+    hulls are the High/Public-Enemy columns of the composition table
+    at :74-81 (1 Defender at High / 2 at Public Enemy). Sentinel
+    dispatch does not use this helper.
+    """
     rep = player.personal_reputation or 0
     if rep <= -750:   # Villain ≈ canon Public Enemy
-        return 3, True
+        return 3, True, 2
     if rep <= -500:   # Criminal ≈ canon Pirate/Criminal (High)
-        return 3, False
+        return 3, False, 1
     if rep <= -250:   # Outlaw ≈ canon Smuggler/Outlaw (Medium)
-        return 2, False
-    return 1, False   # Suspicious/Questionable (Low)
+        return 2, False, 0
+    return 1, False, 0   # Suspicious/Questionable (Low)
+
+
+def _is_federation_escort(npc: NPCCharacter) -> bool:
+    return (npc.duty_role or "") == FEDERATION_ESCORT_DUTY_ROLE
+
+
+def attach_escort_ids_to_police_squad_row(
+    defenses: Optional[Dict[str, Any]],
+    marshal_ids: List[str],
+    escort_ids: List[str],
+) -> Dict[str, Any]:
+    """Copy-on-write: append escort NPC ids onto the ``police_patrol_ships``
+    row that already lists any of ``marshal_ids``. If no row matches,
+    append a dispatch-only row so the escorts are still discoverable.
+    Magnitudes (wanted_threshold, hop caps) are not invented here.
+    """
+    out = dict(defenses or {})
+    patrols = list(out.get(POLICE_PATROL_DEFENSES_KEY) or [])
+    marshal_set = {str(x) for x in marshal_ids}
+    escort_ids = [str(x) for x in escort_ids]
+    attached = False
+    new_patrols: List[Any] = []
+    for row in patrols:
+        if not isinstance(row, dict):
+            new_patrols.append(row)
+            continue
+        ids = [str(x) for x in (row.get("npc_character_ids") or [])]
+        if marshal_set.intersection(ids):
+            merged = list(ids)
+            for eid in escort_ids:
+                if eid not in merged:
+                    merged.append(eid)
+            row = dict(row)
+            row["npc_character_ids"] = merged
+            row["ship_count"] = len(merged)
+            extra = [str(x) for x in (row.get("escort_npc_ids") or [])]
+            for eid in escort_ids:
+                if eid not in extra:
+                    extra.append(eid)
+            row["escort_npc_ids"] = extra
+            attached = True
+        new_patrols.append(row)
+    if not attached and escort_ids:
+        new_patrols.append({
+            "patrol_id": str(uuid.uuid4()),
+            "squad_kind": "federation_marshal",
+            "npc_character_ids": list(marshal_ids) + escort_ids,
+            "escort_npc_ids": escort_ids,
+            "ship_count": len(marshal_ids) + len(escort_ids),
+            "deployed_at": datetime.now(UTC).isoformat(),
+        })
+    out[POLICE_PATROL_DEFENSES_KEY] = new_patrols
+    return out
+
+
+def _host_sector_for_escorts(
+    db: Session, squad: List[NPCCharacter], fallback: Sector
+) -> Sector:
+    for npc in squad:
+        if npc.current_sector_id is None:
+            continue
+        host = (
+            db.query(Sector)
+            .filter(Sector.sector_id == npc.current_sector_id)
+            .first()
+        )
+        if host is not None:
+            return host
+    return fallback
+
+
+def _spawn_federation_escorts(
+    db: Session,
+    count: int,
+    sector: Sector,
+    marshal_ids: List[str],
+) -> List[NPCCharacter]:
+    """Anonymous Defender hulls for High / Public-Enemy Federation squads.
+
+    No new hull class: reuses player-roster ``ShipType.DEFENDER``. Missing
+    specification → skip (do not invent stats). Escort rows are one-shot
+    (duty_role marker); named Marshal identity is unchanged.
+    """
+    if count <= 0 or sector is None:
+        return []
+    from src.models.ship import ShipType, ShipSpecification
+    from src.services.npc_spawn_service import _build_npc_ship
+    from sqlalchemy.orm.attributes import flag_modified
+
+    spec = (
+        db.query(ShipSpecification)
+        .filter(ShipSpecification.type == ShipType.DEFENDER)
+        .first()
+    )
+    if spec is None:
+        logger.warning(
+            "Defender ShipSpecification missing — skipping %d federation escort(s)",
+            count,
+        )
+        return []
+
+    now = datetime.now(UTC)
+    escorts: List[NPCCharacter] = []
+    for i in range(count):
+        ship = _build_npc_ship(
+            spec,
+            name=f"Police Escort {i + 1}",
+            sector_id=sector.sector_id,
+        )
+        db.add(ship)
+        db.flush()
+        npc = NPCCharacter(
+            name=f"Wing {i + 1}",
+            title="Escort",
+            faction_code=_FORCE_FACTION[FEDERATION],
+            archetype=NPCArchetype.LAW_ENFORCEMENT,
+            status=NPCStatus.ENGAGED_PENDING_ARRIVAL,
+            current_sector_id=sector.sector_id,
+            ship_id=ship.id,
+            bang_roster_ref=f"fed-escort:{uuid.uuid4()}",
+            duty_role=FEDERATION_ESCORT_DUTY_ROLE,
+            spawned_at=now,
+            last_seen_at=now,
+        )
+        db.add(npc)
+        db.flush()
+        escorts.append(npc)
+
+    escort_ids = [str(e.id) for e in escorts]
+    sector.defenses = attach_escort_ids_to_police_squad_row(
+        sector.defenses, marshal_ids, escort_ids
+    )
+    flag_modified(sector, "defenses")
+    return escorts
+
+
+def _commit_squad(
+    db: Session,
+    engagement: PendingEngagement,
+    squad: List[NPCCharacter],
+    escort_count: int,
+    host_fallback: Sector,
+) -> None:
+    """Flip named officers to pending-arrival and attach escort hulls."""
+    now = datetime.now(UTC)
+    marshal_ids = [str(npc.id) for npc in squad]
+    for npc in squad:
+        npc.status = NPCStatus.ENGAGED_PENDING_ARRIVAL
+        npc.last_seen_at = now
+    escorts: List[NPCCharacter] = []
+    if (
+        escort_count
+        and engagement.jurisdiction == FEDERATION
+        and squad
+    ):
+        host = _host_sector_for_escorts(db, squad, host_fallback)
+        escorts = _spawn_federation_escorts(db, escort_count, host, marshal_ids)
+    engagement.npc_squad_ids = marshal_ids + [str(e.id) for e in escorts]
 
 
 def _pick_squad(
@@ -262,13 +442,41 @@ def _pick_squad(
     if not candidates:
         return []
 
-    distances = _hop_distances(db, offense_sector_id, _MAX_ROUTING_HOPS)
+    from src.models.npc_character import NPCRoster
+
+    roster_by_ref: Dict[str, Any] = {}
+    refs = {n.bang_roster_ref for n in candidates if n.bang_roster_ref}
+    if refs:
+        for row in (
+            db.query(NPCRoster)
+            .filter(NPCRoster.bang_roster_ref.in_(refs))
+            .all()
+        ):
+            roster_by_ref[row.bang_roster_ref] = row
+
+    max_hops = _MAX_ROUTING_HOPS
+    for npc in candidates:
+        roster = roster_by_ref.get(npc.bang_roster_ref or "")
+        cap = hop_cap_for_npc(
+            npc,
+            roster_config=(roster.config if roster is not None else None),
+            role=(roster.role if roster is not None else None),
+        )
+        if cap > max_hops:
+            max_hops = cap
+
+    distances = _hop_distances(db, offense_sector_id, max_hops)
 
     def in_range(npc: NPCCharacter) -> Optional[int]:
         hops = distances.get(npc.current_sector_id)
         if hops is None:
             return None
-        cap = hop_cap_for_npc(npc)
+        roster = roster_by_ref.get(npc.bang_roster_ref or "")
+        cap = hop_cap_for_npc(
+            npc,
+            roster_config=(roster.config if roster is not None else None),
+            role=(roster.role if roster is not None else None),
+        )
         return hops if hops <= cap else None
 
     ranked = sorted(
@@ -321,13 +529,49 @@ def _pick_pirate_lord_responders(
     if not candidates:
         return []
 
-    distances = _hop_distances(db, offense_sector_id, PIRATE_LORD_MAX_HOPS)
+    from src.models.npc_character import NPCRoster
+
+    roster_by_ref: Dict[str, Any] = {}
+    refs = {n.bang_roster_ref for n in candidates if n.bang_roster_ref}
+    if refs:
+        for row in (
+            db.query(NPCRoster)
+            .filter(NPCRoster.bang_roster_ref.in_(refs))
+            .all()
+        ):
+            roster_by_ref[row.bang_roster_ref] = row
+
+    max_hops = PIRATE_LORD_MAX_HOPS
+    for npc in candidates:
+        roster = roster_by_ref.get(npc.bang_roster_ref or "")
+        cap = hop_cap_for_npc(
+            npc,
+            roster_config=(roster.config if roster is not None else None),
+            role=(roster.role if roster is not None else None),
+        )
+        if cap > max_hops:
+            max_hops = cap
+
+    distances = _hop_distances(db, offense_sector_id, max_hops)
     ranked = sorted(
         (
             (hops, npc)
             for npc in candidates
             if (hops := distances.get(npc.current_sector_id)) is not None
-            and hops <= PIRATE_LORD_MAX_HOPS
+            and hops
+            <= hop_cap_for_npc(
+                npc,
+                roster_config=(
+                    roster_by_ref.get(npc.bang_roster_ref or "").config
+                    if roster_by_ref.get(npc.bang_roster_ref or "") is not None
+                    else None
+                ),
+                role=(
+                    roster_by_ref.get(npc.bang_roster_ref or "").role
+                    if roster_by_ref.get(npc.bang_roster_ref or "") is not None
+                    else None
+                ),
+            )
         ),
         key=lambda pair: (pair[0], str(pair[1].id)),
     )
@@ -391,10 +635,11 @@ def _route_engagement_inner(
     if recent is not None:
         return None
 
+    escort_count = 0
     if jurisdiction == SENTINEL:
         size = squad_size_override or 4  # always 4; 6 after a Sentinel kill
     else:
-        size, tier_captain = _federation_squad_size(player)
+        size, tier_captain, escort_count = _federation_squad_size(player)
         include_captain = include_captain or tier_captain
         if squad_size_override:
             size = squad_size_override
@@ -411,27 +656,28 @@ def _route_engagement_inner(
         jurisdiction=jurisdiction,
         offense_sector_id=offense_sector.sector_id,
         region_id=offense_sector.region_id,
-        npc_squad_ids=[str(npc.id) for npc in squad],
+        npc_squad_ids=[],
         offense_at_turn_count=turn_count,
         arrival_turn_threshold=(turn_count + ARRIVAL_TURN_DELAY) if squad else None,
         status=EngagementStatus.PENDING,
         grace_expires_at=None if squad else scaled_deadline(
-            random.randint(GRACE_MIN_MINUTES, GRACE_MAX_MINUTES) / 60.0, start=now
+            sample_grace_seconds(
+                resolve_npc_scheduler_tuning(role=None)
+            )
+            / 3600.0,
+            start=now,
         ),
         expires_at=scaled_deadline(ENGAGEMENT_EXPIRY_HOURS, start=now),
     )
     db.add(engagement)
 
-    # Atomic commitment: a pending officer can't be picked twice.
-    for npc in squad:
-        npc.status = NPCStatus.ENGAGED_PENDING_ARRIVAL
-        npc.last_seen_at = now
+    _commit_squad(db, engagement, squad, escort_count, offense_sector)
 
     db.flush()
     if squad:
         logger.info(
-            "Engagement dispatched: %s -> player %s (%s, %d officers, arrival at turn %d)",
-            offense_type, player.id, jurisdiction, len(squad),
+            "Engagement dispatched: %s -> player %s (%s, %d hulls, arrival at turn %d)",
+            offense_type, player.id, jurisdiction, len(engagement.npc_squad_ids or []),
             engagement.arrival_turn_threshold,
         )
     else:
@@ -442,10 +688,20 @@ def _route_engagement_inner(
     return engagement
 
 
-def engagement_summary(engagement: Optional[PendingEngagement],
-                       db: Optional[Session] = None) -> Optional[Dict[str, Any]]:
-    """Small dict for combat-response payloads ('Marshal Vance is en
-    route — 2 turns to arrival')."""
+def engagement_summary(
+    engagement: Optional[PendingEngagement],
+    db: Optional[Session] = None,
+    player: Optional[Player] = None,
+) -> Optional[Dict[str, Any]]:
+    """Small dict for combat-response payloads and the player GET/WS
+    ('Marshal Vance is en route — 2 turns to arrival').
+
+    ``turns_to_arrival`` is remaining turns on the offender's
+    ``lifetime_turns_spent`` clock (canon Player.cumulative_turn_count):
+    ``arrival_turn_threshold - lifetime_turns_spent``, floored at 0.
+    When ``player`` is omitted, remaining equals the original delay
+    (threshold − offense_at_turn_count), matching the at-commit banner.
+    """
     if engagement is None:
         return None
     names: List[str] = []
@@ -455,14 +711,85 @@ def engagement_summary(engagement: Optional[PendingEngagement],
             npc.display_name
             for npc in db.query(NPCCharacter).filter(NPCCharacter.id.in_(ids)).all()
         ]
+    turns_to_arrival = None
+    if engagement.arrival_turn_threshold is not None:
+        if player is not None:
+            clock = player.lifetime_turns_spent or 0
+        else:
+            clock = engagement.offense_at_turn_count or 0
+        turns_to_arrival = max(0, engagement.arrival_turn_threshold - clock)
     return {
+        "id": str(engagement.id) if getattr(engagement, "id", None) else None,
         "jurisdiction": engagement.jurisdiction,
         "offense_type": engagement.offense_type,
         "squad": names,
-        "turns_to_arrival": ARRIVAL_TURN_DELAY if engagement.npc_squad_ids else None,
+        "officer_names": names,
+        "turns_to_arrival": turns_to_arrival,
         "grace_window": engagement.grace_expires_at.isoformat()
         if engagement.grace_expires_at else None,
     }
+
+
+def list_open_engagement_summaries(
+    db: Session, player: Player,
+) -> List[Dict[str, Any]]:
+    """Caller's PENDING rows only — owner-scoped reconnect GET."""
+    rows = (
+        db.query(PendingEngagement)
+        .filter(
+            PendingEngagement.player_id == player.id,
+            PendingEngagement.status == EngagementStatus.PENDING,
+        )
+        .order_by(PendingEngagement.created_at.asc())
+        .all()
+    )
+    items: List[Dict[str, Any]] = []
+    for row in rows:
+        summary = engagement_summary(row, db, player)
+        if summary is not None:
+            items.append(summary)
+    return items
+
+
+def dispatch_police_en_route_event(
+    player: Player,
+    engagement: Optional[PendingEngagement],
+    db: Optional[Session] = None,
+) -> None:
+    """POST-COMMIT personal WS: same payload as GET. Best-effort; never
+    raises into combat/movement (medal_awarded pattern)."""
+    if engagement is None:
+        return
+    try:
+        user_id = getattr(player, "user_id", None)
+        if not user_id and db is not None:
+            user_id = (
+                db.query(Player.user_id).filter(Player.id == player.id).scalar()
+            )
+        if not user_id:
+            return
+        payload = engagement_summary(engagement, db, player) or {}
+        message = {
+            "type": "police_en_route",
+            **payload,
+        }
+        import asyncio
+        from src.services.enhanced_websocket_service import (
+            get_enhanced_websocket_service,
+        )
+
+        loop = asyncio.get_running_loop()
+        loop.create_task(
+            get_enhanced_websocket_service().connection_manager.send_personal_message(
+                str(user_id), message
+            )
+        )
+    except Exception:
+        logger.debug(
+            "Skipped police_en_route WS notice for player %s (no loop or socket)",
+            getattr(player, "id", None),
+            exc_info=True,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -539,9 +866,17 @@ def _release_squad(db: Session, engagement: PendingEngagement) -> None:
         )
         if npc is None:
             continue
-        if npc.status in (NPCStatus.ENGAGED_PENDING_ARRIVAL, NPCStatus.ENGAGED):
-            npc.status = NPCStatus.ON_DUTY
+        if npc.status not in (
+            NPCStatus.ENGAGED_PENDING_ARRIVAL,
+            NPCStatus.ENGAGED,
+        ):
+            continue
+        if _is_federation_escort(npc):
+            npc.status = NPCStatus.RETIRED
             npc.last_seen_at = now
+            continue
+        npc.status = NPCStatus.ON_DUTY
+        npc.last_seen_at = now
 
 
 # ---------------------------------------------------------------------------
@@ -811,18 +1146,19 @@ def _sweep_one(db: Session, engagement: PendingEngagement,
         if engagement.grace_expires_at is None or now < engagement.grace_expires_at:
             return []
         if engagement.jurisdiction == SENTINEL:
-            size, include_captain = 4, False
+            size, include_captain, escort_count = 4, False, 0
         else:
-            size, include_captain = _federation_squad_size(player)
+            size, include_captain, escort_count = _federation_squad_size(player)
         squad = _pick_squad(
             db, engagement.jurisdiction, engagement.region_id,
             player.current_sector_id, size, include_captain,
         )
         if not squad:
             return []  # still short-handed; retry next sweep
-        engagement.npc_squad_ids = [str(npc.id) for npc in squad]
-        for npc in squad:
-            npc.status = NPCStatus.ENGAGED_PENDING_ARRIVAL
+        host = current_sector if current_sector is not None else _current_sector_of(db, player)
+        if host is None:
+            return []
+        _commit_squad(db, engagement, squad, escort_count, host)
         # WO-NPC-LOCK-ORDER-BATCH: lock the offender Player BEFORE
         # _place_squad acquires the squad's Ship/Sector locks — see
         # _lock_offender_player's docstring for the AB-BA this closes.

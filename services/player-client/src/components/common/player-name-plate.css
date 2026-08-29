@@ -1,0 +1,40 @@
+.player-name-plate {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: transparent;
+  border: none;
+  color: inherit;
+  font: inherit;
+  padding: 0;
+  cursor: default;
+}
+
+.player-name-plate[type='button'] {
+  cursor: pointer;
+}
+
+.player-name-plate.size-sm {
+  font-size: 0.85em;
+}
+
+.player-name-plate .pnp-name {
+  font-weight: 600;
+}
+
+.player-name-plate .pnp-medal {
+  display: inline-flex;
+  line-height: 1;
+}
+
+.player-name-plate .pnp-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.1rem;
+  padding: 0 0.25rem;
+  border-radius: 0.35rem;
+  font-size: 0.7em;
+  background: rgba(255, 215, 0, 0.2);
+  color: #ffd700;
+}

@@ -15,7 +15,7 @@ vi.mock('../../../services/api', () => ({
   },
 }));
 
-import TerraformingPanel from '../TerraformingPanel';
+import TerraformingPanel, { formatTerraformingCancelError } from '../TerraformingPanel';
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -103,5 +103,28 @@ describe('TerraformingPanel — cancel money path', () => {
     expect(String(call[0])).toContain('/api/v1/planets/planet-1/terraforming/cancel');
     expect((call[1]?.headers as Record<string, string>).Authorization).toBe('Bearer tok-test');
     expect(container.textContent).toMatch(/2,?500 credits refunded/);
+  });
+
+  it('surfaces cancel 400 server detail in action message', async () => {
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes('/terraforming/status')) {
+        return { ok: true, json: async () => ({ active: true, currentHabitability: 45, terraformingTarget: 60, progress: 20, estimatedCompletion: new Date(Date.now() + 3_600_000).toISOString() }) };
+      }
+      if (u.includes('/terraforming/cancel') && init?.method === 'POST') {
+        return { ok: false, status: 400, json: async () => ({ detail: 'No active terraforming project to cancel' }) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    await act(async () => { root.render(<TerraformingPanel planetId="planet-1" playerCredits={100_000} habitabilityScore={45} planetType="DESERT" />); });
+    await act(async () => { await flush(); await flush(); });
+    await vi.waitFor(() => { expect(container.querySelector('.terraforming-btn.cancel-btn')).toBeTruthy(); });
+    const cancelBtn = container.querySelector('.terraforming-btn.cancel-btn') as HTMLButtonElement;
+    await act(async () => { cancelBtn.click(); await flush(); await flush(); });
+    await vi.waitFor(() => { expect(container.textContent).toContain('No active terraforming project to cancel'); });
+  });
+
+  it('formatTerraformingCancelError falls back when detail absent', () => {
+    expect(formatTerraformingCancelError(new Error('API Error: 400'))).toBe('Failed to cancel terraforming');
   });
 });

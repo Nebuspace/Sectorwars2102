@@ -18,6 +18,31 @@ MAX_TOPIC_NAME_LENGTH = 128
 # subscription_rejected." (WO-RT-BUS-HARDENING)
 MAX_TOPICS_PER_USER = 50
 
+# Canon: SYSTEMS/realtime-bus.md Channel / topic model — personal:{user_id}
+# single-recipient invariant (ADR-0057 A-I1 / LEG-2575). Cross-user subscribe
+# must be rejected + logged; reuse subscription_rejected (no dedicated
+# forbidden error_code in tree — invent=0).
+PERSONAL_TOPIC_PREFIX = "personal:"
+
+
+def personal_topic_owner(topic: str) -> Optional[str]:
+    """Return owner user_id if topic uses personal: prefix, else None.
+
+    Empty string owner means a malformed ``personal:`` with no id — still a
+    personal-topic shape, and always forbidden for subscribe.
+    """
+    if not topic.startswith(PERSONAL_TOPIC_PREFIX):
+        return None
+    return topic[len(PERSONAL_TOPIC_PREFIX) :]
+
+
+def is_personal_topic_forbidden(user_id: str, topic: str) -> bool:
+    """True when topic is personal: and not owned by the authenticated user."""
+    owner = personal_topic_owner(topic)
+    if owner is None:
+        return False
+    return owner != user_id
+
 # WO-P1-BUS-RACE-CRITICAL (MEDIUM finding, Mack): send_personal_message's
 # local-hit-suppresses-bus-publish optimization assumes a local send_text()
 # "success" means real delivery -- but a half-open dead socket (network
@@ -536,10 +561,15 @@ class ConnectionManager:
         binding per SYSTEMS/realtime-bus.md's Rate limits table). A topic the
         user is already subscribed to never consumes a fresh slot (idempotent
         re-subscribe always succeeds). Returns True if the subscription is
-        registered (new or already-present), False if the cap was hit — the
-        caller (handle_websocket_message) sends a subscription_rejected frame
-        and does not register."""
+        registered (new or already-present), False if the cap was hit OR a
+        personal: ownership check failed — the caller (handle_websocket_message)
+        sends a subscription_rejected frame and does not register.
+
+        LEG-2575: also refuses personal:{other} (and malformed personal:) so
+        registry registration cannot bypass the handler ownership gate."""
         if not topic or user_id not in self.active_connections:
+            return False
+        if is_personal_topic_forbidden(user_id, topic):
             return False
         if topic in self.topic_subscriptions and user_id in self.topic_subscriptions[topic]:
             return True
@@ -561,6 +591,11 @@ class ConnectionManager:
 
     async def publish_topic(self, topic: str, message: Dict[str, Any], exclude: Optional[str] = None):
         """Publish a message to every subscriber of a generic topic.
+
+        LEG-2575 publisher audit: personal unicast must use
+        ``send_personal_message(user_id, …)`` (keyed by authenticated user),
+        not ``publish_topic("personal:…")``. Subscribe-side ownership gating
+        blocks cross-user opt-in; do not add personal: fan-out publishers.
 
         WO-DBB-RT5 — the generic fan-out primitive over the topic-subscription
         registry, so any service can fan out to arbitrary topic subscribers
@@ -702,6 +737,32 @@ class ConnectionManager:
             await self.send_personal_message(placer_id, message)
         if target_id:
             await self.send_personal_message(target_id, message)
+
+    async def send_fleet_event(
+        self,
+        event_type: str,
+        payload: Dict[str, Any],
+        *,
+        team_id: Optional[str] = None,
+        sector_number: Optional[int] = None,
+    ):
+        """LEG-303 — fleet-coordination.md Outputs (fleet_moved /
+        fleet_status_changed / battle_round_complete / battle_ended).
+
+        Canon does not name a dedicated fleet room. Team members of the
+        owning fleet(s) are the live consumers (broadcast_to_team). Optional
+        sector_number fans out to the integer sector-number room peers
+        already occupy. WS failure is the caller's problem to swallow.
+        """
+        message = {
+            "type": event_type,
+            "timestamp": datetime.now(UTC).isoformat(),
+            **payload,
+        }
+        if team_id:
+            await self.broadcast_to_team(str(team_id), message)
+        if sector_number is not None:
+            await self.broadcast_to_sector(int(sector_number), message)
 
     async def send_planetary_update(self, planet_data: Dict[str, Any], owner_user_id: str = None, sector_id: int = None):
         """Send planetary update to planet owner or sector"""
@@ -1147,6 +1208,71 @@ class ConnectionManager:
 connection_manager = ConnectionManager()
 
 
+def enrich_ws_sector_players_medal_identity(
+    db: Any,
+    players: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """LEG-2654: batch-enrich WS sector_players rows with public medal identity.
+
+    Mirrors REST ``enrich_presence_with_live_pose`` and
+    ``team_service.get_team_members``: ``pinned_medal_id`` + ``medal_count``
+    via ``public_medal_identity``, respecting ``medal_privacy.show_count_publicly``.
+    Rows whose ``user_id`` lacks a resolvable ``player_id`` in connection
+    metadata pass through unchanged (``get_sector_players`` stays DB-free).
+    """
+    if not players:
+        return players
+
+    from sqlalchemy import func as sa_func
+
+    from src.models.medal import PlayerMedal
+    from src.models.player import Player
+    from src.services.medal_service import public_medal_identity
+
+    user_to_player: Dict[str, str] = {}
+    player_ids: List[Any] = []
+    for row in players:
+        user_id = row.get("user_id")
+        if not user_id:
+            continue
+        meta = connection_manager.connection_metadata.get(user_id, {})
+        pid = meta.get("user_data", {}).get("player_id")
+        if not pid:
+            continue
+        user_to_player[str(user_id)] = str(pid)
+        player_ids.append(pid)
+
+    if not player_ids:
+        return players
+
+    player_by_id = {
+        str(p.id): p for p in db.query(Player).filter(Player.id.in_(player_ids)).all()
+    }
+
+    medal_counts: Dict[str, int] = {}
+    for pid, n in (
+        db.query(PlayerMedal.player_id, sa_func.count(PlayerMedal.medal_id))
+        .filter(PlayerMedal.player_id.in_(player_ids))
+        .group_by(PlayerMedal.player_id)
+        .all()
+    ):
+        medal_counts[str(pid)] = int(n)
+
+    enriched: List[Dict[str, Any]] = []
+    for row in players:
+        out = dict(row)
+        pid = user_to_player.get(str(row.get("user_id")))
+        player_row = player_by_id.get(pid) if pid else None
+        if player_row is not None:
+            fields = public_medal_identity(
+                player_row, medal_count=medal_counts.get(pid, 0)
+            )
+            out["pinned_medal_id"] = fields["pinned_medal_id"]
+            out["medal_count"] = fields["medal_count"]
+        enriched.append(out)
+    return enriched
+
+
 async def handle_websocket_message(user_id: str, message_data: Dict[str, Any]):
     """Handle incoming WebSocket messages from clients"""
     message_type = message_data.get("type")
@@ -1267,6 +1393,17 @@ async def handle_websocket_message(user_id: str, message_data: Dict[str, Any]):
         current_sector = metadata.get("current_sector")
         if current_sector:
             players = connection_manager.get_sector_players(current_sector)
+            try:
+                from src.core.database import SessionLocal
+
+                with SessionLocal() as db:
+                    players = enrich_ws_sector_players_medal_identity(db, players)
+            except Exception:
+                logger.debug(
+                    "Skipped sector_players medal enrich for sector %s",
+                    current_sector,
+                    exc_info=True,
+                )
             await connection_manager.send_personal_message(user_id, {
                 "type": "sector_players",
                 "sector_id": current_sector,
@@ -1290,14 +1427,28 @@ async def handle_websocket_message(user_id: str, message_data: Dict[str, Any]):
     elif message_type == "subscribe_topic":
         # WO-DBB-RT5: opt the connection into a generic topic so a later
         # publish_topic() reaches it. Cap topic name length to keep the
-        # registry key bounded; the service-side publisher decides what topics
-        # carry sensitive data (this is opt-in fan-out, not authorization —
-        # publish_topic only ever delivers what a service explicitly fans out).
+        # registry key bounded. LEG-2575: personal:{user_id} is authorization
+        # (single-recipient invariant) — not mere opt-in fan-out.
         topic = (message_data.get("topic") or "").strip()
         if not topic or len(topic) > MAX_TOPIC_NAME_LENGTH:  # NO-CANON: cap to bound the registry key
             await connection_manager.send_personal_message(user_id, {
                 "type": "error",
                 "message": "Invalid topic name"
+            })
+            return
+        if is_personal_topic_forbidden(user_id, topic):
+            # Canon: reject + log security event; reuse subscription_rejected
+            # (realtime-bus.md Failure modes) — no dedicated forbidden code.
+            logger.warning(
+                "security_event personal_topic_cross_subscribe user_id=%s topic=%s",
+                user_id,
+                topic,
+            )
+            await connection_manager.send_personal_message(user_id, {
+                "type": "subscription_rejected",
+                "topic": topic,
+                "reason": "personal topic ownership denied",
+                "timestamp": datetime.now(UTC).isoformat()
             })
             return
         accepted = connection_manager.subscribe_topic(user_id, topic)

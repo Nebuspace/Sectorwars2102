@@ -65,6 +65,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from src.models.docking import DockingSlipOccupancy
 from src.models.market_transaction import MarketPrice, MarketTransaction, TransactionType
 from src.models.npc_character import NPCCharacter, NPCLifecycleStage
+from src.models.region import Region
 from src.models.sector import Sector
 from src.models.ship import Ship
 from src.models.station import Station, StationType
@@ -94,6 +95,12 @@ SURPLUS_RATIO = 0.5          # sells + stock above this = surplus seller
 DEFICIT_RATIO = 0.5          # buys + stock below this = deficit buyer
 DEMAND_SCORE_MIN = 0.0
 DEMAND_SCORE_MAX = 2.0
+# port-ownership.md § Tariff impact — NPC traders apply the same elasticity.
+TARIFF_DEMAND_FLOOR = 0.10
+TARIFF_ELASTICITY_PER_PCT = 0.05
+# Matches Reputation.current_value clamp (faction_service apply_faction_rep_delta).
+FACTION_STANDING_CLAMP = 800
+REPUTATION_SCORE_WEIGHT = 0.10  # port-ownership.md traffic_with_rep compose term
 
 # --- Notoriety drift (npc-traders.md § Notoriety) --------------------------
 # Canon: "Notoriety drifts dynamically: a trader caught smuggling rises toward
@@ -197,6 +204,125 @@ SUPPLY_DELIVERY_SCHEDULE_TARGET_KEY = "supply_delivery"
 # Route generation
 # ---------------------------------------------------------------------------
 
+def compute_tariff_demand_factor(tax_rate: Optional[float]) -> float:
+    """Canon tariff elasticity for NPC (and player) traffic weighting.
+
+    port-ownership.md: demand_factor = max(min(1.0 - 0.05 × tariff_pct, 1.0), 0.10)
+    where tariff_pct = tax_rate × 100 (Station.tax_rate is a 0–1 fraction).
+    Unowned / unset tax_rate is treated as 0% → demand_factor 1.0."""
+    rate = float(tax_rate or 0.0)
+    tariff_pct = rate * 100.0
+    raw = 1.0 - TARIFF_ELASTICITY_PER_PCT * tariff_pct
+    return max(min(raw, 1.0), TARIFF_DEMAND_FLOOR)
+
+
+def normalize_standing_to_reputation_score(standing_value: int) -> float:
+    """Map faction standing [-800, +800] to canon reputation_score [-1, +1]."""
+    clamped = max(
+        -FACTION_STANDING_CLAMP,
+        min(FACTION_STANDING_CLAMP, int(standing_value)),
+    )
+    return clamped / FACTION_STANDING_CLAMP
+
+
+def compose_reputation_traffic_multiplier(reputation_score: float) -> float:
+    """port-ownership.md: (1 + 0.10 × reputation_score), score ∈ [-1, +1]."""
+    rep = max(-1.0, min(1.0, float(reputation_score)))
+    return 1.0 + REPUTATION_SCORE_WEIGHT * rep
+
+
+def compose_npc_traffic_weight(
+    tax_rate: Optional[float],
+    reputation_score: float,
+) -> float:
+    """demand_factor × (1 + 0.10 × reputation_score) per port-ownership.md."""
+    return compute_tariff_demand_factor(tax_rate) * compose_reputation_traffic_multiplier(
+        reputation_score
+    )
+
+
+def resolve_station_reputation_score(db: Session, station: Station) -> float:
+    """Derive reputation_score from owner↔controlling-faction standing.
+
+    Uses resolve_effective_faction_standing_value (team aggregate when set),
+    same resolver as docking_service._player_faction_rep_for_station. Unowned
+    or unaffiliated stations return 0 (neutral)."""
+    owner_id = getattr(station, "owner_id", None)
+    if owner_id is None:
+        return 0.0
+    faction_name = getattr(station, "faction_affiliation", None)
+    if not faction_name:
+        return 0.0
+    from src.models.faction import Faction
+    from src.models.player import Player
+    from src.services.faction_service import resolve_effective_faction_standing_value
+
+    faction = db.query(Faction).filter(Faction.name == faction_name).first()
+    if faction is None:
+        return 0.0
+    owner = db.query(Player).filter(Player.id == owner_id).first()
+    if owner is None:
+        return 0.0
+    value, _source = resolve_effective_faction_standing_value(
+        db, owner.id, faction.id, team_id=getattr(owner, "team_id", None)
+    )
+    return normalize_standing_to_reputation_score(value)
+
+
+REGION_TAX_RATE_MIN = 0.0
+REGION_TAX_RATE_MAX = 0.25
+
+
+def clamp_region_tax_rate(region_tax_rate: Optional[float]) -> float:
+    """Clamp region.tax_rate to canon [0.0, 0.25] (port-ownership.md AU3-10)."""
+    rate = float(region_tax_rate or 0.0)
+    return max(REGION_TAX_RATE_MIN, min(REGION_TAX_RATE_MAX, rate))
+
+
+def compose_region_tax_on_traffic(
+    traffic_with_rep: float,
+    region_tax_rate: Optional[float],
+) -> float:
+    """Apply regional tax to traffic weight (port-ownership.md:190).
+
+    traffic_final = traffic_with_rep × (1 - region.tax_rate)."""
+    if traffic_with_rep <= 0:
+        return 0.0
+    rate = clamp_region_tax_rate(region_tax_rate)
+    return traffic_with_rep * (1.0 - rate)
+
+
+def compute_npc_route_traffic_weight(
+    station_tax_rate: Optional[float],
+    region_tax_rate: Optional[float],
+    reputation_score: float = 0.0,
+) -> float:
+    """NPC route pick weight: demand × reputation compose × regional tax."""
+    traffic_with_rep = compose_npc_traffic_weight(station_tax_rate, reputation_score)
+    return compose_region_tax_on_traffic(traffic_with_rep, region_tax_rate)
+
+
+def compute_npc_traffic_weight_for_station(
+    db: Session,
+    station: Station,
+    region_tax_rate: Optional[float] = 0.0,
+) -> float:
+    """Tariff × reputation_score × region tax for a live station row."""
+    return compute_npc_route_traffic_weight(
+        getattr(station, "tax_rate", None),
+        region_tax_rate,
+        resolve_station_reputation_score(db, station),
+    )
+
+
+def _region_tax_rate(db: Session, region_id) -> float:
+    """Read region.tax_rate once per route generation (missing → 0.0)."""
+    region = db.query(Region).filter(Region.id == region_id).first()
+    if region is None:
+        return 0.0
+    return clamp_region_tax_rate(float(region.tax_rate or 0.0))
+
+
 def _station_profile(station: Station) -> Dict[str, List[str]]:
     """Commodities this station can supply (sells, surplus stock) and
     wants (buys, deficit stock)."""
@@ -239,6 +365,8 @@ def generate_trade_route(
     if not region_sector_ids:
         return None
 
+    region_tax_rate = _region_tax_rate(db, region_id)
+
     stations = [
         s for s in db.query(Station).all()
         if s.sector_id in region_sector_ids and (s.commodities or {})
@@ -267,7 +395,14 @@ def generate_trade_route(
         return None
 
     route: List[Dict[str, Any]] = []
-    current = random.choice(candidates)
+    current = random.choices(
+        candidates,
+        weights=[
+            compute_npc_traffic_weight_for_station(db, s, region_tax_rate)
+            for s in candidates
+        ],
+        k=1,
+    )[0]
     visited = {current.id}
 
     while len(route) < ROUTE_MAX_STOPS:
@@ -287,7 +422,14 @@ def generate_trade_route(
                 options.append((nxt, goods))
         if not options:
             break
-        best, best_goods = random.choice(options)
+        best, best_goods = random.choices(
+            options,
+            weights=[
+                compute_npc_traffic_weight_for_station(db, nxt, region_tax_rate)
+                for nxt, _ in options
+            ],
+            k=1,
+        )[0]
         route.append({
             "station_id": str(current.id),
             "sector_id": current.sector_id,

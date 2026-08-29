@@ -1,6 +1,7 @@
 import React from 'react';
 import CockpitPanel from './CockpitPanel';
 import CitadelManager from '../planetary/CitadelManager';
+import ProfessionsPanel from '../planetary/ProfessionsPanel';
 
 export interface CitadelPanelProps {
   planetId: string;
@@ -50,6 +51,11 @@ const CitadelPanel: React.FC<CitadelPanelProps> = ({
       planetId={planetId}
       playerCredits={playerCredits}
       stationedDrones={stationedDrones}
+      onUpdate={onUpdate}
+    />
+    <ProfessionsPanel
+      planetId={planetId}
+      citadelLevel={citadelLevel}
       onUpdate={onUpdate}
     />
     <div className="cp-actions">

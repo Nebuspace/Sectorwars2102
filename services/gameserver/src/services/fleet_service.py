@@ -74,6 +74,8 @@ class FleetService:
 
     def __init__(self, db: Session):
         self.db = db
+        # LEG-DEC-222: flagship-hop fleet_moved payloads queued until POST-COMMIT.
+        self._pending_fleet_moved: List[Dict[str, Any]] = []
 
     # ---- Ship combat JSONB helpers ----
 
@@ -88,6 +90,70 @@ class FleetService:
             ship.combat = {}
         ship.combat[stat] = value
         flag_modified(ship, "combat")
+
+    def _emit_fleet_event(
+        self,
+        event_type: str,
+        payload: Dict[str, Any],
+        *,
+        team_ids: Optional[List[Any]] = None,
+        sector_number: Optional[int] = None,
+    ) -> None:
+        """Best-effort fleet WS (LEG-303). POST-COMMIT callers only.
+
+        Transport mirrors combat_service bounty/combat emits: lazy import,
+        running-loop create_task, swallow every failure — a quiet client
+        must never roll back fleet/battle rows.
+
+        ``fleet_moved`` (LEG-DEC-222 AMEND): emit only when derived
+        ``Fleet.sector_id`` actually changes in ``_recalculate_fleet_stats``
+        (flagship hop). Never restore ``move_fleet`` / POST /move; never
+        write member ships' ``sector_id``.
+        """
+        try:
+            import asyncio
+            from src.services.websocket_service import connection_manager
+
+            loop = asyncio.get_running_loop()
+            seen = set()
+            ids = list(team_ids or [])
+            if not ids:
+                ids = [None]
+            for tid in ids:
+                key = str(tid) if tid is not None else None
+                if key in seen:
+                    continue
+                seen.add(key)
+                loop.create_task(
+                    connection_manager.send_fleet_event(
+                        event_type,
+                        payload,
+                        team_id=key,
+                        sector_number=sector_number,
+                    )
+                )
+        except Exception:
+            logger.debug(
+                "Skipped fleet WS %s (no loop or socket)",
+                event_type,
+                exc_info=True,
+            )
+
+    def _flush_fleet_moved_events(self) -> None:
+        """POST-COMMIT drain of flagship-hop fleet_moved (LEG-DEC-222)."""
+        hops = list(self._pending_fleet_moved)
+        self._pending_fleet_moved = []
+        for hop in hops:
+            self._emit_fleet_event(
+                "fleet_moved",
+                {
+                    "fleet_id": hop["fleet_id"],
+                    "origin": hop["origin"],
+                    "destination": hop["destination"],
+                },
+                team_ids=[hop.get("team_id")],
+                sector_number=hop.get("sector_number"),
+            )
 
     def _recalculate_fleet_stats(self, fleet: Fleet) -> None:
         """
@@ -136,7 +202,21 @@ class FleetService:
                 Sector.sector_id == flagship.ship.sector_id
             ).first()
             if sector is not None:
-                fleet.sector_id = sector.id
+                origin = fleet.sector_id
+                dest = sector.id
+                fleet.sector_id = dest
+                # LEG-DEC-222: emit fleet_moved only on actual derived hop.
+                # Do not teleport member ships (docs still name that; code does not).
+                if origin != dest:
+                    self._pending_fleet_moved.append(
+                        {
+                            "fleet_id": str(fleet.id),
+                            "origin": str(origin) if origin is not None else None,
+                            "destination": str(dest),
+                            "team_id": fleet.team_id,
+                            "sector_number": sector.sector_id,
+                        }
+                    )
 
     def _compute_coordination_bonus(self, fleet: Fleet) -> float:
         """
@@ -299,6 +379,7 @@ class FleetService:
 
         self.db.commit()
         self.db.refresh(member)
+        self._flush_fleet_moved_events()
 
         logger.info(f"Added ship {ship_id} to fleet {fleet_id}")
         return member
@@ -354,14 +435,26 @@ class FleetService:
         fleet.coordination_bonus = self._compute_coordination_bonus(fleet)
 
         # Disband fleet if no ships remain
+        became_disbanded = False
         if fleet.total_ships == 0:
             fleet.status = FleetStatus.DISBANDED.value
             fleet.disbanded_at = datetime.utcnow()
+            became_disbanded = True
         elif was_flagship:
             self._promote_flagship_successor(fleet, fallen_pilot_id)
 
         if commit:
             self.db.commit()
+            self._flush_fleet_moved_events()
+            if became_disbanded:
+                self._emit_fleet_event(
+                    "fleet_status_changed",
+                    {
+                        "fleet_id": str(fleet.id),
+                        "status": FleetStatus.DISBANDED.value,
+                    },
+                    team_ids=[fleet.team_id],
+                )
         else:
             self.db.flush()
 
@@ -536,6 +629,15 @@ class FleetService:
         ).delete()
 
         self.db.commit()
+
+        self._emit_fleet_event(
+            "fleet_status_changed",
+            {
+                "fleet_id": str(fleet.id),
+                "status": FleetStatus.DISBANDED.value,
+            },
+            team_ids=[fleet.team_id],
+        )
 
         logger.info(f"Disbanded fleet {fleet_id}")
         return True
@@ -1122,8 +1224,24 @@ class FleetService:
         flag_modified(battle, "battle_log")
 
         # Check for battle end conditions
+        # WO-FLEET-ROUND-INTEGRITY: _end_battle is the round's SOLE commit.
+        # Emit battle_round_complete after that commit (no pre-commit).
         if self._should_end_battle(battle, attacker, defender):
-            return self._end_battle(battle)
+            end_result = self._end_battle(battle)
+            self._emit_fleet_event(
+                "battle_round_complete",
+                {
+                    "battle_id": str(battle.id),
+                    "round": round_results["round"],
+                    "round_results": round_results,
+                    "battle_ongoing": False,
+                },
+                team_ids=[
+                    getattr(attacker, "team_id", None),
+                    getattr(defender, "team_id", None),
+                ],
+            )
+            return end_result
 
         # Progress battle phase based on round count
         if round_number > 5 and battle.phase == BattlePhase.ENGAGEMENT.value:
@@ -1132,20 +1250,30 @@ class FleetService:
             battle.phase = BattlePhase.PURSUIT.value
 
         self.db.commit()
+        self._flush_fleet_moved_events()
 
         # Count remaining active ships after this round
         attacker_remaining = len(self._get_active_fleet_ships(attacker))
         defender_remaining = len(self._get_active_fleet_ships(defender))
 
-        return {
+        round_payload = {
             "battle_id": str(battle.id),
             "phase": battle.phase,
             "round": round_results["round"],
             "attacker_remaining": attacker_remaining,
             "defender_remaining": defender_remaining,
             "round_results": round_results,
-            "battle_ongoing": True
+            "battle_ongoing": True,
         }
+        self._emit_fleet_event(
+            "battle_round_complete",
+            round_payload,
+            team_ids=[
+                getattr(attacker, "team_id", None),
+                getattr(defender, "team_id", None),
+            ],
+        )
+        return round_payload
 
     def get_battle_status(self, battle_id: UUID) -> Dict[str, Any]:
         """
@@ -2217,8 +2345,18 @@ class FleetService:
         flag_modified(battle, "battle_log")
 
         self.db.commit()
+        self._flush_fleet_moved_events()
 
-        return self._battle_end_result(battle)
+        summary = self._battle_end_result(battle)
+        self._emit_fleet_event(
+            "battle_ended",
+            summary,
+            team_ids=[
+                getattr(attacker, "team_id", None),
+                getattr(defender, "team_id", None),
+            ],
+        )
+        return summary
 
     # Query Methods
 
