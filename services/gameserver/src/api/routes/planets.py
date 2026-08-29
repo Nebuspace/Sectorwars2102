@@ -26,6 +26,7 @@ from src.services.planetary_service import (
     max_colonists_for,
     max_population_for,
     defense_unit_price,
+    clamp_tax_rate,
 )
 
 router = APIRouter(prefix="/planets", tags=["planets"])
@@ -231,6 +232,18 @@ class LandingRightsResponse(BaseModel):
     mode: str
     whitelist: List[str]
     denylist: List[str]
+
+
+class PlanetTaxRateRequest(BaseModel):
+    """Owner-only planet production tax rate (colonization.md Tax rate)."""
+    tax_rate: float
+
+
+class PlanetTaxRateResponse(BaseModel):
+    success: bool
+    message: str
+    planet_id: str
+    tax_rate: float
 
 
 def _check_landing_allowed(planet: Planet, player: Player, db: Session) -> Optional[str]:
@@ -1622,6 +1635,43 @@ async def set_landing_rights(
         mode=request.mode,
         whitelist=whitelist,
         denylist=denylist,
+    )
+
+
+@router.patch("/{planet_id}/tax-rate", response_model=PlanetTaxRateResponse)
+async def set_planet_tax_rate(
+    planet_id: str,
+    request: PlanetTaxRateRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Set a planet's production tax rate (LEG-525; colonization.md Tax rate).
+
+    Owner-only. Rate is clamped to [0.00, 0.20] via planetary_service.clamp_tax_rate.
+    Skim applies on non-owner stockpile withdrawals only."""
+    try:
+        pid = UUID(planet_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid planet ID format")
+
+    planet = db.query(Planet).filter(Planet.id == pid).with_for_update().first()
+    if not planet:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Planet not found")
+    if planet.owner_id is None or planet.owner_id != player.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the planet's owner can set the tax rate.",
+        )
+
+    rate = clamp_tax_rate(request.tax_rate)
+    planet.tax_rate = rate
+    db.commit()
+
+    return PlanetTaxRateResponse(
+        success=True,
+        message=f"Tax rate for {planet.name} set to {rate:.2%}.",
+        planet_id=str(planet.id),
+        tax_rate=rate,
     )
 
 
