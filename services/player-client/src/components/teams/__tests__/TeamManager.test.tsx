@@ -87,7 +87,7 @@ vi.mock('../../../contexts/GameContext', () => ({
   useGame: () => ({ playerState: mockPlayerState, refreshPlayerState: mockRefreshPlayerState }),
 }));
 
-import { TeamManager, formatTeamManagerLoadError } from '../TeamManager';
+import { TeamManager, formatTeamManagerLoadError, formatTeamManagerMutationError } from '../TeamManager';
 
 const rawTeam = (overrides: Partial<TeamApiResponse> = {}): TeamApiResponse => ({
   id: 'team-1',
@@ -245,6 +245,32 @@ describe('TeamManager', () => {
     const err = Object.assign(new Error('API Error: 403'), { status: 403 });
     expect(formatTeamManagerLoadError(err)).toBe('You are not a member of this team.');
   });
+
+  it('formatTeamManagerMutationError preserves server detail', () => {
+    expect(formatTeamManagerMutationError(new Error('insufficient credits'), 'Failed to create team')).toBe(
+      'insufficient credits',
+    );
+  });
+
+  it('formatTeamManagerMutationError falls back on bare API Error status', () => {
+    const err = Object.assign(new Error('API Error: 400'), { status: 400 });
+    expect(formatTeamManagerMutationError(err, 'Failed to create team')).toBe('Failed to create team');
+  });
+
+  it('formatTeamManagerMutationError uses permission copy on bare 403', () => {
+    const err = Object.assign(new Error('API Error: 403'), { status: 403 });
+    expect(formatTeamManagerMutationError(err, 'Failed to kick member')).toBe(
+      'You do not have permission for this team action.',
+    );
+  });
+
+  it('formatTeamManagerMutationError surfaces 429 rate-limit copy', () => {
+    const err = Object.assign(new Error('API Error: 429'), { status: 429 });
+    expect(formatTeamManagerMutationError(err, 'Failed to create team')).toBe(
+      'Team action rate limit exceeded — wait a moment and try again.',
+    );
+  });
+
 
   it('surfaces honest 404 load copy when getTeam rejects with bare status', async () => {
     mockGetTeam.mockRejectedValue(
@@ -558,6 +584,16 @@ describe('TeamManager', () => {
       await submit();
 
       expect(container.querySelector('.form-error')?.textContent).toBe('insufficient credits');
+      expect(container.querySelector('.team-modal-overlay')).not.toBeNull();
+    });
+
+    it('shows honest create fallback when createTeam rejects bare API Error: 400', async () => {
+      mockCreateTeam.mockRejectedValue(Object.assign(new Error('API Error: 400'), { status: 400 }));
+      await openModal();
+      await act(async () => setValue(document.getElementById('create-team-name') as HTMLInputElement, 'Star Wolves'));
+      await submit();
+
+      expect(container.querySelector('.form-error')?.textContent).toBe('Failed to create team');
       expect(container.querySelector('.team-modal-overlay')).not.toBeNull();
     });
 

@@ -4,7 +4,7 @@ import FleetOperationsTab from './FleetOperationsTab';
 import { api } from '../../utils/auth';
 
 vi.mock('../../utils/auth', () => ({
-  api: { get: vi.fn(), post: vi.fn(), patch: vi.fn() },
+  api: { get: vi.fn(), post: vi.fn(), patch: vi.fn(), delete: vi.fn() },
 }));
 
 const sampleStats = {
@@ -163,5 +163,100 @@ describe('FleetOperationsTab battle intervene POST (LEG-2764)', () => {
       expect(document.body.textContent).toMatch(/rate limit/i);
     });
     expect(document.body.textContent).not.toContain('Failed to apply battle intervention.');
+  });
+});
+
+async function openFleetManageConfirm(action: 'morale' | 'dissolve' = 'morale') {
+  mockHappyFleetGets();
+  render(<FleetOperationsTab />);
+  await waitFor(() => {
+    expect(screen.getByRole('button', { name: 'Manage' })).toBeTruthy();
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Manage' }));
+  if (action === 'dissolve') {
+    fireEvent.change(screen.getByLabelText('Action'), {
+      target: { value: 'dissolve' },
+    });
+  }
+  fireEvent.change(screen.getByLabelText(/Reason \(min 10 characters\)/i), {
+    target: {
+      value:
+        action === 'morale'
+          ? 'Morale correction for audit'
+          : 'Dissolve abandoned fleet',
+    },
+  });
+}
+
+describe('FleetOperationsTab morale/dissolve mutation fleetActError (LEG-2643)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.patch).mockReset();
+    vi.mocked(api.delete).mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('surfaces COMBAT_INTERVENE copy on morale PATCH 403', async () => {
+    await openFleetManageConfirm('morale');
+    vi.mocked(api.patch).mockRejectedValue({ response: { status: 403 } });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm Morale Change' }));
+
+    await waitFor(() => {
+      expect(api.patch).toHaveBeenCalledWith(
+        '/api/v1/admin/fleets/fleet-1/morale',
+        null,
+        expect.objectContaining({
+          params: expect.objectContaining({
+            morale: 75,
+            reason: 'Morale correction for audit',
+          }),
+        }),
+      );
+    });
+    await waitFor(() => {
+      expect(document.body.textContent).toMatch(/COMBAT_INTERVENE/);
+    });
+    expect(document.body.textContent).not.toContain('Failed to adjust fleet morale.');
+  });
+
+  it('surfaces rate-limit copy on morale PATCH 429', async () => {
+    await openFleetManageConfirm('morale');
+    vi.mocked(api.patch).mockRejectedValue({ response: { status: 429 } });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm Morale Change' }));
+
+    await waitFor(() => {
+      expect(document.body.textContent).toMatch(/rate limit/i);
+    });
+    expect(document.body.textContent).not.toContain('Failed to adjust fleet morale.');
+  });
+
+  it('surfaces COMBAT_INTERVENE copy on force-dissolve DELETE 403', async () => {
+    await openFleetManageConfirm('dissolve');
+    vi.mocked(api.delete).mockRejectedValue({ response: { status: 403 } });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm Dissolve' }));
+
+    await waitFor(() => {
+      expect(api.delete).toHaveBeenCalledWith(
+        '/api/v1/admin/fleets/fleet-1/force-dissolve',
+        expect.objectContaining({
+          data: { reason: 'Dissolve abandoned fleet' },
+        }),
+      );
+    });
+    await waitFor(() => {
+      expect(document.body.textContent).toMatch(/COMBAT_INTERVENE/);
+    });
+    expect(document.body.textContent).not.toContain('Failed to dissolve fleet.');
+  });
+
+  it('surfaces rate-limit copy on force-dissolve DELETE 429', async () => {
+    await openFleetManageConfirm('dissolve');
+    vi.mocked(api.delete).mockRejectedValue({ response: { status: 429 } });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm Dissolve' }));
+
+    await waitFor(() => {
+      expect(document.body.textContent).toMatch(/rate limit/i);
+    });
+    expect(document.body.textContent).not.toContain('Failed to dissolve fleet.');
   });
 });
