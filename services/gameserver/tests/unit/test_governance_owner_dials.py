@@ -23,8 +23,8 @@ Covers: PUT /my-region/governance's new governance_quorum_pct field
 (schema-level Field bounds + persistence, including "omitted leaves the
 column untouched"); the new PATCH /my-region/members/{player_id} route
 (voting_power schema bounds incl. the 0.0-is-a-valid-value trap, local_rank
-50-char cap, partial-PATCH persistence, non-member 404, non-owner 404,
-empty-body 400); and a read-only pin that
+closed vocab administrator|moderator|null, partial-PATCH persistence,
+non-member 404, non-owner 404, empty-body 400); and a read-only pin that
 regional_governance_service.quorum_pct_for_region reads the dialed column
 (no service-file edits made by this WO).
 """
@@ -221,9 +221,10 @@ class TestMemberDialsUpdateSchema:
         with pytest.raises(ValidationError):
             gov.MemberDialsUpdate(local_rank="x" * 51)
 
-    def test_local_rank_at_50_chars_accepted(self) -> None:
-        body = gov.MemberDialsUpdate(local_rank="x" * 50)
-        assert body.local_rank is not None and len(body.local_rank) == 50
+    def test_local_rank_freeform_rejected(self) -> None:
+        # LEG-2576: free-form strings (incl. former 50-char allow) are closed.
+        with pytest.raises(ValidationError):
+            gov.MemberDialsUpdate(local_rank="x" * 50)
 
 
 @pytest.mark.unit
@@ -280,14 +281,14 @@ class TestUpdateMemberDialsRoute:
 
         result = await gov.update_member_dials(
             player_id=uuid.uuid4(),
-            body=gov.MemberDialsUpdate(local_rank="Fleet Admiral"),
+            body=gov.MemberDialsUpdate(local_rank="administrator"),
             current_user=owner_user,
             db=db,
         )
 
         values = _extract_update_values(db.calls[-1])
-        assert values == {"local_rank": "Fleet Admiral"}
-        assert result["local_rank"] == "Fleet Admiral"
+        assert values == {"local_rank": "administrator"}
+        assert result["local_rank"] == "administrator"
         # voting_power untouched -> response falls back to the existing value
         assert result["voting_power"] == membership.voting_power
 
