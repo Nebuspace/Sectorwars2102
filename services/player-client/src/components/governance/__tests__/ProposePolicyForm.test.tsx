@@ -29,7 +29,7 @@ vi.mock('../../../services/api', () => ({
   governanceAPI: { proposePolicy: mockProposePolicy },
 }));
 
-import ProposePolicyForm from '../ProposePolicyForm';
+import ProposePolicyForm, { formatProposePolicyError } from '../ProposePolicyForm';
 
 const flush = async () => {
   await act(async () => {
@@ -308,6 +308,38 @@ describe('ProposePolicyForm', () => {
     await submit();
 
     expect(container.querySelector('.gov-validation-strip')?.textContent).toBe('Failed to propose policy.');
+  });
+
+  it('formatProposePolicyError preserves gameserver detail on reject (LEG-2945)', () => {
+    const err = Object.assign(new Error('region is not accepting proposals'), { status: 400 });
+    expect(formatProposePolicyError(err)).toBe('region is not accepting proposals');
+  });
+
+  it('formatProposePolicyError uses 429 rate-limit copy when detail absent (LEG-2945)', () => {
+    const err = Object.assign(new Error('API Error: 429'), { status: 429 });
+    expect(formatProposePolicyError(err)).toBe(
+      'Policy proposal rate limit exceeded — wait a moment and try again.',
+    );
+  });
+
+  it('formatProposePolicyError uses 403 fallback when detail absent (LEG-2945)', () => {
+    const err = Object.assign(new Error('API Error: 403'), { status: 403 });
+    expect(formatProposePolicyError(err)).toBe(
+      'You do not have permission to propose a policy in this region.',
+    );
+  });
+
+  it('surfaces 429 rate-limit honest copy on submit reject (LEG-2945)', async () => {
+    mockProposePolicy.mockRejectedValueOnce(
+      Object.assign(new Error('API Error: 429'), { status: 429 }),
+    );
+    await mount();
+    await fillTitle('T');
+    await submit();
+
+    expect(container.querySelector('.gov-validation-strip')?.textContent).toBe(
+      'Policy proposal rate limit exceeded — wait a moment and try again.',
+    );
   });
 
   it('disables the submit button and shows SUBMITTING… while the request is in flight', async () => {
