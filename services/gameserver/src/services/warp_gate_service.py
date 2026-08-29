@@ -91,7 +91,6 @@ from src.models.faction import Faction, FactionType
 from src.models.gate_construction_site import GateConstructionSite, GateConstructionSiteStatus
 from src.models.player import Player
 from src.models.region import Region, RegionType
-from src.models.reputation import Reputation
 from src.models.sector import Sector, sector_warps
 from src.models.ship import Ship, ShipSpecification, ShipStatus, ShipType
 from src.models.team_member import TeamMember
@@ -1841,10 +1840,12 @@ def _player_team_ids(db: Session, player: Player) -> set:
 
 
 def _faction_rep_value(db: Session, player_id, faction_type_raw: Any) -> int:
-    """A player's reputation with the named faction (FactionType value/name,
-    case-insensitive per FactionType._missing_). No Faction row seeded, or no
-    Reputation row yet for this player, resolves to 0 (NEUTRAL) — mirrors
-    apply_faction_rep_delta's own default-creation value, never an error."""
+    """Effective standing with the named faction (FactionType value/name,
+    case-insensitive per FactionType._missing_). Routes through
+    ``resolve_effective_faction_standing_value`` so teamed players use team
+    AVERAGE standing (factions-and-teams.md). No Faction row seeded, or no
+    standing yet, resolves to 0 (NEUTRAL) — mirrors apply_faction_rep_delta's
+    own default-creation value, never an error."""
     try:
         faction_type = FactionType(faction_type_raw)
     except (ValueError, KeyError, TypeError):
@@ -1852,12 +1853,12 @@ def _faction_rep_value(db: Session, player_id, faction_type_raw: Any) -> int:
     faction = db.query(Faction).filter(Faction.faction_type == faction_type).first()
     if faction is None:
         return 0
-    rep = (
-        db.query(Reputation)
-        .filter(Reputation.player_id == player_id, Reputation.faction_id == faction.id)
-        .first()
+    from src.services.faction_service import resolve_effective_faction_standing_value
+
+    value, _source = resolve_effective_faction_standing_value(
+        db, player_id, faction.id
     )
-    return int(rep.current_value) if rep is not None else 0
+    return int(value)
 
 
 def _check_faction_rep_layers(db: Session, player: Player, reqs: Dict[str, Any]) -> None:
