@@ -190,6 +190,8 @@ class SectorResponse(BaseModel):
     # Audit-27 #1: whether this SectorType.ANOMALY's one-time investigate
     # reward has been claimed (False for non-ANOMALY / uninvestigated).
     anomaly_investigated: bool = False
+    # LEG-333 / ship-registry.md:179 — in-progress salvage breaks peers see.
+    salvage_breaks: List[Any] = []
     # LEG-427 — asteroid depletion overlay (None when not ASTEROID_FIELD).
     asteroid_depletion: Dict[str, Any] | None = None
 
@@ -575,6 +577,9 @@ async def get_current_sector(
     from src.services import intrasystem_movement_service as isp
     present = isp.enrich_presence_with_live_pose(db, list(sector.players_present or []))
 
+    from src.services.ship_registry_service import list_sector_salvage_breaks
+    salvage_breaks = list_sector_salvage_breaks(db, sector.sector_id)
+
     # Special-formation discovery + disclosure (WO-CA; per-player since
     # ADR-0045). Viewing the current sector scans it: any formation anchored
     # here or whose interior includes this sector is first-observed BY THIS
@@ -630,6 +635,7 @@ async def get_current_sector(
         z_coord=sector.z_coord,
         special_formations=formation_responses,
         anomaly_investigated=is_anomaly_investigated(sector),
+        salvage_breaks=salvage_breaks,
         asteroid_depletion=build_asteroid_depletion_readout(sector),
     )
 

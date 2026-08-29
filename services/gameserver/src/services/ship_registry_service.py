@@ -1094,6 +1094,83 @@ def start_salvage_break(db: Session, *, ship: Ship, salvager: Player) -> dict:
     }
 
 
+def serialize_salvage_break_public(ship: Ship) -> Optional[dict]:
+    """Peer-visible in-progress salvage-break snapshot (ship-registry.md:179).
+
+    Returns ``None`` when no break is underway. ETA is ``started_at`` + the
+    ship-class duration table — same clock ``start_salvage_break`` already
+    publishes to the salvager.
+    """
+    if ship.salvage_break_in_progress_by_id is None or ship.salvage_break_started_at is None:
+        return None
+    duration = SALVAGE_BREAK_DURATIONS.get(ship.type, SALVAGE_BREAK_DEFAULT_DURATION)
+    started = ship.salvage_break_started_at
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    completes_at = started + duration
+    eta_hours = duration.total_seconds() / 3600.0
+    return {
+        "ship_id": str(ship.id),
+        "registration_number": ship.registration_number,
+        "ship_name": ship.name,
+        "ship_type": ship.type.value if hasattr(ship.type, "value") else str(ship.type),
+        "salvage_break_in_progress_by_id": str(ship.salvage_break_in_progress_by_id),
+        "salvage_break_started_at": started.isoformat(),
+        "completes_at": completes_at.isoformat(),
+        "eta_hours": eta_hours,
+        "duration_seconds": int(duration.total_seconds()),
+    }
+
+
+def list_sector_salvage_breaks(db: Session, sector_id: int) -> list:
+    """In-progress salvage breaks visible to every player in ``sector_id``.
+
+    Canon: peers see ``salvage break on REG-XXXX-YYYY, ETA: X hours``.
+    Queries hulls in the sector with a non-null ``salvage_break_in_progress_by_id``.
+    """
+    ships = (
+        db.query(Ship)
+        .filter(
+            Ship.sector_id == sector_id,
+            Ship.salvage_break_in_progress_by_id.isnot(None),
+        )
+        .all()
+    )
+    out: list = []
+    for ship in ships:
+        payload = serialize_salvage_break_public(ship)
+        if payload is not None:
+            out.append(payload)
+    return out
+
+
+def build_salvage_break_started_event(ship: Ship, *, sector_id: int) -> dict:
+    """WS fan-out payload peers already consume via sector broadcast."""
+    public = serialize_salvage_break_public(ship) or {}
+    return {
+        "type": "salvage_break_started",
+        "sector_id": sector_id,
+        **public,
+    }
+
+
+def _dispatch_salvage_break_started(ship: Ship, *, sector_id: int) -> None:
+    """Best-effort sector WS broadcast after commit (beacon dual-transport pattern)."""
+    frame = build_salvage_break_started_event(ship, sector_id=sector_id)
+    try:
+        import asyncio
+        from src.services.websocket_service import connection_manager
+
+        loop = asyncio.get_running_loop()
+        loop.create_task(connection_manager.broadcast_to_sector(int(sector_id), dict(frame)))
+    except Exception:
+        logger.debug(
+            "Skipped salvage_break_started WS broadcast for ship %s (no loop or socket)",
+            getattr(ship, "id", None),
+            exc_info=True,
+        )
+
+
 def _complete_salvage_break(ship: Ship) -> None:
     """Shared apply path for the salvage-break watchdog sweep (scheduler/
     economy_sweeps.py). Caller must already hold the row lock on ``ship``
