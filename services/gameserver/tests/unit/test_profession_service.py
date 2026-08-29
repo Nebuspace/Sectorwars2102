@@ -10,9 +10,13 @@ from src.models.profession_training_queue import ProfessionTrainingStatus
 from src.services import profession_service as ps
 from src.services.profession_service import (
     MIN_CITADEL_FOR_TRAINING,
+    MIN_MILITARY_ACADEMY_FOR_COMBAT_PILOTS,
+    MIN_ORBITAL_SHIPYARD_FOR_SPACE_ENGINEERS,
     MIN_RESEARCH_LAB_FOR_RESEARCH_SCIENTISTS,
+    MIN_TERRAFORMING_LAB_FOR_TERRAFORM_ENGINEERS,
     ProfessionService,
 )
+from src.services.structures import max_kind_level
 
 
 class _QueryStub:
@@ -55,13 +59,28 @@ class _DBStub:
         return None
 
 
-def _planet(owner_id, *, citadel_level=3, research_level=3, colonists=500):
+def _structures_with(*buildings):
+    return {"v": 1, "buildings": list(buildings), "plots": [], "instability": 0}
+
+
+def _op_building(kind: str, level: int):
+    return {
+        "id": f"b_{kind}_{level}",
+        "kind": kind,
+        "level": level,
+        "complete_at": None,
+        "browned_out": False,
+    }
+
+
+def _planet(owner_id, *, citadel_level=3, research_level=3, colonists=500, structures=None):
     return SimpleNamespace(
         id=uuid4(),
         owner_id=owner_id,
         citadel_level=citadel_level,
         research_level=research_level,
         colonists=colonists,
+        structures=structures if structures is not None else _structures_with(),
     )
 
 
@@ -351,3 +370,127 @@ def test_mining_engineer_ore_multiplier_for_region_no_owned_planet():
     owner = uuid4()
     db = _StationProfessionDBStub(planets=[])
     assert ps.mining_engineer_ore_multiplier_for_region(db, owner, uuid4()) == 1.0
+
+
+def test_max_kind_level_ignores_incomplete_and_missing():
+    assert max_kind_level({}, "ORBITAL_SHIPYARD") == 0
+    grid = _structures_with(
+        _op_building("ORBITAL_SHIPYARD", 1),
+        {
+            "id": "b_pending",
+            "kind": "ORBITAL_SHIPYARD",
+            "level": 5,
+            "complete_at": "2099-01-01T00:00:00+00:00",
+        },
+        _op_building("MILITARY_ACADEMY", 2),
+    )
+    assert max_kind_level(grid, "ORBITAL_SHIPYARD") == 1
+    assert max_kind_level(grid, "MILITARY_ACADEMY") == 2
+    assert max_kind_level(grid, "TERRAFORMING_LAB") == 0
+
+
+def test_space_engineers_gate_blocks_below_orbital_shipyard_l2():
+    owner = uuid4()
+    planet = _planet(
+        owner,
+        structures=_structures_with(
+            _op_building("ORBITAL_SHIPYARD", MIN_ORBITAL_SHIPYARD_FOR_SPACE_ENGINEERS - 1)
+        ),
+    )
+    svc = ProfessionService(_DBStub())
+    with pytest.raises(ValueError, match="orbital_shipyard_level_too_low"):
+        svc.queue_training(planet, owner, ProfessionType.SPACE_ENGINEERS.value, 10)
+    eligibility = svc.training_eligibility(planet)
+    assert eligibility[ProfessionType.SPACE_ENGINEERS.value] is False
+
+
+def test_space_engineers_gate_passes_at_orbital_shipyard_l2(monkeypatch):
+    owner = uuid4()
+    planet = _planet(
+        owner,
+        structures=_structures_with(
+            _op_building("ORBITAL_SHIPYARD", MIN_ORBITAL_SHIPYARD_FOR_SPACE_ENGINEERS)
+        ),
+    )
+    db = _DBStub()
+    svc = ProfessionService(db)
+    fixed_now = datetime(2026, 8, 28, tzinfo=timezone.utc)
+    fixed_deadline = fixed_now + timedelta(days=30)
+    monkeypatch.setattr(ps, "scaled_deadline", lambda hours, start=None: fixed_deadline)
+    result = svc.queue_training(
+        planet, owner, ProfessionType.SPACE_ENGINEERS.value, 10, now=fixed_now
+    )
+    assert result["success"] is True
+    assert svc.training_eligibility(planet)[ProfessionType.SPACE_ENGINEERS.value] is True
+
+
+def test_combat_pilots_gate_blocks_below_military_academy_l2():
+    owner = uuid4()
+    planet = _planet(
+        owner,
+        structures=_structures_with(
+            _op_building("MILITARY_ACADEMY", MIN_MILITARY_ACADEMY_FOR_COMBAT_PILOTS - 1)
+        ),
+    )
+    svc = ProfessionService(_DBStub())
+    with pytest.raises(ValueError, match="military_academy_level_too_low"):
+        svc.queue_training(planet, owner, ProfessionType.COMBAT_PILOTS.value, 10)
+    assert svc.training_eligibility(planet)[ProfessionType.COMBAT_PILOTS.value] is False
+
+
+def test_combat_pilots_gate_passes_at_military_academy_l2(monkeypatch):
+    owner = uuid4()
+    planet = _planet(
+        owner,
+        structures=_structures_with(
+            _op_building("MILITARY_ACADEMY", MIN_MILITARY_ACADEMY_FOR_COMBAT_PILOTS)
+        ),
+    )
+    db = _DBStub()
+    svc = ProfessionService(db)
+    fixed_now = datetime(2026, 8, 28, tzinfo=timezone.utc)
+    fixed_deadline = fixed_now + timedelta(days=25)
+    monkeypatch.setattr(ps, "scaled_deadline", lambda hours, start=None: fixed_deadline)
+    result = svc.queue_training(
+        planet, owner, ProfessionType.COMBAT_PILOTS.value, 10, now=fixed_now
+    )
+    assert result["success"] is True
+    assert svc.training_eligibility(planet)[ProfessionType.COMBAT_PILOTS.value] is True
+
+
+def test_terraform_engineers_gate_blocks_below_terraforming_lab_l3():
+    owner = uuid4()
+    planet = _planet(
+        owner,
+        structures=_structures_with(
+            _op_building(
+                "TERRAFORMING_LAB", MIN_TERRAFORMING_LAB_FOR_TERRAFORM_ENGINEERS - 1
+            )
+        ),
+    )
+    svc = ProfessionService(_DBStub())
+    with pytest.raises(ValueError, match="terraforming_lab_level_too_low"):
+        svc.queue_training(planet, owner, ProfessionType.TERRAFORM_ENGINEERS.value, 10)
+    assert svc.training_eligibility(planet)[ProfessionType.TERRAFORM_ENGINEERS.value] is False
+
+
+def test_terraform_engineers_gate_passes_at_terraforming_lab_l3(monkeypatch):
+    owner = uuid4()
+    planet = _planet(
+        owner,
+        structures=_structures_with(
+            _op_building(
+                "TERRAFORMING_LAB", MIN_TERRAFORMING_LAB_FOR_TERRAFORM_ENGINEERS
+            )
+        ),
+    )
+    db = _DBStub()
+    svc = ProfessionService(db)
+    fixed_now = datetime(2026, 8, 28, tzinfo=timezone.utc)
+    fixed_deadline = fixed_now + timedelta(days=35)
+    monkeypatch.setattr(ps, "scaled_deadline", lambda hours, start=None: fixed_deadline)
+    result = svc.queue_training(
+        planet, owner, ProfessionType.TERRAFORM_ENGINEERS.value, 10, now=fixed_now
+    )
+    assert result["success"] is True
+    assert svc.training_eligibility(planet)[ProfessionType.TERRAFORM_ENGINEERS.value] is True
