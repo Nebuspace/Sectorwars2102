@@ -18,6 +18,12 @@ vi.mock('../../../services/api', () => ({
 
 import Leaderboard from '../Leaderboard';
 
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
+
 describe('Leaderboard', () => {
   let container: HTMLElement;
   let root: ReturnType<typeof createRoot>;
@@ -78,6 +84,21 @@ describe('Leaderboard', () => {
       root.render(<Leaderboard />);
     });
     expect(container.textContent).toContain('ranking offline');
+  });
+
+  it('surfaces 400 invalid category with server detail on load failure', async () => {
+    getPublicLeaderboard.mockRejectedValue(
+      apiRequestError(
+        400,
+        "Invalid category 'bogus'. Must be one of: combat, exploration, rank_points, trading",
+      ),
+    );
+    await act(async () => {
+      root.render(<Leaderboard />);
+    });
+    expect(container.textContent).toContain(
+      "Invalid category 'bogus'. Must be one of: combat, exploration, rank_points, trading",
+    );
   });
 
   it('refetches when switching categories', async () => {

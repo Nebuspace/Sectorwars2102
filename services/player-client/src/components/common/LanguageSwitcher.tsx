@@ -58,6 +58,8 @@ const LanguageSwitcher: React.FC<LanguageSwitcherProps> = ({
 
   // Fetch available languages from API
   useEffect(() => {
+    let cancelled = false;
+
     const fetchLanguages = async () => {
       // Absolute base — relative `/api/...` breaks under node/undici fetch
       // (vitest/jsdom) with "Failed to parse URL". Matches apiClient.ts.
@@ -69,22 +71,27 @@ const LanguageSwitcher: React.FC<LanguageSwitcherProps> = ({
         const response = await fetch(`${base}/api/v1/i18n/languages`, {
           credentials: 'include'
         });
-        
+
+        if (cancelled) return;
+
         if (response.ok) {
           const data = await response.json();
-          setLanguages(data);
-        } else {
+          if (!cancelled) setLanguages(data);
+        } else if (!cancelled) {
           setLanguages(buildStaticLanguages());
         }
       } catch {
         // Soft fallback is intentional (offline / test / API down) — do not
         // console.error; StatusBar smoke asserts zero console.error and the
         // switcher still works from the static list.
-        setLanguages(buildStaticLanguages());
+        if (!cancelled) setLanguages(buildStaticLanguages());
       }
     };
 
     fetchLanguages();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const handleLanguageChange = async (languageCode: string) => {
