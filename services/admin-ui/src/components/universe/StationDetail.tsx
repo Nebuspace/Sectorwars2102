@@ -329,6 +329,42 @@ const PortDetail: React.FC<PortDetailProps> = ({ port, onBack, onUpdate }) => {
                 </div>
               </div>
             </div>
+            <div className="commodity-card">
+              <h4>⛽ Fuel</h4>
+              <div className="commodity-info">
+                <div className="quantity">
+                  <span className="label">Quantity:</span>
+                  <span className="value">
+                    <EditableField field="fuel_quantity" value={port.fuel_quantity || 0} type="number" />
+                  </span>
+                </div>
+                {port.fuel_capacity != null ? (
+                  <div className="capacity read-only" title="Capacity is read-only">
+                    Capacity: {port.fuel_capacity}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+            <div className="commodity-card">
+              <h4>💎 Luxury Goods</h4>
+              <div className="commodity-info">
+                <div className="quantity">
+                  <span className="label">Quantity:</span>
+                  <span className="value">
+                    <EditableField
+                      field="luxury_goods_quantity"
+                      value={port.luxury_goods_quantity || 0}
+                      type="number"
+                    />
+                  </span>
+                </div>
+                {port.luxury_goods_capacity != null ? (
+                  <div className="capacity read-only" title="Capacity is read-only">
+                    Capacity: {port.luxury_goods_capacity}
+                  </div>
+                ) : null}
+              </div>
+            </div>
           </div>
         </div>
 

@@ -390,6 +390,93 @@
   font-style: italic;
 }
 
+/* ── Empire production dashboard tab (LEG-516) ───────────────────────────── */
+.sb-production-loading,
+.sb-production-error {
+  font-size: 0.9615em;
+  color: var(--color-text-muted, #7e8ca0);
+}
+
+.sb-production-dashboard {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.sb-production-totals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.75rem;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid rgba(0, 217, 255, 0.2);
+  border-radius: 4px;
+  background: rgba(0, 217, 255, 0.04);
+}
+
+.sb-production-total {
+  font-size: 0.8462em;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.sb-production-siege,
+.sb-production-siege-badge {
+  color: var(--health-danger, #ef4444);
+}
+
+.sb-production-table {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.8462em;
+}
+
+.sb-production-row {
+  display: grid;
+  grid-template-columns: 1.4fr 0.9fr repeat(4, 0.55fr);
+  gap: 0.35rem;
+  align-items: center;
+  padding: 0.3rem 0.4rem;
+  border: 1px solid rgba(0, 217, 255, 0.12);
+  border-radius: 3px;
+}
+
+.sb-production-head {
+  font-weight: 700;
+  font-size: 0.7692em;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-muted, #7e8ca0);
+  border: none;
+  padding: 0 0.4rem;
+}
+
+.sb-production-cell.name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.sb-production-cell.sector {
+  color: var(--color-text-muted, #7e8ca0);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sb-production-cell.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.sb-production-footer {
+  margin: 0;
+  font-size: 0.8333em;
+  color: var(--color-text-muted, #7e8ca0);
+  font-style: italic;
+}
+
 /* ── My Beacons tab ───────────────────────────────────────────────────────── */
 .sb-beacons-loading,
 .sb-beacons-error {
@@ -855,6 +942,22 @@
   .sb-link--reconnecting .sb-v {
     animation: none;
   }
+}
+
+/* LEG-2606 — compact rank insignia beside REP badge (reuses ranking.css). */
+.vit.rank-badge-compact {
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+}
+
+.vit .rank-badge.rank-badge--compact {
+  width: 1.75rem;
+  height: 1.75rem;
+}
+
+.vit .rank-badge--compact .rank-level {
+  font-size: 0.75rem;
 }
 
 /* REP badge (DECISIONS #9) — WO-UI5-RETIREMENT+GLASS rep-lane: RESTORES

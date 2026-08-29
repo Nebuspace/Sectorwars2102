@@ -45,18 +45,43 @@ const TIER_NOTE: Record<string, string> = {
 
 const fmtPct = (n: number) => `${n > 0 ? '+' : ''}${n}%`;
 
+/** Preserve gameserver detail on maintenance status load refusal. */
+export function formatMaintenanceLoadError(err: unknown): string {
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+  if (hasServerDetail) return message!;
+  return 'Maintenance data is unavailable.';
+}
+
+/** Preserve gameserver detail on repair refusal. */
+export function formatMaintenanceRepairError(err: unknown): string {
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+  if (hasServerDetail) return message!;
+  return 'Servicing failed.';
+}
+
 const MaintenanceManager: React.FC<MaintenanceManagerProps> = ({ shipId, playerCredits, onChanged, onClose }) => {
   const [status, setStatus] = useState<MaintenanceStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [busyTier, setBusyTier] = useState<string | null>(null);
   const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
       const data = await shipAPI.getMaintenanceStatus(shipId) as MaintenanceStatus;
       setStatus(data);
+      setLoadError(null);
     } catch (e) {
-      setMsg({ kind: 'err', text: e instanceof Error ? e.message : 'Failed to load maintenance.' });
+      setStatus(null);
+      setLoadError(formatMaintenanceLoadError(e));
     } finally {
       setLoading(false);
     }
@@ -73,7 +98,7 @@ const MaintenanceManager: React.FC<MaintenanceManagerProps> = ({ shipId, playerC
       await load();
       onChanged?.();
     } catch (e) {
-      setMsg({ kind: 'err', text: e instanceof Error ? e.message : 'Servicing failed.' });
+      setMsg({ kind: 'err', text: formatMaintenanceRepairError(e) });
     } finally {
       setBusyTier(null);
     }
@@ -84,13 +109,21 @@ const MaintenanceManager: React.FC<MaintenanceManagerProps> = ({ shipId, playerC
     return (
       <div className="maintenance-manager">
         <div className="mnt-header"><h3>Ship Maintenance</h3>{onClose && <button className="mnt-close" onClick={onClose}>✕</button>}</div>
-        <p className="mnt-error">Maintenance data is unavailable.</p>
+        <p className="mnt-error" role="alert" data-testid="mnt-load-error">
+          {loadError || 'Maintenance data is unavailable.'}
+        </p>
       </div>
     );
   }
 
   const c = status.condition;
-  const barClass = c >= 75 ? 'good' : c >= 50 ? 'worn' : c >= 25 ? 'degraded' : 'critical';
+  // Canon bands (ships.md): 90-100 / 75-89 / 50-74 / 25-49 / 10-24 / 0-9
+  const barClass =
+    c >= 75 ? 'good' : c >= 50 ? 'worn' : c >= 25 ? 'degraded' : c >= 10 ? 'critical' : 'catastrophic';
+  const catastrophic =
+    c < 10 ||
+    (typeof status.band.failure_tier === 'string' &&
+      /catastroph/i.test(status.band.failure_tier));
 
   return (
     <div className="maintenance-manager">
@@ -108,6 +141,12 @@ const MaintenanceManager: React.FC<MaintenanceManagerProps> = ({ shipId, playerC
         <div className="mnt-bar-track">
           <div className={`mnt-bar-fill ${barClass}`} style={{ width: `${Math.max(0, Math.min(100, c))}%` }} />
         </div>
+        {catastrophic && (
+          <p className="mnt-catastrophic-warn" role="alert" data-testid="mnt-catastrophic-warn">
+            Catastrophic hull failure risk — condition below 10%. Service immediately.
+            {status.band.failure_tier ? ` (${status.band.failure_tier})` : ''}
+          </p>
+        )}
         <p className="mnt-note">Decays {status.decay_pct_per_day}%/day for this hull class. Service it to restore condition.</p>
       </div>
 

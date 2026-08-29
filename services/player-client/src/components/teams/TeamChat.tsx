@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { gameAPI } from '../../services/api';
 import type { TeamMember, TeamMessageApiResponse } from '../../types/team';
+import PlayerNamePlate from '../common/PlayerNamePlate';
 import './team-chat.css';
 
 interface TeamChatProps {
@@ -18,8 +19,8 @@ export const TeamChat: React.FC<TeamChatProps> = ({ teamId, playerId, members })
   const [sendError, setSendError] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Role lookup so we can badge a sender even though MessageResponse omits role.
-  const roleById = new Map(members.map(m => [m.playerId, m.role]));
+  // Role + medal lookup — MessageResponse omits role and medal fields.
+  const memberById = new Map(members.map(m => [m.playerId, m]));
 
   const loadMessages = useCallback(async () => {
     try {
@@ -75,12 +76,18 @@ export const TeamChat: React.FC<TeamChatProps> = ({ teamId, playerId, members })
 
   const renderMessage = (message: TeamMessageApiResponse) => {
     const isOwnMessage = message.sender_id === playerId;
-    const role = roleById.get(message.sender_id);
+    const sender = memberById.get(message.sender_id);
+    const role = sender?.role;
     return (
       <div key={message.id} className={`chat-message message ${isOwnMessage ? 'own' : ''}`}>
         <div className="message-header">
           <span className="message-sender">
-            {message.sender_name}
+            <PlayerNamePlate
+              name={message.sender_name}
+              size="sm"
+              pinnedMedalId={sender?.pinnedMedalId}
+              medalCount={sender?.medalCount}
+            />
             <span className={`role-indicator ${role ?? ''}`}>
               {role === 'leader' && ' 👑'}
               {role === 'officer' && ' ⭐'}

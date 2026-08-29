@@ -167,6 +167,10 @@
   background: rgba(0, 217, 255, 0.22);
   box-shadow: 0 0 10px rgba(0, 217, 255, 0.25);
 }
+.ssv-popup-action:disabled {
+  opacity: 0.45;
+  cursor: wait;
+}
 .ssv-popup-action.halt {
   color: #FFD9DE;
   border-color: #7A3644;

@@ -1135,6 +1135,38 @@
   gap: 8px;
 }
 
+.license-list {
+  width: 100%;
+  margin: 8px 0;
+  font-size: 0.8em;
+}
+
+.license-list-empty {
+  color: rgba(255, 255, 255, 0.55);
+  text-align: center;
+  padding: 6px 0;
+}
+
+.license-list-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.license-list-table caption {
+  caption-side: top;
+  text-align: left;
+  padding: 0 6px 4px;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 0.85em;
+}
+
+.license-list-table th,
+.license-list-table td {
+  text-align: left;
+  padding: 4px 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+
 /* WO-UI5-CANON-PASS(C): scoped to `.service-status` (ServicesVenue.tsx's
    real, direct-child ancestor of each `.status-bar` service-readout row) so
    this rule stops colliding at the top level with the unrelated real
@@ -2929,6 +2961,41 @@
   font-size: 1.1em;
   cursor: help;
   filter: drop-shadow(0 0 4px rgba(0, 217, 255, 0.3));
+}
+
+.station-service-icon-action {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  line-height: 1;
+  color: inherit;
+}
+
+.station-service-icon-action:focus-visible {
+  outline: 2px solid #00d9ff;
+  outline-offset: 2px;
+}
+
+.market-intel-panel {
+  margin: 12px 0 16px;
+  padding: 12px 16px;
+  border: 1px solid rgba(0, 217, 255, 0.35);
+  border-radius: 6px;
+  background: rgba(0, 20, 40, 0.45);
+}
+
+.market-intel-panel h3 {
+  margin: 0 0 8px;
+  font-size: 0.95em;
+  letter-spacing: 0.04em;
+  color: #00d9ff;
+}
+
+.market-intel-list {
+  margin: 0;
+  padding-left: 1.2em;
 }
 
 /* ========================================

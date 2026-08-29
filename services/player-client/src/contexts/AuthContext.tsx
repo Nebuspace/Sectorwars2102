@@ -20,6 +20,51 @@ export interface WelcomeBackOutcome {
   days_inactive: number;
 }
 
+// WO-IL6 / LEG-834: gameserver notice when invite_code was supplied but did not redeem (D10).
+const INVITE_REDEMPTION_NOTICE = 'invite_invalid_or_expired';
+
+export function inviteRedemptionNoticeMessage(notice: string | undefined): string | undefined {
+  if (notice === INVITE_REDEMPTION_NOTICE) {
+    return (
+      'That invite link is no longer valid. Your account was created in the default starter region.'
+    );
+  }
+  return notice;
+}
+
+function oauthProviderUrl(
+  apiBase: string,
+  provider: string,
+  register: boolean,
+  inviteCode?: string,
+): string {
+  const trimmed = inviteCode?.trim();
+  const inviteSuffix = trimmed ? `&invite=${encodeURIComponent(trimmed)}` : '';
+  const registerQuery = register ? `?register=true${inviteSuffix}` : '';
+
+  if (
+    window.location.hostname.includes('.app.github.dev') ||
+    window.location.hostname.includes('github.dev')
+  ) {
+    const hostname = window.location.hostname;
+    const parts = hostname.split('.');
+    const hostnamePart = parts[0];
+    const lastDashIndex = hostnamePart.lastIndexOf('-');
+    const codespaceName =
+      lastDashIndex !== -1 ? hostnamePart.substring(0, lastDashIndex) : hostnamePart;
+
+    if (register) {
+      return `https://${codespaceName}-8080.app.github.dev/api/v1/auth/${provider}${registerQuery}`;
+    }
+    return `https://${codespaceName}-8080.app.github.dev/api/v1/auth/${provider}`;
+  }
+
+  if (register) {
+    return `${apiBase}/api/v1/auth/${provider}${registerQuery}`;
+  }
+  return `${apiBase}/api/v1/auth/${provider}`;
+}
+
 // WO-FIX-MFA-BYPASS-LOGIN-ROUTES: a 200 response with requires_mfa: true (and
 // no tokens) means the account has MFA enabled and the login is mid-flow, not
 // failed. login() throws this typed error so a consumer (LoginForm) can
@@ -37,9 +82,14 @@ interface AuthContextType {
   isAuthenticated: boolean;
   isLoading: boolean;
   login: (username: string, password: string, mfaCode?: string) => Promise<void>;
-  register: (username: string, email: string, password: string) => Promise<void>;
+  register: (
+    username: string,
+    email: string,
+    password: string,
+    inviteCode?: string,
+  ) => Promise<string | undefined>;
   loginWithOAuth: (provider: string) => void;
-  registerWithOAuth: (provider: string) => void;
+  registerWithOAuth: (provider: string, inviteCode?: string) => void;
   logout: () => void;
   refreshToken: () => Promise<void>;
   // Monotonic counter (mirrors newMessageSignal/medalAwardedSignal in
@@ -264,19 +314,28 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }: AuthProv
     }
   };
 
-  const register = async (username: string, email: string, password: string): Promise<void> => {
+  const register = async (
+    username: string,
+    email: string,
+    password: string,
+    inviteCode?: string,
+  ): Promise<string | undefined> => {
     setIsLoading(true);
 
     try {
-      // Register user
-      await axios.post<AuthResponse>(`${apiUrl}/api/v1/auth/register`, {
-        username,
-        email,
-        password,
-      });
+      const trimmedInvite = inviteCode?.trim();
+      const payload: Record<string, string> = { username, email, password };
+      if (trimmedInvite) {
+        payload.invite_code = trimmedInvite;
+      }
 
-      // After registration, automatically log in
+      const { data } = await axios.post<{
+        redemption_notice?: string;
+      }>(`${apiUrl}/api/v1/auth/register`, payload);
+
       await login(username, password);
+
+      return inviteRedemptionNoticeMessage(data?.redemption_notice);
     } catch (error) {
       console.error('Registration failed:', error);
       throw error;
@@ -286,60 +345,13 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }: AuthProv
   };
 
   const loginWithOAuth = (provider: string) => {
-    // Redirect to OAuth provider for login
-    // Make sure we don't have a stale registration flag
     sessionStorage.removeItem('oauth_register');
-
-    // For GitHub Codespaces, construct the correct URL directly
-    let oauthUrl;
-    if (window.location.hostname.includes('.app.github.dev') ||
-        window.location.hostname.includes('github.dev')) {
-      // Get the codespace name from the hostname
-      const hostname = window.location.hostname;
-
-      // Extract the codespace name from the hostname
-      // Format is like: super-duper-carnival-qppjvq94q9vcxwqp-3000.app.github.dev
-      // We want: super-duper-carnival-qppjvq94q9vcxwqp
-      const parts = hostname.split('.');
-      const hostnamePart = parts[0]; // e.g., super-duper-carnival-qppjvq94q9vcxwqp-3000
-      const lastDashIndex = hostnamePart.lastIndexOf('-');
-      const codespaceName = lastDashIndex !== -1 ? hostnamePart.substring(0, lastDashIndex) : hostnamePart;
-
-      // Construct the URL directly to the gameserver port
-      oauthUrl = `https://${codespaceName}-8080.app.github.dev/api/v1/auth/${provider}`;
-    } else {
-      // For non-Codespaces environments
-      oauthUrl = `${apiUrl}/api/v1/auth/${provider}`;
-    }
-    window.location.href = oauthUrl;
+    window.location.href = oauthProviderUrl(apiUrl, provider, false);
   };
 
-  const registerWithOAuth = (provider: string) => {
-    // Currently, the backend uses the same endpoint for both login and registration
-    // The OAuth provider will handle first-time users as registrations
-    // Store in session storage that this was a registration attempt
+  const registerWithOAuth = (provider: string, inviteCode?: string) => {
     sessionStorage.setItem('oauth_register', 'true');
-
-    // For GitHub Codespaces, construct the correct URL directly
-    let oauthUrl;
-    if (window.location.hostname.includes('.app.github.dev') ||
-        window.location.hostname.includes('github.dev')) {
-      // Get the codespace name from the hostname
-      const hostname = window.location.hostname;
-
-      // Extract the codespace name from the hostname
-      const parts = hostname.split('.');
-      const hostnamePart = parts[0];
-      const lastDashIndex = hostnamePart.lastIndexOf('-');
-      const codespaceName = lastDashIndex !== -1 ? hostnamePart.substring(0, lastDashIndex) : hostnamePart;
-
-      // Construct the URL directly to the gameserver port
-      oauthUrl = `https://${codespaceName}-8080.app.github.dev/api/v1/auth/${provider}?register=true`;
-    } else {
-      // For non-Codespaces environments
-      oauthUrl = `${apiUrl}/api/v1/auth/${provider}?register=true`;
-    }
-    window.location.href = oauthUrl;
+    window.location.href = oauthProviderUrl(apiUrl, provider, true, inviteCode);
   };
   
   const refreshToken = async () => {

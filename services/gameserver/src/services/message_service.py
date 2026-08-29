@@ -3,7 +3,7 @@ Message Service for handling player communication
 """
 
 from collections import defaultdict, deque
-from typing import Optional, Dict, Any, Deque
+from typing import Optional, Dict, Any, Deque, Iterable, List, Set, Tuple
 from datetime import datetime
 from time import monotonic
 from uuid import UUID, uuid4
@@ -42,6 +42,65 @@ THREAD_LIMIT_EXCEEDED = "thread_limit_exceeded"
 
 class MessageService:
     """Service for managing player messages"""
+
+    @staticmethod
+    def _enrich_message_dicts_with_sender_medals(
+        db: Session,
+        messages: Iterable[Message],
+        message_dicts: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Attach sender_pinned_medal_id + sender_medal_count on message rows.
+
+        Batch-enriches distinct senders via ``public_medal_identity`` (same
+        privacy rules as team roster / discovery surfaces).
+        """
+        from sqlalchemy import func
+
+        from src.models.medal import PlayerMedal
+        from src.services.medal_service import public_medal_identity
+
+        msg_list = list(messages)
+        if not msg_list or not message_dicts:
+            return message_dicts
+
+        senders_by_id: Dict[UUID, Player] = {}
+        sender_ids: List[UUID] = []
+        for msg in msg_list:
+            sid = msg.sender_id
+            if sid is None or sid in senders_by_id:
+                continue
+            sender_ids.append(sid)
+            if getattr(msg, "sender", None):
+                senders_by_id[sid] = msg.sender
+
+        missing = [sid for sid in sender_ids if sid not in senders_by_id]
+        if missing:
+            for player in db.query(Player).filter(Player.id.in_(missing)).all():
+                senders_by_id[player.id] = player
+
+        counts: Dict[UUID, int] = {}
+        if sender_ids:
+            rows = (
+                db.query(PlayerMedal.player_id, func.count(PlayerMedal.medal_id))
+                .filter(PlayerMedal.player_id.in_(sender_ids))
+                .group_by(PlayerMedal.player_id)
+                .all()
+            )
+            counts = {pid: int(n) for pid, n in rows}
+
+        for msg_dict, msg in zip(message_dicts, msg_list):
+            player = senders_by_id.get(msg.sender_id)
+            if not player:
+                msg_dict["sender_pinned_medal_id"] = None
+                msg_dict["sender_medal_count"] = None
+                continue
+            identity = public_medal_identity(
+                player, medal_count=counts.get(msg.sender_id, 0)
+            )
+            msg_dict["sender_pinned_medal_id"] = identity["pinned_medal_id"]
+            msg_dict["sender_medal_count"] = identity["medal_count"]
+
+        return message_dicts
 
     @staticmethod
     def check_send_rate_limit(sender_id: UUID) -> None:
@@ -239,8 +298,13 @@ class MessageService:
                       .offset(offset)\
                       .all()
         
+        message_dicts = [msg.to_dict() for msg in messages]
+        MessageService._enrich_message_dicts_with_sender_medals(
+            db, messages, message_dicts
+        )
+
         return {
-            "messages": [msg.to_dict() for msg in messages],
+            "messages": message_dicts,
             "unread_count": unread_count,
             "total": total,
             "page": page,
@@ -287,8 +351,13 @@ class MessageService:
                       .offset(offset)\
                       .all()
         
+        message_dicts = [msg.to_dict() for msg in messages]
+        MessageService._enrich_message_dicts_with_sender_medals(
+            db, messages, message_dicts
+        )
+
         return {
-            "messages": [msg.to_dict() for msg in messages],
+            "messages": message_dicts,
             "total": total,
             "page": page,
             "limit": limit,
@@ -396,8 +465,13 @@ class MessageService:
          .offset(offset)\
          .all()
         
+        conversation_dicts = [msg.to_dict() for msg in conversations]
+        MessageService._enrich_message_dicts_with_sender_medals(
+            db, conversations, conversation_dicts
+        )
+
         return {
-            "conversations": [msg.to_dict() for msg in conversations],
+            "conversations": conversation_dicts,
             "total": total,
             "page": page,
             "limit": limit,
@@ -621,6 +695,58 @@ class MessageService:
             return False
 
     @staticmethod
+    def _audit_rows_sender_block_stats(
+        recent: Iterable[Any],
+        sender_ids: Set[str],
+    ) -> Dict[str, Tuple[int, bool]]:
+        """Tally per-sender block counts and escalation markers from audit rows."""
+        block_counts = {sid: 0 for sid in sender_ids}
+        escalation_logged = {sid: False for sid in sender_ids}
+        for row in recent:
+            body = row.request_body or {}
+            if not isinstance(body, dict):
+                continue
+            sender_key = body.get("sender_id")
+            if sender_key not in sender_ids:
+                continue
+            moderation_action = body.get("moderation_action")
+            if moderation_action == "block":
+                block_counts[sender_key] += 1
+            elif moderation_action == "block_escalation_threshold":
+                escalation_logged[sender_key] = True
+        return {
+            sid: (block_counts[sid], escalation_logged[sid]) for sid in sender_ids
+        }
+
+    @staticmethod
+    def batch_sender_block_stats_30d(
+        db: Session,
+        sender_ids: Iterable[UUID],
+    ) -> Dict[str, Tuple[int, bool]]:
+        """Batch block-count + escalation flag for flagged-queue enrichment."""
+        from datetime import timedelta
+
+        from src.models.audit_log import AuditLog
+
+        unique_sender_ids = {str(sid) for sid in sender_ids}
+        if not unique_sender_ids:
+            return {}
+
+        window_start = datetime.utcnow() - timedelta(
+            days=MessageService.BLOCK_ESCALATION_WINDOW_DAYS
+        )
+        recent = (
+            db.query(AuditLog)
+            .filter(
+                AuditLog.resource_type == "message",
+                AuditLog.action == "intervention",
+                AuditLog.timestamp >= window_start,
+            )
+            .all()
+        )
+        return MessageService._audit_rows_sender_block_stats(recent, unique_sender_ids)
+
+    @staticmethod
     def _record_block_and_maybe_escalate(
         db: Session,
         *,
@@ -659,19 +785,12 @@ class MessageService:
             )
             .all()
         )
-        block_count = 0
-        for row in recent:
-            body = row.request_body or {}
-            if not isinstance(body, dict):
-                continue
-            if (
-                body.get("moderation_action") == "block"
-                and body.get("sender_id") == str(sender_id)
-            ):
-                block_count += 1
+        sender_key = str(sender_id)
+        block_count, escalation_logged = MessageService._audit_rows_sender_block_stats(
+            recent, {sender_key}
+        )[sender_key]
 
-        escalation_logged = False
-        if block_count >= MessageService.BLOCK_ESCALATION_THRESHOLD:
+        if block_count >= MessageService.BLOCK_ESCALATION_THRESHOLD and not escalation_logged:
             AuditService(db).log_action(
                 user_id=moderator_id,
                 action=AuditAction.INTERVENTION,
