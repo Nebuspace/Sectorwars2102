@@ -162,10 +162,9 @@ export function ScanLayer({ scanActive, wrecks, formations, star, onOpenPopup }:
 // ---------------------------------------------------------------------------
 // BeaconLayer — message beacons (message-beacons.md), ALWAYS visible (not
 // gated behind scanActive — canon: "any player arriving in a sector with
-// active beacons sees them"). Read-only summary popup on click; full
-// read/salvage/recharge/report actions live on the deployer's My Beacons
-// screen (GET /beacons/mine + the existing action routes), mirroring the
-// wreck popup's own read-only-info + separate-action-page convention.
+// active beacons sees them"). Click opens a popup with Read (0 turns) and
+// Salvage (1 turn, 250cr) for any visitor in-sector. Deployer-only list
+// (recharge/report/mine) remains on My Beacons (GET /beacons/mine).
 // ---------------------------------------------------------------------------
 
 export interface BeaconLayerProps {

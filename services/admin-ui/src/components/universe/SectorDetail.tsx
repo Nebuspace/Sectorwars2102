@@ -71,6 +71,7 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
   const [planetData, setPlanetData] = useState<any>(null);
   const [shipsInSector, setShipsInSector] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [editingField, setEditingField] = useState<string | null>(null);
   const [editValues, setEditValues] = useState<any>({});
   const [isUpdating, setIsUpdating] = useState(false);
@@ -81,15 +82,24 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
     loadSectorDetails();
   }, [sector]);
 
+  const noteLoadFailure = (err: unknown, fallback: string) => {
+    const status = (err as { response?: { status?: number } })?.response?.status;
+    if (status === 403 || status === 429) {
+      setLoadError(formatUniverseAdminError(err, fallback));
+    }
+  };
+
   const loadSectorDetails = async () => {
     setLoading(true);
+    setLoadError(null);
 
     try {
       // Always try to load port data, regardless of has_port flag
       try {
         const portResponse = await api.get(`/api/v1/admin/sectors/${sector.sector_id}/port`);
         setPortData(portResponse.data);
-      } catch (_portError) {
+      } catch (portError) {
+        noteLoadFailure(portError, 'Failed to load port data');
         setPortData(null);
       }
 
@@ -99,7 +109,7 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
           const planetResponse = await api.get(`/api/v1/admin/sectors/${sector.sector_id}/planet`);
           setPlanetData(planetResponse.data);
         } catch (planetError) {
-          console.error('Error loading planet data:', planetError);
+          noteLoadFailure(planetError, 'Failed to load planet data');
           setPlanetData(null);
         }
       } else {
@@ -111,12 +121,12 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
         const shipsResponse = await api.get(`/api/v1/admin/sectors/${sector.sector_id}/ships`);
         setShipsInSector((shipsResponse.data as any)?.ships || []);
       } catch (shipsError) {
-        console.error('Error loading ships data:', shipsError);
+        noteLoadFailure(shipsError, 'Failed to load ships data');
         setShipsInSector([]);
       }
 
     } catch (error) {
-      console.error('Error loading sector details:', error);
+      noteLoadFailure(error, 'Failed to load sector details');
     } finally {
       setLoading(false);
     }
@@ -317,6 +327,11 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
       </div>
 
       <div className="page-content">
+        {loadError && (
+          <div className="error-message" role="alert">
+            {loadError}
+          </div>
+        )}
         {loading ? (
           <div className="loading-state">
             <div className="spinner"></div>

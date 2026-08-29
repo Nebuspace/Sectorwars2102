@@ -28,6 +28,11 @@ vi.mock('../ResourceSharing', () => ({
 vi.mock('../TeamChat', () => ({
   TeamChat: ({ teamId }: { teamId: string }) => <div data-testid="team-chat" data-team-id={teamId} />,
 }));
+vi.mock('../TeamWarPanel', () => ({
+  TeamWarPanel: ({ teamId, isLeader }: { teamId: string; isLeader: boolean }) => (
+    <div data-testid="team-war-panel" data-team-id={teamId} data-leader={String(isLeader)} />
+  ),
+}));
 
 const {
   mockGetTeam,
@@ -38,6 +43,7 @@ const {
   mockKickMember,
   mockLeaveTeam,
   mockCreateTeam,
+  mockMedalsGetMe,
 } = vi.hoisted(() => ({
   mockGetTeam: vi.fn<(id: string) => Promise<TeamApiResponse>>(),
   mockGetMembers: vi.fn<(id: string) => Promise<TeamMemberApiResponse[]>>(async () => []),
@@ -47,6 +53,11 @@ const {
   mockKickMember: vi.fn<(teamId: string, memberId: string) => Promise<unknown>>(async () => undefined),
   mockLeaveTeam: vi.fn<() => Promise<unknown>>(async () => undefined),
   mockCreateTeam: vi.fn<(data: unknown) => Promise<TeamApiResponse>>(),
+  mockMedalsGetMe: vi.fn<() => Promise<unknown>>(async () => ({
+    earned: [],
+    pinned_medal_id: null,
+    total_earned: 0,
+  })),
 }));
 
 vi.mock('../../../services/api', () => ({
@@ -59,6 +70,9 @@ vi.mock('../../../services/api', () => ({
     kickMember: mockKickMember,
     leaveTeam: mockLeaveTeam,
     createTeam: mockCreateTeam,
+  },
+  medalsAPI: {
+    getMe: mockMedalsGetMe,
   },
 }));
 
@@ -73,7 +87,7 @@ vi.mock('../../../contexts/GameContext', () => ({
   useGame: () => ({ playerState: mockPlayerState, refreshPlayerState: mockRefreshPlayerState }),
 }));
 
-import { TeamManager } from '../TeamManager';
+import { TeamManager, formatTeamManagerLoadError } from '../TeamManager';
 
 const rawTeam = (overrides: Partial<TeamApiResponse> = {}): TeamApiResponse => ({
   id: 'team-1',
@@ -158,6 +172,8 @@ describe('TeamManager', () => {
     mockLeaveTeam.mockReset();
     mockLeaveTeam.mockResolvedValue(undefined);
     mockCreateTeam.mockReset();
+    mockMedalsGetMe.mockReset();
+    mockMedalsGetMe.mockResolvedValue({ earned: [], pinned_medal_id: null, total_earned: 0 });
     mockRefreshPlayerState.mockReset();
     mockRefreshPlayerState.mockResolvedValue(undefined);
     errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -206,6 +222,48 @@ describe('TeamManager', () => {
     });
     await flush();
     expect(container.querySelector('.team-header')).not.toBeNull();
+  });
+
+  it('formatTeamManagerLoadError preserves 404 server detail', () => {
+    const err = Object.assign(new Error('Team not found'), { status: 404 });
+    expect(formatTeamManagerLoadError(err)).toBe('Team not found');
+  });
+
+  it('formatTeamManagerLoadError falls back on bare 404', () => {
+    const err = Object.assign(new Error('API Error: 404'), { status: 404 });
+    expect(formatTeamManagerLoadError(err)).toBe('Team not found.');
+  });
+
+  it('formatTeamManagerLoadError preserves 403 server detail', () => {
+    const err = Object.assign(new Error('You are not a member of this team'), {
+      status: 403,
+    });
+    expect(formatTeamManagerLoadError(err)).toBe('You are not a member of this team');
+  });
+
+  it('formatTeamManagerLoadError falls back on bare 403', () => {
+    const err = Object.assign(new Error('API Error: 403'), { status: 403 });
+    expect(formatTeamManagerLoadError(err)).toBe('You are not a member of this team.');
+  });
+
+  it('surfaces honest 404 load copy when getTeam rejects with bare status', async () => {
+    mockGetTeam.mockRejectedValue(
+      Object.assign(new Error('API Error: 404'), { status: 404 }),
+    );
+    await mount();
+
+    expect(container.querySelector('.load-error')).not.toBeNull();
+    expect(container.textContent).toContain('Team not found.');
+  });
+
+  it('surfaces honest 403 load copy when getTeam rejects with bare status', async () => {
+    mockGetTeam.mockRejectedValue(
+      Object.assign(new Error('API Error: 403'), { status: 403 }),
+    );
+    await mount();
+
+    expect(container.querySelector('.load-error')).not.toBeNull();
+    expect(container.textContent).toContain('You are not a member of this team.');
   });
 
   it('renders the header with tag/name, member counts, and founded date, and maps combat/trade ratings to 1 decimal', async () => {
@@ -360,6 +418,45 @@ describe('TeamManager', () => {
 
       expect(container.querySelector('.form-error')?.textContent).toBe('cannot kick the leader');
       expect(container.querySelector('.member-item')).not.toBeNull();
+    });
+
+    it('renders pinned medal pin and count for a non-self roster row from API fields', async () => {
+      mockGetMembers.mockResolvedValue([
+        rawMember({
+          player_id: 'p2',
+          nickname: 'Rho',
+          pinned_medal_id: 'star_bronze',
+          medal_count: 5,
+        }),
+      ]);
+      await mount();
+      await act(async () => {
+        tab('Members').click();
+      });
+
+      const plate = container.querySelector('.member-item [data-testid="player-name-plate"]') as HTMLElement;
+      expect(plate).not.toBeNull();
+      expect(plate.getAttribute('data-pinned-medal')).toBe('star_bronze');
+      expect(plate.querySelector('[data-testid="player-name-plate-medal"]')?.textContent).toBe('🏅');
+      expect(plate.querySelector('[data-testid="player-name-plate-count"]')?.textContent).toBe('5');
+    });
+
+    it('omits medal count badge when medal_count is null (privacy hidden)', async () => {
+      mockGetMembers.mockResolvedValue([
+        rawMember({
+          player_id: 'p2',
+          pinned_medal_id: 'star_bronze',
+          medal_count: null,
+        }),
+      ]);
+      await mount();
+      await act(async () => {
+        tab('Members').click();
+      });
+
+      const plate = container.querySelector('.member-item [data-testid="player-name-plate"]') as HTMLElement;
+      expect(plate.getAttribute('data-pinned-medal')).toBe('star_bronze');
+      expect(plate.querySelector('[data-testid="player-name-plate-count"]')).toBeNull();
     });
   });
 

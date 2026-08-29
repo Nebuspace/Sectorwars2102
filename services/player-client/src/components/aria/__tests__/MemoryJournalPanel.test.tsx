@@ -16,7 +16,7 @@ vi.mock('../../../services/api', () => ({
   },
 }));
 
-import MemoryJournalPanel from '../MemoryJournalPanel';
+import MemoryJournalPanel, { formatAriaMemoryLoadError } from '../MemoryJournalPanel';
 
 const sampleMemory = {
   id: 'mem-1',
@@ -130,5 +130,23 @@ describe('MemoryJournalPanel', () => {
 
     const alert = container.querySelector('[role="alert"]');
     expect(alert?.textContent).toContain('ARIA memory recall temporarily unavailable');
+  });
+
+  it('surfaces 503 server detail on memory load failure', async () => {
+    const err = new Error('ARIA memory recall temporarily unavailable');
+    (err as { status?: number }).status = 503;
+    mockGetMemories.mockRejectedValue(err);
+
+    await act(async () => {
+      root.render(<MemoryJournalPanel />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+      'ARIA memory recall temporarily unavailable',
+    );
+    expect(formatAriaMemoryLoadError(err)).toBe('ARIA memory recall temporarily unavailable');
   });
 });

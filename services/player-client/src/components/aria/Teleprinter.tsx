@@ -129,6 +129,7 @@ import { useAutopilot } from '../../contexts/AutopilotContext';
 import { ariaFeed, useAriaFeed } from '../mfd/ariaFeedStore';
 import './teleprinter.css';
 import MemoryJournalPanel from './MemoryJournalPanel';
+import AssistanceLevelSettings from './AssistanceLevelSettings';
 
 /** Content-channel tab, independent of the two display-toggle booleans
  *  below. PANEL keeps this 3-way split; LOG shows the merged stream
@@ -281,6 +282,10 @@ const Teleprinter: React.FC<TeleprinterProps> = ({
   // NARRATION/DIALOGUE/CMD tabs: when open, replaces the feed+input body
   // without extending TeleprinterMode (keeps mode/aria-live contracts intact).
   const [journalOpen, setJournalOpen] = useState(false);
+  // LEG-785 — SETTINGS (assistance level) uses the same exclusive-panel
+  // pattern as JOURNAL; do not extend TeleprinterMode.
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const overlayOpen = journalOpen || settingsOpen;
   // Offline-fallback echoes (Pixel a11y REVISE #2) — component-local, never
   // sent anywhere, pinned to the mode active when sendARIAMessage failed.
   const [localEchoes, setLocalEchoes] = useState<FeedEntry[]>([]);
@@ -738,12 +743,13 @@ const Teleprinter: React.FC<TeleprinterProps> = ({
                 role="tab"
                 id={`tp-mode-tab-${m.id}`}
                 ref={(el) => { modeTabRefs.current[i] = el; }}
-                aria-selected={!journalOpen && mode === m.id}
-                aria-controls={journalOpen ? 'tp-journal' : 'tp-log'}
-                tabIndex={!journalOpen && mode === m.id ? 0 : -1}
-                className={`tkey tp-mode-btn tp-mode-${m.id}${!journalOpen && mode === m.id ? ' active' : ''}`}
+                aria-selected={!overlayOpen && mode === m.id}
+                aria-controls={settingsOpen ? 'tp-settings' : journalOpen ? 'tp-journal' : 'tp-log'}
+                tabIndex={!overlayOpen && mode === m.id ? 0 : -1}
+                className={`tkey tp-mode-btn tp-mode-${m.id}${!overlayOpen && mode === m.id ? ' active' : ''}`}
                 onClick={() => {
                   setJournalOpen(false);
+                  setSettingsOpen(false);
                   setMode(m.id);
                 }}
               >
@@ -751,19 +757,41 @@ const Teleprinter: React.FC<TeleprinterProps> = ({
               </button>
             ))}
           </div>
-          <button
-            type="button"
-            className={`tkey tp-journal-toggle${journalOpen ? ' active' : ''}`}
-            aria-pressed={journalOpen}
-            aria-controls="tp-journal"
-            aria-label={journalOpen ? 'Hide ARIA memory journal' : 'Show ARIA memory journal'}
-            onClick={() => setJournalOpen((open) => !open)}
-          >
-            JOURNAL
-          </button>
+          <div className="tp-body-header-actions">
+            <button
+              type="button"
+              className={`tkey tp-journal-toggle${journalOpen ? ' active' : ''}`}
+              aria-pressed={journalOpen}
+              aria-controls="tp-journal"
+              aria-label={journalOpen ? 'Hide ARIA memory journal' : 'Show ARIA memory journal'}
+              onClick={() => {
+                setSettingsOpen(false);
+                setJournalOpen((open) => !open);
+              }}
+            >
+              JOURNAL
+            </button>
+            <button
+              type="button"
+              className={`tkey tp-settings-toggle${settingsOpen ? ' active' : ''}`}
+              aria-pressed={settingsOpen}
+              aria-controls="tp-settings"
+              aria-label={settingsOpen ? 'Hide ARIA assistance settings' : 'Show ARIA assistance settings'}
+              onClick={() => {
+                setJournalOpen(false);
+                setSettingsOpen((open) => !open);
+              }}
+            >
+              SETTINGS
+            </button>
+          </div>
         </div>
 
-        {journalOpen ? (
+        {settingsOpen ? (
+          <div id="tp-settings" className="tp-settings" role="region" aria-label="ARIA assistance settings">
+            <AssistanceLevelSettings />
+          </div>
+        ) : journalOpen ? (
           <div id="tp-journal" className="tp-journal" role="region" aria-label="ARIA memory journal">
             <MemoryJournalPanel />
           </div>

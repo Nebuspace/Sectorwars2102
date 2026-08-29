@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { useAuth } from './AuthContext';
-import { sectorAPI, messageAPI, planetaryAPI, citadelAPI, expeditionAPI, pioneerAPI, armoryAPI, tradingAPI, quantumAPI, portOwnershipAPI, playerAPI, shipAPI, firstLoginAPI } from '../services/api';
+import { sectorAPI, messageAPI, planetaryAPI, citadelAPI, expeditionAPI, pioneerAPI, armoryAPI, tradingAPI, quantumAPI, portOwnershipAPI, playerAPI, shipAPI, firstLoginAPI, type ArmoryMineItem } from '../services/api';
 import websocketService from '../services/websocket';
 import { ariaFeed } from '../components/mfd/ariaFeedStore';
 
@@ -59,6 +59,14 @@ export interface Sector {
   x_coord?: number | null;
   y_coord?: number | null;
   z_coord?: number | null;
+  /** LEG-427 / mining.md:255 — GS asteroid_depletion on current-sector (null off ASTEROID_FIELD). */
+  asteroid_depletion?: Record<string, unknown> | null;
+  /** Tip SectorResponse — true after POST investigate-anomaly (LEG-478). */
+  anomaly_investigated?: boolean;
+  /** NAV chart nebula cluster fields (LEG-INI-16) — omitted on non-nebula / frontier. */
+  nebula_type?: string;
+  quantum_field_strength?: number;
+  color_hex?: string;
 }
 
 export interface Planet {
@@ -387,8 +395,13 @@ interface GameContextType {
   withdrawFromSafe: (planetId: string, amount: number) => Promise<any>;
   depositCommodityToSafe: (planetId: string, commodity: string, amount: number) => Promise<any>;
   withdrawCommodityFromSafe: (planetId: string, commodity: string, amount: number) => Promise<any>;
+  withdrawStockpileToCargo: (
+    planetId: string,
+    commodity: 'fuel_ore' | 'organics' | 'equipment',
+    amount: number,
+  ) => Promise<any>;
   setCitadelAutoDeposit: (planetId: string, enabled: boolean) => Promise<any>;
-  deployMines: (quantity: number) => Promise<any>;
+  deployMines: (quantity: number, item?: ArmoryMineItem) => Promise<any>;
   // Planetary defenses — shield generator status/upgrade
   getPlanetDefenseInfo: (planetId: string) => Promise<any>;
   upgradeShields: (planetId: string) => Promise<any>;
@@ -435,6 +448,10 @@ interface GameContextType {
     stationId: string,
     defensePct: number,
     ownerPct: number,
+  ) => Promise<unknown>;
+  militaryTakeover: (
+    stationId: string,
+    action: 'declare' | 'siege' | 'occupy',
   ) => Promise<unknown>;
 
   // Player-to-player hails (COMMS mailbox) — bound to /api/v1/messages/*.
@@ -1368,6 +1385,22 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
+  // Planet stockpile → ship cargo. GS POST /planets/{id}/stockpile/withdraw
+  // (LEG-546). Tax skim / ACL / landed-on-planet are server-enforced.
+  const withdrawStockpileToCargo = async (
+    planetId: string,
+    commodity: 'fuel_ore' | 'organics' | 'equipment',
+    amount: number,
+  ) => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+    try {
+      return await planetaryAPI.withdrawStockpileToCargo(planetId, commodity, amount);
+    } catch (error: any) {
+      console.error('Error withdrawing stockpile to cargo:', error);
+      throw error;
+    }
+  };
+
   // Toggle auto-deposit of production into the protected safe (opt-in, default
   // OFF). WO-WIRE-CITADEL-AUTO-DEPOSIT-API — citadelAPI.setAutoDeposit (same
   // URL as before; body is the response payload directly).
@@ -1381,12 +1414,11 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  // Lay armored mines in the current sector (open space).
-  // WO-WIRE-ARMORY-DEPLOY: armoryAPI.deploy (same URL; still refresh state).
-  const deployMines = async (quantity: number) => {
+  // Lay mines in the current sector (open space). Item defaults to armored.
+  const deployMines = async (quantity: number, item: ArmoryMineItem = 'armored_mine') => {
     if (!user || !playerState) throw new Error('Not authenticated');
     try {
-      const data = await armoryAPI.deploy(quantity);
+      const data = await armoryAPI.deploy(quantity, item);
       await refreshPlayerState();
       return data;
     } catch (error: any) {
@@ -1687,6 +1719,26 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       return await portOwnershipAPI.setFeeDistribution(stationId, defensePct, ownerPct);
     } catch (error: any) {
       console.error('Error setting fee distribution:', error);
+      throw error;
+    }
+  };
+
+  // Military takeover stages (declare → siege → occupy). Magnitudes /
+  // immunity / notice window enforced server-side — client posts action only.
+  const militaryTakeover = async (
+    stationId: string,
+    action: 'declare' | 'siege' | 'occupy',
+  ): Promise<unknown> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      const data = await portOwnershipAPI.militaryTakeover(stationId, action);
+      if (action === 'occupy') {
+        await refreshPlayerState();
+      }
+      return data;
+    } catch (error: any) {
+      console.error('Error on military takeover action:', error);
       throw error;
     }
   };
@@ -2073,6 +2125,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     withdrawFromSafe,
     depositCommodityToSafe,
     withdrawCommodityFromSafe,
+    withdrawStockpileToCargo,
     setCitadelAutoDeposit,
     deployMines,
     getPlanetDefenseInfo,
@@ -2099,6 +2152,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     activateCounterTrade,
     activateFriendlyTrade,
     setFeeDistribution,
+    militaryTakeover,
 
     // Player-to-player hails (COMMS mailbox)
     inboxMessages,

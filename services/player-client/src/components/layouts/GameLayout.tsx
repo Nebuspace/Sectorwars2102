@@ -22,6 +22,7 @@ import PriorityHailConsumer from '../comms/PriorityHailConsumer';
 import WelcomeBackToast from '../auth/WelcomeBackToast';
 import GcLapsePanel from '../auth/GcLapsePanel';
 import NpcCombatBanner from '../combat/NpcCombatBanner';
+import PoliceEnRouteBanner from '../combat/PoliceEnRouteBanner';
 import FirstSessionObjectives from '../onboarding/FirstSessionObjectives';
 import { useFirstSession } from '../onboarding/useFirstSession';
 import { ShellPresenceContext, useShellPresent, ShellSlotsContext } from './ShellContext';
@@ -419,6 +420,8 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
       {/* NPC-initiated combat alert (WO-CMB-NPC-INITIATED-1 lane D): the
           npc_combat_initiated WS event's defender-side banner. */}
       <NpcCombatBanner />
+      {/* LAW en-route countdown (LEG-902): pending engagement before combat. */}
+      <PoliceEnRouteBanner />
       {/* First-session orientation chip (WO-PUX-ONBOARD) -- renders nothing
           unless this tab just landed here from first-login completion. */}
       <FirstSessionObjectives />

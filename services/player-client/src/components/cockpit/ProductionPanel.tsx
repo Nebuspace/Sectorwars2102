@@ -23,7 +23,25 @@ export interface ProductionLine {
   storeBusy: boolean;
   /** Reason the Store button is disabled (for the title), when canStore < 1. */
   storeDisabledTitle: string;
+  /** How much of this resource can be loaded to ship cargo right now (0 = none). */
+  canWithdraw?: number;
+  /** True while a stockpile→cargo call is in flight for this resource. */
+  withdrawBusy?: boolean;
+  /** Reason the Cargo button is disabled (for the title), when canWithdraw < 1. */
+  withdrawDisabledTitle?: string;
+  /** Days until storage cap at current rate; null when uncapped / atCap / no rate. */
+  daysUntilFull?: number | null;
 }
+
+/** Existing GameDashboard helper — display only; do not invent a new formula. */
+export const fmtDaysUntilFull = (d: number | null | undefined): string => {
+  if (d == null) return '';
+  if (d < 1) {
+    const hrs = Math.max(1, Math.round(d * 24));
+    return `~${hrs}h to cap`;
+  }
+  return `~${Math.round(d)}d to cap`;
+};
 
 
 export interface ProductionPanelProps {
@@ -51,6 +69,8 @@ export interface ProductionPanelProps {
   allocError?: string | null;
   /** Store the given resource's storable amount into the citadel safe. */
   onStoreToSafe: (key: 'fuel' | 'organics' | 'equipment', amount: number) => void;
+  /** Load the given resource's stockpile into docked ship cargo (GS stockpile/withdraw). */
+  onWithdrawToCargo: (key: 'fuel' | 'organics' | 'equipment', amount: number) => void;
 }
 
 const fmt = (n: number) => Math.floor(n).toLocaleString();
@@ -102,7 +122,8 @@ const RollingStock: React.FC<{ value: number }> = ({ value }) => {
  * landedPlanetDetail (the 15s realtime poll + the caller's per-second clamped
  * projection) — no extra fetch. Surfaces the coupled colonist sliders + presets
  * + idle meter, the rolling stockpile readouts (clearly labelled UNPROTECTED with
- * a Store→Safe affordance), storage fill, and the Specialization modal.
+ * a Store→Safe affordance and a distinct stockpile→ship-cargo control),
+ * storage fill, and the Specialization modal.
  */
 const ProductionPanel: React.FC<ProductionPanelProps> = ({
   lines,
@@ -117,6 +138,7 @@ const ProductionPanel: React.FC<ProductionPanelProps> = ({
   allocSyncing,
   allocError,
   onStoreToSafe,
+  onWithdrawToCargo,
 }) => (
   <CockpitPanel title="Production" accent="#7dd3fc" readout={<span className="cp-live-tag">┄ LIVE ┄</span>}>
     <CoupledColonistSliders
@@ -160,6 +182,24 @@ const ProductionPanel: React.FC<ProductionPanelProps> = ({
               >
                 {l.storeBusy ? '…' : '🔐 Store'}
               </button>
+              {(() => {
+                const canWithdraw = l.canWithdraw ?? Math.floor(l.stock);
+                const withdrawBusy = !!l.withdrawBusy;
+                const withdrawTitle = canWithdraw < 1
+                  ? (l.withdrawDisabledTitle || 'No stockpile to load to cargo')
+                  : `Move ${canWithdraw.toLocaleString()} to ship cargo`;
+                return (
+                  <button
+                    type="button"
+                    className="cp-store-btn cp-cargo-btn"
+                    disabled={withdrawBusy || canWithdraw < 1}
+                    title={withdrawTitle}
+                    onClick={() => onWithdrawToCargo(l.key, canWithdraw)}
+                  >
+                    {withdrawBusy ? '…' : '📦 Cargo'}
+                  </button>
+                );
+              })()}
               {l.capped && (
                 <div className="cp-prod-bar">
                   <div
@@ -167,6 +207,14 @@ const ProductionPanel: React.FC<ProductionPanelProps> = ({
                     style={{ width: `${Math.round(l.ratio * 100)}%` }}
                   />
                 </div>
+              )}
+              {l.capped && fmtDaysUntilFull(l.daysUntilFull) !== '' && (
+                <span
+                  className="cp-prod-eta"
+                  data-testid={`days-until-full-${l.key}`}
+                >
+                  {fmtDaysUntilFull(l.daysUntilFull)}
+                </span>
               )}
             </div>
           ))}

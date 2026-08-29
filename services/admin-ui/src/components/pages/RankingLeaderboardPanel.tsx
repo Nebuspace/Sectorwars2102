@@ -3,6 +3,15 @@ import { api } from '../../utils/auth';
 import { formatAdminApiError } from '../../utils/adminApiError';
 import './ranking-leaderboard-panel.css';
 
+/** Keys match rank tiers the backend emits (RANK_DEFINITIONS). Copied from player-client RankDisplay.tsx. */
+export const TIER_COLORS: Record<string, string> = {
+  Enlisted: '#888888',
+  NCO: '#4a9eff',
+  Warrant: '#ffaa44',
+  Officer: '#ff44ff',
+  Flag: '#ff4444',
+};
+
 export type AdminLeaderboardEntry = {
   position: number;
   player_id: string;
@@ -10,10 +19,16 @@ export type AdminLeaderboardEntry = {
   military_rank: string;
   rank_points: number;
   rank_level: number;
+  rank_tier?: string;
   is_game_complete?: boolean;
   is_suspect?: boolean;
   is_wanted?: boolean;
 };
+
+function rankTierColor(tier: string | undefined): string {
+  if (!tier) return '#888888';
+  return TIER_COLORS[tier] ?? '#ffffff';
+}
 
 type LeaderboardResponse = {
   entries: AdminLeaderboardEntry[];
@@ -98,8 +113,20 @@ const RankingLeaderboardPanel: React.FC = () => {
                   <tr key={e.player_id} data-testid={`admin-ranking-row-${e.player_id}`}>
                     <td>{e.position}</td>
                     <td>{e.username}</td>
-                    <td>
-                      {e.military_rank} (L{e.rank_level})
+                    <td className="ranking-leaderboard-rank-cell">
+                      <span
+                        className="admin-rank-badge"
+                        data-testid={`admin-rank-badge-${e.player_id}`}
+                        style={{ borderColor: rankTierColor(e.rank_tier) }}
+                      >
+                        <span className="admin-rank-level">{e.rank_level}</span>
+                      </span>
+                      <span
+                        className="admin-rank-name"
+                        style={{ color: e.rank_tier ? rankTierColor(e.rank_tier) : undefined }}
+                      >
+                        {e.military_rank}
+                      </span>
                     </td>
                     <td>{e.rank_points}</td>
                     <td>

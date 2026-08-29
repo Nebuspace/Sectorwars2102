@@ -9,6 +9,7 @@ import type { LandedVistaSource } from './landedVistaAdapter';
 import type { VistaInput } from '../../vista/contract';
 import type { SectorWreck } from '../../services/api';
 import type { SpecialFormationSummary } from '../../contexts/GameContext';
+import PlayerNamePlate from '../common/PlayerNamePlate';
 
 // ---------------------------------------------------------------------------
 // Vista engine feature flag (Lane A3 — Phase-2a go-live)
@@ -256,7 +257,7 @@ export type HitMeta =
   | { kind: 'procedural'; designation: string; typeName: string; sizeDesc: string }
   | { kind: 'ship'; shipId: string; shipName: string; shipType: string; captain: string;
       isNpc: boolean; factionLabel: string; factionColor: string; lawful: boolean;
-      notoriety?: number }
+      notoriety?: number; pinnedMedalId?: string | null; medalCount?: number | null }
   /** SCAN layer (#7): a sector wreck, gated behind the SCAN toggle. */
   | { kind: 'wreck'; wreckId: string; shipType: string; cause: string; suspect: boolean }
   /** SCAN layer (#7): a special_formations anomaly, gated behind the SCAN toggle. */
@@ -300,8 +301,11 @@ export interface ShipPresence {
   notoriety?: number | null;
   /** Live activity (COMMUTE | WORK_STATION | PATROL | …) — drives honest motion. */
   activity?: string | null;
-  /** Trader mission (commerce | colonist | science) — drives which dock type. */
+  /** Trader mission (commerce | colonist | science | supply_delivery) — dock type + haul cue. */
   mission?: string | null;
+  /** LEG-2654 / medals.md:203 — public medal identity on sector presence rows. */
+  pinned_medal_id?: string | null;
+  medal_count?: number | null;
   /** WO-ISP: authoritative in-system pose / leg plan from the server. */
   pose?: {
     x_pct: number;
@@ -355,12 +359,33 @@ export function shipFaction(s: ShipPresence): { key: string; color: string; labe
     if (isRaider) return { key: 'raider', color: '#ff5a5a', label: 'HOSTILE', lawful: true };
   }
 
+  // Visible supply-delivery haul-in (GS daily_schedule.mission=supply_delivery) —
+  // distinct from ordinary commerce traders so players can spot a restock run.
+  // Does not change fair-game / notoriety rules; label+tint only.
+  const mission = String(s.mission || '').toLowerCase();
+  if (mission === 'supply_delivery') {
+    return { key: 'supply_haul', color: '#4fd1c5', label: 'SUPPLY HAUL', lawful: false };
+  }
+
   // Trader / neutral — grade by notoriety.
   const n = typeof s.notoriety === 'number' ? s.notoriety : 0;
   if (n >= 75) return { key: 'notorious', color: '#ff7a3c', label: 'NOTORIOUS TRADER', lawful: true };
   if (n >= 50) return { key: 'unscrupulous', color: '#ffb000', label: 'UNSCRUPULOUS TRADER', lawful: true };
   if (n >= 25) return { key: 'merchant', color: '#7fe0a0', label: 'MERCHANT', lawful: false };
   return { key: 'reputable', color: '#00ff41', label: 'REPUTABLE MERCHANT', lawful: false };
+}
+
+/** Captain nameplate props for sector ship markers (LEG-2657 / medals.md:203). */
+export function shipCaptainNamePlateProps(s: ShipPresence): {
+  name: string;
+  pinnedMedalId?: string | null;
+  medalCount?: number | null;
+} {
+  return {
+    name: (s.username || (s.is_npc ? 'NPC' : 'PILOT')).toUpperCase(),
+    pinnedMedalId: s.pinned_medal_id,
+    medalCount: s.medal_count,
+  };
 }
 
 interface PopupState {
@@ -2001,8 +2026,9 @@ export function drawScene(
     );
     const size = (docked ? 4.6 : 6.0) * Math.min(1.5, bodyScale);
     const fac = shipFaction(s);
-    const contactName = (s.ship_name || s.username || 'CONTACT').toUpperCase();
     const captain = s.username || (s.is_npc ? 'NPC' : 'PILOT');
+    const baseContactName = (s.ship_name || s.username || 'CONTACT').toUpperCase();
+    const contactName = s.pinned_medal_id ? `${baseContactName} 🏅` : baseContactName;
     hitTargets.push({
       x, y, r: size + 8, kind: 'ship', id: s.ship_id,
       name: contactName,
@@ -2011,7 +2037,9 @@ export function drawScene(
         kind: 'ship', shipId: s.ship_id, shipName: s.ship_name || contactName,
         shipType: s.ship_type || 'UNKNOWN', captain, isNpc: !!s.is_npc,
         factionLabel: fac.label, factionColor: fac.color, lawful: fac.lawful,
-        notoriety: typeof s.notoriety === 'number' ? s.notoriety : undefined
+        notoriety: typeof s.notoriety === 'number' ? s.notoriety : undefined,
+        pinnedMedalId: s.pinned_medal_id,
+        medalCount: s.medal_count,
       }
     });
     if (docked) {
@@ -8477,7 +8505,13 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
             </div>
             <div className="ssv-popup-line">{meta.shipType.replace(/_/g, ' ').toUpperCase()}</div>
             <div className="ssv-popup-line">
-              {meta.isNpc ? 'NPC' : 'PILOT'} — {meta.captain.toUpperCase()}
+              {meta.isNpc ? 'NPC' : 'PILOT'} —{' '}
+              <PlayerNamePlate
+                name={meta.captain.toUpperCase()}
+                size="sm"
+                pinnedMedalId={meta.pinnedMedalId}
+                medalCount={meta.medalCount}
+              />
             </div>
             {meta.isNpc && (
               <div
