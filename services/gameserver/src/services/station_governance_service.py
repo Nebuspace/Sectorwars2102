@@ -20,12 +20,16 @@ from src.models.player import Player
 from src.models.port_ownership import StationGovernanceVote
 from src.models.station import Station
 from src.services.port_ownership_service import (
+    apply_governance_disbandment_listing,
+    apply_governance_sale_listing,
     MAX_TAX_RATE,
     MIN_TAX_RATE,
     PortOwnershipError,
     SYNDICATE_MODE_KEY,
+    WITHDRAWAL_SCHEDULES,
     _ensure_primary_share,
     _lock_station,
+    set_withdrawal_schedule,
 )
 
 logger = logging.getLogger(__name__)
@@ -51,6 +55,14 @@ VOTE_SPECS: Dict[str, Dict[str, Any]] = {
         "window_hours": 96.0,
         "major_upgrade": False,
     },
+    # Vote-threshold table is silent on disbandment (port-ownership.md:138-144);
+    # Soft-ORDER invent=0 mirrors sale specs. Dissolve prose is :453.
+    "disbandment": {
+        "threshold": 0.66,
+        "veto": True,
+        "window_hours": 96.0,
+        "major_upgrade": False,
+    },
     "withdrawal": {
         "threshold": 0.50,
         "veto": False,
@@ -65,6 +77,8 @@ _VOTE_ALIASES = {
     "upgrade": "upgrade",
     "major_upgrade": "upgrade",
     "sale": "sale",
+    "disbandment": "disbandment",
+    "disband": "disbandment",
     "withdrawal": "withdrawal",
     "withdrawal_schedule": "withdrawal",
     "withdrawal-schedule": "withdrawal",
@@ -72,10 +86,12 @@ _VOTE_ALIASES = {
 
 POSITIONS = frozenset({"for", "against", "absent", "veto", "against_veto"})
 INACTIVE_DAYS = 30
+INACTIVE_FORFEIT_DAYS = 90
 QUORUM_FRAC = 0.50
 VETO_HOLDER_FRAC = 0.25
 VETO_OVERRIDE_FRAC = 0.75
 TOTAL_STAKE = 100.0
+UPGRADE_VOTE_SPENT_KEY = "upgrade_vote_spent"
 
 
 def normalize_vote_type(raw: str) -> str:
@@ -83,8 +99,8 @@ def normalize_vote_type(raw: str) -> str:
     if key not in _VOTE_ALIASES:
         raise PortOwnershipError(
             400,
-            "vote_type must be tariff, upgrade, sale, or withdrawal "
-            "(canon port-ownership.md vote-threshold table)",
+            "vote_type must be tariff, upgrade, sale, disbandment, or withdrawal "
+            "(canon port-ownership.md vote-threshold table + disbandment dissolve)",
         )
     return _VOTE_ALIASES[key]
 
@@ -137,16 +153,111 @@ def _apply_passed_tariff(
     )
 
 
+def _apply_passed_sale(
+    db: Session,
+    station: Station,
+    row: StationGovernanceVote,
+    now: Optional[datetime] = None,
+) -> None:
+    """Syndicate sale motion: release ownership and list at canon price."""
+    listing = apply_governance_sale_listing(db, station, now=now)
+    if listing is not None:
+        logger.info(
+            "Governance sale applied station=%s vote=%s listing=%s",
+            station.id,
+            row.id,
+            listing.id,
+        )
+
+
+def _withdrawal_schedule_from_proposed(proposed_value: Any) -> Optional[str]:
+    """Parse daily|weekly|monthly from a withdrawal motion payload (LEG-2014)."""
+    if isinstance(proposed_value, str):
+        key = proposed_value.strip().lower()
+        return key if key in WITHDRAWAL_SCHEDULES else None
+    if isinstance(proposed_value, dict):
+        raw = proposed_value.get(
+            "schedule",
+            proposed_value.get("value", proposed_value.get("withdrawal_schedule")),
+        )
+        if raw is None and len(proposed_value) == 1:
+            only = next(iter(proposed_value.values()))
+            if isinstance(only, str):
+                raw = only
+        if isinstance(raw, str):
+            key = raw.strip().lower()
+            if key in WITHDRAWAL_SCHEDULES:
+                return key
+    return None
+
+
+def _apply_passed_withdrawal(
+    db: Session, station: Station, row: StationGovernanceVote, now: datetime
+) -> None:
+    """Persist withdrawal schedule enum for lazy sweep (port-ownership.md:381)."""
+    schedule = _withdrawal_schedule_from_proposed(row.proposed_value)
+    if schedule is None:
+        logger.warning(
+            "Passed withdrawal vote %s has no parseable schedule in proposed_value",
+            row.id,
+        )
+        return
+    locked = _lock_station(db, station.id)
+    set_withdrawal_schedule(locked, schedule, now)
+    db.flush()
+    outcome = dict(row.outcome or {})
+    outcome["execution"] = {
+        "action": "set_withdrawal_schedule",
+        "schedule": schedule,
+    }
+    row.outcome = outcome
+    flag_modified(row, "outcome")
+    logger.info(
+        "Governance withdrawal schedule applied station=%s schedule=%s vote=%s",
+        locked.id,
+        schedule,
+        row.id,
+    )
+
+
+def _apply_passed_disbandment(
+    db: Session,
+    station: Station,
+    row: StationGovernanceVote,
+    now: Optional[datetime] = None,
+) -> None:
+    """Syndicate disbandment: dissolve and list at depreciated value."""
+    listing = apply_governance_disbandment_listing(db, station, now=now)
+    if listing is not None:
+        logger.info(
+            "Governance disbandment applied station=%s vote=%s listing=%s",
+            station.id,
+            row.id,
+            listing.id,
+        )
+
+
 def _apply_passed_vote(
     db: Session,
     station: Station,
     row: StationGovernanceVote,
     outcome: Dict[str, Any],
+    now: Optional[datetime] = None,
 ) -> None:
     if not outcome.get("passed"):
         return
+    if isinstance((row.outcome or {}).get("execution"), dict):
+        return  # idempotent
     if row.vote_type == "tariff":
         _apply_passed_tariff(db, station, row)
+    elif row.vote_type == "sale":
+        _apply_passed_sale(db, station, row, now=now)
+    elif row.vote_type == "withdrawal":
+        _apply_passed_withdrawal(
+            db, station, row, now or datetime.now(UTC)
+        )
+    elif row.vote_type == "disbandment":
+        _apply_passed_disbandment(db, station, row, now=now)
 
 
 def counted_stake(pct: float, inactive: bool) -> float:
@@ -255,13 +366,25 @@ def resolve_governance_ballots(
     return result
 
 
-def _player_inactive(player: Player, now: datetime) -> bool:
-    login = getattr(player, "last_game_login", None) or getattr(
+def _player_last_login(player: Player) -> Optional[datetime]:
+    return getattr(player, "last_game_login", None) or getattr(
         player, "last_activity_at", None
     )
+
+
+def _player_inactive(player: Player, now: datetime) -> bool:
+    login = _player_last_login(player)
     if login is None:
         return True
     return game_time.scaled_elapsed(login, now) >= timedelta(days=INACTIVE_DAYS)
+
+
+def player_forfeit_eligible(player: Player, now: datetime) -> bool:
+    """True when owner has been inactive long enough to forfeit syndicate stake."""
+    login = _player_last_login(player)
+    if login is None:
+        return True
+    return game_time.scaled_elapsed(login, now) >= timedelta(days=INACTIVE_FORFEIT_DAYS)
 
 
 def _require_syndicate_share(station: Station, player: Player) -> Tuple[str, List[Dict[str, Any]]]:
@@ -306,6 +429,72 @@ def _ballot_map(ballots: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     return out
 
 
+def _apply_passed_upgrade_spend(
+    db: Session,
+    station: Station,
+    row: StationGovernanceVote,
+    now: datetime,
+) -> None:
+    """On passed major-upgrade vote: debit treasury by locked capex (LEG-2032)."""
+    if row.vote_type != "upgrade":
+        return
+    outcome = dict(row.outcome or {})
+    if not outcome.get("passed"):
+        return
+    if isinstance(outcome.get("execution"), dict):
+        return
+
+    capex = _capex_from_proposed(row.proposed_value)
+    if capex is None or capex <= 0:
+        outcome["execution"] = {
+            "action": "debit_capex",
+            "success": False,
+            "reason": "missing_capex",
+        }
+        row.outcome = outcome
+        flag_modified(row, "outcome")
+        return
+
+    station = _lock_station(db, station.id)
+    balance = int(station.treasury_balance or 0)
+    if balance < capex:
+        outcome["execution"] = {
+            "action": "debit_capex",
+            "success": False,
+            "reason": "insufficient_treasury",
+            "capex": capex,
+            "treasury_balance": balance,
+        }
+        row.outcome = outcome
+        flag_modified(row, "outcome")
+        return
+
+    station.treasury_balance = balance - capex
+    ownership = dict(station.ownership or {})
+    spent = list(ownership.get(UPGRADE_VOTE_SPENT_KEY) or [])
+    spent.append(
+        {
+            "vote_id": str(row.id),
+            "capex": capex,
+            "at": now.isoformat(),
+            "treasury_after": station.treasury_balance,
+        }
+    )
+    ownership[UPGRADE_VOTE_SPENT_KEY] = spent
+    station.ownership = ownership
+    flag_modified(station, "ownership")
+    db.flush()
+
+    outcome["execution"] = {
+        "action": "debit_capex",
+        "success": True,
+        "capex": capex,
+        "treasury_balance": station.treasury_balance,
+    }
+    row.outcome = outcome
+    flag_modified(row, "outcome")
+
+
 def _maybe_resolve_row(
     db: Session,
     station: Station,
@@ -327,7 +516,9 @@ def _maybe_resolve_row(
     row.status = outcome["status"]
     row.outcome = outcome
     flag_modified(row, "outcome")
-    _apply_passed_vote(db, station, row, outcome)
+    _apply_passed_vote(db, station, row, outcome, now=now)
+    if row.status == "passed" and row.vote_type == "upgrade":
+        _apply_passed_upgrade_spend(db, station, row, now)
 
 
 def cast_governance_vote(

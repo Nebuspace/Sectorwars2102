@@ -26,7 +26,35 @@ vi.mock('../../../services/api', async (importOriginal) => {
   };
 });
 
-import TradeCascadePanel from '../TradeCascadePanel';
+import TradeCascadePanel, { formatTradeCascadeError } from '../TradeCascadePanel';
+
+describe('formatTradeCascadeError (LEG-2957)', () => {
+  it('preserves gameserver detail when present', () => {
+    const err = Object.assign(new Error('Start sector is unexplored'), { status: 400 });
+    expect(formatTradeCascadeError(err)).toBe('Start sector is unexplored');
+  });
+
+  it('uses 403 fallback when detail is a bare API Error blob', () => {
+    const err = Object.assign(new Error('API Error: 403'), { status: 403 });
+    expect(formatTradeCascadeError(err)).toBe(
+      'Access denied — you cannot plan a trade cascade right now.',
+    );
+  });
+
+  it('uses 429 rate-limit copy', () => {
+    const err = Object.assign(new Error('API Error: 429'), { status: 429 });
+    expect(formatTradeCascadeError(err)).toBe(
+      'Trade cascade rate limit exceeded — wait a moment and try again.',
+    );
+  });
+
+  it('falls back for network-ish failures without status', () => {
+    expect(formatTradeCascadeError(new Error('Failed to fetch'))).toBe('Failed to fetch');
+    expect(formatTradeCascadeError(new Error('API Error: 500'))).toBe(
+      'Failed to plan trade cascade.',
+    );
+  });
+});
 
 describe('TradeCascadePanel', () => {
   let container: HTMLElement;

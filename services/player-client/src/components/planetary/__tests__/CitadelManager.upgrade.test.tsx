@@ -133,6 +133,74 @@ describe('CitadelManager — upgrade money path', () => {
     expect(prereq.textContent).not.toMatch(/planetary defense level/i);
   });
 
+  it('structured missing-prereq payload surfaces building_name Shield Generator L4', async () => {
+    getInfo.mockResolvedValue({
+      ...CITADEL_INFO,
+      citadel_level: 3,
+      citadel_name: 'Colony',
+      next_level: {
+        ...CITADEL_INFO.next_level,
+        level: 4,
+        name: 'Major Colony',
+        upgrade_cost: 50_000,
+      },
+    });
+    const structuredErr = Object.assign(new Error('Upgrade failed'), {
+      status: 400,
+      data: {
+        detail: {
+          error_code: 'ERR_CITADEL_PREREQUISITE_MISSING',
+          reason: 'prerequisite_building_missing',
+          building_key: 'shield_generator',
+          building_name: 'Shield Generator L4',
+          message:
+            'ERR_CITADEL_PREREQUISITE_MISSING: Upgrade to Major Colony requires Shield Generator L4 — build it first.',
+        },
+      },
+    });
+    upgrade.mockRejectedValue(structuredErr);
+
+    await act(async () => {
+      root.render(<CitadelManager planetId="planet-1" playerCredits={100_000} />);
+    });
+    await act(async () => {
+      await flush();
+      await flush();
+    });
+
+    await vi.waitFor(() => {
+      expect(container.querySelector('.citadel-btn.upgrade-btn')).toBeTruthy();
+    });
+
+    const btn = container.querySelector('.citadel-btn.upgrade-btn') as HTMLButtonElement;
+    await act(async () => {
+      btn.click();
+      await flush();
+      await flush();
+    });
+
+    await vi.waitFor(() => {
+      const msg = container.querySelector('.citadel-message');
+      expect(msg?.textContent).toContain('Shield Generator L4');
+      expect(msg?.textContent).toContain('ERR_CITADEL_PREREQUISITE_MISSING');
+    });
+  });
+
+  it('formatCitadelUpgradeError builds copy from building_name when message absent', () => {
+    const err = Object.assign(new Error('API Error: 400'), {
+      status: 400,
+      data: {
+        error_code: 'ERR_CITADEL_PREREQUISITE_MISSING',
+        reason: 'prerequisite_building_missing',
+        building_key: 'shield_generator',
+        building_name: 'Shield Generator L4',
+      },
+    });
+    expect(formatCitadelUpgradeError(err)).toBe(
+      'Upgrade requires Shield Generator L4 — build it first.',
+    );
+  });
+
   it('failed L4 upgrade surfaces GS 400 detail naming Shield Generator L4', async () => {
     getInfo.mockResolvedValue({
       ...CITADEL_INFO,

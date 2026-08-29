@@ -34,6 +34,42 @@ function feeLabel(credits: unknown): string | null {
   return `${credits} credits`;
 }
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+/** Surface GS ownership-transfer detail; hide bare API Error status blobs (LEG-2954). */
+export function formatOwnershipTransferError(
+  err: unknown,
+  fallback = 'Transfer request failed.',
+): string {
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission for this ownership transfer action.';
+  }
+
+  if (status === 429) {
+    if (hasServerDetail) return message!;
+    return 'Ownership-transfer rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (hasServerDetail) return message!;
+  return fallback;
+}
+
 export const OwnershipTransferControl: React.FC<OwnershipTransferControlProps> = ({
   planetId,
   isOwned,
@@ -57,8 +93,7 @@ export const OwnershipTransferControl: React.FC<OwnershipTransferControlProps> =
       setPending(Boolean(status?.pending && nextOffer));
       setOffer(nextOffer);
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to load transfer status.';
-      setError(message);
+      setError(formatOwnershipTransferError(err, 'Failed to load transfer status.'));
       setPending(false);
       setOffer(null);
     } finally {
@@ -92,8 +127,7 @@ export const OwnershipTransferControl: React.FC<OwnershipTransferControlProps> =
       onChanged?.();
       await refresh();
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Transfer request failed.';
-      setError(message);
+      setError(formatOwnershipTransferError(err));
     } finally {
       setBusy(false);
     }
