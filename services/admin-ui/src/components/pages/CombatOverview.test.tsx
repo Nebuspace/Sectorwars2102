@@ -354,4 +354,31 @@ describe('CombatOverview intervention mutation formatAdminApiError (LEG-2599)', 
     });
     expect(screen.queryByText('Failed to intervene in combat')).not.toBeInTheDocument();
   });
+
+  it('surfaces rate-limit copy on adjust_damage intervention 429', async () => {
+    vi.mocked(api.post).mockRejectedValue(
+      Object.assign(new Error('HTTP 429'), {
+        response: { status: 429 },
+      })
+    );
+    const user = userEvent.setup();
+    render(<CombatOverview />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Open intervention')).toBeInTheDocument();
+    });
+    await user.click(screen.getByText('Open intervention'));
+    await user.click(screen.getByText('Adjust damage'));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/combat/combat-1/intervene',
+        expect.objectContaining({ intervention_type: 'adjust_damage' })
+      );
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/rate limit/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByText('Failed to intervene in combat')).not.toBeInTheDocument();
+  });
 });
