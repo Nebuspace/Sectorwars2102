@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useAdmin } from '../../../contexts/AdminContext';
 import { useAuth } from '../../../contexts/AuthContext';
 import { previewBangConfig } from '../../../services/bangGalaxyApi';
-import { adminHttpErrorMessage, adminHttpStatus } from '../../../utils/adminHttpError';
+import { adminHttpErrorMessage } from '../../../utils/adminHttpError';
 import { i18nKeyForBangCode } from './errorCodeMap';
 import {
   BangConfig,
@@ -108,14 +108,9 @@ const GalaxyGenerationForm: React.FC<GalaxyGenerationFormProps> = ({
       const result = await previewBangConfig(payload, token);
       setPreview(result);
     } catch (err) {
-      // LEG-1253: 403/429 honesty — never opaque previewFailed alone for RBAC/rate-limit
-      const status = adminHttpStatus(err);
-      if (status === 401 || status === 403 || status === 429) {
-        setPreviewError(adminHttpErrorMessage(err, 'Preview failed', 'BANG_REGENERATE'));
-      } else {
-        const message = err instanceof Error ? err.message : String(err);
-        setPreviewError(t('bang.form.preview.previewFailed', { error: message }));
-      }
+      // LEG-1253 + LEG-2936: all preview failures (RBAC/rate-limit and
+      // non-RBAC/network) go through the honesty helper — never raw Error.message.
+      setPreviewError(adminHttpErrorMessage(err, 'Preview failed', 'BANG_REGENERATE'));
     } finally {
       setIsPreviewing(false);
     }
@@ -130,13 +125,8 @@ const GalaxyGenerationForm: React.FC<GalaxyGenerationFormProps> = ({
       const job = await bangGalaxy(payload.config, payload.galaxy_name);
       if (job && onJobStarted) onJobStarted(job.id);
     } catch (err) {
-      const status = adminHttpStatus(err);
-      if (status === 401 || status === 403 || status === 429) {
-        setError(adminHttpErrorMessage(err, 'Submit failed', 'BANG_REGENERATE'));
-      } else {
-        const message = err instanceof Error ? err.message : String(err);
-        setError(t('bang.form.errors.submitFailed', { error: message }));
-      }
+      // LEG-1253 + LEG-2936: all commit failures through honesty helper.
+      setError(adminHttpErrorMessage(err, 'Submit failed', 'BANG_REGENERATE'));
     } finally {
       setIsCommitting(false);
     }
