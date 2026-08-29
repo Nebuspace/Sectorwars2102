@@ -25,6 +25,47 @@ type Busy =
   | 'approve'
   | null;
 
+/** Surface gameserver registry refusal detail (string 404 or `{code,message}`). */
+export function formatShipRegistryActionError(err: unknown): string {
+  let message = err instanceof Error ? err.message : undefined;
+  let code: string | undefined;
+  if (err && typeof err === 'object') {
+    const typed = err as {
+      code?: unknown;
+      data?: { detail?: unknown };
+    };
+    if (typeof typed.code === 'string' && typed.code.trim()) {
+      code = typed.code.trim();
+    }
+    const detail = typed.data?.detail;
+    if (typeof detail === 'string' && detail.trim()) {
+      message = detail.trim();
+    } else if (detail && typeof detail === 'object') {
+      const structured = detail as { message?: unknown; code?: unknown };
+      if (typeof structured.message === 'string' && structured.message.trim()) {
+        message = structured.message.trim();
+      }
+      if (typeof structured.code === 'string' && structured.code.trim()) {
+        code = structured.code.trim();
+      }
+    }
+  }
+
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (hasServerDetail) {
+    if (code && !message!.includes(code)) {
+      return `${message} [${code}]`;
+    }
+    return message!;
+  }
+  if (code) return code;
+  return 'Registry action failed';
+}
+
 const ShipRegistryPanel: React.FC<ShipRegistryPanelProps> = ({
   shipId,
   shipName,
@@ -44,7 +85,7 @@ const ShipRegistryPanel: React.FC<ShipRegistryPanelProps> = ({
       setFeedback('Registry update accepted.');
       onDone?.();
     } catch (err: unknown) {
-      setFeedback(err instanceof Error ? err.message : 'Registry action failed');
+      setFeedback(formatShipRegistryActionError(err));
     } finally {
       setBusy(null);
     }
