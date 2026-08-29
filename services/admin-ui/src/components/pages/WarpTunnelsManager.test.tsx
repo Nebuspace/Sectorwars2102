@@ -80,6 +80,20 @@ describe('WarpTunnelsManager scope errors (LEG-966)', () => {
       expect(screen.getByText(/rate limit/i)).toBeTruthy();
     });
   });
+
+  it('surfaces honest fallback on non-RBAC network collapse (LEG-2949)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<WarpTunnelsManager />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to fetch warp tunnels/i)).toBeTruthy();
+    });
+
+    const text = screen.getByText(/Failed to fetch warp tunnels/i).textContent ?? '';
+    expect(text).not.toMatch(/TypeError/i);
+    expect(text).not.toBe('Failed to fetch');
+  });
 });
 
 describe('WarpTunnelsManager mutation errors (LEG-2611)', () => {
