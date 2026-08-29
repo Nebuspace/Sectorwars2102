@@ -219,4 +219,31 @@ describe('AdvancedAnalytics generate/export (LEG-165)', () => {
     expect(msg).toContain('admin.audit.view');
     expect(msg).not.toContain('not implemented');
   });
+
+  it('reports export GET 429 with reports-tier rate-limit copy (LEG-2891)', async () => {
+    vi.mocked(api.get).mockRejectedValue(axiosError(429));
+
+    render(<AdvancedAnalytics />);
+    fireEvent.click(screen.getByRole('button', { name: /Data Export/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Player Data')).toBeTruthy();
+    });
+
+    const cardExport = screen
+      .getByText('Player Data')
+      .closest('.export-card')
+      ?.querySelector('button.btn-primary');
+    fireEvent.click(cardExport!);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('analytics-save-message')).toBeTruthy();
+    });
+
+    const msg = screen.getByTestId('analytics-save-message').textContent ?? '';
+    expect(msg).toMatch(/5\/hour/i);
+    expect(msg).toMatch(/rate limit/i);
+    expect(msg).not.toMatch(/^Export failed/i);
+    expect(msg).not.toContain('not implemented');
+  });
 });

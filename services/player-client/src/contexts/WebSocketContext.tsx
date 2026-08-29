@@ -9,6 +9,12 @@ import websocketService, {
   ARIANarrationMessage,
   LinkStatus
 } from '../services/websocket';
+import { parsePendingEngagementSummary } from '../services/pendingEngagementApi';
+import {
+  miningHarvestNotificationToast,
+  miningLicenseExpiryWarningToast,
+} from '../services/miningWsNotifications';
+import { requestSpacedockVenue } from '../services/spacedockVenueBus';
 import { useAuth } from './AuthContext';
 
 interface WebSocketContextType {
@@ -86,6 +92,8 @@ interface WebSocketContextType {
   lastUrgentMessage: {
     message_id: string;
     sender_name: string;
+    sender_pinned_medal_id?: string | null;
+    sender_medal_count?: number | null;
     preview: string;
     sent_at: string | null;
   } | null;
@@ -181,6 +189,19 @@ interface WebSocketContextType {
     new_level: string;
     old_value: number;
     new_value: number;
+  } | null;
+
+  // Pending LAW en-route (police_en_route — LEG-902): bumps once per inbound
+  // frame. PoliceEnRouteBanner consumes alongside GET /pending-engagements.
+  policeEnRouteSignal: number;
+  lastPoliceEnRoute: {
+    id: string;
+    jurisdiction: string | null;
+    offense_type: string | null;
+    squad: string[];
+    officer_names: string[];
+    turns_to_arrival: number;
+    grace_window: string | null;
   } | null;
 
   // NPC-initiated combat (WO-CMB-NPC-INITIATED-1 lane D): bumps once per
@@ -306,6 +327,8 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
   const [lastUrgentMessage, setLastUrgentMessage] = useState<{
     message_id: string;
     sender_name: string;
+    sender_pinned_medal_id?: string | null;
+    sender_medal_count?: number | null;
     preview: string;
     sent_at: string | null;
   } | null>(null);
@@ -360,6 +383,16 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
     new_level: string;
     old_value: number;
     new_value: number;
+  } | null>(null);
+  const [policeEnRouteSignal, setPoliceEnRouteSignal] = useState(0);
+  const [lastPoliceEnRoute, setLastPoliceEnRoute] = useState<{
+    id: string;
+    jurisdiction: string | null;
+    offense_type: string | null;
+    squad: string[];
+    officer_names: string[];
+    turns_to_arrival: number;
+    grace_window: string | null;
   } | null>(null);
   const [npcCombatSignal, setNpcCombatSignal] = useState(0);
   const [lastNpcCombatInitiated, setLastNpcCombatInitiated] = useState<{
@@ -762,9 +795,20 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           }
 
           if (delivery.includes('modal')) {
+            const sender_medal_count =
+              message.sender_medal_count == null
+                ? null
+                : Number(message.sender_medal_count);
             setLastUrgentMessage({
               message_id: String(message.message_id || ''),
               sender_name,
+              sender_pinned_medal_id:
+                message.sender_pinned_medal_id != null
+                  ? String(message.sender_pinned_medal_id)
+                  : null,
+              sender_medal_count: Number.isFinite(sender_medal_count)
+                ? sender_medal_count
+                : null,
               preview,
               sent_at
             });
@@ -948,6 +992,15 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           break;
         }
 
+        case 'police_en_route': {
+          // LEG-902: stash + bump — PoliceEnRouteBanner merges into its list.
+          setLastPoliceEnRoute(
+            parsePendingEngagementSummary(message as Record<string, unknown>)
+          );
+          setPoliceEnRouteSignal((prev) => prev + 1);
+          break;
+        }
+
         case 'npc_combat_initiated': {
           // WO-CMB-NPC-INITIATED-1 lane D: see the field doc-comment on
           // npcCombatSignal above for why this is plumbing-only (no toast/
@@ -1001,6 +1054,23 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           break;
         }
 
+        case 'mining_harvest_notification': {
+          const toast = miningHarvestNotificationToast(message as Record<string, unknown>);
+          if (toast) {
+            addNotification(toast);
+          }
+          break;
+        }
+
+        case 'mining_license_expiry_warning': {
+          const toast = miningLicenseExpiryWarningToast(message as Record<string, unknown>);
+          if (toast) {
+            addNotification(toast);
+            requestSpacedockVenue('mining');
+          }
+          break;
+        }
+
         case 'admin_broadcast':
           addNotification({
             title: message.title || 'System Message',
@@ -1033,7 +1103,7 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           // send_failed is consumed by sendFailedHandler above — it's a
           // client-local synthetic event (websocket.ts's own send()), not
           // an unhandled server frame.)
-          if (!['sector_players', 'connection_status', 'chat_message', 'player_entered_sector', 'player_left_sector', 'notification', 'aria_response', 'aria_narration', 'medal_awarded', 'genesis_progress', 'planetary_update', 'contract_offer', 'contract_settled', 'rp_governor_status', 'reputation_changed', 'team_reputation_changed', 'npc_combat_initiated', 'bounty_updated', 'turn_pool_updated', 'send_failed', 'docking_slip_bumped', 'ship_recovered_impounded'].includes(message.type)) {
+          if (!['sector_players', 'connection_status', 'chat_message', 'player_entered_sector', 'player_left_sector', 'notification', 'aria_response', 'aria_narration', 'medal_awarded', 'genesis_progress', 'planetary_update', 'contract_offer', 'contract_settled', 'rp_governor_status', 'reputation_changed', 'team_reputation_changed', 'npc_combat_initiated', 'bounty_updated', 'turn_pool_updated', 'send_failed', 'docking_slip_bumped', 'ship_recovered_impounded', 'mining_harvest_notification', 'mining_license_expiry_warning'].includes(message.type)) {
             console.warn('WebSocket: Unhandled message type:', message.type);
           }
       }
@@ -1126,6 +1196,10 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
     reputationEventSignal,
     lastReputationChanged,
     lastTeamReputationChanged,
+
+    // Pending LAW en-route (police_en_route — LEG-902)
+    policeEnRouteSignal,
+    lastPoliceEnRoute,
 
     // NPC-initiated combat (npc_combat_initiated — WO-CMB-NPC-INITIATED-1 lane D)
     npcCombatSignal,

@@ -51,3 +51,45 @@ describe('MarketPredictionInterface scope honesty (LEG-1206)', () => {
     expect(alert).toMatch(/rate limit/i);
   });
 });
+
+describe('MarketPredictionInterface accuracy secondary honesty (LEG-1260)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('surfaces PLAYERS_VIEW on accuracy 403 when predictions succeed', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/accuracy')) {
+        throw axiosError(403);
+      }
+      return { data: [] };
+    });
+
+    render(<MarketPredictionInterface />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/PLAYERS_VIEW|Access denied|accuracy/i);
+  });
+
+  it('surfaces admin rate-limit on accuracy 429 when predictions succeed', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/accuracy')) {
+        throw axiosError(429);
+      }
+      return { data: [] };
+    });
+
+    render(<MarketPredictionInterface />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    expect(screen.getByRole('alert').textContent ?? '').toMatch(/rate limit/i);
+  });
+});

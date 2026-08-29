@@ -1,0 +1,85 @@
+.professions-panel {
+  margin-top: 1rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid rgba(251, 191, 36, 0.25);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.professions-panel__title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: #fbbf24;
+  margin: 0 0 0.5rem;
+}
+
+.professions-panel__meta {
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.7);
+  margin-bottom: 0.75rem;
+}
+
+.professions-panel__notice {
+  font-size: 0.8rem;
+  color: #fcd34d;
+  margin: 0.5rem 0;
+}
+
+.professions-panel__error {
+  font-size: 0.8rem;
+  color: #f87171;
+  margin: 0.5rem 0;
+}
+
+.professions-panel__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
+  gap: 0.35rem 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.professions-panel__row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+}
+
+.professions-panel__queue {
+  margin-top: 0.5rem;
+  font-size: 0.78rem;
+}
+
+.professions-panel__queue-item {
+  padding: 0.25rem 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.professions-panel__train {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-top: 0.75rem;
+}
+
+.professions-panel__train select,
+.professions-panel__train input {
+  font-size: 0.8rem;
+  padding: 0.25rem 0.4rem;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: inherit;
+}
+
+.professions-panel__train button {
+  font-size: 0.8rem;
+  padding: 0.35rem 0.65rem;
+  cursor: pointer;
+}
+
+.professions-panel__train button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

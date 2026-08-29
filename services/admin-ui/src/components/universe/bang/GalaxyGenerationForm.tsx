@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useAdmin } from '../../../contexts/AdminContext';
 import { useAuth } from '../../../contexts/AuthContext';
 import { previewBangConfig } from '../../../services/bangGalaxyApi';
+import { adminHttpErrorMessage } from '../../../utils/adminHttpError';
 import { i18nKeyForBangCode } from './errorCodeMap';
 import {
   BangConfig,
@@ -107,8 +108,9 @@ const GalaxyGenerationForm: React.FC<GalaxyGenerationFormProps> = ({
       const result = await previewBangConfig(payload, token);
       setPreview(result);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setPreviewError(t('bang.form.preview.previewFailed', { error: message }));
+      // LEG-1253 + LEG-2936: all preview failures (RBAC/rate-limit and
+      // non-RBAC/network) go through the honesty helper — never raw Error.message.
+      setPreviewError(adminHttpErrorMessage(err, 'Preview failed', 'BANG_REGENERATE'));
     } finally {
       setIsPreviewing(false);
     }
@@ -123,8 +125,8 @@ const GalaxyGenerationForm: React.FC<GalaxyGenerationFormProps> = ({
       const job = await bangGalaxy(payload.config, payload.galaxy_name);
       if (job && onJobStarted) onJobStarted(job.id);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setError(t('bang.form.errors.submitFailed', { error: message }));
+      // LEG-1253 + LEG-2936: all commit failures through honesty helper.
+      setError(adminHttpErrorMessage(err, 'Submit failed', 'BANG_REGENERATE'));
     } finally {
       setIsCommitting(false);
     }
@@ -482,7 +484,11 @@ const GalaxyGenerationForm: React.FC<GalaxyGenerationFormProps> = ({
       {/* --- Preview stats card --- */}
       <div className="form-preview-card">
         <h3>{t('bang.form.preview.title')}</h3>
-        {previewError && <p className="form-error">{previewError}</p>}
+        {previewError && (
+          <p className="form-error" role="alert">
+            {previewError}
+          </p>
+        )}
         {!preview && !previewError && (
           <p className="form-hint">{t('bang.form.preview.noPreview')}</p>
         )}

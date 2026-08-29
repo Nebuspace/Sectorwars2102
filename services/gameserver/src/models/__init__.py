@@ -11,6 +11,8 @@ from src.models.team import Team, TeamReputationHandling, TeamRecruitmentStatus
 from src.models.team_member import TeamMember, TeamRole
 from src.models.treasury_transaction import TreasuryTransaction
 from src.models.planet import Planet, player_planets
+from src.models.colonist_profession import ColonistProfession, ProfessionType
+from src.models.profession_training_queue import ProfessionTrainingQueue, ProfessionTrainingStatus
 from src.models.station import Station, StationClass, StationType, StationStatus, player_stations
 
 # New models

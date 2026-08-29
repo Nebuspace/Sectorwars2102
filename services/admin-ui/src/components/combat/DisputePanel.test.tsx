@@ -80,4 +80,20 @@ describe('DisputePanel (LEG-1099 scope errors)', () => {
     const alert = screen.getByRole('alert').textContent ?? '';
     expect(alert).toMatch(/rate limit/i);
   });
+
+  it('surfaces honest fallback on non-RBAC network collapse (LEG-2961)', async () => {
+    vi.mocked(api.post).mockRejectedValue(new TypeError('Failed to fetch'));
+    await openResolveForm();
+
+    fireEvent.click(screen.getByRole('button', { name: /Resolve Dispute/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Gameserver unreachable|network error resolving dispute/i);
+    expect(alert).not.toMatch(/TypeError/i);
+    expect(alert).not.toBe('Failed to fetch');
+  });
 });

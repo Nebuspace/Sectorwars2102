@@ -46,6 +46,34 @@ const MEDAL_ICONS: Record<string, string> = {
 
 const CATEGORIES = ['All', 'Combat', 'Economic', 'Exploration', 'Diplomatic', 'Special'];
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+/** apiRequest throws Error with `.status`; surface gameserver detail on initial medal load. */
+export function formatMedalShowcaseLoadError(err: unknown): string {
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (status === 404) {
+    if (hasServerDetail) return message!;
+    return 'Failed to load medals';
+  }
+
+  if (hasServerDetail) return message!;
+  return 'Failed to load medals';
+}
+
 const MedalShowcase: React.FC = () => {
   const [medalData, setMedalData] = useState<MedalData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -70,7 +98,7 @@ const MedalShowcase: React.FC = () => {
     } catch (err: any) {
       // Only surface the error overlay on the initial load; a failed live
       // re-fetch keeps the last-known grid rather than wiping it.
-      if (showInitialSpinner) setError(err.message || 'Failed to load medals');
+      if (showInitialSpinner) setError(formatMedalShowcaseLoadError(err));
     } finally {
       if (showInitialSpinner) setLoading(false);
     }

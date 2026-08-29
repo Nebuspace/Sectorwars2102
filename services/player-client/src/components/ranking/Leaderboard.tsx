@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { rankingAPI } from '../../services/api';
+import PlayerNamePlate from '../common/PlayerNamePlate';
+import { TIER_COLORS } from './RankDisplay';
 import './ranking.css';
 
 interface LeaderboardEntry {
@@ -8,6 +10,10 @@ interface LeaderboardEntry {
   nickname: string;
   military_rank: string;
   score: number;
+  rank_level?: number;
+  rank_tier?: string;
+  pinned_medal_id?: string | null;
+  medal_count?: number | null;
 }
 
 interface LeaderboardData {
@@ -27,6 +33,34 @@ const CATEGORY_LABELS: Record<Category, { label: string; icon: string; scoreLabe
 };
 
 const CATEGORIES: Category[] = ['rank_points', 'combat', 'trading', 'exploration'];
+
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+/** apiRequest throws Error with `.status`; surface gameserver detail on leaderboard load. */
+export function formatLeaderboardLoadError(err: unknown): string {
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (status === 400) {
+    if (hasServerDetail) return message!;
+    return 'Failed to load leaderboard';
+  }
+
+  if (hasServerDetail) return message!;
+  return 'Failed to load leaderboard';
+}
 
 interface LeaderboardProps {
   category?: Category;
@@ -61,7 +95,7 @@ const Leaderboard: React.FC<LeaderboardProps> = ({
         setLoading(false);
       } catch (err) {
         if (cancelled) return;
-        setError(err instanceof Error ? err.message : 'Failed to load leaderboard');
+        setError(formatLeaderboardLoadError(err));
         setLoading(false);
       }
     };
@@ -77,6 +111,31 @@ const Leaderboard: React.FC<LeaderboardProps> = ({
   };
 
   const meta = CATEGORY_LABELS[activeCategory];
+
+  const renderRankCell = (entry: LeaderboardEntry) => {
+    if (
+      activeCategory === 'rank_points'
+      && entry.rank_tier != null
+      && entry.rank_level != null
+    ) {
+      const tierColor = TIER_COLORS[entry.rank_tier] || '#ffffff';
+      return (
+        <span className="leaderboard-rank-cell">
+          <span
+            className="rank-badge rank-badge--compact"
+            style={{ borderColor: tierColor }}
+            data-testid={`leaderboard-rank-badge-${entry.player_id}`}
+          >
+            <span className="rank-level">{entry.rank_level}</span>
+          </span>
+          <span className="leaderboard-rank-name" style={{ color: tierColor }}>
+            {entry.military_rank}
+          </span>
+        </span>
+      );
+    }
+    return entry.military_rank;
+  };
 
   return (
     <div className="leaderboard">
@@ -118,6 +177,7 @@ const Leaderboard: React.FC<LeaderboardProps> = ({
                 <th className="col-pos">#</th>
                 <th className="col-name">Player</th>
                 <th className="col-rank">Rank</th>
+                <th className="col-medals">Medals</th>
                 <th className="col-score">{meta.scoreLabel}</th>
               </tr>
             </thead>
@@ -129,13 +189,22 @@ const Leaderboard: React.FC<LeaderboardProps> = ({
                 >
                   <td className="col-pos">{entry.position}</td>
                   <td className="col-name">{entry.nickname}</td>
-                  <td className="col-rank">{entry.military_rank}</td>
+                  <td className="col-rank">{renderRankCell(entry)}</td>
+                  <td className="col-medals">
+                    <PlayerNamePlate
+                      name=""
+                      size="sm"
+                      pinnedMedalId={entry.pinned_medal_id}
+                      medalCount={entry.medal_count}
+                      className="leaderboard-medal-plate"
+                    />
+                  </td>
                   <td className="col-score">{entry.score.toLocaleString()}</td>
                 </tr>
               ))}
               {data.entries.length === 0 && (
                 <tr>
-                  <td colSpan={4} className="leaderboard-empty">No entries yet</td>
+                  <td colSpan={5} className="leaderboard-empty">No entries yet</td>
                 </tr>
               )}
             </tbody>

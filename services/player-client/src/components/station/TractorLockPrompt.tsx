@@ -10,6 +10,40 @@ import './tractor-lock-prompt.css';
  * and this modal offers Break free / Surrender (Fight = ordinary combat once
  * security squads exist). Mounted once in GameLayout.
  */
+
+/** Normalize GS/API detail from apiRequest Error.message, axios-shaped response, or object detail. */
+function tractorLockServerDetail(err: unknown): string | undefined {
+  if (err && typeof err === 'object') {
+    const rawDetail =
+      (err as { response?: { data?: { detail?: unknown } } }).response?.data?.detail ??
+      (err as { data?: { detail?: unknown } }).data?.detail;
+    if (typeof rawDetail === 'string' && rawDetail.trim()) return rawDetail.trim();
+    if (rawDetail && typeof rawDetail === 'object' && !Array.isArray(rawDetail)) {
+      const nested = (rawDetail as { message?: unknown }).message;
+      if (typeof nested === 'string' && nested.trim()) return nested.trim();
+      try {
+        return JSON.stringify(rawDetail);
+      } catch {
+        /* fall through to Error.message */
+      }
+    }
+  }
+  const message = err instanceof Error ? err.message : undefined;
+  if (
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim())
+  ) {
+    return message.trim();
+  }
+  return undefined;
+}
+
+/** Surface gameserver break/surrender refusal detail. */
+export function formatTractorLockActionError(err: unknown): string {
+  return tractorLockServerDetail(err) ?? 'Action failed';
+}
+
 const TractorLockPrompt: React.FC = () => {
   const { tractorLock, clearTractorLock, refreshPlayerState } = useGame();
   const [busy, setBusy] = useState(false);
@@ -48,10 +82,7 @@ const TractorLockPrompt: React.FC = () => {
         setFeedback('Ship surrendered. You are reseated in an Escape Pod.');
       }
     } catch (err: unknown) {
-      const detail =
-        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
-        (err instanceof Error ? err.message : 'Action failed');
-      setFeedback(typeof detail === 'string' ? detail : JSON.stringify(detail));
+      setFeedback(formatTractorLockActionError(err));
     } finally {
       setBusy(false);
     }
