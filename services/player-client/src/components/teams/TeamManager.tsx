@@ -108,6 +108,29 @@ export function formatTeamManagerLoadError(err: unknown): string {
   return 'Failed to load team data';
 }
 
+
+/** Surface gameserver detail on team mutation failures (create/update/promote/kick/leave). */
+export function formatTeamManagerMutationError(err: unknown, fallback: string): string {
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission for this team action.';
+  }
+
+  if (status === 429) {
+    return 'Team action rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (hasServerDetail) return message!;
+  return fallback;
+}
+
 // --- Wire mappers ----------------------------------------------------------
 // The gameserver speaks snake_case (teams.py response models); the UI types
 // are camelCase. Translate at the boundary so render code stays typed.
@@ -337,7 +360,7 @@ export const TeamManager: React.FC = () => {
       setEditingInfo(false);
     } catch (error) {
       console.error('Failed to update team info:', error);
-      setSaveError(error instanceof Error ? error.message : 'Failed to update team info');
+      setSaveError(formatTeamManagerMutationError(error, 'Failed to update team info'));
     }
   };
 
@@ -352,7 +375,7 @@ export const TeamManager: React.FC = () => {
     } catch (error) {
       console.error('Failed to update member role:', error);
       setConfirmingKickId(null);
-      setMemberActionError(error instanceof Error ? error.message : 'Failed to update member role');
+      setMemberActionError(formatTeamManagerMutationError(error, 'Failed to update member role'));
     }
   };
 
@@ -372,7 +395,7 @@ export const TeamManager: React.FC = () => {
       setTeam(prev => prev ? { ...prev, memberCount: prev.memberCount - 1 } : prev);
     } catch (error) {
       console.error('Failed to kick member:', error);
-      setMemberActionError(error instanceof Error ? error.message : 'Failed to kick member');
+      setMemberActionError(formatTeamManagerMutationError(error, 'Failed to kick member'));
     }
   };
 
@@ -390,7 +413,7 @@ export const TeamManager: React.FC = () => {
       await refreshPlayerState();
     } catch (error) {
       console.error('Failed to leave team:', error);
-      setLeaveError(error instanceof Error ? error.message : 'Failed to leave team');
+      setLeaveError(formatTeamManagerMutationError(error, 'Failed to leave team'));
     }
   };
 
@@ -459,7 +482,7 @@ export const TeamManager: React.FC = () => {
     } catch (error) {
       // Surface backend 400s honestly: duplicate name, insufficient credits
       // for the 10,000-credit creation cost, or already in a team
-      setCreateError(error instanceof Error ? error.message : 'Failed to create team');
+      setCreateError(formatTeamManagerMutationError(error, 'Failed to create team'));
     } finally {
       setCreating(false);
     }
