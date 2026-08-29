@@ -72,7 +72,7 @@ vi.mock('../../../services/api', () => ({
   },
 }));
 
-import ProfessionsPanel from '../ProfessionsPanel';
+import ProfessionsPanel, { formatProfessionsLoadError } from '../ProfessionsPanel';
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -265,5 +265,63 @@ describe('ProfessionsPanel', () => {
       o.textContent?.trim(),
     );
     expect(options.some((t) => t?.includes('Combat Pilots'))).toBe(true);
+  });
+
+  it('formatProfessionsLoadError falls back on bare 403 without server detail', () => {
+    const err = Object.assign(new Error('API Error: 403'), { status: 403 });
+    expect(formatProfessionsLoadError(err)).toBe('You do not own this planet.');
+  });
+
+  it('formatProfessionsLoadError falls back on bare 404 without server detail', () => {
+    const err = Object.assign(new Error('API Error: 404'), { status: 404 });
+    expect(formatProfessionsLoadError(err)).toBe('Planet not found.');
+  });
+
+  it('surfaces load 404 planet-not-found server detail', async () => {
+    getPlanetProfessions.mockRejectedValueOnce(
+      Object.assign(new Error('Planet not found'), { status: 404 }),
+    );
+
+    await act(async () => {
+      root.render(<ProfessionsPanel planetId="planet-1" citadelLevel={3} />);
+    });
+    await act(async () => {
+      await flush();
+    });
+
+    expect(container.querySelector('.professions-panel__error')?.textContent).toBe('Planet not found');
+  });
+
+  it('shows honest fallback for bare 403 load failure', async () => {
+    getPlanetProfessions.mockRejectedValueOnce(
+      Object.assign(new Error('API Error: 403'), { status: 403 }),
+    );
+
+    await act(async () => {
+      root.render(<ProfessionsPanel planetId="planet-1" citadelLevel={3} />);
+    });
+    await act(async () => {
+      await flush();
+    });
+
+    expect(container.querySelector('.professions-panel__error')?.textContent).toBe(
+      'You do not own this planet.',
+    );
+  });
+
+  it('hides panel on not-owner load failure without showing error', async () => {
+    getPlanetProfessions.mockRejectedValueOnce(
+      Object.assign(new Error('Only the planet owner can view professions'), { status: 403 }),
+    );
+
+    await act(async () => {
+      root.render(<ProfessionsPanel planetId="planet-1" citadelLevel={3} />);
+    });
+    await act(async () => {
+      await flush();
+    });
+
+    expect(container.querySelector('.professions-panel__error')).toBeNull();
+    expect(container.querySelector('.professions-panel')).toBeNull();
   });
 });

@@ -25,6 +25,38 @@ interface RankInfo {
   rank_victory_at?: string | null;
 }
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+/** apiRequest throws Error with `.status`; surface actionable server detail on load failure. */
+export function formatRankDisplayLoadError(err: unknown): string {
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'Access denied — you cannot view rank information right now.';
+  }
+
+  if (status === 429) {
+    return 'Rank lookup rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (hasServerDetail) return message!;
+  return 'Failed to load rank info';
+}
+
 /** Keys match the rank tiers the backend emits (RANK_DEFINITIONS). */
 export const TIER_COLORS: Record<string, string> = {
   Enlisted: '#888888',
@@ -46,8 +78,8 @@ const RankDisplay: React.FC = () => {
         const data = await rankingAPI.getRank();
         setRankInfo(data);
         setError(null);
-      } catch (err: any) {
-        setError(err.message || 'Failed to load rank info');
+      } catch (err) {
+        setError(formatRankDisplayLoadError(err));
       } finally {
         setLoading(false);
       }

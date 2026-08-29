@@ -39,6 +39,39 @@ const CrewShell: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   </CockpitInstrument>
 );
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+/** Surface gameserver 404/403 detail on team load failure. */
+export function formatTeamManagerLoadError(err: unknown): string {
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You are not a member of this team.';
+  }
+
+  if (status === 404) {
+    if (hasServerDetail) return message!;
+    return 'Team not found.';
+  }
+
+  if (hasServerDetail) return message!;
+  return 'Failed to load team data';
+}
+
 // --- Wire mappers ----------------------------------------------------------
 // The gameserver speaks snake_case (teams.py response models); the UI types
 // are camelCase. Translate at the boundary so render code stays typed.
@@ -245,7 +278,7 @@ export const TeamManager: React.FC = () => {
       });
     } catch (error) {
       console.error('Failed to load team data:', error);
-      setLoadError(error instanceof Error ? error.message : 'Failed to load team data');
+      setLoadError(formatTeamManagerLoadError(error));
     } finally {
       setLoading(false);
     }
