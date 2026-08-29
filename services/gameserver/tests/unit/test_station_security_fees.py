@@ -17,12 +17,14 @@ from src.services import docking_service
 def make_station(security_level="basic", price_modifiers=None, treasury_balance=0):
     """Lightweight stand-in carrying the attributes docking_fee_for /
     _realize_fee read. security_level mirrors the real Station.security_level
-    computed property's output (a lowercased tier string)."""
+    computed property's output (a lowercased tier string). ownership=None
+    so Soft-ORDER productivity_until read stays a no-op (1.0×)."""
     return SimpleNamespace(
         id="station-1",
         security_level=security_level,
         price_modifiers=price_modifiers or {},
         treasury_balance=treasury_balance,
+        ownership=None,
     )
 
 
