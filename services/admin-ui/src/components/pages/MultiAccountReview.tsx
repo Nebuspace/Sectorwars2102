@@ -210,6 +210,12 @@ export const MultiAccountReview: React.FC = () => {
           )}
         </div>
 
+        {decideError && !selected && (
+          <div className="mar-decide-error" role="alert">
+            {decideError}
+          </div>
+        )}
+
         {/* Evidence + ruling panel */}
         {selected && (
           <div className="mar-evidence">
