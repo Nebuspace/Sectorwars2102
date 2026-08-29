@@ -23,10 +23,17 @@ vi.mock('../../../services/api', () => ({
   greyStatusAPI: {
     getStatus: () => Promise.resolve({ isGrey: false, kind: null, greyUntil: null, remainingSeconds: 0, clearFineCredits: null }),
   },
+  armoryAPI: {
+    getCatalog: () => Promise.resolve({ loadout: { mines: 0, limpet_mines: 0 } }),
+  },
   combatAPI: {
     engage: vi.fn(),
     getStatus: vi.fn(),
   },
+}));
+
+vi.mock('../../../contexts/WebSocketContext', () => ({
+  useWebSocket: () => ({ lastLimpetSignal: null, limpetSignalEventSignal: 0 }),
 }));
 
 vi.mock('../../../contexts/GameContext', () => ({

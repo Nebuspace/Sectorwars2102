@@ -37,6 +37,7 @@ from src.models.claim_license import ClaimLicense
 from src.models.mining_harvest import MiningHarvest, MiningHarvestStatus
 from src.models.zone import Zone, ZoneType
 from src.services.faction_service import apply_faction_rep_delta
+from src.services.profession_service import mining_engineer_ore_multiplier_for_region
 from src.services.turn_service import regenerate_turns, spend_turns
 
 logger = logging.getLogger(__name__)
@@ -90,6 +91,9 @@ LICENSE_RENEWAL_FACTOR = 0.8  # § License cost: renewal at 80% of base (400 × 
 # License panel "recently expired" window (LEG-435 / coord pin): one ClaimLicense
 # duration — expired_at within the last LICENSE_DURATION_HOURS. Not multi-week.
 RECENTLY_EXPIRED_LICENSE_HOURS = LICENSE_DURATION_HOURS
+# § Notifications — license expiry warning (mining.md:258): 1 real-time hour before.
+LICENSE_EXPIRY_WARN_HOURS = 1
+_MINING_LICENSE_EXPIRY_WARNED_KEY = "mining_license_expiry_warned"
 
 # § Output — precious_metals rare-drop: 5% base + 2% per laser level, frozen
 # at the Laser L2 value (9%) per ADR-0062 E-F3 vs Laser L3 ruling, 2026-08-04
@@ -203,6 +207,75 @@ def depletion_band_for_consumed_fraction(pool_consumed_fraction: float) -> str:
     if pool_consumed_fraction <= 0.90:
         return "heavy"
     return "exhausted"
+
+
+def build_harvest_notification_events(
+    user_id: Any,
+    harvest_result: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Compose toast-capable WS frames for a successful harvest (mining.md:258).
+
+    Returns separate events for the base yield summary and for rare/trace drops.
+    Failed harvests produce no notifications.
+    """
+    if not harvest_result.get("success"):
+        return []
+    uid = str(user_id)
+    ts = datetime.now(timezone.utc).isoformat()
+    harvest_id = harvest_result.get("harvest_id")
+    ore = int(harvest_result.get("ore") or 0)
+    precious_metals = int(harvest_result.get("precious_metals") or 0)
+    quantum_shards = int(harvest_result.get("quantum_shards") or 0)
+    base_delivery = ["inbox", "toast"]
+    events: List[Dict[str, Any]] = [
+        {
+            "type": "mining_harvest_notification",
+            "subtype": "harvest_success",
+            "timestamp": ts,
+            "user_id": uid,
+            "delivery": base_delivery,
+            "priority": "normal",
+            "payload": {
+                "harvest_id": harvest_id,
+                "ore": ore,
+                "precious_metals": precious_metals,
+                "quantum_shards": quantum_shards,
+            },
+        }
+    ]
+    if precious_metals > 0:
+        events.append(
+            {
+                "type": "mining_harvest_notification",
+                "subtype": "precious_metals",
+                "timestamp": ts,
+                "user_id": uid,
+                "delivery": base_delivery,
+                "priority": "normal",
+                "payload": {
+                    "harvest_id": harvest_id,
+                    "drop_type": "precious_metals",
+                    "amount": precious_metals,
+                },
+            }
+        )
+    if quantum_shards > 0:
+        events.append(
+            {
+                "type": "mining_harvest_notification",
+                "subtype": "quantum_shards",
+                "timestamp": ts,
+                "user_id": uid,
+                "delivery": base_delivery,
+                "priority": "normal",
+                "payload": {
+                    "harvest_id": harvest_id,
+                    "drop_type": "quantum_shards",
+                    "amount": quantum_shards,
+                },
+            }
+        )
+    return events
 
 
 def build_asteroid_depletion_readout(
@@ -667,6 +740,12 @@ class MiningService:
         depletion_mod = _depletion_yield_modifier(consumed_fraction)
 
         ore_lo, ore_hi = self.matrix_yield_band(tier, laser_col)
+        mining_mult = mining_engineer_ore_multiplier_for_region(
+            self.db, player.id, getattr(sector, "region_id", None)
+        )
+        if mining_mult != 1.0:
+            ore_lo = max(1, int(ore_lo * mining_mult))
+            ore_hi = max(ore_lo, int(ore_hi * mining_mult))
 
         return {
             "success": True,
@@ -909,8 +988,11 @@ class MiningService:
         consumed = max(0, pool_size - depletion_pool)
         consumed_fraction = (consumed / pool_size) if pool_size > 0 else 0.0
         depletion_mod = _depletion_yield_modifier(consumed_fraction)
+        mining_mult = mining_engineer_ore_multiplier_for_region(
+            self.db, player.id, getattr(sector, "region_id", None)
+        )
 
-        ore = int(base_ore * efficiency * depletion_mod)
+        ore = int(base_ore * efficiency * depletion_mod * mining_mult)
         floor_fired = False
         if ore < 1:
             ore = 1
@@ -1072,6 +1154,7 @@ class MiningService:
             "am_rep_delta": am_rep_delta,
             "remaining_turns": player.turns or 0,
             "player_id": str(row.player_id),
+            "user_id": str(player.user_id) if player.user_id else None,
         }
 
     def interrupt_pending_for_ship(
@@ -1267,6 +1350,69 @@ class MiningService:
             "total": len(items),
             "recently_expired_window_hours": RECENTLY_EXPIRED_LICENSE_HOURS,
         }
+
+    def collect_license_expiry_warning_events(
+        self, now: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """Warn owners when an active ClaimLicense expires within 1 canonical hour.
+
+        Dedupes via ``player.settings[_MINING_LICENSE_EXPIRY_WARNED_KEY]`` so each
+        license row warns at most once per player.
+        """
+        when = now or datetime.now(timezone.utc)
+        warn_before = when + timedelta(hours=LICENSE_EXPIRY_WARN_HOURS)
+        rows = (
+            self.db.query(ClaimLicense, Player)
+            .join(Player, Player.id == ClaimLicense.player_id)
+            .filter(
+                ClaimLicense.expires_at > when,
+                ClaimLicense.expires_at <= warn_before,
+            )
+            .all()
+        )
+        events: List[Dict[str, Any]] = []
+        for license_row, player in rows:
+            if not player.user_id:
+                continue
+            settings = (
+                dict(player.settings)
+                if isinstance(player.settings, dict)
+                else {}
+            )
+            warned = settings.get(_MINING_LICENSE_EXPIRY_WARNED_KEY, {})
+            if not isinstance(warned, dict):
+                warned = {}
+            license_key = str(license_row.id)
+            if warned.get(license_key):
+                continue
+            warned[license_key] = when.isoformat()
+            settings[_MINING_LICENSE_EXPIRY_WARNED_KEY] = warned
+            player.settings = settings
+            if getattr(player, "_sa_instance_state", None) is not None:
+                flag_modified(player, "settings")
+            expires_at = license_row.expires_at
+            events.append(
+                {
+                    "type": "mining_license_expiry_warning",
+                    "timestamp": when.isoformat(),
+                    "user_id": str(player.user_id),
+                    "delivery": ["inbox", "toast"],
+                    "priority": "normal",
+                    "payload": {
+                        "license_id": license_key,
+                        "region_id": (
+                            str(license_row.region_id)
+                            if license_row.region_id
+                            else None
+                        ),
+                        "sector_number": int(license_row.sector_number),
+                        "expires_at": (
+                            expires_at.isoformat() if expires_at else None
+                        ),
+                    },
+                }
+            )
+        return events
 
     # ------------------------------------------------------------------
     # License purchase / renewal

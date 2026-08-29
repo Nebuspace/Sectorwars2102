@@ -26,6 +26,7 @@ describe('RankingLeaderboardPanel', () => {
             military_rank: 'Captain',
             rank_points: 900,
             rank_level: 5,
+            rank_tier: 'Officer',
             is_wanted: true,
           },
         ],
@@ -45,6 +46,63 @@ describe('RankingLeaderboardPanel', () => {
     expect(screen.getByText(/wanted/)).toBeTruthy();
   });
 
+  it('renders rank insignia badge with tier color when rank_tier is present', async () => {
+    vi.mocked(api.get).mockResolvedValue({
+      data: {
+        total_players: 1,
+        entries: [
+          {
+            position: 1,
+            player_id: 'p2',
+            username: 'Bravo',
+            military_rank: 'Lieutenant',
+            rank_points: 500,
+            rank_level: 3,
+            rank_tier: 'Officer',
+          },
+        ],
+      },
+    });
+
+    render(<RankingLeaderboardPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('admin-rank-badge-p2')).toBeTruthy();
+    });
+    const badge = screen.getByTestId('admin-rank-badge-p2');
+    expect(badge.textContent).toBe('3');
+    expect((badge as HTMLElement).style.borderColor).toBe('rgb(255, 68, 255)');
+    expect(screen.getByText('Lieutenant')).toBeTruthy();
+  });
+
+  it('renders rank row gracefully when rank_tier is missing', async () => {
+    vi.mocked(api.get).mockResolvedValue({
+      data: {
+        total_players: 1,
+        entries: [
+          {
+            position: 1,
+            player_id: 'p3',
+            username: 'Charlie',
+            military_rank: 'Private',
+            rank_points: 100,
+            rank_level: 1,
+          },
+        ],
+      },
+    });
+
+    render(<RankingLeaderboardPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('admin-rank-badge-p3')).toBeTruthy();
+    });
+    const badge = screen.getByTestId('admin-rank-badge-p3');
+    expect(badge.textContent).toBe('1');
+    expect((badge as HTMLElement).style.borderColor).toBe('rgb(136, 136, 136)');
+    expect(screen.getByText('Private')).toBeTruthy();
+  });
+
   it('shows error when the request fails', async () => {
     vi.mocked(api.get).mockRejectedValue({
       response: { status: 403, data: { detail: 'Missing scope admin.players.view' } },
@@ -61,6 +119,25 @@ describe('RankingLeaderboardPanel', () => {
     vi.mocked(api.get).mockRejectedValue({
       response: { status: 429 },
     });
+
+    render(<RankingLeaderboardPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
+    });
+  });
+  it('reports a 403 as PLAYERS_VIEW scope, not bare Forbidden detail', async () => {
+    vi.mocked(api.get).mockRejectedValue({ response: { status: 403 } });
+
+    render(<RankingLeaderboardPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/PLAYERS_VIEW/);
+    });
+  });
+
+  it('reports a 429 as an admin rate-limit', async () => {
+    vi.mocked(api.get).mockRejectedValue({ response: { status: 429 } });
 
     render(<RankingLeaderboardPanel />);
 

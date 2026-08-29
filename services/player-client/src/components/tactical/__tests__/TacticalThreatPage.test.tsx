@@ -13,11 +13,19 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const mockGetStatus = vi.fn();
 const mockClearFine = vi.fn();
+const mockGetCatalog = vi.fn();
 vi.mock('../../../services/api', () => ({
   greyStatusAPI: {
     getStatus: (...a: unknown[]) => mockGetStatus(...a),
     clearFine: (...a: unknown[]) => mockClearFine(...a),
   },
+  armoryAPI: {
+    getCatalog: (...a: unknown[]) => mockGetCatalog(...a),
+  },
+}));
+
+vi.mock('../../../contexts/WebSocketContext', () => ({
+  useWebSocket: () => ({ lastLimpetSignal: null, limpetSignalEventSignal: 0 }),
 }));
 
 let gameState: any;
@@ -36,6 +44,8 @@ describe('TacticalThreatPage', () => {
   beforeEach(() => {
     mockGetStatus.mockReset();
     mockClearFine.mockReset();
+    mockGetCatalog.mockReset();
+    mockGetCatalog.mockResolvedValue({ loadout: { mines: 3, limpet_mines: 2 } });
     mockDeployMines.mockReset();
     mockUpdatePlayerCredits.mockReset();
     mockGetStatus.mockResolvedValue({ isGrey: false, kind: null, greyUntil: null, remainingSeconds: 0, clearFineCredits: null });
@@ -159,19 +169,32 @@ describe('TacticalThreatPage', () => {
     expect(container.querySelector('.threat-msg')?.getAttribute('role')).toBe('status');
   });
 
-  it('LAY 5 deploys mines when carrying mines in open space, result announced as a status', async () => {
-    mockDeployMines.mockResolvedValue({ message: 'Deployed 1 mine(s).' });
+  it('LAY armored deploys armored_mine when carrying mines in open space', async () => {
+    mockDeployMines.mockResolvedValue({ message: 'Deployed 1 armored mine(s).' });
     await mount();
 
-    const btn = container.querySelector('.threat-btn')!;
-    expect(btn.textContent).toContain('LAY 5');
+    const btn = container.querySelector('[data-testid="threat-lay-mines"]')!;
+    expect(btn.textContent).toContain('ARMORED');
     expect(btn.getAttribute('aria-busy')).toBe('false');
     await click(btn);
 
-    expect(mockDeployMines).toHaveBeenCalled();
+    expect(mockDeployMines).toHaveBeenCalledWith(1, 'armored_mine');
     const msg = container.querySelector('.threat-msg.ok')!;
     expect(msg.textContent).toContain('Deployed');
     expect(msg.getAttribute('role')).toBe('status');
+  });
+
+  it('LAY limpet sends limpet_mine when that type is selected', async () => {
+    mockDeployMines.mockResolvedValue({ message: 'ok' });
+    await mount();
+    const select = container.querySelector('select[aria-label="Mine type"]') as HTMLSelectElement;
+    await act(async () => {
+      select.value = 'limpet_mine';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    const btn = container.querySelector('[data-testid="threat-lay-mines"]')!;
+    await click(btn);
+    expect(mockDeployMines).toHaveBeenCalledWith(1, 'limpet_mine');
   });
 
   it('shows a hint instead of the mine control when docked (not open space)', async () => {
@@ -183,6 +206,7 @@ describe('TacticalThreatPage', () => {
 
   it('shows a hint instead of the mine control with zero mines carried', async () => {
     gameState.playerState.mines = 0;
+    mockGetCatalog.mockResolvedValue({ loadout: { mines: 0, limpet_mines: 0 } });
     await mount();
     expect(container.querySelector('.threat-hint')?.textContent).toContain('No mines aboard');
   });
@@ -196,11 +220,14 @@ describe('TacticalThreatPage', () => {
     expect(text).toContain('NEBULA');
   });
 
-  it('marks the three section titles as headings (role=heading aria-level=3), not raw <h3>', async () => {
+  it('marks the section titles as headings (role=heading aria-level=3), not raw <h3>', async () => {
     await mount();
     const titles = Array.from(container.querySelectorAll('.threat-section-title'));
     expect(titles.map((t) => t.textContent?.trim().replace(/\s+/g, ' '))).toEqual([
-      'LAW STATUS', 'MINES ABOARD 3', 'HAZARD READOUT',
+      'LAW STATUS',
+      'MINES ABOARD armored 3 · limpet 2',
+      'LIMPET TRACKER',
+      'HAZARD READOUT',
     ]);
     titles.forEach((t) => {
       expect(t.tagName.toLowerCase()).not.toBe('h3');

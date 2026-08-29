@@ -71,6 +71,7 @@ const BASE_PROPS = {
   totalColonists: 10,
   onSetAllocations: vi.fn(),
   onStoreToSafe: vi.fn(),
+  onWithdrawToCargo: vi.fn(),
   onOpsChange: vi.fn(),
 };
 

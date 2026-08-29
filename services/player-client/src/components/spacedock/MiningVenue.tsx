@@ -2,21 +2,43 @@ import React from 'react';
 import './spacedock.css';
 
 // =====================================================================
-// Astral Mining — extracted verbatim from SpaceDockInterface's inline
-// `renderMiningVenue()` closure (WO-UI3-VENUES sub-part #1, pure
-// refactor — zero behavior change). All state/handlers remain owned by
-// SpaceDockInterface and are threaded through as props here.
+// Astral Mining — extracted from SpaceDockInterface's inline
+// `renderMiningVenue()` closure (WO-UI3-VENUES). State/handlers remain
+// owned by SpaceDockInterface and are threaded through as props.
+// LEG-1226 / LEG-109: Install Mining Laser when none fitted; Upgrade when
+// installed. Catalog install cost matches gameserver EQUIPMENT_DEFINITIONS.
+// ModuleGrid mining-family ladder UI remains Design-only.
 // =====================================================================
+
+/** Tip GET /mining/licenses row — keys match list_player_licenses (LEG-435). */
+export interface ClaimLicenseRow {
+  id: string;
+  region_id: string | null;
+  sector_number: number;
+  expires_at: string | null;
+  purchased_at: string | null;
+  cost_paid_cr: number;
+  is_active: boolean;
+}
+
+/** Canon catalog cost for first Mining Laser fit (equipment_slots, not module grid). */
+export const MINING_LASER_INSTALL_COST_CR = 35_000;
 
 interface MiningVenueProps {
   shipId: string | undefined;
+  /** From GET /player/current-ship — null/undefined when no Mining Laser fitted. */
+  miningLaserLevel?: number | null;
   licenseBusy: boolean;
   licenseError: string | null;
   licenseSuccess: string | null;
   purchaseClaimLicense: () => void;
+  licenses?: ClaimLicenseRow[];
+  licensesLoading?: boolean;
+  licensesError?: string | null;
   laserBusy: boolean;
   laserError: string | null;
   laserSuccess: string | null;
+  installMiningLaser: () => void;
   upgradeMiningLaser: () => void;
   onBack: () => void;
   blackMarketButton: React.ReactNode;
@@ -24,18 +46,26 @@ interface MiningVenueProps {
 
 const MiningVenue: React.FC<MiningVenueProps> = ({
   shipId,
+  miningLaserLevel,
   licenseBusy,
   licenseError,
   licenseSuccess,
   purchaseClaimLicense,
+  licenses = [],
+  licensesLoading = false,
+  licensesError = null,
   laserBusy,
   laserError,
   laserSuccess,
+  installMiningLaser,
   upgradeMiningLaser,
   onBack,
   blackMarketButton,
 }) => {
   const hasShip = Boolean(shipId);
+  const hasMiningLaser = miningLaserLevel != null;
+  const installCostLabel = MINING_LASER_INSTALL_COST_CR.toLocaleString();
+
   return (
     <div className="venue-container mining">
       <div className="venue-header">
@@ -67,6 +97,47 @@ const MiningVenue: React.FC<MiningVenueProps> = ({
                 {licenseError}
               </div>
             )}
+            <div className="license-list" data-testid="mining-license-list">
+              {licensesLoading && (
+                <div className="license-list-empty">Loading licenses…</div>
+              )}
+              {!licensesLoading && licensesError && (
+                <div className="genesis-error-message">
+                  <span className="error-icon">❌</span>
+                  {licensesError}
+                </div>
+              )}
+              {!licensesLoading && !licensesError && licenses.length === 0 && (
+                <div className="license-list-empty">
+                  No active or recently expired licenses.
+                </div>
+              )}
+              {!licensesLoading && !licensesError && licenses.length > 0 && (
+                <table className="license-list-table">
+                  <caption>Active and recently expired claim licenses</caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">Sector</th>
+                      <th scope="col">Expires</th>
+                      <th scope="col">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {licenses.map((row) => (
+                      <tr key={row.id} data-license-id={row.id}>
+                        <td>{row.sector_number}</td>
+                        <td>
+                          {row.expires_at
+                            ? new Date(row.expires_at).toLocaleString()
+                            : '—'}
+                        </td>
+                        <td>{row.is_active ? 'Active' : 'Recently expired'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
             <div className="service-action">
               <button
                 className="service-btn"
@@ -82,12 +153,25 @@ const MiningVenue: React.FC<MiningVenueProps> = ({
           <div className="service-card">
             <div className="service-icon">🔆</div>
             <h3>Mining Laser Refit</h3>
-            <p>Upgrade your installed Mining Laser to the next yield tier</p>
-            <div className="service-status">
-              A higher Mining Laser level raises ore yield, the precious-metals
-              cap, and the quantum-shard trace drop. Requires a Mining Laser
-              already fitted to your ship.
-            </div>
+            {hasMiningLaser ? (
+              <>
+                <p>Upgrade your installed Mining Laser to the next yield tier</p>
+                <div className="service-status">
+                  Current level: {miningLaserLevel}. A higher Mining Laser level
+                  raises ore yield, the precious-metals cap, and the quantum-shard
+                  trace drop.
+                </div>
+              </>
+            ) : (
+              <>
+                <p>Fit a Mining Laser so your ship can harvest asteroid fields</p>
+                <div className="service-status">
+                  Harvest requires a Mining Laser in an equipment slot (not the
+                  deferred module-grid mining family). Catalog cost:{' '}
+                  {installCostLabel} cr.
+                </div>
+              </>
+            )}
             {laserSuccess && (
               <div className="genesis-success-message">
                 <span className="success-icon">✅</span>
@@ -101,14 +185,25 @@ const MiningVenue: React.FC<MiningVenueProps> = ({
               </div>
             )}
             <div className="service-action">
-              <button
-                className="service-btn"
-                onClick={upgradeMiningLaser}
-                disabled={laserBusy || !hasShip}
-                title={!hasShip ? 'No active ship' : undefined}
-              >
-                {laserBusy ? 'Refitting...' : 'Upgrade Mining Laser'}
-              </button>
+              {hasMiningLaser ? (
+                <button
+                  className="service-btn"
+                  onClick={upgradeMiningLaser}
+                  disabled={laserBusy || !hasShip}
+                  title={!hasShip ? 'No active ship' : undefined}
+                >
+                  {laserBusy ? 'Refitting...' : 'Upgrade Mining Laser'}
+                </button>
+              ) : (
+                <button
+                  className="service-btn"
+                  onClick={installMiningLaser}
+                  disabled={laserBusy || !hasShip}
+                  title={!hasShip ? 'No active ship' : undefined}
+                >
+                  {laserBusy ? 'Installing...' : `Install Mining Laser (${installCostLabel} cr)`}
+                </button>
+              )}
             </div>
           </div>
         </div>

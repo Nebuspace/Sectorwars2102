@@ -889,6 +889,9 @@ _PHASE14_ATTACHMENT_RETRY_LOCK_KEY = _mnemonic_lock_key("PH14")
 # two gameserver instances don't double-complete the same PENDING row.
 # 'MHRV' = Mining HaRVest.
 _MINING_HARVEST_LOCK_KEY = _mnemonic_lock_key("MHRV")
+# LEG-2607: ClaimLicense 1h-before expiry warnings (mining.md:258).
+# 'MINL' = MINing License expiry warn.
+_MINING_LICENSE_EXPIRY_LOCK_KEY = _mnemonic_lock_key("MINL")
 
 # ADR-0063: recruit lifecycle stage lasts 7 canonical days, then ACTIVE.
 RECRUIT_STAGE_HOURS = 7 * 24
@@ -1302,6 +1305,24 @@ async def _broadcast_events(events: List[Dict[str, Any]]) -> None:
                     logger.exception(
                         "NPC scheduler: mining_harvest_completed send failed for %s",
                         player_id,
+                    )
+            continue
+
+        if event.get("type") in (
+            "mining_harvest_notification",
+            "mining_license_expiry_warning",
+        ):
+            user_id = event.get("user_id")
+            if user_id is not None:
+                try:
+                    await connection_manager.send_personal_message(
+                        str(user_id), dict(event)
+                    )
+                except Exception:
+                    logger.exception(
+                        "NPC scheduler: %s send failed for %s",
+                        event.get("type"),
+                        user_id,
                     )
             continue
 

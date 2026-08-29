@@ -351,6 +351,62 @@ describe('SectorNode3D — click handling', () => {
   });
 });
 
+describe('SectorNode3D — nebula chart tint (LEG-2590)', () => {
+  const materialProps = () => captured.sphere[captured.sphere.length - 1].children.props;
+
+  it('renders visited nebula sectors with canon color_hex instead of steel blue', () => {
+    renderNode({
+      sector: baseSector({ type: 'nebula', color_hex: '#DC143C' }),
+      knowledge: 'visited',
+    });
+    const mat = materialProps();
+    expect((mat.color as Color).getHexString()).toBe('dc143c');
+  });
+
+  it('falls back to steel blue for visited nebula when color_hex is absent', () => {
+    renderNode({
+      sector: baseSector({ type: 'nebula' }),
+      knowledge: 'visited',
+    });
+    const mat = materialProps();
+    expect((mat.color as Color).getHexString()).toBe('6aa8e8');
+  });
+
+  it('shows nebula type and field-strength range on hover when metadata is present', () => {
+    renderNode({
+      sector: baseSector({
+        type: 'nebula',
+        nebula_type: 'azure',
+        quantum_field_strength: 65,
+        color_hex: '#1E90FF',
+      }),
+      knowledge: 'visited',
+    });
+    const group = container.querySelector('group') as HTMLElement;
+    act(() => {
+      group.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }));
+    });
+    expect(container.textContent).toContain('AZURE · 60–80');
+  });
+
+  it('withholds nebula hover on frontier fog nodes', () => {
+    renderNode({
+      sector: baseSector({
+        type: 'nebula',
+        nebula_type: 'crimson',
+        quantum_field_strength: 90,
+        color_hex: '#DC143C',
+      }),
+      knowledge: 'frontier',
+    });
+    const group = container.querySelector('group') as HTMLElement;
+    act(() => {
+      group.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }));
+    });
+    expect(container.textContent).not.toContain('CRIMSON');
+  });
+});
+
 describe('SectorNode3D — hover cursor', () => {
   it('sets a pointer cursor on hover and resets it on pointer-out, only when clickable', () => {
     renderNode({ sector: baseSector(), knowledge: 'visited', clickable: true });

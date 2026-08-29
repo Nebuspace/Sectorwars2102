@@ -540,6 +540,27 @@ def split_revenue(
     return defense, owner, operating
 
 
+def expected_revenue_per_day(
+    traffic_final: float,
+    per_trade_revenue_avg: float,
+    region_tax_rate: float,
+    owner_pct: float,
+) -> int:
+    """Per-day owner revenue projection (port-ownership.md:195-205).
+
+    Pure planning helper — callers supply already-composed traffic and split
+    inputs (no NPC traffic simulation here). Returns integer credits/day."""
+    if traffic_final <= 0 or per_trade_revenue_avg <= 0 or owner_pct <= 0:
+        return 0
+    gross = (
+        traffic_final
+        * per_trade_revenue_avg
+        * (1.0 - region_tax_rate)
+        * (owner_pct / 100.0)
+    )
+    return int(round(gross))
+
+
 def _effective_fee_split_pcts(station: Station) -> Tuple[float, float, float]:
     """Effective (defense_pct, owner_pct, operating_pct) fee-split for THIS
     station: reads the owner's rebalanced price_modifiers override (canon
@@ -3685,6 +3706,8 @@ def my_stations(db: Session, player: Player) -> Dict[str, Any]:
             "treasury_balance": station.treasury_balance or 0,
             "acquisition_cost": _acquisition_cost(station),
             "revenue": revenue_summary(db, station),
+            # invent=0: helper exists; populated when elasticity spine feeds inputs.
+            "expected_revenue_per_day": None,
         }
         row.update(_owner_price_lever_fields(station))
         out.append(row)

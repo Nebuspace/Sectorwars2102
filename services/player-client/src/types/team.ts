@@ -45,6 +45,10 @@ export interface TeamMember {
   };
   shipType: string;
   combatRating: number;
+  /** Public pinned medal from team roster API (public_medal_identity) */
+  pinnedMedalId?: string | null;
+  /** Earned medal count when visible; null when privacy-hidden */
+  medalCount?: number | null;
 }
 
 // --- Gameserver wire shapes (snake_case) -----------------------------------
@@ -84,6 +88,8 @@ export interface TeamMemberApiResponse {
   contribution_credits: Record<string, number> | null;
   current_sector: number | null;
   combat_rating: number;
+  pinned_medal_id?: string | null;
+  medal_count?: number | null;
 }
 
 export interface TeamPermissionsApiResponse {
@@ -301,4 +307,56 @@ export interface TeamPermissions {
   canEditTeamInfo: boolean;
   canManageAlliances: boolean;
   canDeclareWar: boolean;
+}
+
+// --- Team war (teams.py WarEntry + team_war_service victory fields) --------
+// List endpoint response_model=WarEntry may strip victory-only keys; keep them
+// optional so the UI renders what the server actually returns.
+
+export interface WarScore {
+  us: number;
+  them: number;
+}
+
+/** Wire shape from GET /teams/{id}/wars and declare_war.war */
+export interface WarEntryApiResponse {
+  target_team_id: string;
+  declared_by: string;
+  declared_at: string;
+  reason: string;
+  status: string; // 'active' | 'ceased'
+  score: WarScore;
+  ceased_at?: string;
+  ceased_by?: string;
+  cease_reason?: string; // e.g. 'victory' from team_war_service
+  winner_team_id?: string;
+  loser_team_id?: string;
+  victory_at?: string;
+}
+
+export interface TeamWar {
+  targetTeamId: string;
+  declaredBy: string;
+  declaredAt: string;
+  reason: string;
+  status: 'active' | 'ceased' | string;
+  score: WarScore;
+  ceasedAt?: string;
+  ceasedBy?: string;
+  ceaseReason?: string;
+  winnerTeamId?: string;
+  loserTeamId?: string;
+  victoryAt?: string;
+}
+
+export interface DeclareWarResponse {
+  success: boolean;
+  message: string;
+  war: WarEntryApiResponse;
+}
+
+export interface CeasefireResponse {
+  success: boolean;
+  message: string;
+  ceased_by: string;
 }
