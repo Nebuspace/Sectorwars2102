@@ -70,6 +70,80 @@ const contactDisplayName = (contact: any): string =>
 
 type CommsMode = 'hails' | 'threads';
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+function serverDetail(err: unknown): string | undefined {
+  if (err && typeof err === 'object') {
+    const rawDetail = (err as { response?: { data?: { detail?: unknown } } }).response?.data
+      ?.detail;
+    if (typeof rawDetail === 'string' && rawDetail.trim()) return rawDetail.trim();
+  }
+  const message = err instanceof Error ? err.message : undefined;
+  if (
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim())
+  ) {
+    return message.trim();
+  }
+  return undefined;
+}
+
+/** apiRequest throws Error with `.status`; legacy axios callers may use `.response.data.detail`. */
+export function formatCommsFlagError(err: unknown): string {
+  const status = httpStatus(err);
+  const detail = serverDetail(err);
+
+  if (status === 404) {
+    if (detail) return detail;
+    return 'Message not found';
+  }
+
+  if (detail) return detail;
+  return 'Failed to flag transmission';
+}
+
+/** PURGE soft-delete — surface gameserver 404 detail (messages.py). */
+export function formatCommsPurgeError(err: unknown): string {
+  const status = httpStatus(err);
+  const detail = serverDetail(err);
+
+  if (status === 404) {
+    if (detail) return detail;
+    return 'Message not found';
+  }
+
+  if (detail) return detail;
+  return 'Failed to purge transmission';
+}
+
+/** THREADS tab load — surface gameserver detail on GET /messages/conversations failure. */
+export function formatCommsThreadsLoadError(err: unknown): string {
+  const status = httpStatus(err);
+  const detail = serverDetail(err);
+
+  if (status === 403) {
+    if (detail) return detail;
+    return 'Access denied — you cannot view threads right now.';
+  }
+
+  if (status === 429) {
+    if (detail) return detail;
+    return 'Thread lookup rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (detail) return detail;
+  return 'Failed to load threads';
+}
+
 const conversationPartyLabel = (msg: PlayerMessage, playerId: string | undefined): string => {
   if (!playerId) return (msg.sender_name || 'UNKNOWN').toUpperCase();
   if (msg.sender_id !== playerId) return (msg.sender_name || 'UNKNOWN').toUpperCase();
@@ -201,9 +275,7 @@ const CommsCrewPage: React.FC = () => {
       .catch((err: unknown) => {
         if (cancelled) return;
         setConversations([]);
-        setConversationsError(
-          err instanceof Error ? err.message : 'FAILED TO LOAD THREADS'
-        );
+        setConversationsError(formatCommsThreadsLoadError(err));
       })
       .finally(() => {
         if (!cancelled) setConversationsLoading(false);
@@ -306,7 +378,7 @@ const CommsCrewPage: React.FC = () => {
       if (expandedId === msg.id) setExpandedId(null);
       if (compose?.replyToId === msg.id) clearCompose();
     } catch (err: unknown) {
-      setSendError(err instanceof Error ? err.message : 'Failed to purge transmission');
+      setSendError(formatCommsPurgeError(err));
     } finally {
       setDeletingId(null);
     }
@@ -323,7 +395,7 @@ const CommsCrewPage: React.FC = () => {
       setFlagMenuId(null);
       setFlagNotice('FLAGGED FOR MODERATION');
     } catch (err: unknown) {
-      setFlagError(err instanceof Error ? err.message : 'Failed to flag transmission');
+      setFlagError(formatCommsFlagError(err));
     } finally {
       setFlaggingId(null);
     }
@@ -618,6 +690,9 @@ const CommsCrewPage: React.FC = () => {
           <div className="mfd-page-comms-compose-hint">
             HAIL A CONTACT OR REPLY TO A TRANSMISSION TO OPEN A CHANNEL
           </div>
+        )}
+        {sendError && !compose && (
+          <div className="mfd-page-warnline" role="alert">{sendError}</div>
         )}
 
         <div className="mfd-page-section-label">CONTACTS IN SECTOR</div>

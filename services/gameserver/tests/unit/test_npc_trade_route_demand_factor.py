@@ -30,6 +30,25 @@ def test_compute_tariff_demand_factor_canon_table(tax_rate, expected):
     )
 
 
+def test_compose_region_tax_rate_quarter_scales_traffic_by_three_quarters():
+    """port-ownership.md:190 — region.tax_rate=0.25 → traffic ×0.75."""
+    base = 1.0
+    assert npc_trading_service.compose_region_tax_on_traffic(base, 0.25) == pytest.approx(
+        0.75
+    )
+    assert npc_trading_service.compose_region_tax_on_traffic(base, 0.0) == pytest.approx(
+        1.0
+    )
+
+
+def test_compute_npc_route_traffic_weight_applies_region_compose():
+    """Same station tariff; 25% region tax → 0.75× route weight vs 0%."""
+    station_tax = 0.05  # demand_factor 0.75
+    at_zero = npc_trading_service.compute_npc_route_traffic_weight(station_tax, 0.0)
+    at_quarter = npc_trading_service.compute_npc_route_traffic_weight(station_tax, 0.25)
+    assert at_quarter == pytest.approx(at_zero * 0.75)
+
+
 def _station(station_id, sector_id, *, tax_rate, supplies, wants):
     commodities = {}
     for name in supplies:

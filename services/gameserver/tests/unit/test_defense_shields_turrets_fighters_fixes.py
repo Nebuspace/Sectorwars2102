@@ -105,6 +105,9 @@ def test_citadel_shield_gate_reads_only_the_real_generator_ladder():
     result = svc._eval_prereq(planet, req, "L4 Major Colony", operational={}, queued_types=set())
     assert result is not None
     assert result["success"] is False
+    assert result["error_code"] == "ERR_CITADEL_PREREQUISITE_MISSING"
+    assert result["building_key"] == "shield_generator"
+    assert result["building_name"] == "Shield Generator L4"
 
 
 # --------------------------------------------------------------------------- #
