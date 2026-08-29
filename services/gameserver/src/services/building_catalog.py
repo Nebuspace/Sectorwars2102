@@ -230,6 +230,49 @@ BUILDING_CATALOG: Dict[str, Dict[str, Any]] = {
         "signature": False, "prereqs": [],
     },
 
+    # ===== PROFESSION PREREQUISITE BUILDINGS (D#594 / LEG-2841) — placeable kinds for
+    # professions.md gates (Orbital Shipyard L2 / Military Academy L2 / Terraforming Lab L3).
+    # Magnitudes [NO-CANON] kernel placeholders mirroring LAB/SPACEPORT scale; effect is
+    # identity-only until profession_service (LEG-2840) reads max_kind_level from the grid.
+    "ORBITAL_SHIPYARD": {
+        "kind": "ORBITAL_SHIPYARD", "domain": "economy", "name": "Orbital Shipyard",
+        "footprint": [2, 1], "max_level": 5,
+        "build_hours": {1: 72, 2: 108, 3: 162, 4: 240, 5: 336},
+        "cost": {1: {"credits": 150000, "equipment": 80}, 2: {"credits": 300000, "equipment": 160},
+                 3: {"credits": 600000, "equipment": 320}, 4: {"credits": 1200000, "equipment": 640},
+                 5: {"credits": 2400000, "equipment": 1280}},
+        "power_draw": {1: 45, 2: 62, 3: 84, 4: 110, 5: 140}, "crew": {1: 8, 2: 12, 3: 18, 4: 24, 5: 32},
+        "upkeep": {"credits": 700, "materials": {}}, "tech_gate": None,
+        "terrain_bonus": {"FLAT": 0.10, "COASTAL": 0.10},
+        "effect": {"kind": "profession_gate", "profession": "SPACE_ENGINEERS"},
+        "signature": False, "prereqs": [],
+    },
+    "MILITARY_ACADEMY": {
+        "kind": "MILITARY_ACADEMY", "domain": "civic", "name": "Military Academy",
+        "footprint": [1, 1], "max_level": 5,
+        "build_hours": {1: 48, 2: 72, 3: 108, 4: 162, 5: 240},
+        "cost": {1: {"credits": 80000}, 2: {"credits": 160000}, 3: {"credits": 320000},
+                 4: {"credits": 640000}, 5: {"credits": 1280000}},
+        "power_draw": {1: 25, 2: 35, 3: 48, 4: 64, 5: 84}, "crew": {1: 6, 2: 9, 3: 13, 4: 18, 5: 24},
+        "upkeep": {"credits": 450, "materials": {}}, "tech_gate": None,
+        "terrain_bonus": {},
+        "effect": {"kind": "profession_gate", "profession": "COMBAT_PILOTS"},
+        "signature": False, "prereqs": [],
+    },
+    "TERRAFORMING_LAB": {
+        "kind": "TERRAFORMING_LAB", "domain": "terraform", "name": "Terraforming Lab",
+        "footprint": [1, 1], "max_level": 5,
+        "build_hours": {1: 48, 2: 72, 3: 108, 4: 162, 5: 240},
+        "cost": {1: {"credits": 70000, "organics": 150}, 2: {"credits": 140000, "organics": 300},
+                 3: {"credits": 280000, "organics": 600}, 4: {"credits": 560000, "organics": 1200},
+                 5: {"credits": 1120000, "organics": 2400}},
+        "power_draw": {1: 35, 2: 48, 3: 64, 4: 84, 5: 108}, "crew": {1: 6, 2: 9, 3: 13, 4: 18, 5: 24},
+        "upkeep": {"credits": 500, "materials": {"equipment": 4}}, "tech_gate": None,
+        "terrain_bonus": {},
+        "effect": {"kind": "profession_gate", "profession": "TERRAFORM_ENGINEERS"},
+        "signature": False, "prereqs": [],
+    },
+
     # ===== TERRAFORM (domain:"terraform") — rigs that RE-SHAPE per-plot axes (K1b-2). Placed by the
     # legacy start_terraforming presets; pushed by structures.terraform_grid_tick. NOT counted by
     # derive_citadel_level (it sums only economy/civic floor-area). push_axis/push_base are stamped
