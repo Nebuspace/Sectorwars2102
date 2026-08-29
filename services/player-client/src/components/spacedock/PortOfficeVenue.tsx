@@ -149,6 +149,12 @@ interface MyStationView {
   revenue90d: number | null;
   revenue30d: number | null;
   monthly: Array<{ label: string; amount: number }>;
+  /** LEG-370 / LEG-371 — tip my-stations price lever fields */
+  priceAdjustmentLever: number | null;
+  dockingFee: number | null;
+  dockingFeeEnabled: boolean | null;
+  serviceChargeMultiplier: number | null;
+  storageRentalPerDay: number | null;
 }
 
 interface MonthView {
@@ -223,7 +229,12 @@ const normalizeMyStation = (raw: unknown): MyStationView => {
     acquisitionCost: pickNumber(o.acquisition_cost, o.purchase_price),
     revenue90d: pickNumber(revenue.last_90_days, o.revenue_90d),
     revenue30d: pickNumber(revenue.last_30_days, o.revenue_30d),
-    monthly
+    monthly,
+    priceAdjustmentLever: pickNumber(o.price_adjustment_lever),
+    dockingFee: pickNumber(o.docking_fee),
+    dockingFeeEnabled: pickBool(o.docking_fee_enabled),
+    serviceChargeMultiplier: pickNumber(o.service_charge_multiplier),
+    storageRentalPerDay: pickNumber(o.storage_rental_per_day),
   };
 };
 
@@ -433,6 +444,7 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
     activateCounterTrade,
     activateFriendlyTrade,
     setFeeDistribution,
+    militaryTakeover,
   } = useGame();
 
   const [activeTab, setActiveTab] = useState<PortOfficeTab>('registry');
@@ -565,6 +577,26 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
   useEffect(() => {
     fetchAll();
   }, [fetchAll]);
+
+  // LEG-371 — hydrate revenue levers from tip my-stations (LEG-370 keys).
+  useEffect(() => {
+    if (!myStation) return;
+    if (myStation.priceAdjustmentLever !== null) {
+      setPriceLeverPct(myStation.priceAdjustmentLever);
+    }
+    if (myStation.dockingFee !== null) {
+      setDockingFeeAmount(myStation.dockingFee);
+    }
+    if (myStation.dockingFeeEnabled !== null) {
+      setDockingFeeEnabled(myStation.dockingFeeEnabled);
+    }
+    if (myStation.serviceChargeMultiplier !== null) {
+      setServiceChargeMult(myStation.serviceChargeMultiplier);
+    }
+    if (myStation.storageRentalPerDay !== null) {
+      setStorageRentalPerDay(myStation.storageRentalPerDay);
+    }
+  }, [myStation]);
 
   // Load owner-only defense policy once ownership is confirmed
   useEffect(() => {
@@ -950,6 +982,34 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
       await fetchTakeover();
     }
   }, [runAction, launchTakeover, stationId, fetchTakeover]);
+
+  const runMilitaryAction = useCallback(
+    async (action: 'declare' | 'siege' | 'occupy') => {
+      setWarSuccess(null);
+      const successLabels: Record<typeof action, string> = {
+        declare:
+          'Declaration filed — 24-hour galaxy-wide notice before the siege may begin.',
+        siege: 'Siege round resolved — check defenders remaining before occupying.',
+        occupy:
+          'Occupation complete — deed transferred; prior treasury forfeited as war-tax; severe reputation cost applies.',
+      };
+      const result = await runAction(
+        `military-${action}`,
+        () => militaryTakeover(stationId, action),
+        setWarError,
+        'Military takeover action rejected.',
+      );
+      if (result !== null) {
+        setWarSuccess(successLabels[action]);
+        if (action === 'occupy') {
+          await fetchAll();
+        } else {
+          await fetchTakeover();
+        }
+      }
+    },
+    [runAction, militaryTakeover, stationId, fetchTakeover, fetchAll],
+  );
 
   const counter = useCallback(async (action: 'accept' | 'match' | 'dispute') => {
     setWarSuccess(null);
@@ -1890,6 +1950,50 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
               <li><strong>Match</strong> — if your own volume this month meets the challenger&apos;s, their clock resets to zero.</li>
               <li><strong>Dispute</strong> — the arbiter audits the challenger&apos;s books for self-dealing wash trades.</li>
             </ul>
+          </div>
+        )}
+
+        {/* Military takeover — challenger only on owned foreign stations (LEG-368).
+            GS enforces notice window, Military Contract immunity, drones, region
+            rules; UI surfaces returned detail via warError. */}
+        {!isMine && listing?.ownerId && (
+          <div className="po-section" data-testid="po-military-takeover">
+            <h3 className="po-section-title">🎖️ Military Takeover</h3>
+            <p className="section-description">
+              Hostile path: declare intent (24-hour galaxy-wide notice), siege defenders
+              with attack drones, then occupy. Severe reputation cost; prior treasury is
+              forfeited to the controlling faction as war-tax — not paid to you. Stations
+              with a Military Contract are immune. Restricted regions reject at the server.
+            </p>
+            <div className="po-counter-actions">
+              <button
+                className="action-button primary"
+                type="button"
+                data-testid="po-military-declare"
+                onClick={() => void runMilitaryAction('declare')}
+                disabled={Boolean(busyAction)}
+              >
+                {busyAction === 'military-declare' ? 'Filing...' : '📜 Declare Intent'}
+              </button>
+              <button
+                className="action-button"
+                type="button"
+                data-testid="po-military-siege"
+                onClick={() => void runMilitaryAction('siege')}
+                disabled={Boolean(busyAction)}
+              >
+                {busyAction === 'military-siege' ? 'Engaging...' : '⚔️ Siege Round'}
+              </button>
+              <button
+                className="action-button"
+                type="button"
+                data-testid="po-military-occupy"
+                onClick={() => void runMilitaryAction('occupy')}
+                disabled={Boolean(busyAction)}
+              >
+                {busyAction === 'military-occupy' ? 'Occupying...' : '🏳️ Occupy'}
+              </button>
+            </div>
           </div>
         )}
 

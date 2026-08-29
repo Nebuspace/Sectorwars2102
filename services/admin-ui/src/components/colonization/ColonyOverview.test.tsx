@@ -51,4 +51,37 @@ describe('ColonyOverview (LEG-212 shared api)', () => {
     });
     expect(screen.getByText('Colony Overview')).toBeTruthy();
   });
+  it('reports a 403 as colonization scope denial, never bare Failed to load colonies', async () => {
+    vi.mocked(api.get).mockRejectedValue({ response: { status: 403 } });
+
+    render(<ColonyOverview />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/Access denied|colonization\.view|scope/i);
+    });
+    expect(screen.getByRole('alert').textContent).not.toContain('Failed to load colonies data');
+  });
+
+  it('reports a 429 as an admin rate-limit', async () => {
+    vi.mocked(api.get).mockRejectedValue({ response: { status: 429 } });
+
+    render(<ColonyOverview />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
+    });
+  });
+
+  it('surfaces honest fallback on non-RBAC network collapse (LEG-2947)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<ColonyOverview />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/Failed to load colonies/i);
+    });
+    const text = screen.getByRole('alert').textContent ?? '';
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
 });

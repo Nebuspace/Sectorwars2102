@@ -136,7 +136,68 @@ describe('RegisterForm', () => {
       await flush();
     });
 
-    expect(register).toHaveBeenCalledWith('newbie', 'n@ex.com', 'password1');
+    expect(register).toHaveBeenCalledWith('newbie', 'n@ex.com', 'password1', '');
+    expect(onRegisterSuccess).toHaveBeenCalled();
+  });
+
+  it('renders the optional invite code field', () => {
+    expect(container.querySelector('#invite-code')).not.toBeNull();
+  });
+
+  it('passes a filled invite code to register', async () => {
+    register.mockResolvedValueOnce(undefined);
+    await fillValidForm(container);
+    await setInputValue(container.querySelector('#invite-code') as HTMLInputElement, 'ABCD1234');
+
+    await act(async () => {
+      container.querySelector('form')!.dispatchEvent(
+        new Event('submit', { bubbles: true, cancelable: true }),
+      );
+      await flush();
+    });
+
+    expect(register).toHaveBeenCalledWith('newbie', 'n@ex.com', 'password1', 'ABCD1234');
+  });
+
+  it('prefills invite code from ?invite= query param', async () => {
+    const originalSearch = window.location.search;
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...window.location, search: '?invite=PREFILL99' },
+    });
+
+    await act(async () => {
+      root.unmount();
+    });
+    root = createRoot(container);
+    act(() => {
+      root.render(
+        <RegisterForm onRegisterSuccess={onRegisterSuccess} switchToLogin={switchToLogin} />,
+      );
+    });
+
+    expect((container.querySelector('#invite-code') as HTMLInputElement).value).toBe('PREFILL99');
+
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...window.location, search: originalSearch },
+    });
+  });
+
+  it('surfaces redemption notice when register returns one', async () => {
+    register.mockResolvedValueOnce(
+      'That invite link is no longer valid. Your account was created in the default starter region.',
+    );
+    await fillValidForm(container);
+
+    await act(async () => {
+      container.querySelector('form')!.dispatchEvent(
+        new Event('submit', { bubbles: true, cancelable: true }),
+      );
+      await flush();
+    });
+
+    expect(container.querySelector('.notice-message')?.textContent).toContain('invite link is no longer valid');
     expect(onRegisterSuccess).toHaveBeenCalled();
   });
 

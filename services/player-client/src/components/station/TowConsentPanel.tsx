@@ -3,6 +3,29 @@ import { towAPI, type TowStatus } from '../../services/api';
 import { useSectorContacts } from '../tactical/contactClassification';
 import './tow-consent-panel.css';
 
+function serverDetail(err: unknown): string | undefined {
+  if (err && typeof err === 'object') {
+    const rawDetail = (err as { response?: { data?: { detail?: unknown } } }).response?.data
+      ?.detail;
+    if (typeof rawDetail === 'string' && rawDetail.trim()) return rawDetail.trim();
+  }
+  const message = err instanceof Error ? err.message : undefined;
+  if (
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim())
+  ) {
+    return message.trim();
+  }
+  return undefined;
+}
+
+export function formatTowActionError(err: unknown): string {
+  const detail = serverDetail(err);
+  if (detail) return detail;
+  return 'Tow action failed';
+}
+
 /**
  * TowConsentPanel — WO-WIRE-TOW-CONSENT-UI.
  *
@@ -56,7 +79,7 @@ const TowConsentPanel: React.FC = () => {
       setFeedback(okMsg);
       await refresh();
     } catch (err: unknown) {
-      setFeedback(err instanceof Error ? err.message : 'Tow action failed');
+      setFeedback(formatTowActionError(err));
     } finally {
       setBusy(false);
     }

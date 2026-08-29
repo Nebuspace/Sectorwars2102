@@ -111,7 +111,16 @@ describe('MaintenanceManager', () => {
       root.render(<MaintenanceManager shipId="ship-1" playerCredits={0} />);
       await flush();
     });
-    expect(container.textContent).toMatch(/Maintenance data is unavailable/);
+    expect(container.querySelector('[data-testid="mnt-load-error"]')?.textContent).toBe(
+      'yard closed',
+    );
+    expect(container.textContent).toMatch(/yard closed/);
+  });
+
+  it('formatMaintenanceLoadError falls back on bare API Error status', async () => {
+    const { formatMaintenanceLoadError } = await import('../MaintenanceManager');
+    const err = Object.assign(new Error('API Error: 500'), { status: 500 });
+    expect(formatMaintenanceLoadError(err)).toBe('Maintenance data is unavailable.');
   });
 
   it('labels unaffordable service as Too costly', async () => {
@@ -126,4 +135,49 @@ describe('MaintenanceManager', () => {
     expect(btn).toBeTruthy();
     expect((btn as HTMLButtonElement).disabled).toBe(true);
   });
+
+  it('renders a distinct catastrophic warning below 10% condition', async () => {
+    getMaintenanceStatus.mockResolvedValue({
+      ...STATUS,
+      condition: 8.2,
+      band: {
+        ...STATUS.band,
+        tier: 'failing',
+        failure_pct: 40,
+        failure_tier: 'catastrophic',
+      },
+    });
+    await act(async () => {
+      root.render(<MaintenanceManager shipId="ship-1" playerCredits={20000} />);
+      await flush();
+    });
+    const warn = container.querySelector('[data-testid="mnt-catastrophic-warn"]');
+    expect(warn).toBeTruthy();
+    expect(warn!.textContent).toMatch(/Catastrophic hull failure risk/);
+    expect(warn!.textContent).toMatch(/catastrophic/i);
+    const fill = container.querySelector('.mnt-bar-fill.catastrophic');
+    expect(fill).toBeTruthy();
+    expect(container.querySelector('.mnt-tier.catastrophic')).toBeTruthy();
+  });
+
+  it('keeps 10–24% in critical without catastrophic banner', async () => {
+    getMaintenanceStatus.mockResolvedValue({
+      ...STATUS,
+      condition: 18,
+      band: {
+        ...STATUS.band,
+        tier: 'critical',
+        failure_pct: 15,
+        failure_tier: 'critical',
+      },
+    });
+    await act(async () => {
+      root.render(<MaintenanceManager shipId="ship-1" playerCredits={20000} />);
+      await flush();
+    });
+    expect(container.querySelector('[data-testid="mnt-catastrophic-warn"]')).toBeNull();
+    expect(container.querySelector('.mnt-bar-fill.critical')).toBeTruthy();
+    expect(container.querySelector('.mnt-bar-fill.catastrophic')).toBeNull();
+  });
 });
+

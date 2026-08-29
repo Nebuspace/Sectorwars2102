@@ -12,6 +12,7 @@ import { useGame } from '../../contexts/GameContext';
 import { gameAPI } from '../../services/api';
 import { InputValidator, SecurityAudit } from '../../utils/security/inputValidation';
 import CockpitInstrument from '../cockpit/CockpitInstrument';
+import { CombatHistoryPanel } from './CombatHistoryPanel';
 import './combat-interface.css';
 
 /* WEAPONS CONSOLE shell (Law 3) — module-level so the frame keeps its
@@ -22,6 +23,38 @@ const WeaponsConsoleShell: React.FC<{ children?: React.ReactNode }> = ({ childre
     {children}
   </CockpitInstrument>
 );
+
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+/** Surface GS engage detail on combat initiation failure (LEG-2932 Soft-ORDER). */
+export function formatCombatInitiateError(err: unknown): string {
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission to engage this target.';
+  }
+
+  if (status === 429) {
+    return 'Combat action rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (hasServerDetail) return message!;
+  return 'Combat system error. Please try again.';
+}
 
 // Shapes returned by the player_combat API (see gameserver player_combat.py)
 interface CombatRoundEvent {
@@ -157,8 +190,7 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
         setError(response.message || 'Failed to initiate combat');
       }
     } catch (err) {
-      // apiRequest surfaces the server's `detail` message — show it inline
-      setError(err instanceof Error ? err.message : 'Combat system error. Please try again.');
+      setError(formatCombatInitiateError(err));
       console.error('Combat initiation failed:', err);
     } finally {
       setIsEngaging(false);
@@ -516,6 +548,9 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
           </div>
         </div>
       )}
+
+      {/* LEG-372 — paginated own-history browse (standalone Weapons Console only) */}
+      {isStandalone && <CombatHistoryPanel />}
     </div>
     </Wrapper>
   );

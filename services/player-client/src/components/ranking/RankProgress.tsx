@@ -33,6 +33,43 @@ interface RankProgressData {
   requirements: RankRequirement[];
 }
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+/** apiRequest throws Error with `.status`; surface gameserver detail on rank progress load. */
+export function formatRankProgressLoadError(err: unknown): string {
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (status === 404) {
+    if (hasServerDetail) return message!;
+    return 'Failed to load rank progress';
+  }
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'Access denied — you cannot view rank progress right now.';
+  }
+
+  if (status === 429) {
+    return 'Rank progress rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (hasServerDetail) return message!;
+  return 'Failed to load rank progress';
+}
+
 const RankProgress: React.FC = () => {
   const [data, setData] = useState<RankProgressData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -45,8 +82,8 @@ const RankProgress: React.FC = () => {
         const result = await rankingAPI.getProgress();
         setData(result);
         setError(null);
-      } catch (err: any) {
-        setError(err.message || 'Failed to load rank progress');
+      } catch (err: unknown) {
+        setError(formatRankProgressLoadError(err));
       } finally {
         setLoading(false);
       }
@@ -72,6 +109,8 @@ const RankProgress: React.FC = () => {
   }
 
   const tierColor = TIER_COLORS[data.rank_tier] || '#ffffff';
+  const showCompactBadge =
+    data.rank_tier != null && data.rank_level != null;
   // Defensive: RankProgressData's shape is enforced by the TS type, not at
   // runtime -- a malformed/incomplete 200 must not crash the panel. Missing
   // numeric fields render as 0 (the same "nothing yet" reading a brand-new
@@ -96,9 +135,20 @@ const RankProgress: React.FC = () => {
       <div className="rank-progress-ranks">
         <div className="rank-progress-current">
           <span className="rank-progress-label">Current</span>
-          <span className="rank-progress-value" style={{ color: tierColor }}>
-            {data.current_rank}
-          </span>
+          <div className="rank-progress-current-row">
+            {showCompactBadge && (
+              <span
+                className="rank-badge rank-badge--compact"
+                style={{ borderColor: tierColor }}
+                data-testid="rank-progress-compact-badge"
+              >
+                <span className="rank-level">{data.rank_level}</span>
+              </span>
+            )}
+            <span className="rank-progress-value" style={{ color: tierColor }}>
+              {data.current_rank}
+            </span>
+          </div>
           <span className="rank-progress-tier">{data.rank_tier}</span>
         </div>
         {!data.is_max_rank && data.next_rank && (

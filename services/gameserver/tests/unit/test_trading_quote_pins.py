@@ -44,16 +44,21 @@ from src.api.routes.trading import (
     sell_resource,
 )
 from src.models.market_transaction import MarketPrice
+from src.models.planet import Planet
 from src.models.player import Player
 from src.models.ship import Ship, ShipType
 from src.models.station import Station, StationClass, StationStatus, StationType
 
 
 class _FakeQuery:
-    def __init__(self, *, first: Any = None) -> None:
+    def __init__(self, *, first: Any = None, all_results=None) -> None:
         self._first = first
+        self._all = list(all_results) if all_results is not None else []
 
     def filter(self, *a: Any, **k: Any) -> "_FakeQuery":
+        return self
+
+    def join(self, *a: Any, **k: Any) -> "_FakeQuery":
         return self
 
     def populate_existing(self) -> "_FakeQuery":
@@ -64,6 +69,9 @@ class _FakeQuery:
 
     def first(self) -> Any:
         return self._first
+
+    def all(self) -> list:
+        return self._all
 
 
 class _FakeSession:
@@ -192,6 +200,7 @@ def _trade_session(player: Player, station: Station, ship: Ship, market_price: M
         Player: _FakeQuery(first=player),
         Ship: _FakeQuery(first=ship),
         MarketPrice: _FakeQuery(first=market_price),
+        Planet: _FakeQuery(all_results=[]),
     })
 
 

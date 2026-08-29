@@ -122,4 +122,20 @@ describe('GenesisDeviceTracking (LEG-150)', () => {
     expect(alert).toMatch(/rate limit/i);
     expect(alert).not.toMatch(/Failed to load Genesis device data \(HTTP 429\)/);
   });
+
+  it('surfaces honest fallback on non-RBAC network collapse (LEG-2956)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<GenesisDeviceTracking />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Gameserver unreachable|network error fetching Genesis device/i);
+    expect(alert).not.toMatch(/TypeError/i);
+    expect(alert).not.toBe('Failed to fetch');
+    expect(alert).not.toMatch(/Failed to load Genesis device data/i);
+  });
 });
