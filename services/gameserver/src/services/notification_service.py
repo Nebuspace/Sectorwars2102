@@ -82,18 +82,27 @@ class NotificationService:
     """Priority-driven fan-out for messaging notifications."""
 
     @staticmethod
-    def build_frame(message: Message, sender: Player, delivery: List[str]) -> Dict[str, Any]:
+    def build_frame(
+        message: Message,
+        sender: Player,
+        delivery: List[str],
+        *,
+        sender_pinned_medal_id: Optional[str] = None,
+        sender_medal_count: Optional[int] = None,
+    ) -> Dict[str, Any]:
         """Build the `new_message` WebSocket frame for a recipient.
 
         Shape is backward-compatible with the prior `_send_notification`
-        payload; the only addition is `delivery`, the surface list the client
-        switches on (inbox-always, toast/modal conditional).
+        payload; additions are `delivery` (surface list the client switches on)
+        and sender medal identity (same field names as inbox REST enrich).
         """
         return {
             "type": "new_message",
             "message_id": str(message.id),
             "sender_id": str(message.sender_id),
             "sender_name": sender.nickname,
+            "sender_pinned_medal_id": sender_pinned_medal_id,
+            "sender_medal_count": sender_medal_count,
             "preview": message.content[:100] if message.content else "",
             "sent_at": message.sent_at.isoformat() if message.sent_at else None,
             "priority": message.priority,
@@ -117,7 +126,18 @@ class NotificationService:
         """
         sender_is_admin = bool(getattr(getattr(sender, "user", None), "is_admin", False))
         delivery = delivery_surfaces_for(message.priority, sender_is_admin)
-        frame = NotificationService.build_frame(message, sender, delivery)
+        from src.services.medal_service import count_earned_medals, public_medal_identity
+
+        medal_identity = public_medal_identity(
+            sender, medal_count=count_earned_medals(db, sender.id)
+        )
+        frame = NotificationService.build_frame(
+            message,
+            sender,
+            delivery,
+            sender_pinned_medal_id=medal_identity["pinned_medal_id"],
+            sender_medal_count=medal_identity["medal_count"],
+        )
 
         # `push` is parked infrastructure — be explicit in the log that the
         # mapping earned it but no transport exists, rather than silently

@@ -11,6 +11,34 @@ import {
 } from '../../services/api';
 import './memory-journal.css';
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+/** Surface gameserver detail when ARIA memory recall fails. */
+export function formatAriaMemoryLoadError(err: unknown): string {
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (status === 503 || status === 500) {
+    if (hasServerDetail) return message!;
+    return 'Failed to load memories';
+  }
+
+  if (hasServerDetail) return message!;
+  return 'Failed to load memories';
+}
+
 const contentPreview = (content: Record<string, unknown>): string => {
   try {
     return JSON.stringify(content);
@@ -45,7 +73,7 @@ const MemoryJournalPanel: React.FC = () => {
       setMemories(Array.isArray(rows) ? rows : []);
     } catch (err) {
       setMemories([]);
-      setError(err instanceof Error ? err.message : 'Failed to load memories');
+      setError(formatAriaMemoryLoadError(err));
     } finally {
       setLoading(false);
     }
