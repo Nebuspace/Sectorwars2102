@@ -78,6 +78,7 @@ QUORUM_FRAC = 0.50
 VETO_HOLDER_FRAC = 0.25
 VETO_OVERRIDE_FRAC = 0.75
 TOTAL_STAKE = 100.0
+UPGRADE_VOTE_SPENT_KEY = "upgrade_vote_spent"
 
 
 def normalize_vote_type(raw: str) -> str:
@@ -340,6 +341,72 @@ def _ballot_map(ballots: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     return out
 
 
+def _apply_passed_upgrade_spend(
+    db: Session,
+    station: Station,
+    row: StationGovernanceVote,
+    now: datetime,
+) -> None:
+    """On passed major-upgrade vote: debit treasury by locked capex (LEG-2032)."""
+    if row.vote_type != "upgrade":
+        return
+    outcome = dict(row.outcome or {})
+    if not outcome.get("passed"):
+        return
+    if isinstance(outcome.get("execution"), dict):
+        return
+
+    capex = _capex_from_proposed(row.proposed_value)
+    if capex is None or capex <= 0:
+        outcome["execution"] = {
+            "action": "debit_capex",
+            "success": False,
+            "reason": "missing_capex",
+        }
+        row.outcome = outcome
+        flag_modified(row, "outcome")
+        return
+
+    station = _lock_station(db, station.id)
+    balance = int(station.treasury_balance or 0)
+    if balance < capex:
+        outcome["execution"] = {
+            "action": "debit_capex",
+            "success": False,
+            "reason": "insufficient_treasury",
+            "capex": capex,
+            "treasury_balance": balance,
+        }
+        row.outcome = outcome
+        flag_modified(row, "outcome")
+        return
+
+    station.treasury_balance = balance - capex
+    ownership = dict(station.ownership or {})
+    spent = list(ownership.get(UPGRADE_VOTE_SPENT_KEY) or [])
+    spent.append(
+        {
+            "vote_id": str(row.id),
+            "capex": capex,
+            "at": now.isoformat(),
+            "treasury_after": station.treasury_balance,
+        }
+    )
+    ownership[UPGRADE_VOTE_SPENT_KEY] = spent
+    station.ownership = ownership
+    flag_modified(station, "ownership")
+    db.flush()
+
+    outcome["execution"] = {
+        "action": "debit_capex",
+        "success": True,
+        "capex": capex,
+        "treasury_balance": station.treasury_balance,
+    }
+    row.outcome = outcome
+    flag_modified(row, "outcome")
+
+
 def _maybe_resolve_row(
     db: Session,
     station: Station,
@@ -362,6 +429,8 @@ def _maybe_resolve_row(
     row.outcome = outcome
     flag_modified(row, "outcome")
     _apply_passed_vote(db, station, row, outcome, now=now)
+    if row.status == "passed" and row.vote_type == "upgrade":
+        _apply_passed_upgrade_spend(db, station, row, now)
 
 
 def cast_governance_vote(
