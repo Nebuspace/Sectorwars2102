@@ -38,6 +38,7 @@ import { miningAPI, navAPI, playerAPI, type NavChartResponse, sectorAPI, type Se
 import NearestAmRefineryOverlay from '../mining/NearestAmRefineryOverlay';
 import AsteroidDepletionOverlay from '../mining/AsteroidDepletionOverlay';
 import HarvestYieldPreview, { HARVEST_GATE_COPY, type HarvestGateState } from '../mining/HarvestYieldPreview';
+import { deriveSectorContacts } from '../tactical/contactClassification';
 import { projectedWarpBearing, subscribeWarpDepart, WARP_TURN_MS } from '../../services/warpCinematicBus';
 import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import { TurnsIcon } from '../icons/TurnsIcon';
@@ -895,46 +896,11 @@ const GameDashboardInner: React.FC = () => {
     await Promise.allSettled([exploreCurrentLocation(), getAvailableMoves()]);
   };
 
-  // COMMS contacts: merge live WebSocket presence with the sector snapshot
-  // from the API (players_present), excluding ourselves, de-duplicated.
-  const sectorContacts = useMemo(() => {
-    const contacts = new Map<string, any>();
-    const addContact = (contact: any) => {
-      if (!contact) return;
-      // Real players surface twice — once from live WS presence (keyed only
-      // by user_id) and once from the API snapshot (carries player_id +
-      // username, the hailable form). Keying real players on a normalized
-      // (lowercased) username collapses both into one row; NPC presence
-      // entries carry their NPCCharacter id in player_id and have no stable
-      // username, so key those on player_id to keep same-named captains
-      // distinct. Fall back to user_id/id only when neither is available.
-      const key = contact.is_npc
-        ? String(contact.player_id || contact.user_id || contact.id || '')
-        : String(
-            (contact.username && contact.username.toLowerCase()) ||
-            contact.user_id || contact.id || ''
-          );
-      if (!key) return;
-      const isSelf = playerState && (
-        key === String(playerState.id) ||
-        (contact.username && playerState.username &&
-         contact.username.toLowerCase() === playerState.username.toLowerCase())
-      );
-      if (isSelf) return;
-      const existing = contacts.get(key);
-      if (!existing) {
-        contacts.set(key, contact);
-      } else if (!existing.player_id && contact.player_id) {
-        // Prefer the entry carrying player_id so the surviving row is
-        // hailable — merge the snapshot's player_id (and richer fields)
-        // over the bare WS-presence entry without losing either source.
-        contacts.set(key, { ...existing, ...contact });
-      }
-    };
-    sectorPlayers.forEach(addContact);
-    (currentSector?.players_present || []).forEach(addContact);
-    return Array.from(contacts.values());
-  }, [sectorPlayers, currentSector?.players_present, playerState]);
+  // COMMS contacts: shared merge of WS presence + sector snapshot (see contactClassification.ts).
+  const sectorContacts = useMemo(
+    () => deriveSectorContacts(sectorPlayers, currentSector?.players_present, playerState),
+    [sectorPlayers, currentSector?.players_present, playerState]
+  );
 
   // Ships present in the sector for the windshield viewport — the API snapshot
   // entries that carry ship telemetry (ship_id/ship_name/ship_type), excluding
