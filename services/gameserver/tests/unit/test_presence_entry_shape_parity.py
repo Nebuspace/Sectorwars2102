@@ -38,10 +38,15 @@ def _movement_service_call(player, *, arrived_at):
         ship_type=player.current_ship.type.name if player.current_ship else None,
         team_id=player.team_id,
         arrived_at=arrived_at,
+        attack_turn_cost=(
+            getattr(player.current_ship, "attack_turn_cost", None)
+            if player.current_ship
+            else None
+        ),
     )
 
 
-def _heal_pass_call(pid, username, ship_id, team_id, ship_name, ship_type_enum, *, arrived_at):
+def _heal_pass_call(pid, username, ship_id, team_id, ship_name, ship_type_enum, *, arrived_at, attack_turn_cost=None):
     """Mirrors _heal_missing_or_poseless_presence_sync's own call site
     verbatim -- the heal loop unpacks raw SQL-row tuples (not a loaded
     Player/Ship ORM instance), so ship_type needs its own `.name` resolve
@@ -54,6 +59,7 @@ def _heal_pass_call(pid, username, ship_id, team_id, ship_name, ship_type_enum, 
         ship_type=ship_type_enum.name if ship_type_enum else None,
         team_id=team_id,
         arrived_at=arrived_at,
+        attack_turn_cost=attack_turn_cost,
     )
 
 
@@ -65,7 +71,11 @@ class TestHealedEntryMatchesOrganicArrivalEntry:
         team_id = uuid.uuid4()
         frozen_now = datetime(2026, 7, 16, 12, 0, 0, tzinfo=timezone.utc)
 
-        ship = SimpleNamespace(name="Nomad", type=SimpleNamespace(name="LIGHT_FREIGHTER"))
+        ship = SimpleNamespace(
+            name="Nomad",
+            type=SimpleNamespace(name="LIGHT_FREIGHTER"),
+            attack_turn_cost=20,
+        )
         player = SimpleNamespace(
             id=pid, username="sweepclean", current_ship_id=ship_id,
             current_ship=ship, team_id=team_id,
@@ -75,6 +85,7 @@ class TestHealedEntryMatchesOrganicArrivalEntry:
         healed = _heal_pass_call(
             pid, "sweepclean", ship_id, team_id, "Nomad",
             SimpleNamespace(name="LIGHT_FREIGHTER"), arrived_at=frozen_now,
+            attack_turn_cost=20,
         )
 
         assert set(organic.keys()) == set(healed.keys())
@@ -84,6 +95,7 @@ class TestHealedEntryMatchesOrganicArrivalEntry:
         assert healed["ship_type"] != "None"
         assert healed["ship_name"] == "Nomad"
         assert healed["ship_type"] == "LIGHT_FREIGHTER"
+        assert healed["attack_turn_cost"] == 20
 
     def test_key_set_and_value_equality_player_with_no_ship(self) -> None:
         """State Y: a player with no current ship (e.g. mid-eject) -- the
@@ -112,6 +124,7 @@ class TestHealedEntryMatchesOrganicArrivalEntry:
         assert healed["ship_name"] is None
         assert healed["ship_type"] is None
         assert healed["ship_id"] is None
+        assert healed["attack_turn_cost"] is None
 
     def test_key_set_and_value_equality_no_team(self) -> None:
         """State Z: a ship but no team -- team_id None fallback parity."""
@@ -119,7 +132,11 @@ class TestHealedEntryMatchesOrganicArrivalEntry:
         ship_id = uuid.uuid4()
         frozen_now = datetime(2026, 7, 16, 12, 0, 0, tzinfo=timezone.utc)
 
-        ship = SimpleNamespace(name="Rustbucket", type=SimpleNamespace(name="ESCAPE_POD"))
+        ship = SimpleNamespace(
+            name="Rustbucket",
+            type=SimpleNamespace(name="ESCAPE_POD"),
+            attack_turn_cost=10000,
+        )
         player = SimpleNamespace(
             id=pid, username="lonewolf", current_ship_id=ship_id,
             current_ship=ship, team_id=None,
@@ -129,8 +146,10 @@ class TestHealedEntryMatchesOrganicArrivalEntry:
         healed = _heal_pass_call(
             pid, "lonewolf", ship_id, None, "Rustbucket",
             SimpleNamespace(name="ESCAPE_POD"), arrived_at=frozen_now,
+            attack_turn_cost=10000,
         )
 
         assert set(organic.keys()) == set(healed.keys())
         assert organic == healed
         assert healed["team_id"] is None
+        assert healed["attack_turn_cost"] == 10000
