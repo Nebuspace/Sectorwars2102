@@ -1,5 +1,6 @@
 from typing import Dict, Any, List
 from uuid import UUID
+import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -15,6 +16,9 @@ from src.services.ranking_service import RankingService
 from src.services.ship_service import ShipService
 from src.services.bounty_service import BountyService
 from src.services import turn_service
+from src.services.ship_ownership_query import owned_ships_filter
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/player",
@@ -75,8 +79,8 @@ class ShipResponse(BaseModel):
     mining_laser_level: int | None = None
     # ship-registry.md "Hatch pin lock": "The owner sees it in their ship
     # panel from minute one." Populated ONLY on this owner-scoped listing
-    # (GET /players/ships already filters Ship.owner_id == the caller) --
-    # never add this field to a response shape another player's client can
+    # (GET /player/ships filters via owned_ships_filter / registered_owner_id)
+    # -- never add this field to a response shape another player's client can
     # see, since it's the boarding secret for the ship.
     hatch_pin_code: str | None = None
 
@@ -186,6 +190,10 @@ class SectorResponse(BaseModel):
     # Audit-27 #1: whether this SectorType.ANOMALY's one-time investigate
     # reward has been claimed (False for non-ANOMALY / uninvestigated).
     anomaly_investigated: bool = False
+    # LEG-333 / ship-registry.md:179 — in-progress salvage breaks peers see.
+    salvage_breaks: List[Any] = []
+    # LEG-427 — asteroid depletion overlay (None when not ASTEROID_FIELD).
+    asteroid_depletion: Dict[str, Any] | None = None
 
 class MoveResponse(BaseModel):
     success: bool
@@ -200,6 +208,10 @@ class MoveResponse(BaseModel):
     tunnel_events: list = []
 
 class MoveOption(BaseModel):
+    # Sector row UUID (mirrors SectorResponse.id) for fleet move-as-one /
+    # any client that must POST a destination UUID without a second lookup.
+    # Numeric global `sector_id` stays the player/move / NAV identity.
+    id: str | None = None
     sector_id: int
     sector_number: int | None = None  # Display number
     name: str
@@ -307,8 +319,12 @@ async def get_player_ships(
     player: Player = Depends(get_current_player),
     db: Session = Depends(get_db)
 ):
-    """Get all ships owned by the current player"""
-    ships = db.query(Ship).filter(Ship.owner_id == player.id).all()
+    """Get all ships owned by the current player.
+
+    Ownership is ``registered_owner_id`` (canon); ``owner_id`` is only a
+    fallback when ``registered_owner_id`` was never backfilled (NULL).
+    """
+    ships = db.query(Ship).filter(owned_ships_filter(player.id)).all()
 
     ship_responses = []
     for ship in ships:
@@ -481,6 +497,11 @@ async def repair_player_ship(
     if service_mult != 1.0:
         cost = int(round(cost * service_mult))
 
+    from src.services.profession_service import space_engineer_repair_multiplier_for_station
+    repair_mult = space_engineer_repair_multiplier_for_station(db, locked_player.id, station)
+    if repair_mult != 1.0:
+        cost = int(round(cost / repair_mult))
+
     if locked_player.credits < cost:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -556,6 +577,9 @@ async def get_current_sector(
     from src.services import intrasystem_movement_service as isp
     present = isp.enrich_presence_with_live_pose(db, list(sector.players_present or []))
 
+    from src.services.ship_registry_service import list_sector_salvage_breaks
+    salvage_breaks = list_sector_salvage_breaks(db, sector.sector_id)
+
     # Special-formation discovery + disclosure (WO-CA; per-player since
     # ADR-0045). Viewing the current sector scans it: any formation anchored
     # here or whose interior includes this sector is first-observed BY THIS
@@ -590,6 +614,9 @@ async def get_current_sector(
             is_investigated=is_formation_investigated(f) if discovered else False,
         ))
 
+    # LEG-427: server-authoritative depletion band + replenish ETA for overlay.
+    from src.services.mining_service import build_asteroid_depletion_readout
+
     return SectorResponse(
         id=str(sector.id),
         sector_id=sector.sector_id,
@@ -608,6 +635,8 @@ async def get_current_sector(
         z_coord=sector.z_coord,
         special_formations=formation_responses,
         anomaly_investigated=is_anomaly_investigated(sector),
+        salvage_breaks=salvage_breaks,
+        asteroid_depletion=build_asteroid_depletion_readout(sector),
     )
 
 @router.post("/formations/{formation_id}/investigate", response_model=FormationInvestigateResponse)
@@ -712,6 +741,30 @@ async def move_to_sector(
             detail=result["message"]
         )
 
+    # LEG-338: durable + Redis activity for sector_move / warp
+    try:
+        from src.services.player_activity_service import (
+            ActivityEventType,
+            get_player_activity_service,
+        )
+        event_type = (
+            ActivityEventType.WARP
+            if result.get("travel_mode") == "warp"
+            else ActivityEventType.SECTOR_MOVE
+        )
+        activity_service = await get_player_activity_service()
+        await activity_service.track_activity(
+            str(player.id),
+            event_type,
+            {
+                "sector_id": sector_id,
+                "travel_mode": result.get("travel_mode", "sector"),
+            },
+            db=db,
+        )
+    except Exception:
+        logger.warning("activity tracking failed (move)", exc_info=True)
+
     # Return the movement response with turn cost and remaining turns.
     # Forward the encounter/tunnel events the MovementService attached to its
     # result — without these the response_model silently strips them, hiding
@@ -780,6 +833,7 @@ async def get_available_moves(
         region_name = (sector.region.display_name or sector.region.name) if sector and sector.region else None
 
         warps.append(MoveOption(
+            id=str(sector.id) if sector is not None else None,
             sector_id=warp["sector_id"],
             sector_number=sector.sector_number if sector and sector.sector_number else warp["sector_id"],
             name=warp["name"],
@@ -802,6 +856,7 @@ async def get_available_moves(
         region_name = (sector.region.display_name or sector.region.name) if sector and sector.region else None
 
         tunnels.append(MoveOption(
+            id=str(sector.id) if sector is not None else None,
             sector_id=tunnel["sector_id"],
             sector_number=sector.sector_number if sector and sector.sector_number else tunnel["sector_id"],
             name=tunnel["name"],

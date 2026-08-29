@@ -15,8 +15,8 @@ import logging
 import random
 from typing import Optional
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import or_
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import or_, desc, nullslast
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field, model_validator
 
@@ -75,6 +75,29 @@ class CombatStatusResponse(BaseModel):
     combatDuration: Optional[int] = None
     creditsLooted: Optional[int] = None
     cargoLooted: list[str] = Field(default_factory=list)
+
+
+class CombatHistoryOpponent(BaseModel):
+    """Opponent summary for a combat history row."""
+    id: Optional[str] = Field(None, description="Player UUID when the opponent is a player")
+    displayName: str
+
+
+class CombatHistoryItem(BaseModel):
+    """Paginated combat history summary for the authenticated player."""
+    combatId: str
+    endedAt: Optional[str] = None
+    outcome: str
+    opponent: CombatHistoryOpponent
+    sectorLabel: str
+    role: str = Field(..., description="'attacker' or 'defender'")
+
+
+class CombatHistoryResponse(BaseModel):
+    items: list[CombatHistoryItem]
+    total: int
+    limit: int
+    offset: int
 
 
 def _execute_planet_assault(db: Session, player: Player, planet_id: UUID) -> dict:
@@ -157,7 +180,82 @@ def _get_combat_log_for_player(db: Session, combat_id_raw: str, player: Player) 
     return combat
 
 
+def _sector_label_for_combat(db: Session, combat: CombatLog) -> str:
+    """Human-readable sector label for a combat log row."""
+    if combat.sector_id is None:
+        return "Unknown"
+    sector = db.query(Sector).filter(Sector.sector_id == combat.sector_id).first()
+    if sector and sector.name:
+        return f"{sector.name} ({combat.sector_id})"
+    return str(combat.sector_id)
+
+
+def _opponent_for_combat(db: Session, combat: CombatLog, player_id: UUID) -> CombatHistoryOpponent:
+    """Resolve opponent display name/id from the caller's perspective."""
+    is_attacker = combat.attacker_id == player_id
+    opponent_id = combat.defender_id if is_attacker else combat.attacker_id
+    if opponent_id:
+        opponent = db.query(Player).filter(Player.id == opponent_id).first()
+        display = (
+            opponent.username
+            if opponent and opponent.username
+            else (
+                combat.defender_ship_name if is_attacker else combat.attacker_ship_name
+            )
+            or "Unknown"
+        )
+        return CombatHistoryOpponent(id=str(opponent_id), displayName=display)
+
+    ship_name = combat.defender_ship_name if is_attacker else combat.attacker_ship_name
+    return CombatHistoryOpponent(id=None, displayName=ship_name or "Unknown")
+
+
 # Combat Endpoints
+
+@router.get("/history", response_model=CombatHistoryResponse)
+async def get_combat_history(
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """List combats where the caller was attacker or defender (newest first)."""
+    base_q = db.query(CombatLog).filter(
+        or_(
+            CombatLog.attacker_id == player.id,
+            CombatLog.defender_id == player.id,
+        )
+    )
+    total = base_q.count()
+    logs = (
+        base_q.order_by(
+            nullslast(desc(CombatLog.ended_at)),
+            desc(CombatLog.timestamp),
+        )
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    items: list[CombatHistoryItem] = []
+    for log in logs:
+        ended = log.ended_at or log.timestamp
+        role = "attacker" if log.attacker_id == player.id else "defender"
+        items.append(
+            CombatHistoryItem(
+                combatId=str(log.id),
+                endedAt=ended.isoformat() if ended else None,
+                outcome=log.outcome,
+                opponent=_opponent_for_combat(db, log, player.id),
+                sectorLabel=_sector_label_for_combat(db, log),
+                role=role,
+            )
+        )
+
+    return CombatHistoryResponse(items=items, total=total, limit=limit, offset=offset)
+
+
+# Combat Endpoints (engage + status)
 
 @router.post("/engage", response_model=CombatEngageResponse)
 async def engage_combat(
@@ -264,6 +362,36 @@ async def engage_combat(
 
     if not result.get("success"):
         return CombatEngageResponse(status="error", message=result.get("message", "Combat failed"))
+
+    # LEG-338: combat_attack (+ combat_defend when PvP defender known)
+    try:
+        from src.services.player_activity_service import (
+            ActivityEventType,
+            get_player_activity_service,
+        )
+        activity_service = await get_player_activity_service()
+        await activity_service.track_activity(
+            str(player.id),
+            ActivityEventType.COMBAT_ATTACK,
+            {
+                "sector_id": player.current_sector_id,
+                "target_type": request.targetType,
+            },
+            db=db,
+        )
+        defender_id = result.get("defender_id")
+        if defender_id and str(defender_id) != str(player.id):
+            await activity_service.track_activity(
+                str(defender_id),
+                ActivityEventType.COMBAT_DEFEND,
+                {
+                    "sector_id": player.current_sector_id,
+                    "target_type": request.targetType,
+                },
+                db=db,
+            )
+    except Exception:
+        logger.warning("activity tracking failed (combat engage)", exc_info=True)
 
     return CombatEngageResponse(
         combatId=result.get("combat_log_id"),

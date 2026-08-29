@@ -106,14 +106,13 @@ from src.models.contract import (
     ContractType,
 )
 
-# WO-CONTRACT-3-NPCGEN-TYPES: FactionType (below) + apply_faction_rep_delta
-# (bottom of the services import block below) are consumed by complete()'s
-# hazardous_transport completion-penalty branch ONLY -- see that function's
-# own comment. Top-level import mirrors contraband_service.py's own
-# established convention for this exact helper (no circular-import risk:
-# faction_service.py has no contract_service/contract_dispute/contract_
-# escrow_core dependency).
-from src.models.faction import FactionType
+# WO-CONTRACT-3-NPCGEN-TYPES / LEG-122: FactionType + apply_faction_rep_delta
+# are consumed by complete()'s hazardous_transport reputation_penalty branch
+# and the NPC reputation_reward reader. Top-level import mirrors
+# contraband_service.py's established convention for this helper (no
+# circular-import risk: faction_service.py has no contract_service /
+# contract_dispute / contract_escrow_core dependency).
+from src.models.faction import Faction, FactionType
 from src.models.resource import Resource
 from src.models.station import Station, StationStatus
 from src.services.contract_bulk import deliver as deliver
@@ -527,6 +526,34 @@ def complete(
             db, player_id, FactionType.FEDERATION, int(contract.reputation_penalty),
             reason="hazardous_transport_contract_completed",
         )
+
+    # LEG-122: first real READER of `reputation_reward` on NPC complete.
+    # Canon (contracts.md § Reputation effects): completing NPC contracts
+    # boosts standing with the issuing faction; magnitudes are frozen on
+    # the row at posting — do not invent numbers here. Same sync,
+    # flush-only `apply_faction_rep_delta` rail as the hazardous_transport
+    # penalty above. `_is_reputation_penalty_paused` does NOT gate the
+    # penalty path today, so reward mirrors that (no pause invent).
+    # Player-posted mutual trader-rep bump stays out of scope.
+    reward = getattr(contract, "reputation_reward", None)
+    if (
+        getattr(contract, "issuer_type", None) == ContractIssuerType.NPC
+        and reward
+    ):
+        faction = getattr(contract, "faction", None)
+        if faction is None:
+            faction_id = getattr(contract, "faction_id", None)
+            if faction_id is not None:
+                faction = db.query(Faction).filter(Faction.id == faction_id).first()
+        if faction is not None and getattr(faction, "faction_type", None) is not None:
+            apply_faction_rep_delta(
+                db,
+                player_id,
+                faction.faction_type,
+                int(reward),
+                reason="npc_contract_reputation_reward",
+                faction_name=getattr(faction, "name", None),
+            )
 
     db.flush()
 

@@ -58,6 +58,38 @@ def _status_for_reason(reason) -> int:
     return status.HTTP_400_BAD_REQUEST
 
 
+@router.get("/yield-preview")
+async def preview_yield_band(
+    ship_id: str,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Read-only yield band for current sector × Mining Laser (mining.md:252).
+
+    Returns matrix ``ore_lo``/``ore_hi``, ``richness_tier``, ``laser_level``,
+    ``depletion_modifier``, and ``turns_cost`` (5) without spending turns.
+    """
+    from uuid import UUID
+
+    try:
+        sid = UUID(ship_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="invalid_ship_id",
+        ) from exc
+
+    result = MiningService(db).preview_yield(sid, player.id)
+    if not result.get("success"):
+        db.rollback()
+        reason = result.get("reason")
+        raise HTTPException(
+            status_code=_status_for_reason(reason),
+            detail=reason or "Yield preview failed",
+        )
+    return result
+
+
 @router.post("/harvest")
 async def harvest_asteroids(
     request: HarvestRequest,
@@ -131,6 +163,29 @@ async def get_harvest_status(
     }
 
 
+@router.get(
+    "/licenses",
+    summary="List caller's claim licenses (active + recently expired)",
+    response_description=(
+        "Owner-scoped ClaimLicense rows: active, or expired within the last "
+        "24 real-time hours (one ClaimLicense duration)."
+    ),
+)
+async def list_claim_licenses(
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """List the authenticated player's AM claim licenses for the license panel.
+
+    Includes **active** licenses and those **recently expired** — ``expires_at``
+    within the last 24 hours (one ClaimLicense duration; see
+    ``RECENTLY_EXPIRED_LICENSE_HOURS`` / ``LICENSE_DURATION_HOURS`` in
+    ``mining_service``). Older expired rows are omitted. Never returns another
+    player's licenses (FEATURES/economy/mining.md § license panel; LEG-435).
+    """
+    return MiningService(db).list_player_licenses(player.id)
+
+
 @router.post("/license")
 async def purchase_claim_license(
     request: LicenseRequest,
@@ -198,3 +253,21 @@ async def upgrade_mining_laser(
         db.rollback()
         raise
     return result
+
+
+@router.get(
+    "/nearest-am-refinery",
+    summary="Nearest AM-flagged refinery + ore buy price",
+    description=(
+        "ARIA market-intelligence overlay helper (mining.md:254). Returns the "
+        "nearest Astral Mining Consortium station with refining_facility from "
+        "the caller's current sector, plus current ore buy_price from tip "
+        "trading math. Honest empty when none reachable."
+    ),
+)
+async def nearest_am_refinery(
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Owner-scoped nearest AM refinery finder (LEG-430)."""
+    return MiningService(db).find_nearest_am_refinery(player.id)

@@ -106,11 +106,8 @@ TECH_NODES: Dict[str, Dict[str, Any]] = {
         "effect": {"kind": "content_unlock", "key": "planetary_defense_grid"},
     },
 
-    # --- Inert PLACEHOLDER nodes (defined-but-unwired; reserved for K1b) -------
-    # They carry their eventual effect shape so K1b wires consumers (grid clear,
-    # hazard tools, terraform intensity) without reshaping the catalog. In K0 the
-    # readers (has_tool / gate_value / tech_modifier) recognise them but no game
-    # system consults those readers yet — genuinely inert.
+    # --- Capability nodes (wired at point-of-use via has_tool / gate_value /
+    # tech_modifier — never written onto planet/ship rows).
     "t.exploration.survey.1": {
         "id": "t.exploration.survey.1",
         "branch": "exploration",
@@ -118,7 +115,7 @@ TECH_NODES: Dict[str, Dict[str, Any]] = {
         "name": "Orbital Survey Suite",
         "cost": {"rp": 30},
         "prereqs": [FREE_ROOT_ID],
-        # Reserved for K1b grid fog/reveal — a capability flag (has_tool).
+        # Grid fog/reveal — has_tool('grid_survey') on GET /grid + POST /grid/survey.
         "effect": {"kind": "tool", "key": "grid_survey"},
     },
     "t.terraforming.hazard_clear.1": {
@@ -128,7 +125,7 @@ TECH_NODES: Dict[str, Dict[str, Any]] = {
         "name": "Hazard Remediation",
         "cost": {"rp": 60},
         "prereqs": [FREE_ROOT_ID],
-        # Reserved for K1b: tool-gates clearing radiation/hazard plots.
+        # Tool-gates POST /grid/clear-hazard (radiation/hazard plots).
         "effect": {"kind": "tool", "key": "hazard_clear"},
     },
     "t.terraforming.plot_clear.1": {
@@ -138,7 +135,7 @@ TECH_NODES: Dict[str, Dict[str, Any]] = {
         "name": "Land Clearance",
         "cost": {"rp": 40},
         "prereqs": [FREE_ROOT_ID],
-        # Reserved for K1b: tool-gates clearing uncleared land plots.
+        # Tool-gates POST /grid/clear-plot (uncleared non-hazard land).
         "effect": {"kind": "tool", "key": "plot_clear"},
     },
     "t.terraforming.intensity.1": {
@@ -148,8 +145,8 @@ TECH_NODES: Dict[str, Dict[str, Any]] = {
         "name": "Aggressive Terraforming",
         "cost": {"rp": 90},
         "prereqs": ["t.terraforming.plot_clear.1"],
-        # Reserved for K1b: gates terraform intensity ABOVE Conservative. The
-        # gate_value reader returns this magnitude when unlocked, else the floor.
+        # Gates terraform intensity ABOVE standard (settle-tick ceiling).
+        # gate_value returns this magnitude when unlocked, else the floor.
         "effect": {"kind": "gate", "key": "terraform_intensity", "gate": 2},
     },
     "t.production.yield.1": {
@@ -159,8 +156,7 @@ TECH_NODES: Dict[str, Dict[str, Any]] = {
         "name": "Process Optimization",
         "cost": {"rp": 45},
         "prereqs": [FREE_ROOT_ID],
-        # Reserved for K1b/T1: bends a production curve at point-of-use. Inert in
-        # K0 (no consumer calls tech_modifier yet).
+        # Bends planetary commodity production at point-of-use (+5%).
         "effect": {"kind": "modifier", "key": "production_rate", "magnitude": 0.05},
     },
     "t.ships.efficiency.1": {
@@ -170,7 +166,7 @@ TECH_NODES: Dict[str, Dict[str, Any]] = {
         "name": "Drive Efficiency",
         "cost": {"rp": 45},
         "prereqs": [FREE_ROOT_ID],
-        # Reserved: bends a movement/turn curve at point-of-use. Inert in K0.
+        # Bends warp turn-cost at point-of-use (−5%).
         "effect": {"kind": "modifier", "key": "turn_cost", "magnitude": -0.05},
     },
 }

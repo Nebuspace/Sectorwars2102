@@ -382,6 +382,10 @@ def abandon_planet(db: Session, planet: Planet, owner: Player) -> Dict[str, Any]
     if _siege_blocks_abandon(planet):
         raise ValueError("under_siege")
 
+    # LEG-159 / LEG-DEC-15: pending voluntary transfer blocks abandon.
+    from src.services.planet_ownership_transfer_service import assert_abandon_allowed
+    assert_abandon_allowed(planet)
+
     # If the abandoning owner was standing on the planet, lift them off (the
     # planet is about to become unowned; a stale landed pointer would be wrong).
     if owner.current_planet_id == planet.id:

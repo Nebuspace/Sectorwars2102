@@ -270,7 +270,7 @@ async def claim_ship(
                 ship_choice,
                 claim.dialogue_response
             )
-            logger.info(f"Ship claim recorded successfully")
+            logger.info("Ship claim recorded successfully")
         except Exception as record_error:
             logger.error(f"Failed to record ship claim: {str(record_error)}", exc_info=True)
             raise HTTPException(
@@ -280,7 +280,7 @@ async def claim_ship(
 
         # ESCAPE POD BYPASS: If claiming an escape pod, grant it immediately without interrogation
         if ship_choice == ShipChoice.ESCAPE_POD:
-            logger.info(f"Escape pod claimed - bypassing interrogation, granting immediately")
+            logger.info("Escape pod claimed - bypassing interrogation, granting immediately")
             try:
                 # Auto-approve with minimal questioning
                 outcome_data = await service.auto_approve_escape_pod(session.id)
