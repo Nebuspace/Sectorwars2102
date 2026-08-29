@@ -182,16 +182,16 @@ class TestFederationSquadTiers:
         return SimpleNamespace(personal_reputation=rep)
 
     def test_low_tier_single_officer(self):
-        assert _federation_squad_size(self._player(-100)) == (1, False)
+        assert _federation_squad_size(self._player(-100)) == (1, False, 0)
 
     def test_medium_tier(self):
-        assert _federation_squad_size(self._player(-300)) == (2, False)
+        assert _federation_squad_size(self._player(-300)) == (2, False, 0)
 
     def test_high_tier(self):
-        assert _federation_squad_size(self._player(-600)) == (3, False)
+        assert _federation_squad_size(self._player(-600)) == (3, False, 1)
 
     def test_public_enemy_brings_the_captain(self):
-        assert _federation_squad_size(self._player(-900)) == (3, True)
+        assert _federation_squad_size(self._player(-900)) == (3, True, 2)
 
 
 # ---------------------------------------------------------------------------
