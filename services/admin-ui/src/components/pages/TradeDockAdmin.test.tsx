@@ -147,7 +147,7 @@ describe('TradeDockAdmin', () => {
     expect(screen.getByLabelText('Force-cancel reservation r1')).toBeTruthy();
   });
 
-  it('force-cancel posts tip path and toasts refund credits', async () => {
+  it('force-cancel posts tip path and toasts refund credits after inline confirm (ADR-0093)', async () => {
     await openReservationDetail();
     vi.mocked(api.post).mockResolvedValue({
       data: {
@@ -157,6 +157,11 @@ describe('TradeDockAdmin', () => {
     });
 
     fireEvent.click(screen.getByLabelText('Force-cancel reservation r1'));
+    expect(api.post).not.toHaveBeenCalled();
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: /Confirm\? · ₡100,000 refund/ })
+    );
 
     await waitFor(() => {
       expect(api.post).toHaveBeenCalledWith(
@@ -168,6 +173,84 @@ describe('TradeDockAdmin', () => {
     );
   });
 
+  it('force-cancels at or below ₡1,000 refund in one click (ADR-0093)', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.endsWith('/admin/construction/tradedocks')) {
+        return {
+          data: {
+            tradedocks: [
+              {
+                station_id: 'st1',
+                name: 'TradeDock Prime',
+                tradedock_tier: 'A',
+                sector_id: 50,
+              },
+            ],
+          },
+        };
+      }
+      if (url.includes('/admin/construction/tradedocks/st1')) {
+        return {
+          data: {
+            station_id: 'st1',
+            station_name: 'TradeDock Prime',
+            tradedock_tier: 'A',
+            slips: {
+              standard: { capacity: 10, in_use: 1 },
+              specialized: { capacity: 2, in_use: 0 },
+            },
+            queue_length: 0,
+            queue: [],
+            reservations: [
+              {
+                id: 'r-low',
+                ship_type: 'SCOUT',
+                state: 'queued',
+                deposit_paid: 1000,
+              },
+            ],
+          },
+        };
+      }
+      if (url.includes('/admin/construction/reservations/r-low')) {
+        return {
+          data: {
+            id: 'r-low',
+            ship_type: 'SCOUT',
+            state: 'queued',
+            deposit_paid: 1000,
+          },
+        };
+      }
+      return { data: {} };
+    });
+
+    render(<TradeDockAdmin />);
+
+    await waitFor(() => {
+      expect(api.get).toHaveBeenCalledWith('/api/v1/admin/construction/tradedocks');
+    });
+
+    fireEvent.click(await screen.findByLabelText('Open reservation r-low'));
+
+    await waitFor(() => {
+      expect(api.get).toHaveBeenCalledWith('/api/v1/admin/construction/reservations/r-low');
+    });
+
+    vi.mocked(api.post).mockResolvedValue({
+      data: { message: 'Reservation force-cancelled — 1,000 credits refunded', refund: 1000 },
+    });
+
+    fireEvent.click(screen.getByLabelText('Force-cancel reservation r-low'));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/construction/reservations/r-low/force-cancel'
+      );
+    });
+    expect(screen.queryByRole('button', { name: /Confirm\?/ })).toBeNull();
+  });
+
   it('force-cancel 403 surfaces formatAdminApiError scope helper copy', async () => {
     await openReservationDetail();
     vi.mocked(api.post).mockRejectedValue({
@@ -175,6 +258,9 @@ describe('TradeDockAdmin', () => {
     });
 
     fireEvent.click(screen.getByLabelText('Force-cancel reservation r1'));
+    fireEvent.click(
+      await screen.findByRole('button', { name: /Confirm\? · ₡100,000 refund/ })
+    );
 
     await waitFor(() => {
       expect(toastError).toHaveBeenCalled();
@@ -192,6 +278,9 @@ describe('TradeDockAdmin', () => {
     });
 
     fireEvent.click(screen.getByLabelText('Force-cancel reservation r1'));
+    fireEvent.click(
+      await screen.findByRole('button', { name: /Confirm\? · ₡100,000 refund/ })
+    );
 
     await waitFor(() => {
       expect(toastError).toHaveBeenCalledWith(

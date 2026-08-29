@@ -171,3 +171,70 @@ describe('WarpTunnelsManager mutation errors (LEG-2611)', () => {
     expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/rate limit/i));
   });
 });
+
+describe('WarpTunnelsManager modal save errors (LEG-2761)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.put).mockReset();
+    toastError.mockReset();
+    mockSuccessfulLoad();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('surfaces formatAdminApiError on modal save PUT 403', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.put).mockRejectedValue(
+      axiosError(403, 'Missing scope admin.universe.warp'),
+    );
+
+    render(<WarpTunnelsManager />);
+    await waitFor(() => expect(screen.getByText('Test Tunnel')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: /^Edit$/i }));
+    await waitFor(() => expect(screen.getByRole('heading', { name: /Edit Tunnel: Test Tunnel/i })).toBeTruthy());
+
+    const energyInput = screen.getByDisplayValue('100');
+    await user.clear(energyInput);
+    await user.type(energyInput, '150');
+    await user.click(screen.getByRole('button', { name: /Save Changes/i }));
+
+    await waitFor(() => {
+      expect(api.put).toHaveBeenCalledWith(
+        `/api/v1/admin/warp-tunnels/${sampleTunnel.id}`,
+        expect.objectContaining({ energy_cost: 150 }),
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(
+      expect.stringMatching(/Missing scope admin\.universe\.warp/i),
+    );
+    expect(toastError).not.toHaveBeenCalledWith(expect.stringMatching(/^Failed to update tunnel: update failed$/));
+  });
+
+  it('surfaces rate-limit copy on modal save PUT 429', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.put).mockRejectedValue(axiosError(429));
+
+    render(<WarpTunnelsManager />);
+    await waitFor(() => expect(screen.getByText('Test Tunnel')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: /^Edit$/i }));
+    await waitFor(() => expect(screen.getByRole('heading', { name: /Edit Tunnel: Test Tunnel/i })).toBeTruthy());
+
+    const energyInput = screen.getByDisplayValue('100');
+    await user.clear(energyInput);
+    await user.type(energyInput, '200');
+    await user.click(screen.getByRole('button', { name: /Save Changes/i }));
+
+    await waitFor(() => {
+      expect(api.put).toHaveBeenCalledWith(
+        `/api/v1/admin/warp-tunnels/${sampleTunnel.id}`,
+        expect.objectContaining({ energy_cost: 200 }),
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/rate limit/i));
+  });
+});

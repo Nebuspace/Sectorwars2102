@@ -1147,6 +1147,71 @@ class ConnectionManager:
 connection_manager = ConnectionManager()
 
 
+def enrich_ws_sector_players_medal_identity(
+    db: Any,
+    players: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """LEG-2654: batch-enrich WS sector_players rows with public medal identity.
+
+    Mirrors REST ``enrich_presence_with_live_pose`` and
+    ``team_service.get_team_members``: ``pinned_medal_id`` + ``medal_count``
+    via ``public_medal_identity``, respecting ``medal_privacy.show_count_publicly``.
+    Rows whose ``user_id`` lacks a resolvable ``player_id`` in connection
+    metadata pass through unchanged (``get_sector_players`` stays DB-free).
+    """
+    if not players:
+        return players
+
+    from sqlalchemy import func as sa_func
+
+    from src.models.medal import PlayerMedal
+    from src.models.player import Player
+    from src.services.medal_service import public_medal_identity
+
+    user_to_player: Dict[str, str] = {}
+    player_ids: List[Any] = []
+    for row in players:
+        user_id = row.get("user_id")
+        if not user_id:
+            continue
+        meta = connection_manager.connection_metadata.get(user_id, {})
+        pid = meta.get("user_data", {}).get("player_id")
+        if not pid:
+            continue
+        user_to_player[str(user_id)] = str(pid)
+        player_ids.append(pid)
+
+    if not player_ids:
+        return players
+
+    player_by_id = {
+        str(p.id): p for p in db.query(Player).filter(Player.id.in_(player_ids)).all()
+    }
+
+    medal_counts: Dict[str, int] = {}
+    for pid, n in (
+        db.query(PlayerMedal.player_id, sa_func.count(PlayerMedal.medal_id))
+        .filter(PlayerMedal.player_id.in_(player_ids))
+        .group_by(PlayerMedal.player_id)
+        .all()
+    ):
+        medal_counts[str(pid)] = int(n)
+
+    enriched: List[Dict[str, Any]] = []
+    for row in players:
+        out = dict(row)
+        pid = user_to_player.get(str(row.get("user_id")))
+        player_row = player_by_id.get(pid) if pid else None
+        if player_row is not None:
+            fields = public_medal_identity(
+                player_row, medal_count=medal_counts.get(pid, 0)
+            )
+            out["pinned_medal_id"] = fields["pinned_medal_id"]
+            out["medal_count"] = fields["medal_count"]
+        enriched.append(out)
+    return enriched
+
+
 async def handle_websocket_message(user_id: str, message_data: Dict[str, Any]):
     """Handle incoming WebSocket messages from clients"""
     message_type = message_data.get("type")
@@ -1267,6 +1332,17 @@ async def handle_websocket_message(user_id: str, message_data: Dict[str, Any]):
         current_sector = metadata.get("current_sector")
         if current_sector:
             players = connection_manager.get_sector_players(current_sector)
+            try:
+                from src.core.database import SessionLocal
+
+                with SessionLocal() as db:
+                    players = enrich_ws_sector_players_medal_identity(db, players)
+            except Exception:
+                logger.debug(
+                    "Skipped sector_players medal enrich for sector %s",
+                    current_sector,
+                    exc_info=True,
+                )
             await connection_manager.send_personal_message(user_id, {
                 "type": "sector_players",
                 "sector_id": current_sector,
