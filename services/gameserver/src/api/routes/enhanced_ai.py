@@ -999,6 +999,78 @@ async def get_aria_market_intelligence(
 
 
 @router.get(
+    "/memories/dump",
+    summary="Export your ARIA personal memory store",
+    description=(
+        "Owner-scoped data export of the caller's ARIA personal memory store "
+        "(aria-companion.md:173-175). Path is /memories/dump not /export so it "
+        "cannot collide with security.py _ADMIN_REPORT_MARKERS if this router "
+        "is ever mounted under /admin. Decrypts Tier-1 memories with the same "
+        "path as GET /ai/memories (no player-id parameter). Does not call "
+        "POST /ai/system/cleanup."
+    ),
+)
+async def export_aria_personal_store(
+    current_player: Player = Depends(get_current_player),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """JWT owner only — ``current_player.id`` is the sole filter."""
+    try:
+        from src.services.aria_personal_intelligence_service import (
+            get_aria_intelligence_service,
+        )
+
+        aria_service = get_aria_intelligence_service()
+        payload = await aria_service.export_personal_store(
+            str(current_player.id), db,
+        )
+        await db.commit()
+        return payload
+    except Exception as e:
+        logger.error(f"Error exporting ARIA personal store: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="ARIA memory export temporarily unavailable",
+        )
+
+
+@router.post(
+    "/memories/reset",
+    summary="Reset your ARIA personal data",
+    description=(
+        "Owner-scoped delete of the caller's ARIA personal tables listed in "
+        "aria-companion.md:169. Never a global cleanup — POST /ai/system/cleanup "
+        "is untouched."
+    ),
+)
+async def reset_aria_personal_store(
+    current_player: Player = Depends(get_current_player),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """JWT owner only — deletes rows for ``current_player.id`` only."""
+    try:
+        from src.services.aria_personal_intelligence_service import (
+            get_aria_intelligence_service,
+        )
+
+        aria_service = get_aria_intelligence_service()
+        deleted = await aria_service.reset_personal_store(
+            str(current_player.id), db,
+        )
+        await db.commit()
+        return {
+            "status": "success",
+            "deleted": deleted,
+        }
+    except Exception as e:
+        logger.error(f"Error resetting ARIA personal store: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="ARIA memory reset temporarily unavailable",
+        )
+
+
+@router.get(
     "/memories",
     response_model=List[ARIAMemoryOut],
     summary="Recall your own decrypted ARIA memories",
