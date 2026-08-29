@@ -1224,9 +1224,10 @@ class FleetService:
         flag_modified(battle, "battle_log")
 
         # Check for battle end conditions
+        # WO-FLEET-ROUND-INTEGRITY: _end_battle is the round's SOLE commit.
+        # Emit battle_round_complete after that commit (no pre-commit).
         if self._should_end_battle(battle, attacker, defender):
-            self.db.commit()
-            self._flush_fleet_moved_events()
+            end_result = self._end_battle(battle)
             self._emit_fleet_event(
                 "battle_round_complete",
                 {
@@ -1240,7 +1241,7 @@ class FleetService:
                     getattr(defender, "team_id", None),
                 ],
             )
-            return self._end_battle(battle)
+            return end_result
 
         # Progress battle phase based on round count
         if round_number > 5 and battle.phase == BattlePhase.ENGAGEMENT.value:
