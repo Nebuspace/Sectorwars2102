@@ -3,7 +3,7 @@ Message Service for handling player communication
 """
 
 from collections import defaultdict, deque
-from typing import Optional, Dict, Any, Deque
+from typing import Optional, Dict, Any, Deque, Iterable, List, Set, Tuple
 from datetime import datetime
 from time import monotonic
 from uuid import UUID, uuid4
@@ -42,6 +42,65 @@ THREAD_LIMIT_EXCEEDED = "thread_limit_exceeded"
 
 class MessageService:
     """Service for managing player messages"""
+
+    @staticmethod
+    def _enrich_message_dicts_with_sender_medals(
+        db: Session,
+        messages: Iterable[Message],
+        message_dicts: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Attach sender_pinned_medal_id + sender_medal_count on message rows.
+
+        Batch-enriches distinct senders via ``public_medal_identity`` (same
+        privacy rules as team roster / discovery surfaces).
+        """
+        from sqlalchemy import func
+
+        from src.models.medal import PlayerMedal
+        from src.services.medal_service import public_medal_identity
+
+        msg_list = list(messages)
+        if not msg_list or not message_dicts:
+            return message_dicts
+
+        senders_by_id: Dict[UUID, Player] = {}
+        sender_ids: List[UUID] = []
+        for msg in msg_list:
+            sid = msg.sender_id
+            if sid is None or sid in senders_by_id:
+                continue
+            sender_ids.append(sid)
+            if getattr(msg, "sender", None):
+                senders_by_id[sid] = msg.sender
+
+        missing = [sid for sid in sender_ids if sid not in senders_by_id]
+        if missing:
+            for player in db.query(Player).filter(Player.id.in_(missing)).all():
+                senders_by_id[player.id] = player
+
+        counts: Dict[UUID, int] = {}
+        if sender_ids:
+            rows = (
+                db.query(PlayerMedal.player_id, func.count(PlayerMedal.medal_id))
+                .filter(PlayerMedal.player_id.in_(sender_ids))
+                .group_by(PlayerMedal.player_id)
+                .all()
+            )
+            counts = {pid: int(n) for pid, n in rows}
+
+        for msg_dict, msg in zip(message_dicts, msg_list):
+            player = senders_by_id.get(msg.sender_id)
+            if not player:
+                msg_dict["sender_pinned_medal_id"] = None
+                msg_dict["sender_medal_count"] = None
+                continue
+            identity = public_medal_identity(
+                player, medal_count=counts.get(msg.sender_id, 0)
+            )
+            msg_dict["sender_pinned_medal_id"] = identity["pinned_medal_id"]
+            msg_dict["sender_medal_count"] = identity["medal_count"]
+
+        return message_dicts
 
     @staticmethod
     def check_send_rate_limit(sender_id: UUID) -> None:
@@ -239,8 +298,13 @@ class MessageService:
                       .offset(offset)\
                       .all()
         
+        message_dicts = [msg.to_dict() for msg in messages]
+        MessageService._enrich_message_dicts_with_sender_medals(
+            db, messages, message_dicts
+        )
+
         return {
-            "messages": [msg.to_dict() for msg in messages],
+            "messages": message_dicts,
             "unread_count": unread_count,
             "total": total,
             "page": page,
@@ -287,8 +351,13 @@ class MessageService:
                       .offset(offset)\
                       .all()
         
+        message_dicts = [msg.to_dict() for msg in messages]
+        MessageService._enrich_message_dicts_with_sender_medals(
+            db, messages, message_dicts
+        )
+
         return {
-            "messages": [msg.to_dict() for msg in messages],
+            "messages": message_dicts,
             "total": total,
             "page": page,
             "limit": limit,
@@ -396,8 +465,13 @@ class MessageService:
          .offset(offset)\
          .all()
         
+        conversation_dicts = [msg.to_dict() for msg in conversations]
+        MessageService._enrich_message_dicts_with_sender_medals(
+            db, conversations, conversation_dicts
+        )
+
         return {
-            "conversations": [msg.to_dict() for msg in conversations],
+            "conversations": conversation_dicts,
             "total": total,
             "page": page,
             "limit": limit,
@@ -492,3 +566,246 @@ class MessageService:
         logger.info(f"Message {message_id} moderated by {moderator_id}: {action}")
         
         return True
+
+    # Canon messaging.md § Moderation actions (LEG-263 / LEG-DEC-157).
+    REDACT_BODY = "[Moderated]"
+    REDACT_NOTIFY = "Your message was moderated for rule violation"
+    BLOCK_NOTIFY = "Repeated violations may result in account restriction"
+    REDACT_REP_DELTA = -50
+    BLOCK_REP_DELTA = -100
+    BLOCK_ESCALATION_WINDOW_DAYS = 30
+    BLOCK_ESCALATION_THRESHOLD = 2
+
+    @staticmethod
+    async def moderation_canon_action(
+        db: Session,
+        message_id: UUID,
+        action: str,
+        moderator_id: UUID,
+        reason: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Apply accept / redact / block per FEATURES/gameplay/messaging.md.
+
+        LEG-DEC-157: do **not** invent an ``account_review`` player column —
+        at the 2-block/30d threshold write an audit-log escalation marker only.
+        """
+        if action not in ("accept", "redact", "block"):
+            return {"success": False, "reason": "invalid_action"}
+
+        message = db.query(Message).filter(Message.id == message_id).first()
+        if not message:
+            return {"success": False, "reason": "message_not_found"}
+
+        now = datetime.utcnow()
+        message.moderated_at = now
+        message.moderated_by = moderator_id
+        rep_delta = 0
+        notified = False
+        escalation_logged = False
+        block_count_30d = 0
+
+        if action == "accept":
+            # Message stays visible; flag cleared. No penalty / notify.
+            message.flagged = False
+            message.flagged_reason = None
+        elif action == "redact":
+            message.content = MessageService.REDACT_BODY
+            message.flagged = False
+            message.flagged_reason = None
+            rep_delta = MessageService.REDACT_REP_DELTA
+            notified = MessageService._notify_sender_moderation(
+                db, message.sender_id, MessageService.REDACT_NOTIFY
+            )
+            MessageService._apply_sender_rep(
+                db, message.sender_id, rep_delta, reason="message_moderation_redact"
+            )
+        else:  # block
+            # Hidden from recipient (and all player-facing reads via
+            # moderation_status IS NULL filter).
+            message.moderation_status = "blocked"
+            message.flagged = False
+            message.flagged_reason = None
+            rep_delta = MessageService.BLOCK_REP_DELTA
+            notified = MessageService._notify_sender_moderation(
+                db, message.sender_id, MessageService.BLOCK_NOTIFY
+            )
+            MessageService._apply_sender_rep(
+                db, message.sender_id, rep_delta, reason="message_moderation_block"
+            )
+            block_count_30d, escalation_logged = (
+                MessageService._record_block_and_maybe_escalate(
+                    db,
+                    moderator_id=moderator_id,
+                    sender_id=message.sender_id,
+                    message_id=message.id,
+                    reason=reason,
+                )
+            )
+
+        db.commit()
+        logger.info(
+            "Message %s canon-moderation %s by %s (rep_delta=%s block_count_30d=%s)",
+            message_id,
+            action,
+            moderator_id,
+            rep_delta,
+            block_count_30d,
+        )
+        return {
+            "success": True,
+            "action": action,
+            "message_id": str(message_id),
+            "rep_delta": rep_delta,
+            "sender_notified": notified,
+            "block_count_30d": block_count_30d,
+            "escalation_audit_logged": escalation_logged,
+        }
+
+    @staticmethod
+    def _apply_sender_rep(
+        db: Session, sender_id: UUID, amount: int, reason: str
+    ) -> None:
+        from src.services.personal_reputation_service import PersonalReputationService
+
+        PersonalReputationService(db).adjust_reputation(sender_id, amount, reason)
+
+    @staticmethod
+    def _notify_sender_moderation(
+        db: Session, sender_id: UUID, content: str
+    ) -> bool:
+        """Deliver a system message to the moderated sender. Soft-fail."""
+        try:
+            # System row: sender is the moderated player (self-addressed
+            # system notice) — recipient_id = sender so it lands in inbox.
+            notice = Message(
+                sender_id=sender_id,
+                recipient_id=sender_id,
+                subject="Moderation notice",
+                content=content,
+                message_type="system",
+                priority="high",
+            )
+            db.add(notice)
+            db.flush()
+            return True
+        except Exception as exc:  # noqa: BLE001 — must not void the moderation
+            logger.warning(
+                "Failed to notify sender %s of moderation: %s", sender_id, exc
+            )
+            return False
+
+    @staticmethod
+    def _audit_rows_sender_block_stats(
+        recent: Iterable[Any],
+        sender_ids: Set[str],
+    ) -> Dict[str, Tuple[int, bool]]:
+        """Tally per-sender block counts and escalation markers from audit rows."""
+        block_counts = {sid: 0 for sid in sender_ids}
+        escalation_logged = {sid: False for sid in sender_ids}
+        for row in recent:
+            body = row.request_body or {}
+            if not isinstance(body, dict):
+                continue
+            sender_key = body.get("sender_id")
+            if sender_key not in sender_ids:
+                continue
+            moderation_action = body.get("moderation_action")
+            if moderation_action == "block":
+                block_counts[sender_key] += 1
+            elif moderation_action == "block_escalation_threshold":
+                escalation_logged[sender_key] = True
+        return {
+            sid: (block_counts[sid], escalation_logged[sid]) for sid in sender_ids
+        }
+
+    @staticmethod
+    def batch_sender_block_stats_30d(
+        db: Session,
+        sender_ids: Iterable[UUID],
+    ) -> Dict[str, Tuple[int, bool]]:
+        """Batch block-count + escalation flag for flagged-queue enrichment."""
+        from datetime import timedelta
+
+        from src.models.audit_log import AuditLog
+
+        unique_sender_ids = {str(sid) for sid in sender_ids}
+        if not unique_sender_ids:
+            return {}
+
+        window_start = datetime.utcnow() - timedelta(
+            days=MessageService.BLOCK_ESCALATION_WINDOW_DAYS
+        )
+        recent = (
+            db.query(AuditLog)
+            .filter(
+                AuditLog.resource_type == "message",
+                AuditLog.action == "intervention",
+                AuditLog.timestamp >= window_start,
+            )
+            .all()
+        )
+        return MessageService._audit_rows_sender_block_stats(recent, unique_sender_ids)
+
+    @staticmethod
+    def _record_block_and_maybe_escalate(
+        db: Session,
+        *,
+        moderator_id: UUID,
+        sender_id: UUID,
+        message_id: UUID,
+        reason: Optional[str],
+    ) -> tuple:
+        """Audit each block; at 2+ in 30d log escalation (no account_review invent)."""
+        from datetime import timedelta
+
+        from src.models.audit_log import AuditLog
+        from src.services.audit_service import AuditAction, AuditService
+
+        AuditService(db).log_action(
+            user_id=moderator_id,
+            action=AuditAction.INTERVENTION,
+            resource_type="message",
+            resource_id=str(message_id),
+            details={
+                "moderation_action": "block",
+                "sender_id": str(sender_id),
+                "reason": reason,
+            },
+        )
+
+        window_start = datetime.utcnow() - timedelta(
+            days=MessageService.BLOCK_ESCALATION_WINDOW_DAYS
+        )
+        recent = (
+            db.query(AuditLog)
+            .filter(
+                AuditLog.resource_type == "message",
+                AuditLog.action == "intervention",
+                AuditLog.timestamp >= window_start,
+            )
+            .all()
+        )
+        sender_key = str(sender_id)
+        block_count, escalation_logged = MessageService._audit_rows_sender_block_stats(
+            recent, {sender_key}
+        )[sender_key]
+
+        if block_count >= MessageService.BLOCK_ESCALATION_THRESHOLD and not escalation_logged:
+            AuditService(db).log_action(
+                user_id=moderator_id,
+                action=AuditAction.INTERVENTION,
+                resource_type="message",
+                resource_id=str(message_id),
+                details={
+                    "moderation_action": "block_escalation_threshold",
+                    "sender_id": str(sender_id),
+                    "block_count_30d": block_count,
+                    "note": (
+                        "account_review status flip deferred — no column "
+                        "(LEG-DEC-157); counter+audit only"
+                    ),
+                },
+            )
+            escalation_logged = True
+
+        return block_count, escalation_logged

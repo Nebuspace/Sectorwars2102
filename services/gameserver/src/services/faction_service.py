@@ -2,8 +2,11 @@
 Faction service for managing faction relationships, reputation, and missions.
 """
 
+from dataclasses import dataclass
 from uuid import UUID
+from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, func
@@ -13,6 +16,7 @@ import logging
 from src.models.faction import Faction, FactionType
 from src.models.reputation import Reputation, ReputationLevel
 from src.models.player import Player
+from src.models.team import Team
 from src.models.sector_faction_influence import SectorFactionInfluence
 from src.services.websocket_service import connection_manager as manager
 
@@ -59,6 +63,105 @@ TRADE_MODIFIERS = [
 ]
 TRADE_MODIFIER_PUBLIC_ENEMY = 1.50  # Fallback for -700 and below
 
+# Phase-1/2 consumer inventory (LEG-800 / LEG-814): personal Reputation.current_value
+# readers used for faction *interaction* decisions (pricing / port access / patrol).
+# Wired:
+#   (1) get_trade_modifier — team aggregate when player has team_id (LEG-800)
+#   (2) docking_service.check_reputation_gate / _player_faction_rep_for_station
+#       — dock slip + defense_policy port access (LEG-814)
+# Same resolver (not forked formulas):
+#   (3) construction_service.tradedock_access — TradeDock construction gate (LEG-2819)
+#   (4) get_faction_pricing_modifier — GET /factions/{id}/pricing-modifier (LEG-2819)
+#   (5) check_territory_access — faction territory gate (LEG-2819)
+#   (6) mission-gate consumers — none located on tip; separate WO if found
+# Not interaction consumers (personal-row maintenance / display only):
+#   update_reputation / apply_faction_rep_delta / apply_reputation_decay derived
+#   field writes; factions.py reputation API response fields.
+
+
+@dataclass(frozen=True)
+class EffectiveFactionStanding:
+    """Resolved standing for faction interactions (team aggregate or personal)."""
+
+    value: int
+    source: str  # "team" | "personal"
+    trade_modifier: float
+    port_access_level: int
+    combat_response: str
+
+
+def trade_modifier_from_standing_value(value: int) -> float:
+    """Lookup-table pricing multiplier (same ladder as get_trade_modifier)."""
+    for threshold, modifier in TRADE_MODIFIERS:
+        if value >= threshold:
+            return modifier
+    return TRADE_MODIFIER_PUBLIC_ENEMY
+
+
+def resolve_effective_faction_standing_value(
+    db: Session,
+    player_id: UUID,
+    faction_id: UUID,
+    *,
+    team_id: Optional[UUID] = None,
+) -> Tuple[int, str]:
+    """When the acting player belongs to a team, use the team aggregate value.
+
+    Reads ``TeamReputation.faction_reputation[faction_id].value`` via
+    ``team_reputation_service.get_team_reputation`` (lazy inline recalc).
+    Otherwise falls back to the player's personal ``Reputation.current_value``.
+    """
+    from src.services import team_reputation_service
+
+    resolved_team_id = team_id
+    if resolved_team_id is None:
+        player = db.query(Player).filter(Player.id == player_id).first()
+        resolved_team_id = player.team_id if player is not None else None
+
+    if resolved_team_id is not None:
+        team = db.query(Team).filter(Team.id == resolved_team_id).first()
+        if team is not None:
+            snapshot = team_reputation_service.get_team_reputation(db, team)
+            entry = (snapshot.get("standings") or {}).get(str(faction_id))
+            if entry is not None:
+                return int(entry.get("value", 0)), "team"
+
+    reputation = (
+        db.query(Reputation)
+        .filter(
+            and_(
+                Reputation.player_id == player_id,
+                Reputation.faction_id == faction_id,
+            )
+        )
+        .first()
+    )
+    if reputation is None:
+        return 0, "personal"
+    return int(reputation.current_value), "personal"
+
+
+def build_effective_faction_standing(
+    db: Session,
+    player_id: UUID,
+    faction_id: UUID,
+    *,
+    team_id: Optional[UUID] = None,
+    svc: Optional["FactionService"] = None,
+) -> EffectiveFactionStanding:
+    """Map resolved standing through the existing derived-field helpers."""
+    svc = svc or FactionService(db)
+    value, source = resolve_effective_faction_standing_value(
+        db, player_id, faction_id, team_id=team_id
+    )
+    return EffectiveFactionStanding(
+        value=value,
+        source=source,
+        trade_modifier=svc._calculate_trade_modifier(value),
+        port_access_level=svc._calculate_port_access_level(value),
+        combat_response=svc._calculate_combat_response(value),
+    )
+
 
 def apply_faction_rep_delta(
     db: Session,
@@ -66,6 +169,8 @@ def apply_faction_rep_delta(
     faction_type: FactionType,
     delta: int,
     reason: str,
+    *,
+    faction_name: Optional[str] = None,
 ) -> Optional[Reputation]:
     """Apply a faction reputation delta from a SYNC, caller-owned transaction.
 
@@ -80,26 +185,35 @@ def apply_faction_rep_delta(
 
     The faction is resolved by FactionType (the Faction model has no
     ``code`` column, so roster faction codes like "terran_federation" need
-    an explicit mapping by the caller). Returns None — with an error log,
-    never an exception — when no faction row of that type exists, so a
-    missing seed degrades to a lost rep delta rather than a failed combat.
+    an explicit mapping by the caller). Pass ``faction_name`` when more than
+    one row can share a FactionType (e.g. Frontier Coalition under
+    Independents) so the delta never credits a sibling roster row. Returns
+    None — with an error log, never an exception — when no matching faction
+    row exists, so a missing seed degrades to a lost rep delta rather than
+    a failed combat.
 
     No rivalry cap is applied: the cap only constrains positive gains and
     this helper exists for penalty hooks; route positive gains through
     ``FactionService.update_reputation``.
     """
-    faction = (
-        db.query(Faction)
-        .filter(Faction.faction_type == faction_type)
-        .first()
-    )
+    q = db.query(Faction).filter(Faction.faction_type == faction_type)
+    if faction_name is not None:
+        q = q.filter(Faction.name == faction_name)
+    faction = q.first()
     if faction is None:
-        logger.error(
-            "apply_faction_rep_delta: no %s faction row exists — delta %+d "
-            "for player %s dropped (reason: %s). Seed the faction "
-            "(npc_spawn_service._ensure_federation_faction).",
-            faction_type.name, delta, player_id, reason,
-        )
+        if faction_name is not None:
+            logger.error(
+                "apply_faction_rep_delta: no %s faction row named %r "
+                "exists — delta %+d for player %s dropped (reason: %s).",
+                faction_type.name, faction_name, delta, player_id, reason,
+            )
+        else:
+            logger.error(
+                "apply_faction_rep_delta: no %s faction row exists — delta %+d "
+                "for player %s dropped (reason: %s). Seed the faction "
+                "(npc_spawn_service._ensure_federation_faction).",
+                faction_type.name, delta, player_id, reason,
+            )
         return None
 
     reputation = (
@@ -176,10 +290,10 @@ def adjust_sector_influence(
     commit (built for in-transaction hooks like the colony-establish and
     warp-gate-build paths, mirroring ``apply_faction_rep_delta``).
 
-    The READ-side taxonomy / patrol-spawn effects (ADR-0021) are deliberately
-    NOT computed here (human-gated) — this only maintains the canonical stored
-    influence value. ``patrol_spawn_weight`` is left at its model default and is
-    untouched until the read-side lands.
+    The READ-side taxonomy is derived on read (``sector_territory_tier``).
+    ``patrol_spawn_weight`` is recomputed here from the LEG-34 formula so
+    Loop B can read live weights (identity defaults for missing
+    ``base_patrol_intensity`` / ``zone_mod`` Faction columns).
 
     Defensive: a ``None`` faction (or sector) is a no-op returning ``None`` so a
     missing-faction hook degrades to a dropped influence delta rather than an
@@ -238,45 +352,44 @@ def adjust_sector_influence(
         SECTOR_INFLUENCE_MIN,
         min(SECTOR_INFLUENCE_MAX, old_value + float(delta)),
     )
+    # LEG-65 activity clock — decay idle uses this, never updated_at alone.
+    influence.last_action_at = datetime.now(timezone.utc)
+    apply_patrol_spawn_weight(influence)
 
     db.flush()
     logger.info(
-        "Sector influence for faction %s over sector %s: %.2f -> %.2f (delta %+.2f)",
+        "Sector influence for faction %s over sector %s: %.2f -> %.2f (delta %+.2f); "
+        "patrol_spawn_weight=%.3f",
         faction_id, sector_id, old_value, influence.influence_percentage, float(delta),
+        influence.patrol_spawn_weight or 0.0,
     )
     return influence
 
 
 # ---------------------------------------------------------------------------
-# SectorFactionInfluence READ side (WO-FI / ADR-0021)
+# SectorFactionInfluence READ side (WO-FI / ADR-0021 / LEG-INI-05)
 #
 # The WRITE half (adjust_sector_influence, above) maintains the canonical
-# stored influence_percentage. These pure-READ helpers consume it for the
-# taxonomy / spawn-bias effects canon attributes to it
-# (FEATURES/gameplay/factions-and-teams.md "### Territory & influence"):
-#   - four-tier taxonomy (Core 100 / Controlled >=75 / Contested 40-60 across
-#     >=2 factions / Uncontrolled 0)
-#   - "Patrol spawn rate scales with influence ... Pirate spawn rate is
-#     inversely proportional".
-#
-# Reproduce-exactly invariant: a sector with NO influence rows reads as
-# Uncontrolled with a neutral spawn bias, so existing (un-seeded) sectors
-# behave EXACTLY as before these helpers existed.
+# stored influence_percentage and patrol_spawn_weight. These pure-READ helpers
+# consume them for taxonomy / spawn-bias effects.
 # ---------------------------------------------------------------------------
 
-# Canon taxonomy thresholds (factions-and-teams.md "### Territory & influence").
-TERRITORY_CORE_MIN = 100.0       # Core: 100%
-TERRITORY_CONTROLLED_MIN = 75.0  # Controlled: >= 75%
-TERRITORY_CONTESTED_MIN = 40.0   # Contested floor (40-60% across >= 2 factions)
-TERRITORY_CONTESTED_MAX = 60.0   # Contested ceiling
-
-# [NO-CANON] Secondary-influencer half-share threshold. factions-and-teams.md
-# states "secondary influencers >=25% receive half-share rep" for emergent-rep,
-# which is the only numeric handle canon gives on a "meaningful secondary
-# influencer"; reused here purely to label a sector Contested when a second
-# faction is materially present. Flagged for DECISIONS.md if the read-side
-# taxonomy ever needs its own threshold.
+# Canon taxonomy thresholds — LEG-34 / DATA_MODELS/gameplay.md § Territory
+# taxonomy derivation (0–100 percentage points):
+#   >=95 core; >=75 controlled; >=40 contested if rival>=25 else controlled;
+#   else uncontrolled.
+TERRITORY_CORE_MIN = 95.0
+TERRITORY_CONTROLLED_MIN = 75.0
+TERRITORY_CONTESTED_BAND_MIN = 40.0
 TERRITORY_SECONDARY_PRESENCE_MIN = 25.0
+
+# Patrol spawn weight (gameplay.md § Patrol spawn weight derivation).
+# Faction.base_patrol_intensity / zone_mod columns do not exist yet — identity
+# defaults (1.0) keep weight = clamp(influence/100, 0, 2) until those land.
+PATROL_SPAWN_WEIGHT_MIN = 0.0
+PATROL_SPAWN_WEIGHT_MAX = 2.0
+DEFAULT_BASE_PATROL_INTENSITY = 1.0
+DEFAULT_ZONE_MOD = 1.0
 
 
 def get_sector_influence(
@@ -304,13 +417,11 @@ def get_sector_influence(
 
 
 def sector_territory_tier(rows: List[SectorFactionInfluence]) -> str:
-    """Classify a sector into the canon four-tier taxonomy from its influence
-    rows (factions-and-teams.md "### Territory & influence").
+    """Classify a sector into the LEG-34 four-tier taxonomy.
 
     ``rows`` is the output of ``get_sector_influence`` (already sorted
     strongest-first). Returns one of ``"core"``, ``"controlled"``,
-    ``"contested"``, ``"uncontrolled"``. An empty / all-zero sector is
-    ``"uncontrolled"`` (reproduce-exactly).
+    ``"contested"``, ``"uncontrolled"``.
     """
     if not rows:
         return "uncontrolled"
@@ -321,29 +432,101 @@ def sector_territory_tier(rows: List[SectorFactionInfluence]) -> str:
         return "core"
     if top >= TERRITORY_CONTROLLED_MIN:
         return "controlled"
-    # Contested per canon needs the band 40-60% AND >= 2 factions materially
-    # present (a meaningful secondary influencer).
-    secondary = rows[1].influence_percentage if len(rows) > 1 else 0.0
-    secondary = secondary or 0.0
-    if (
-        TERRITORY_CONTESTED_MIN <= top <= TERRITORY_CONTESTED_MAX
-        and secondary >= TERRITORY_SECONDARY_PRESENCE_MIN
-    ):
-        return "contested"
-    # Below Controlled but not a canon-Contested split: a single weak holder.
-    # Canon names no tier for this band, so it degrades to "uncontrolled" for
-    # spawn purposes (low/no faction suppression) — the conservative, no-new-
-    # behavior reading. [NO-CANON] for the sub-40% single-holder band.
+    if top >= TERRITORY_CONTESTED_BAND_MIN:
+        secondary = rows[1].influence_percentage if len(rows) > 1 else 0.0
+        secondary = secondary or 0.0
+        if secondary >= TERRITORY_SECONDARY_PRESENCE_MIN:
+            return "contested"
+        return "controlled"
     return "uncontrolled"
 
 
-# [NO-CANON] Patrol-versus-pirate spawn multiplier mapping. Canon states the
-# DIRECTION only ("Patrol spawn rate scales with influence ... Pirate spawn
-# rate is inversely proportional") but gives no formula. This conservative
-# linear mapping keys off the dominant influence (0-100) and is centered so
-# that an Uncontrolled sector (0%) reproduces TODAY's neutral behavior exactly
-# (pirate x1.0, patrol x1.0). Flagged for DECISIONS.md; the bias is read-only
-# advice — callers may ignore it, so an un-tuned multiplier never breaks spawn.
+def compute_patrol_spawn_weight(
+    influence_percentage: float,
+    base_patrol_intensity: float = DEFAULT_BASE_PATROL_INTENSITY,
+    zone_mod: float = DEFAULT_ZONE_MOD,
+) -> float:
+    """Derive ``patrol_spawn_weight`` per gameplay.md (LEG-34 formula)."""
+    frac = max(0.0, min(100.0, float(influence_percentage))) / 100.0
+    raw = frac * float(base_patrol_intensity) * float(zone_mod)
+    return max(PATROL_SPAWN_WEIGHT_MIN, min(PATROL_SPAWN_WEIGHT_MAX, raw))
+
+
+def apply_patrol_spawn_weight(influence: SectorFactionInfluence) -> float:
+    """Write derived patrol_spawn_weight onto a row (flush left to caller)."""
+    weight = compute_patrol_spawn_weight(influence.influence_percentage or 0.0)
+    influence.patrol_spawn_weight = weight
+    return weight
+
+
+def max_patrol_spawn_weight_for_sector(db: Session, sector_uuid: UUID) -> Optional[float]:
+    """Highest stored patrol_spawn_weight among factions in a sector.
+
+    Returns ``None`` when the sector has no influence rows so Loop B can keep
+    pre-LEG-INI-05 fill cadence (reproduce-exactly for unseeded sectors).
+    Returns ``0.0`` when rows exist but every weight is zero (skip fills).
+    """
+    rows = get_sector_influence(db, sector_uuid)
+    if not rows:
+        return None
+    return max(float(r.patrol_spawn_weight or 0.0) for r in rows)
+
+
+# LEG-65 / DATA_MODELS/gameplay.md § Daily decay sweep (provisional numbers).
+SECTOR_INFLUENCE_IDLE_UTC_DAYS = 3
+SECTOR_INFLUENCE_DECAY_PER_IDLE_DAY = 0.5
+
+
+def _sfi_activity_clock(row: SectorFactionInfluence) -> Optional[datetime]:
+    """Prefer ``last_action_at``; fall back to ``updated_at`` for pre-column rows."""
+    ts = row.last_action_at or row.updated_at
+    if ts is None:
+        return None
+    if ts.tzinfo is None:
+        return ts.replace(tzinfo=timezone.utc)
+    return ts
+
+
+def sector_influence_is_idle(
+    row: SectorFactionInfluence,
+    now: Optional[datetime] = None,
+) -> bool:
+    """True when the activity clock is older than 3 UTC calendar days."""
+    clock = _sfi_activity_clock(row)
+    if clock is None:
+        return False
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    idle_days = (now.astimezone(timezone.utc).date() - clock.astimezone(timezone.utc).date()).days
+    return idle_days >= SECTOR_INFLUENCE_IDLE_UTC_DAYS
+
+
+def apply_sector_influence_daily_decay(
+    row: SectorFactionInfluence,
+    now: Optional[datetime] = None,
+) -> bool:
+    """Apply one −0.5 pp idle-day decay tick if the row is idle (LEG-65).
+
+    Does NOT write ``last_action_at`` (decay must not reset the idle clock).
+    Refreshes ``patrol_spawn_weight`` when influence changes. Rows already at
+    0.0 are no-ops. Returns True when influence changed.
+    """
+    if not sector_influence_is_idle(row, now=now):
+        return False
+    old = float(row.influence_percentage or 0.0)
+    if old <= 0.0:
+        return False
+    new = max(0.0, old - SECTOR_INFLUENCE_DECAY_PER_IDLE_DAY)
+    if new == old:
+        return False
+    row.influence_percentage = new
+    apply_patrol_spawn_weight(row)
+    return True
+
+
+# [NO-CANON] Patrol-versus-pirate spawn multiplier mapping for advisory bias.
+# Canon states DIRECTION only; linear mapping keys off dominant influence.
 PIRATE_SPAWN_FLOOR = 0.25  # high faction influence suppresses, never zeroes
 
 
@@ -418,9 +601,6 @@ def dominant_reputation_faction_id(db: Session, player_id: UUID) -> Optional[UUI
 
 
 # Canon dynamic-influence deltas (factions-and-teams.md influence action table).
-# KEEP-slice companion for port_ownership_service / combat_service imports
-# (promo LEG-2726 CI: FAIR_OPS_SECTOR_INFLUENCE_DELTA was omitted from
-# master-era faction_service while callers arrived via path-checkout).
 RIVAL_KILL_INFLUENCE_DELTA = -2.0
 DEFEND_SECTOR_INFLUENCE_DELTA = 1.0
 FAIR_OPS_SECTOR_INFLUENCE_DELTA = 2.0
@@ -765,12 +945,30 @@ class FactionService:
 
         return results
 
-    async def get_trade_modifier(self, player_id: UUID, faction_id: UUID) -> float:
+    def effective_faction_standing(
+        self,
+        player_id: UUID,
+        faction_id: UUID,
+        *,
+        team_id: Optional[UUID] = None,
+    ) -> EffectiveFactionStanding:
+        """Team aggregate when ``team_id`` present (or player belongs to a team)."""
+        return build_effective_faction_standing(
+            self.db, player_id, faction_id, team_id=team_id, svc=self
+        )
+
+    async def get_trade_modifier(
+        self,
+        player_id: UUID,
+        faction_id: UUID,
+        *,
+        team_id: Optional[UUID] = None,
+    ) -> float:
         """
         Return a price multiplier for a player at a faction-controlled port.
 
-        The multiplier is derived from the player's current reputation value
-        with the faction using the TRADE_MODIFIERS lookup table:
+        Uses ``effective_faction_standing`` (team aggregate when the player
+        has a team) and the TRADE_MODIFIERS lookup table:
 
             EXALTED  (+700+): 0.85  (15% discount)
             REVERED  (+500) : 0.90
@@ -782,18 +980,12 @@ class FactionService:
             HATED    (-500) : 1.30
             PUBLIC_ENEMY(-700): 1.50
 
-        Returns 1.0 (no modifier) when no reputation record exists.
+        Neutral (1.0) when no personal or team standing exists.
         """
-        reputation = await self.get_player_reputation(player_id, faction_id)
-        if not reputation:
-            return 1.0
-
-        value = reputation.current_value
-        for threshold, modifier in TRADE_MODIFIERS:
-            if value >= threshold:
-                return modifier
-
-        return TRADE_MODIFIER_PUBLIC_ENEMY
+        value, _source = resolve_effective_faction_standing_value(
+            self.db, player_id, faction_id, team_id=team_id
+        )
+        return trade_modifier_from_standing_value(value)
 
     def _calculate_reputation_level(self, value: int) -> ReputationLevel:
         """Calculate reputation level from numeric value."""
@@ -894,12 +1086,16 @@ class FactionService:
         faction = await self.get_faction_by_id(faction_id)
         if not faction:
             return 1.0
-        
-        reputation = await self.get_player_reputation(player_id, faction_id)
-        if not reputation:
-            return faction.base_pricing_modifier
-        
-        return faction.get_pricing_modifier(reputation.current_value)
+
+        value, source = resolve_effective_faction_standing_value(
+            self.db, player_id, faction_id
+        )
+        if source == "personal":
+            reputation = await self.get_player_reputation(player_id, faction_id)
+            if not reputation:
+                return faction.base_pricing_modifier
+
+        return faction.get_pricing_modifier(value)
     
     async def check_territory_access(
         self, 
@@ -925,16 +1121,20 @@ class FactionService:
             # Sector is not faction-controlled
             return {"allowed": True, "reason": "Neutral territory"}
         
-        # Check player reputation
-        reputation = await self.get_player_reputation(player_id, controlling_faction.id)
-        if not reputation:
-            # No reputation record, treat as hostile
-            return {
-                "allowed": False, 
-                "reason": f"No standing with {controlling_faction.name}"
-            }
-        
-        if controlling_faction.can_access_territory(reputation.current_value):
+        value, source = resolve_effective_faction_standing_value(
+            self.db, player_id, controlling_faction.id
+        )
+        if source == "personal":
+            reputation = await self.get_player_reputation(
+                player_id, controlling_faction.id
+            )
+            if not reputation:
+                return {
+                    "allowed": False,
+                    "reason": f"No standing with {controlling_faction.name}",
+                }
+
+        if controlling_faction.can_access_territory(value):
             return {"allowed": True, "reason": "Good standing"}
         else:
             return {

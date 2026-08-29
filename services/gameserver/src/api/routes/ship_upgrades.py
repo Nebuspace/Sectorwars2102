@@ -118,7 +118,11 @@ class UpgradeRequest(BaseModel):
 class EquipmentRequest(BaseModel):
     # ship_id is the URL path param (see UpgradeRequest) — optional in the body.
     ship_id: Optional[str] = None
-    equipment_key: str = Field(..., description="One of: quantum_harvester, mining_laser, planetary_lander")
+    # LEG-131: derive from EQUIPMENT_DEFINITIONS — prior hardcode listed only 3 keys.
+    equipment_key: str = Field(
+        ...,
+        description=ShipUpgradeService.equipment_key_openapi_description(),
+    )
 
 
 class ModuleInstallRequest(BaseModel):
@@ -152,8 +156,13 @@ class InsurancePurchaseRequest(BaseModel):
 # Ship insurance (ADR-0081 premium pricing, ADR-0061 payout formula).
 # Premium = % of purchase_value paid upfront; net payout on destruction =
 # (coverage - deductible)% of purchase_value.
-INSURANCE_PREMIUM_PCT = {"BASIC": 0.10, "STANDARD": 0.17, "PREMIUM": 0.22}
-INSURANCE_NET_PAYOUT_PCT = {"BASIC": 0.45, "STANDARD": 0.65, "PREMIUM": 0.75}
+# Source of truth is economy_balancing_levers (admin Economy Levers can mutate
+# these in-process — same contract as upgrade-definition overrides).
+from src.services.economy_balancing_levers import (  # noqa: E402
+    INSURANCE_NET_PAYOUT_PCT,
+    INSURANCE_PREMIUM_PCT,
+)
+
 INSURANCE_TIER_ORDER = ["NONE", "BASIC", "STANDARD", "PREMIUM"]
 # Non-insurable hulls (ADR-0029): a registry flag, not a route-level set — see
 # ShipSpecification.insurable (models/ship.py) and its seeder
@@ -814,6 +823,30 @@ async def get_ship_modules(
     }
 
 
+@router.post("/{ship_id}/modules/preview")
+async def preview_ship_module(
+    ship_id: str,
+    request: ModuleInstallRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Dry-run before/after module effect preview (LEG-320 / ships.md shipyard UI).
+
+    No DB write and no credit charge — reuses bake totals math so the player
+    client does not duplicate MODULE_DEFINITIONS / best-N stacking.
+    """
+    service = ShipUpgradeService(db)
+    result = service.preview_module_install(
+        ship_id, player.id, request.slot_index, request.module_class, request.tier
+    )
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=result.get("message", "Module preview failed"),
+        )
+    return result
+
+
 @router.post("/{ship_id}/modules/install")
 async def install_ship_module(
     ship_id: str,
@@ -1027,6 +1060,10 @@ async def repair_ship_maintenance(
     from src.services import docking_service
     service_mult = docking_service.service_charge_multiplier_for(station)
     cost = round((max(0.0, 100.0 - condition) / 10.0) * pct * value * service_mult)
+    from src.services.profession_service import space_engineer_repair_multiplier_for_station
+    repair_mult = space_engineer_repair_multiplier_for_station(db, locked_player.id, station)
+    if repair_mult != 1.0:
+        cost = round(cost / repair_mult)
     # Never restore for free: a near-pristine or zero-value hull whose cost rounds
     # to <=0 would otherwise get a free full-condition reset.
     if cost <= 0:

@@ -97,6 +97,7 @@ class StationResponse(BaseModel):
     faction_affiliation: str | None = None
     is_spacedock: bool = False
     tradedock_tier: str | None = None
+    is_starport_prime: bool = False
 
 class SectorPlanetsResponse(BaseModel):
     planets: List[PlanetResponse]
@@ -144,6 +145,8 @@ class SectorContentsResponse(BaseModel):
     stations: List[Dict[str, Any]] = []
     # Live sector state (GET /player/current-sector passthrough).
     live_ships: List[Any] = []
+    # LEG-333 — in-progress salvage breaks (same contract as SectorResponse.salvage_breaks).
+    salvage_breaks: List[Any] = []
     hazards: SectorHazards
     formations: List[FormationResponse] = []
     # Salvage (GET /sectors/{id}/wrecks passthrough).
@@ -155,6 +158,10 @@ class SectorContentsResponse(BaseModel):
     # sole writer; this is a direct, zero-query read of the already-loaded
     # Sector row, same shape/convention as live_ships above).
     message_beacons: List[Dict[str, Any]] = []
+    # Lodging sector flags (npc-lodging.md) — player-info surface for
+    # OutlawBase / sector-location NPCBarracks presence.
+    is_outlaw_zone: bool = False
+    is_npc_barracks_sector: bool = False
     # Server-authoritative ENGAGE proximity threshold, in REFERENCE_BAND em
     # (WO-API-A1) -- intrasystem_movement_service.ENGAGE_RANGE_EM, the SAME
     # value POST /combat/engage now enforces server-side. Published here
@@ -162,6 +169,8 @@ class SectorContentsResponse(BaseModel):
     # from the server instead of an independently-drifting local literal;
     # see WindshieldFlightContext.tsx's engageRangeEm.
     engage_range_em: float
+    # LEG-427 — asteroid depletion overlay (None when not ASTEROID_FIELD).
+    asteroid_depletion: Dict[str, Any] | None = None
 
 @router.get("/{sector_id}/planets", response_model=SectorPlanetsResponse)
 async def get_sector_planets(
@@ -252,6 +261,7 @@ async def get_sector_stations(
             station_class=station.station_class.value if hasattr(station.station_class, 'value') else station.station_class,
             is_spacedock=bool(station.is_spacedock),
             tradedock_tier=station.tradedock_tier,
+            is_starport_prime=bool(station.is_starport_prime),
             type=station.type.value if hasattr(station.type, 'value') else str(station.type),
             status=station.status.value if hasattr(station.status, 'value') else str(station.status),
             sector_id=station.sector_id,
@@ -507,6 +517,9 @@ async def get_sector_contents(
     #     100% read-only in the source route -- NPCCharacter query only). ---
     present = _enrich_players_present(db, sector.players_present or [])
 
+    from src.services.ship_registry_service import list_sector_salvage_breaks
+    salvage_breaks = list_sector_salvage_breaks(db, sector.sector_id)
+
     # WO-API-A1: the same server-authoritative ENGAGE proximity dial
     # POST /combat/engage now enforces -- a plain constant read, not a query.
     from src.services import intrasystem_movement_service as isp
@@ -535,6 +548,9 @@ async def get_sector_contents(
     # --- Warp-gate structures: read-only (no ADVANCE, no expiry write). ---
     gates = warp_gate_service.list_sector_structures(db, sector_id, read_only=True)
 
+    # LEG-427: same depletion band + replenish ETA as GET /player/current-sector.
+    from src.services.mining_service import build_asteroid_depletion_readout
+
     return SectorContentsResponse(
         sector_id=system.get("sector_id", sector_id),
         sector_type=system.get("sector_type"),
@@ -547,6 +563,7 @@ async def get_sector_contents(
         bodies=system.get("bodies", []),
         stations=system.get("stations", []),
         live_ships=present,
+        salvage_breaks=salvage_breaks,
         hazards=SectorHazards(
             hazard_level=sector.hazard_level,
             radiation_level=sector.radiation_level,
@@ -555,5 +572,8 @@ async def get_sector_contents(
         wrecks=wrecks,
         warp_gates=SectorStructuresResponse(**gates),
         message_beacons=sector.message_beacons or [],
+        is_outlaw_zone=bool(getattr(sector, "is_outlaw_zone", False)),
+        is_npc_barracks_sector=bool(getattr(sector, "is_npc_barracks_sector", False)),
         engage_range_em=isp.ENGAGE_RANGE_EM,
+        asteroid_depletion=build_asteroid_depletion_readout(sector),
     )

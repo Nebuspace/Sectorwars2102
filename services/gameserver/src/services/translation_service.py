@@ -127,7 +127,7 @@ class TranslationService:
         
         for pattern in dangerous_patterns:
             if re.search(pattern, value, re.IGNORECASE):
-                return False, f"Dangerous content detected: script or event handlers not allowed"
+                return False, "Dangerous content detected: script or event handlers not allowed"
         
         # Sanitize HTML entities but preserve intended formatting
         # Only escape if it looks like unintended HTML
