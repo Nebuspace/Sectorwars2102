@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { getStationClassInfo, StationClassMark } from '../common/stationIdentity';
+import PlanetaryLanderInstallCta from '../planetary/PlanetaryLanderInstallCta';
 import ConfirmDialog, { type PendingConfirm } from './ConfirmDialog';
 import './planet-port-pair.css';
 
@@ -65,6 +66,13 @@ interface PlanetPortPairProps {
    *  that waits until the ship has arrived (atDestination / isLanded /
    *  isDocked) and the player clicks LAND/DOCK. */
   onApproach?: (objectId: string) => void;
+  /** Active ship id/type for LEG-117 Planetary Lander install CTA on claim. */
+  shipId?: string | null;
+  shipType?: string | null;
+  onLanderInstalled?: (result: {
+    remainingCredits?: number;
+    message?: string;
+  }) => void | Promise<void>;
 }
 
 const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
@@ -78,7 +86,10 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
   atDestination = false,
   flying = false,
   onHalt,
-  onApproach
+  onApproach,
+  shipId = null,
+  shipType = null,
+  onLanderInstalled,
 }) => {
   // Planet type icons
   const planetTypeIcons: { [key: string]: string } = {
@@ -361,6 +372,16 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
             pendingConfirm.onConfirm();
           }}
           onCancel={() => setPendingConfirm(null)}
+          extra={
+            pendingConfirm.title === 'Claim Planet' ? (
+              <PlanetaryLanderInstallCta
+                shipId={shipId}
+                shipType={shipType}
+                compact
+                onInstalled={onLanderInstalled}
+              />
+            ) : undefined
+          }
         />
       )}
     </div>

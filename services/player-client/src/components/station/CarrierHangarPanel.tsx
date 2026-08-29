@@ -4,6 +4,29 @@ import { useSectorContacts } from '../tactical/contactClassification';
 import { useGame } from '../../contexts/GameContext';
 import './carrier-hangar-panel.css';
 
+function serverDetail(err: unknown): string | undefined {
+  if (err && typeof err === 'object') {
+    const rawDetail = (err as { response?: { data?: { detail?: unknown } } }).response?.data
+      ?.detail;
+    if (typeof rawDetail === 'string' && rawDetail.trim()) return rawDetail.trim();
+  }
+  const message = err instanceof Error ? err.message : undefined;
+  if (
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim())
+  ) {
+    return message.trim();
+  }
+  return undefined;
+}
+
+export function formatHangarActionError(err: unknown): string {
+  const detail = serverDetail(err);
+  if (detail) return detail;
+  return 'Hangar action failed';
+}
+
 /**
  * CarrierHangarPanel — WO-WIRE-CARRIER-HANGAR-UI.
  *
@@ -55,7 +78,7 @@ const CarrierHangarPanel: React.FC = () => {
       await refresh();
       await refreshPlayerState();
     } catch (err: unknown) {
-      setFeedback(err instanceof Error ? err.message : 'Hangar action failed');
+      setFeedback(formatHangarActionError(err));
     } finally {
       setBusy(false);
     }

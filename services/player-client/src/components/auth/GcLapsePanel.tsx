@@ -3,6 +3,29 @@ import { gcLapseAPI } from '../../services/api';
 import { useGame } from '../../contexts/GameContext';
 import './gc-lapse-panel.css';
 
+function serverDetail(err: unknown): string | undefined {
+  if (err && typeof err === 'object') {
+    const rawDetail = (err as { response?: { data?: { detail?: unknown } } }).response?.data
+      ?.detail;
+    if (typeof rawDetail === 'string' && rawDetail.trim()) return rawDetail.trim();
+  }
+  const message = err instanceof Error ? err.message : undefined;
+  if (
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim())
+  ) {
+    return message.trim();
+  }
+  return undefined;
+}
+
+export function formatGcLapseRelocateError(err: unknown): string {
+  const detail = serverDetail(err);
+  if (detail) return detail;
+  return 'Relocation failed';
+}
+
 type Holding = {
   asset_type: string;
   asset_id: string;
@@ -69,7 +92,7 @@ const GcLapsePanel: React.FC = () => {
       setAvailable(false);
       await refreshPlayerState();
     } catch (err: unknown) {
-      setFeedback(err instanceof Error ? err.message : 'Relocation failed');
+      setFeedback(formatGcLapseRelocateError(err));
     } finally {
       setBusyId(null);
     }

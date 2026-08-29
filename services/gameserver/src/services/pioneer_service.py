@@ -280,6 +280,10 @@ def sell_planet_surplus(
 
     price = quote_surplus_price(db, station)  # already clamped to the 30-80 band
     credits_earned = price * to_sell
+    from src.services.profession_service import trade_specialist_credit_multiplier
+    trade_mult = trade_specialist_credit_multiplier(db, planet.id)
+    if trade_mult != 1.0:
+        credits_earned = int(round(credits_earned * trade_mult))
 
     # Lock the player row (leaf) AFTER the planet row.
     locked_player = (

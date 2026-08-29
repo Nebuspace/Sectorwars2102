@@ -42,6 +42,7 @@
 .mnt-tier.worn { color: #ffd166; }
 .mnt-tier.degraded { color: #ff9f43; }
 .mnt-tier.critical { color: #ff6b6b; }
+.mnt-tier.catastrophic { color: #ff003c; text-shadow: 0 0 6px rgba(255,0,60,0.45); }
 
 .mnt-bar-track { height: 10px; background: rgba(255,255,255,0.08); border-radius: 5px; overflow: hidden; }
 .mnt-bar-fill { height: 100%; transition: width 0.3s; }
@@ -49,6 +50,7 @@
 .mnt-bar-fill.worn { background: #ffd166; }
 .mnt-bar-fill.degraded { background: #ff9f43; }
 .mnt-bar-fill.critical { background: #ff6b6b; }
+.mnt-bar-fill.catastrophic { background: #ff003c; box-shadow: 0 0 8px rgba(255,0,60,0.55); }
 
 .mnt-effects {
   display: grid;
@@ -119,4 +121,14 @@
 @media (max-width: 640px) {
   .maintenance-manager { min-width: 0; width: 100%; }
   .mnt-tiers, .mnt-effects { grid-template-columns: 1fr; }
+}
+
+.mnt-catastrophic-warn {
+  margin: 0.5rem 0 0;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid #ff003c;
+  background: rgba(255, 0, 60, 0.12);
+  color: #ff6b8a;
+  font-weight: 600;
+  font-size: 0.85rem;
 }
