@@ -20,6 +20,7 @@ from src.models.player import Player
 from src.models.port_ownership import StationGovernanceVote
 from src.models.station import Station
 from src.services.port_ownership_service import (
+    apply_governance_sale_listing,
     MAX_TAX_RATE,
     MIN_TAX_RATE,
     PortOwnershipError,
@@ -137,16 +138,36 @@ def _apply_passed_tariff(
     )
 
 
+def _apply_passed_sale(
+    db: Session,
+    station: Station,
+    row: StationGovernanceVote,
+    now: Optional[datetime] = None,
+) -> None:
+    """Syndicate sale motion: release ownership and list at canon price."""
+    listing = apply_governance_sale_listing(db, station, now=now)
+    if listing is not None:
+        logger.info(
+            "Governance sale applied station=%s vote=%s listing=%s",
+            station.id,
+            row.id,
+            listing.id,
+        )
+
+
 def _apply_passed_vote(
     db: Session,
     station: Station,
     row: StationGovernanceVote,
     outcome: Dict[str, Any],
+    now: Optional[datetime] = None,
 ) -> None:
     if not outcome.get("passed"):
         return
     if row.vote_type == "tariff":
         _apply_passed_tariff(db, station, row)
+    elif row.vote_type == "sale":
+        _apply_passed_sale(db, station, row, now=now)
 
 
 def counted_stake(pct: float, inactive: bool) -> float:
@@ -327,7 +348,7 @@ def _maybe_resolve_row(
     row.status = outcome["status"]
     row.outcome = outcome
     flag_modified(row, "outcome")
-    _apply_passed_vote(db, station, row, outcome)
+    _apply_passed_vote(db, station, row, outcome, now=now)
 
 
 def cast_governance_vote(
