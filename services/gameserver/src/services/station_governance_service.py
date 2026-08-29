@@ -26,8 +26,10 @@ from src.services.port_ownership_service import (
     MIN_TAX_RATE,
     PortOwnershipError,
     SYNDICATE_MODE_KEY,
+    WITHDRAWAL_SCHEDULES,
     _ensure_primary_share,
     _lock_station,
+    set_withdrawal_schedule,
 )
 
 logger = logging.getLogger(__name__)
@@ -168,6 +170,56 @@ def _apply_passed_sale(
         )
 
 
+def _withdrawal_schedule_from_proposed(proposed_value: Any) -> Optional[str]:
+    """Parse daily|weekly|monthly from a withdrawal motion payload (LEG-2014)."""
+    if isinstance(proposed_value, str):
+        key = proposed_value.strip().lower()
+        return key if key in WITHDRAWAL_SCHEDULES else None
+    if isinstance(proposed_value, dict):
+        raw = proposed_value.get(
+            "schedule",
+            proposed_value.get("value", proposed_value.get("withdrawal_schedule")),
+        )
+        if raw is None and len(proposed_value) == 1:
+            only = next(iter(proposed_value.values()))
+            if isinstance(only, str):
+                raw = only
+        if isinstance(raw, str):
+            key = raw.strip().lower()
+            if key in WITHDRAWAL_SCHEDULES:
+                return key
+    return None
+
+
+def _apply_passed_withdrawal(
+    db: Session, station: Station, row: StationGovernanceVote, now: datetime
+) -> None:
+    """Persist withdrawal schedule enum for lazy sweep (port-ownership.md:381)."""
+    schedule = _withdrawal_schedule_from_proposed(row.proposed_value)
+    if schedule is None:
+        logger.warning(
+            "Passed withdrawal vote %s has no parseable schedule in proposed_value",
+            row.id,
+        )
+        return
+    locked = _lock_station(db, station.id)
+    set_withdrawal_schedule(locked, schedule, now)
+    db.flush()
+    outcome = dict(row.outcome or {})
+    outcome["execution"] = {
+        "action": "set_withdrawal_schedule",
+        "schedule": schedule,
+    }
+    row.outcome = outcome
+    flag_modified(row, "outcome")
+    logger.info(
+        "Governance withdrawal schedule applied station=%s schedule=%s vote=%s",
+        locked.id,
+        schedule,
+        row.id,
+    )
+
+
 def _apply_passed_disbandment(
     db: Session,
     station: Station,
@@ -194,10 +246,16 @@ def _apply_passed_vote(
 ) -> None:
     if not outcome.get("passed"):
         return
+    if isinstance((row.outcome or {}).get("execution"), dict):
+        return  # idempotent
     if row.vote_type == "tariff":
         _apply_passed_tariff(db, station, row)
     elif row.vote_type == "sale":
         _apply_passed_sale(db, station, row, now=now)
+    elif row.vote_type == "withdrawal":
+        _apply_passed_withdrawal(
+            db, station, row, now or datetime.now(UTC)
+        )
     elif row.vote_type == "disbandment":
         _apply_passed_disbandment(db, station, row, now=now)
 
