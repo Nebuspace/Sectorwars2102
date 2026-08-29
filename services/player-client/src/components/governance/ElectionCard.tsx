@@ -47,6 +47,64 @@ const CANDIDACY_ERROR_COPY: Record<string, string> = {
   ERR_NOT_A_MEMBER: 'You must be a member of this region to stand as a candidate.',
 };
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+/** Surface GS cast-vote detail (LEG-2938 Soft-ORDER). */
+export function formatElectionVoteError(err: unknown): string {
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (message && VOTE_ERROR_COPY[message]) return VOTE_ERROR_COPY[message];
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You are not allowed to vote in this election.';
+  }
+
+  if (status === 429) {
+    return 'Vote rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (hasServerDetail) return message!;
+  return 'Failed to cast vote.';
+}
+
+/** Surface GS register-candidacy detail (LEG-2938 Soft-ORDER). */
+export function formatElectionCandidacyError(err: unknown): string {
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (message && CANDIDACY_ERROR_COPY[message]) return CANDIDACY_ERROR_COPY[message];
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You are not allowed to register as a candidate.';
+  }
+
+  if (status === 429) {
+    return 'Candidacy rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (hasServerDetail) return message!;
+  return 'Failed to register candidacy.';
+}
+
 function formatCountdown(targetIso: string, now: number): string {
   const target = new Date(targetIso).getTime();
   const diffMs = target - now;
@@ -139,10 +197,10 @@ const ElectionCard: React.FC<ElectionCardProps> = ({
       setConfirmArmed(false);
       onChanged();
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to cast vote.';
+      const message = err instanceof Error ? err.message : '';
       if (message.includes('ERR_ALREADY_VOTED')) setAlreadyVoted(true);
       setConfirmArmed(false);
-      setVoteError(VOTE_ERROR_COPY[message] || message);
+      setVoteError(formatElectionVoteError(err));
     } finally {
       setCasting(false);
     }
@@ -156,9 +214,9 @@ const ElectionCard: React.FC<ElectionCardProps> = ({
       setJustRegistered(true);
       onChanged();
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to register candidacy.';
+      const message = err instanceof Error ? err.message : '';
       if (message.includes('ERR_ALREADY_CANDIDATE')) setJustRegistered(true);
-      setNominateError(CANDIDACY_ERROR_COPY[message] || message);
+      setNominateError(formatElectionCandidacyError(err));
     } finally {
       setNominating(false);
     }
