@@ -25,7 +25,7 @@ vi.mock('../../contexts/GameContext', () => ({
   useGame: () => ({ currentSector: mockCurrentSector }),
 }));
 
-import GovSummaryTab from './GovSummaryTab';
+import GovSummaryTab, { formatGovSummaryLoadError } from './GovSummaryTab';
 
 const MEMBER_RESPONSE = {
   region_id: 'region-1',
@@ -141,6 +141,36 @@ describe('GovSummaryTab', () => {
     const errorEl = container.querySelector('.sb-gov-error');
     expect(errorEl?.textContent).toBe('Network down');
     expect(errorEl?.getAttribute('role')).toBe('alert');
+  });
+
+  it('surfaces load 403 ERR_NOT_A_MEMBER server detail', async () => {
+    mockCurrentSector = { region_id: 'region-1' };
+    mockGetMyMembership.mockRejectedValue(
+      Object.assign(new Error('ERR_NOT_A_MEMBER'), { status: 403 }),
+    );
+    await mount();
+
+    expect(container.querySelector('.sb-gov-error')?.textContent).toBe('ERR_NOT_A_MEMBER');
+  });
+
+  it('surfaces load 404 region-not-found server detail', async () => {
+    mockCurrentSector = { region_id: 'region-1' };
+    mockGetMyMembership.mockRejectedValue(
+      Object.assign(new Error('Region not found'), { status: 404 }),
+    );
+    await mount();
+
+    expect(container.querySelector('.sb-gov-error')?.textContent).toBe('Region not found');
+  });
+
+  it('formatGovSummaryLoadError falls back on bare 403 without server detail', () => {
+    const err = Object.assign(new Error('API Error: 403'), { status: 403 });
+    expect(formatGovSummaryLoadError(err)).toBe('You are not a member of this region.');
+  });
+
+  it('formatGovSummaryLoadError falls back on bare 404 without server detail', () => {
+    const err = Object.assign(new Error('API Error: 404'), { status: 404 });
+    expect(formatGovSummaryLoadError(err)).toBe('Region not found.');
   });
 
   it('shows a status/aria-live loading state before the fetch resolves', async () => {
