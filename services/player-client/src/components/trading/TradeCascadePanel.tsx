@@ -8,6 +8,38 @@ import {
 } from '../../services/api';
 import './trade-cascade.css';
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+/** Surface GS trade-cascade plan detail; hide bare API Error: N blobs (LEG-2957). */
+export function formatTradeCascadeError(err: unknown): string {
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'Access denied — you cannot plan a trade cascade right now.';
+  }
+
+  if (status === 429) {
+    return 'Trade cascade rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (hasServerDetail) return message!;
+  return 'Failed to plan trade cascade.';
+}
+
 /**
  * LEG-725 — first player consumer of POST /api/v1/ai/trade-cascade.
  * Plans multi-hop trade cascades through explored sectors only; refusal
@@ -70,8 +102,7 @@ const TradeCascadePanel: React.FC = () => {
 
       setPlan(response);
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Failed to plan trade cascade.';
-      setError(message);
+      setError(formatTradeCascadeError(err));
     } finally {
       setLoading(false);
     }
