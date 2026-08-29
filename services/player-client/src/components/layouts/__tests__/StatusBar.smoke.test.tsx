@@ -67,6 +67,9 @@ vi.mock('../../../contexts/GameContext', () => ({
     ships: [],
     currentShip: null,
     setCurrentShip: vi.fn(),
+    // LEG-1159 / LEG-141 — FLEET tab mounts FleetManagerPanel move picker.
+    availableMoves: { warps: [], tunnels: [] },
+    getAvailableMoves: vi.fn().mockResolvedValue(undefined),
   }),
 }));
 
@@ -134,6 +137,7 @@ vi.mock('../../../services/api', () => ({
     getBattle: vi.fn().mockResolvedValue({}),
     initiateBattle: vi.fn(),
     simulateBattleRound: vi.fn(),
+    move: vi.fn(),
   },
 }));
 

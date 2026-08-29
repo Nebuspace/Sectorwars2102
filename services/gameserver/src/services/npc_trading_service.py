@@ -65,6 +65,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from src.models.docking import DockingSlipOccupancy
 from src.models.market_transaction import MarketPrice, MarketTransaction, TransactionType
 from src.models.npc_character import NPCCharacter, NPCLifecycleStage
+from src.models.region import Region
 from src.models.sector import Sector
 from src.models.ship import Ship
 from src.models.station import Station, StationType
@@ -212,6 +213,46 @@ def compute_tariff_demand_factor(tax_rate: Optional[float]) -> float:
     return max(min(raw, 1.0), TARIFF_DEMAND_FLOOR)
 
 
+REGION_TAX_RATE_MIN = 0.0
+REGION_TAX_RATE_MAX = 0.25
+
+
+def clamp_region_tax_rate(region_tax_rate: Optional[float]) -> float:
+    """Clamp region.tax_rate to canon [0.0, 0.25] (port-ownership.md AU3-10)."""
+    rate = float(region_tax_rate or 0.0)
+    return max(REGION_TAX_RATE_MIN, min(REGION_TAX_RATE_MAX, rate))
+
+
+def compose_region_tax_on_traffic(
+    traffic_with_rep: float,
+    region_tax_rate: Optional[float],
+) -> float:
+    """Apply regional tax to traffic weight (port-ownership.md:190).
+
+    traffic_final = traffic_with_rep × (1 - region.tax_rate)."""
+    if traffic_with_rep <= 0:
+        return 0.0
+    rate = clamp_region_tax_rate(region_tax_rate)
+    return traffic_with_rep * (1.0 - rate)
+
+
+def compute_npc_route_traffic_weight(
+    station_tax_rate: Optional[float],
+    region_tax_rate: Optional[float],
+) -> float:
+    """NPC route pick weight: station tariff elasticity × regional tax compose."""
+    demand = compute_tariff_demand_factor(station_tax_rate)
+    return compose_region_tax_on_traffic(demand, region_tax_rate)
+
+
+def _region_tax_rate(db: Session, region_id) -> float:
+    """Read region.tax_rate once per route generation (missing → 0.0)."""
+    region = db.query(Region).filter(Region.id == region_id).first()
+    if region is None:
+        return 0.0
+    return clamp_region_tax_rate(float(region.tax_rate or 0.0))
+
+
 def _station_profile(station: Station) -> Dict[str, List[str]]:
     """Commodities this station can supply (sells, surplus stock) and
     wants (buys, deficit stock)."""
@@ -254,6 +295,8 @@ def generate_trade_route(
     if not region_sector_ids:
         return None
 
+    region_tax_rate = _region_tax_rate(db, region_id)
+
     stations = [
         s for s in db.query(Station).all()
         if s.sector_id in region_sector_ids and (s.commodities or {})
@@ -284,7 +327,10 @@ def generate_trade_route(
     route: List[Dict[str, Any]] = []
     current = random.choices(
         candidates,
-        weights=[compute_tariff_demand_factor(s.tax_rate) for s in candidates],
+        weights=[
+            compute_npc_route_traffic_weight(s.tax_rate, region_tax_rate)
+            for s in candidates
+        ],
         k=1,
     )[0]
     visited = {current.id}
@@ -309,7 +355,8 @@ def generate_trade_route(
         best, best_goods = random.choices(
             options,
             weights=[
-                compute_tariff_demand_factor(nxt.tax_rate) for nxt, _ in options
+                compute_npc_route_traffic_weight(nxt.tax_rate, region_tax_rate)
+                for nxt, _ in options
             ],
             k=1,
         )[0]
