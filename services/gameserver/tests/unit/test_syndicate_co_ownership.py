@@ -223,3 +223,157 @@ class TestDeclineShareInvite:
             )
         assert result["declined_invite_id"] == invite_id
         assert station.ownership.get(po.SYNDICATE_INVITES_KEY) == []
+
+
+class TestWithdrawTreasurySyndicate:
+    """LEG-1997 Soft-ORDER invent=0 — per-share treasury withdrawal."""
+
+    def test_solo_path_unchanged(self):
+        owner_id = uuid4()
+        station = SimpleNamespace(
+            id=uuid4(),
+            owner_id=owner_id,
+            ownership={po.SYNDICATE_MODE_KEY: "solo"},
+            treasury_balance=10_000,
+        )
+        owner = SimpleNamespace(id=owner_id, credits=100)
+        db = MagicMock()
+        with patch.object(po, "_lock_station", return_value=station):
+            with patch.object(
+                po, "_lock_players_ascending", return_value={owner_id: owner}
+            ):
+                result = po.withdraw_treasury(db, station, owner, 1_000)
+        assert result["withdrawn"] == 1_000
+        assert result["mode"] == "solo"
+        assert result["treasury_balance"] == 9_000
+        assert owner.credits == 1_100
+        assert result["distributions"] == [
+            {"player_id": str(owner_id), "pct": 100, "credits": 1_000}
+        ]
+
+    def test_syndicate_60_40_exact_split(self):
+        owner_id = uuid4()
+        partner_id = uuid4()
+        station = SimpleNamespace(
+            id=uuid4(),
+            owner_id=owner_id,
+            ownership={
+                po.SYNDICATE_MODE_KEY: "syndicate",
+                po.SYNDICATE_SHARES_KEY: [
+                    {"player_id": str(owner_id), "pct": 60},
+                    {"player_id": str(partner_id), "pct": 40},
+                ],
+            },
+            treasury_balance=10_000,
+        )
+        owner = SimpleNamespace(id=owner_id, credits=0)
+        partner = SimpleNamespace(id=partner_id, credits=0)
+        db = MagicMock()
+        with patch.object(po, "_lock_station", return_value=station):
+            with patch.object(
+                po,
+                "_lock_players_ascending",
+                return_value={owner_id: owner, partner_id: partner},
+            ):
+                result = po.withdraw_treasury(db, station, owner, 1_000)
+        assert result["mode"] == "syndicate"
+        assert result["withdrawn"] == 1_000
+        assert result["treasury_balance"] == 9_000
+        by_id = {d["player_id"]: d for d in result["distributions"]}
+        assert by_id[str(owner_id)]["credits"] == 600
+        assert by_id[str(partner_id)]["credits"] == 400
+        assert owner.credits == 600
+        assert partner.credits == 400
+        assert sum(d["credits"] for d in result["distributions"]) == 1_000
+
+    def test_syndicate_remainder_to_primary(self):
+        owner_id = uuid4()
+        partner_id = uuid4()
+        station = SimpleNamespace(
+            id=uuid4(),
+            owner_id=owner_id,
+            ownership={
+                po.SYNDICATE_MODE_KEY: "syndicate",
+                po.SYNDICATE_SHARES_KEY: [
+                    {"player_id": str(owner_id), "pct": 60},
+                    {"player_id": str(partner_id), "pct": 40},
+                ],
+            },
+            treasury_balance=10_000,
+        )
+        owner = SimpleNamespace(id=owner_id, credits=0)
+        partner = SimpleNamespace(id=partner_id, credits=0)
+        db = MagicMock()
+        # 101 * 60 // 100 = 60; 101 * 40 // 100 = 40; remainder 1 → primary
+        with patch.object(po, "_lock_station", return_value=station):
+            with patch.object(
+                po,
+                "_lock_players_ascending",
+                return_value={owner_id: owner, partner_id: partner},
+            ):
+                result = po.withdraw_treasury(db, station, owner, 101)
+        by_id = {d["player_id"]: d["credits"] for d in result["distributions"]}
+        assert by_id[str(owner_id)] == 61
+        assert by_id[str(partner_id)] == 40
+        assert sum(by_id.values()) == 101
+
+    def test_non_owner_forbidden(self):
+        owner_id = uuid4()
+        station = SimpleNamespace(
+            id=uuid4(), owner_id=owner_id, ownership={}, treasury_balance=10_000
+        )
+        stranger = SimpleNamespace(id=uuid4(), credits=0)
+        db = MagicMock()
+        with patch.object(po, "_lock_station", return_value=station):
+            with pytest.raises(PortOwnershipError) as exc:
+                po.withdraw_treasury(db, station, stranger, 100)
+        assert exc.value.status_code == 403
+
+
+class TestInjectTreasury:
+    """LEG-2000 Soft-ORDER invent=0 — owner cash-injection."""
+
+    def test_inject_success(self):
+        owner_id = uuid4()
+        station = SimpleNamespace(
+            id=uuid4(), owner_id=owner_id, ownership={}, treasury_balance=500
+        )
+        owner = SimpleNamespace(id=owner_id, credits=2_000)
+        db = MagicMock()
+        with patch.object(po, "_lock_station", return_value=station):
+            with patch.object(
+                po, "_lock_players_ascending", return_value={owner_id: owner}
+            ):
+                result = po.inject_treasury(db, station, owner, 750)
+        assert result["injected"] == 750
+        assert result["treasury_balance"] == 1_250
+        assert owner.credits == 1_250
+        assert station.treasury_balance == 1_250
+
+    def test_insufficient_credits(self):
+        owner_id = uuid4()
+        station = SimpleNamespace(
+            id=uuid4(), owner_id=owner_id, ownership={}, treasury_balance=0
+        )
+        owner = SimpleNamespace(id=owner_id, credits=50)
+        db = MagicMock()
+        with patch.object(po, "_lock_station", return_value=station):
+            with patch.object(
+                po, "_lock_players_ascending", return_value={owner_id: owner}
+            ):
+                with pytest.raises(PortOwnershipError) as exc:
+                    po.inject_treasury(db, station, owner, 100)
+        assert exc.value.status_code == 400
+        assert "insufficient" in exc.value.detail.lower()
+
+    def test_non_owner_forbidden(self):
+        owner_id = uuid4()
+        station = SimpleNamespace(
+            id=uuid4(), owner_id=owner_id, ownership={}, treasury_balance=0
+        )
+        stranger = SimpleNamespace(id=uuid4(), credits=500)
+        db = MagicMock()
+        with patch.object(po, "_lock_station", return_value=station):
+            with pytest.raises(PortOwnershipError) as exc:
+                po.inject_treasury(db, station, stranger, 100)
+        assert exc.value.status_code == 403
