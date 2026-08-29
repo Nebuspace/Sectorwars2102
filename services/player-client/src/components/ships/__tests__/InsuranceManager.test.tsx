@@ -108,7 +108,16 @@ describe('InsuranceManager', () => {
       root.render(<InsuranceManager shipId="ship-1" playerCredits={0} />);
       await flush();
     });
-    expect(container.textContent).toMatch(/Insurance is unavailable/);
+    expect(container.querySelector('[data-testid="ins-load-error"]')?.textContent).toBe(
+      'underwriter down',
+    );
+    expect(container.textContent).toMatch(/underwriter down/);
+  });
+
+  it('formatInsuranceLoadError falls back on bare API Error status', async () => {
+    const { formatInsuranceLoadError } = await import('../InsuranceManager');
+    const err = Object.assign(new Error('API Error: 503'), { status: 503 });
+    expect(formatInsuranceLoadError(err)).toBe('Insurance is unavailable right now.');
   });
 
   it('disables buy when player cannot afford the premium', async () => {

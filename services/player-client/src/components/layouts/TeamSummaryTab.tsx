@@ -50,6 +50,34 @@ const RECRUITMENT_LABEL: Record<Team['recruitmentStatus'], string> = {
   closed: 'Closed',
 };
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+/** apiRequest throws Error with `.status`; surface gameserver 403 detail on crew load. */
+export function formatTeamSummaryLoadError(err: unknown): string {
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You are not a member of this team.';
+  }
+
+  if (hasServerDetail) return message!;
+  return 'Failed to load team data';
+}
+
 const TeamSummaryTab: React.FC = () => {
   const { playerState } = useGame();
   const teamId = playerState?.team_id ?? null;
@@ -81,7 +109,7 @@ const TeamSummaryTab: React.FC = () => {
       })
       .catch((err: unknown) => {
         if (cancelled) return;
-        setError(err instanceof Error ? err.message : 'Failed to load team data');
+        setError(formatTeamSummaryLoadError(err));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);

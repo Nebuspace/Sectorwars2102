@@ -34,6 +34,34 @@ const CATEGORY_LABELS: Record<Category, { label: string; icon: string; scoreLabe
 
 const CATEGORIES: Category[] = ['rank_points', 'combat', 'trading', 'exploration'];
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+/** apiRequest throws Error with `.status`; surface gameserver detail on leaderboard load. */
+export function formatLeaderboardLoadError(err: unknown): string {
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (status === 400) {
+    if (hasServerDetail) return message!;
+    return 'Failed to load leaderboard';
+  }
+
+  if (hasServerDetail) return message!;
+  return 'Failed to load leaderboard';
+}
+
 interface LeaderboardProps {
   category?: Category;
   /** The viewing player's id (Player.id), used to highlight their row. */
@@ -67,7 +95,7 @@ const Leaderboard: React.FC<LeaderboardProps> = ({
         setLoading(false);
       } catch (err) {
         if (cancelled) return;
-        setError(err instanceof Error ? err.message : 'Failed to load leaderboard');
+        setError(formatLeaderboardLoadError(err));
         setLoading(false);
       }
     };

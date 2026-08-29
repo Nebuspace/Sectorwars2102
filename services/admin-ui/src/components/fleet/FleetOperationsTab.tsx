@@ -1,41 +1,33 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { api } from '../../utils/auth';
+import { axiosResponseStatus, formatAdminApiError } from '../../utils/adminApiError';
 import './fleet-operations.css';
 
-const responseStatus = (err: unknown): number | undefined =>
-  typeof err === 'object' && err !== null && 'response' in err
-    ? (err as { response?: { status?: number } }).response?.status
-    : undefined;
-
-const settledStatuses = (results: PromiseSettledResult<unknown>[]): number[] =>
-  results
-    .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
-    .map((r) => responseStatus(r.reason))
-    .filter((s): s is number => s !== undefined);
+const FLEET_LOAD_SCOPE_HINT =
+  'fleet operations require the admin players view scope (PLAYERS_VIEW)';
+const FLEET_ACT_SCOPE_HINT = 'fleet interventions require COMBAT_INTERVENE';
 
 const fleetLoadError = (results: PromiseSettledResult<unknown>[], allFailed: boolean): string => {
-  const statuses = settledStatuses(results);
-  if (statuses.some((s) => s === 429)) {
-    return 'Admin rate limit exceeded — wait a moment and try again.';
-  }
-  if (statuses.some((s) => s === 401 || s === 403)) {
-    return 'Access denied — fleet operations require the admin players view scope (PLAYERS_VIEW).';
+  const rejected = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+  for (const r of rejected) {
+    const status = axiosResponseStatus(r.reason);
+    if (status === 429 || status === 401 || status === 403) {
+      return formatAdminApiError(r.reason, {
+        fallback: 'Failed to load fleet operations data.',
+        scopeHint: FLEET_LOAD_SCOPE_HINT,
+      });
+    }
   }
   return allFailed
     ? 'Failed to load fleet operations data.'
     : 'Some fleet operations data could not be loaded.';
 };
 
-const fleetActError = (err: unknown, fallback: string): string => {
-  const status = responseStatus(err);
-  if (status === 401 || status === 403) {
-    return 'Access denied — fleet interventions require COMBAT_INTERVENE.';
-  }
-  if (status === 429) {
-    return 'Admin rate limit exceeded — wait a moment and try again.';
-  }
-  return fallback;
-};
+const fleetActError = (err: unknown, fallback: string): string =>
+  formatAdminApiError(err, {
+    fallback,
+    scopeHint: FLEET_ACT_SCOPE_HINT,
+  });
 
 
 // =============================================================================

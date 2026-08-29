@@ -767,6 +767,25 @@ class PlanetaryService:
         # matching per-colonist food cost on the same tick.
         if _read_gourmet_food_stockpile(planet) > 0:
             rate_per_day *= (1 + GOURMET_FOOD_PRODUCTION_BONUS)
+        # Colonist profession growth bonuses (LEG-2734 / professions.md:41-42):
+        # Medical +20% / Agricultural +15% — applied HERE on the path that
+        # actually mutates planet.colonists (same pattern as WO-G14 gourmet
+        # food). Growth-only: the below-threshold decline branch above is
+        # intentionally unaffected.
+        try:
+            from src.services.profession_service import (
+                production_multipliers,
+                profession_counts,
+            )
+
+            prof_counts = profession_counts(self.db, planet.id)
+            rate_per_day *= production_multipliers(prof_counts)["colonists"]
+        except Exception:
+            logger.debug(
+                "Profession growth-read skipped on planet %s (non-fatal)",
+                getattr(planet, "id", "?"),
+                exc_info=True,
+            )
         if rate_per_day <= 0:
             # Nothing can grow (zero habitability at/above threshold is
             # impossible, but guard anyway); keep the anchor current.
