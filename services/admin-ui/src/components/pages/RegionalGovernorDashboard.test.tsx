@@ -117,6 +117,52 @@ describe('RegionalGovernorDashboard (LEG-213)', () => {
     });
   });
 
+  it('surfaces scope denial on 403 stats load (LEG-2747)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url === '/api/v1/regions/my-region') return { data: region };
+      if (url === '/api/v1/regions/my-region/stats') {
+        throw httpErr(403, 'Missing scope admin.regions.view');
+      }
+      if (url.endsWith('/policies')) return { data: [] };
+      if (url.endsWith('/elections')) return { data: [] };
+      if (url.endsWith('/treaties')) return { data: [] };
+      if (url.endsWith('/members')) return { data: [] };
+      return { data: {} };
+    });
+
+    render(<RegionalGovernorDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(
+        /Missing scope admin\.regions\.view/i,
+      );
+    });
+    expect(screen.queryByText('Failed to load regional stats')).toBeNull();
+  });
+
+  it('shows rate-limit copy on 429 stats load (LEG-2747)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url === '/api/v1/regions/my-region') return { data: region };
+      if (url === '/api/v1/regions/my-region/stats') {
+        throw httpErr(429);
+      }
+      if (url.endsWith('/policies')) return { data: [] };
+      if (url.endsWith('/elections')) return { data: [] };
+      if (url.endsWith('/treaties')) return { data: [] };
+      if (url.endsWith('/members')) return { data: [] };
+      return { data: {} };
+    });
+
+    render(<RegionalGovernorDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
+    });
+    expect(screen.queryByText('Failed to load regional stats')).toBeNull();
+  });
+
   it('shows admin rate-limit copy on 429 economy save', async () => {
     render(<RegionalGovernorDashboard />);
     await waitFor(() => expect(screen.getByText('Sol Reach')).toBeTruthy());
