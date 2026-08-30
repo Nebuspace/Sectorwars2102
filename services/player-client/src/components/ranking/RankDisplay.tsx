@@ -35,14 +35,22 @@ function httpStatus(err: unknown): number | undefined {
   return undefined;
 }
 
+/** True when err looks like gameserver detail (not bare API Error: N / TypeError noise). */
+function hasRankDisplayServerDetail(err: unknown, message: string | undefined): boolean {
+  // Network collapse (fetch TypeError) is not gameserver copy — use the caller fallback.
+  if (err instanceof TypeError) return false;
+  return (
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim())
+  );
+}
+
 /** apiRequest throws Error with `.status`; surface actionable server detail on load failure. */
 export function formatRankDisplayLoadError(err: unknown): string {
   const status = httpStatus(err);
   const message = err instanceof Error ? err.message : undefined;
-  const hasServerDetail =
-    typeof message === 'string' &&
-    message.trim().length > 0 &&
-    !/^API Error: \d+$/.test(message.trim());
+  const hasServerDetail = hasRankDisplayServerDetail(err, message);
 
   if (status === 403) {
     if (hasServerDetail) return message!;
