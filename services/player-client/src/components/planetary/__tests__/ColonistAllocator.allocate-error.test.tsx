@@ -20,4 +20,11 @@ describe('formatColonistAllocateError (LEG-2876)', () => {
   it('falls back for non-Error values', () => {
     expect(formatColonistAllocateError('boom')).toBe('Failed to update allocations');
   });
+
+  it('falls back on TypeError network collapse (LEG-3039)', () => {
+    const text = formatColonistAllocateError(new TypeError('Failed to fetch'));
+    expect(text).toMatch(/Failed to update allocations/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
 });
