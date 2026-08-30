@@ -213,6 +213,27 @@ describe('ScopesManager grant/revoke mutation errors (LEG-2627)', () => {
     expect(alert).not.toHaveTextContent('Grant failed');
   });
 
+  it('surfaces honest fallback on grant POST TypeError/network collapse (LEG-2975)', async () => {
+    const user = userEvent.setup();
+    mockSuccessfulLoad();
+    vi.mocked(api.post).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await selectAliceForGrant(user);
+    await user.click(screen.getByRole('button', { name: 'Grant' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith('/api/v1/admin/scopes/grant', {
+        user_id: 'u1',
+        scope: 'admin.galaxy.manage',
+      });
+    });
+
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveTextContent(/Grant failed/i);
+    expect(alert).not.toHaveTextContent(/Failed to fetch/i);
+    expect(alert).not.toHaveTextContent(/TypeError/i);
+  });
+
   it('surfaces formatAdminApiError on revoke POST 403', async () => {
     const user = userEvent.setup();
     vi.mocked(api.post).mockRejectedValue(
