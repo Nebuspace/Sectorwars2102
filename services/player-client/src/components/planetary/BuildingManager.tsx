@@ -37,7 +37,9 @@ interface BuildingInfo {
 /** Surface gameserver 400 detail on building upgrade refusal (ownership / unknown type / in-progress). */
 export function formatBuildingUpgradeError(err: unknown): string {
   const message = err instanceof Error ? err.message : undefined;
+  // Network collapse (fetch TypeError) is not gameserver copy — use the caller fallback.
   const hasServerDetail =
+    !(err instanceof TypeError) &&
     typeof message === 'string' &&
     message.trim().length > 0 &&
     !/^API Error: \d+$/.test(message.trim());
