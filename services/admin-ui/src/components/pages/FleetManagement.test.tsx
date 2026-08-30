@@ -341,6 +341,24 @@ describe('FleetManagement ship CRUD+teleport formatAdminApiError (LEG-2395)', ()
     });
   });
 
+  it('surfaces honest fallback on update PUT TypeError/network collapse (LEG-2973)', async () => {
+    await readyFleet();
+    vi.mocked(api.put).mockRejectedValue(new TypeError('Failed to fetch'));
+    fireEvent.click(screen.getByLabelText('Edit Ship'));
+    fireEvent.submit(modalForm(/Edit Ship/));
+
+    await waitFor(() => {
+      expect(api.put).toHaveBeenCalledWith(
+        `/api/v1/admin/ships/${sampleShip.id}`,
+        expect.anything(),
+      );
+    });
+    const msg = String(toastError.mock.calls.map((call) => call[0]).join('\n'));
+    expect(msg).toMatch(/Failed to update ship/i);
+    expect(msg).not.toMatch(/Failed to fetch/i);
+    expect(msg).not.toMatch(/TypeError/i);
+  });
+
   it('delete 403 surfaces formatAdminApiError fleet-manage scope copy', async () => {
     await readyFleet();
     vi.mocked(api.delete).mockRejectedValue({
