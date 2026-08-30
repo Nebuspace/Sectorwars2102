@@ -165,6 +165,13 @@ describe('TeamSummaryTab', () => {
     expect(formatTeamSummaryLoadError(err)).toBe('You are not a member of this team.');
   });
 
+  it('formatTeamSummaryLoadError falls back on TypeError network collapse (LEG-3012)', () => {
+    const text = formatTeamSummaryLoadError(new TypeError('Failed to fetch'));
+    expect(text).toMatch(/Failed to load team data/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
   it('shows a status/aria-live loading state before the fetch resolves', async () => {
     mockPlayerState = { team_id: 'team-1' };
     let resolveFn: (v: unknown) => void = () => {};
