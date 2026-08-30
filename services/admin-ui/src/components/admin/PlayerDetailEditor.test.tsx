@@ -120,6 +120,25 @@ describe('PlayerDetailEditor (LEG-2721 formatAdminApiError)', () => {
     expect(screen.getByRole('option', { name: 'No Team' })).toBeTruthy();
   });
 
+  it('surfaces honest fallback on teams LIST TypeError/network collapse (LEG-3042)', async () => {
+    mockMetaLoads({ teamsReject: new TypeError('Failed to fetch') });
+
+    render(
+      <PlayerDetailEditor player={basePlayer} onClose={onClose} onSave={onSave} />,
+    );
+
+    await waitFor(() => {
+      expect(api.get).toHaveBeenCalledWith('/api/v1/admin/teams');
+    });
+
+    const alert = await screen.findByRole('alert');
+    const text = alert.textContent ?? '';
+    expect(text).toMatch(/Failed to load teams/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+    expect(screen.getByRole('option', { name: 'No Team' })).toBeTruthy();
+  });
+
   it('surfaces scope denial on regions LIST 403 in metaLoadError banner', async () => {
     mockMetaLoads({
       regionsReject: axiosError(403, 'Missing scope admin.players.view'),
