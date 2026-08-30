@@ -256,4 +256,21 @@ describe('PerformanceMetrics (LEG-153; port of LEG-114)', () => {
 
     expect(screen.getByRole('alert').textContent).toContain('Gameserver unreachable');
   });
+
+  it('reports TypeError Failed to fetch as gameserver-unreachable fallback, not raw TypeError', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<PerformanceMetrics />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(
+      /Gameserver unreachable — network error fetching performance metrics/i
+    );
+    expect(alert).not.toMatch(/Failed to fetch/i);
+    expect(alert).not.toMatch(/TypeError/i);
+  });
 });
