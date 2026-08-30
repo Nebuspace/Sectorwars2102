@@ -356,6 +356,31 @@ describe('EconomyDashboard mutation errors (LEG-2600)', () => {
     expect(toastError).not.toHaveBeenCalledWith('Failed to create price alert');
   });
 
+  it('surfaces honest fallback on create-alert POST TypeError/network collapse (LEG-3001)', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.post).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<EconomyDashboard />);
+    await waitFor(() => expect(screen.getByLabelText(/^Station$/)).toBeTruthy());
+
+    await user.selectOptions(screen.getByLabelText(/^Station$/), 'st1');
+    await user.selectOptions(screen.getByLabelText(/^Commodity$/), 'ore');
+    await user.type(screen.getByLabelText(/Threshold Value/i), '15');
+    await user.click(screen.getByRole('button', { name: /Create Alert/i }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/economy/create-alert',
+        expect.objectContaining({ station_id: 'st1', commodity: 'ore' }),
+      );
+      expect(toastError).toHaveBeenCalled();
+    });
+    const msg = String(toastError.mock.calls[0][0]);
+    expect(msg).toMatch(/Failed to create price alert/i);
+    expect(msg).not.toMatch(/Failed to fetch/i);
+    expect(msg).not.toMatch(/TypeError/i);
+  });
+
   it('surfaces formatAdminApiError on delete-alert DELETE 403', async () => {
     const user = userEvent.setup();
     vi.mocked(api.post).mockResolvedValueOnce({
