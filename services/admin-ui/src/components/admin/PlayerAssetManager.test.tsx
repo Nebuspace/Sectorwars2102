@@ -61,4 +61,22 @@ describe('PlayerAssetManager scope honesty (LEG-1207)', () => {
 
     expect(screen.getByRole('alert').textContent ?? '').toMatch(/rate limit/i);
   });
+
+  it('surfaces honest fallback on non-RBAC network collapse (LEG-2962)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(
+      <PlayerAssetManager player={player} onClose={() => {}} onUpdate={() => {}} />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Gameserver unreachable|network error loading player assets/i);
+    expect(alert).not.toMatch(/TypeError/i);
+    expect(alert).not.toBe('Failed to fetch');
+    expect(alert).not.toMatch(/^Failed to load player assets$/);
+  });
 });

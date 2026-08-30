@@ -1,7 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import MessageModeration from './MessageModeration';
+import { MemoryRouter } from 'react-router-dom';
+import MessageModeration, {
+  buildEscalationAuditLedgerHref,
+} from './MessageModeration';
 import { api } from '../../utils/auth';
 
 vi.mock('../../utils/auth', () => ({
@@ -97,6 +100,14 @@ function mockLoad({
   });
 }
 
+function renderPage() {
+  return render(
+    <MemoryRouter>
+      <MessageModeration />
+    </MemoryRouter>,
+  );
+}
+
 describe('MessageModeration', () => {
   beforeEach(() => {
     vi.mocked(api.get).mockReset();
@@ -121,12 +132,58 @@ describe('MessageModeration', () => {
 
   it('shows honest empty states when nothing is flagged', async () => {
     mockLoad();
-    render(<MessageModeration />);
+    renderPage();
 
     await waitFor(() => {
       expect(screen.getByText('No flagged messages.')).toBeTruthy();
     });
     expect(screen.getByText('No flagged sector beacons.')).toBeTruthy();
+  });
+
+  it('shows escalation block-count badge when sender_block_count_30d is 2 (LEG-2690)', async () => {
+    mockLoad({
+      messages: {
+        ...emptyMessages,
+        messages: [{ ...message, sender_block_count_30d: 2 }],
+        total: 1,
+      },
+    });
+
+    render(<MessageModeration />);
+
+    await waitFor(() => {
+      expect(screen.getByText('2 blocks/30d')).toBeTruthy();
+    });
+    expect(screen.getByLabelText(/Sender escalation risk/i)).toBeTruthy();
+    expect(screen.queryByText('1 block/30d')).toBeNull();
+  });
+
+  it('omits block-count badge when sender_block_count_30d is 0 (LEG-2690)', async () => {
+    mockLoad({
+      messages: {
+        ...emptyMessages,
+        messages: [{ ...message, sender_block_count_30d: 0 }],
+        total: 1,
+      },
+    });
+
+    render(<MessageModeration />);
+
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+    expect(screen.queryByText(/block\/30d/i)).toBeNull();
+    expect(screen.queryByLabelText(/Sender block history/i)).toBeNull();
+    expect(screen.queryByLabelText(/Sender escalation risk/i)).toBeNull();
+  });
+
+  it('omits block-count badge when sender_block_count_30d is absent (LEG-2690 rollout)', async () => {
+    mockLoad({
+      messages: { ...emptyMessages, messages: [message], total: 1 },
+    });
+
+    render(<MessageModeration />);
+
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+    expect(screen.queryByText(/block\/30d/i)).toBeNull();
   });
 
   it('renders flagged messages and beacons from the real endpoints', async () => {
@@ -136,7 +193,7 @@ describe('MessageModeration', () => {
       stats: { ...emptyStats, total_messages: 10, flagged_messages: 1 },
     });
 
-    render(<MessageModeration />);
+    renderPage();
 
     await waitFor(() => {
       expect(screen.getByText('Alice')).toBeTruthy();
@@ -157,7 +214,7 @@ describe('MessageModeration', () => {
       },
     });
 
-    render(<MessageModeration />);
+    renderPage();
 
     await waitFor(() => {
       expect(screen.getByText('abcdef12345678')).toBeTruthy();
@@ -175,7 +232,7 @@ describe('MessageModeration', () => {
       return Promise.resolve({ data: emptyBeacons });
     });
 
-    render(<MessageModeration />);
+    renderPage();
 
     await waitFor(() => {
       expect(
@@ -192,7 +249,7 @@ describe('MessageModeration', () => {
     confirmMock.mockResolvedValue(true);
     vi.mocked(api.post).mockResolvedValue({ data: { success: true } });
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
 
     await user.click(screen.getByRole('button', { name: 'Delete' }));
@@ -224,7 +281,7 @@ describe('MessageModeration', () => {
       },
     });
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
 
     await user.click(screen.getByRole('button', { name: 'Accept' }));
@@ -236,6 +293,88 @@ describe('MessageModeration', () => {
       );
     });
     expect(toastSuccess).toHaveBeenCalledWith('Flag accepted.');
+  });
+
+  it('surfaces formatAdminApiError on accept POST 403 (LEG-2660)', async () => {
+    const user = userEvent.setup();
+    mockLoad({ messages: { ...emptyMessages, messages: [message], total: 1 } });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockRejectedValue(
+      Object.assign(new Error('HTTP 403'), {
+        response: {
+          status: 403,
+          data: { detail: 'Missing scope admin.security.act' },
+        },
+      }),
+    );
+
+    render(<MessageModeration />);
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: 'Accept' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/moderation/messages/m1/accept',
+        {},
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(
+      expect.stringMatching(/admin\.security\.act|Missing scope|Access denied/i),
+    );
+    expect(toastError).not.toHaveBeenCalledWith('Failed to accept the message');
+  });
+
+  it('surfaces rate-limit copy on accept POST 429 (LEG-2660)', async () => {
+    const user = userEvent.setup();
+    mockLoad({ messages: { ...emptyMessages, messages: [message], total: 1 } });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockRejectedValue(
+      Object.assign(new Error('HTTP 429'), {
+        response: { status: 429 },
+      }),
+    );
+
+    render(<MessageModeration />);
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: 'Accept' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/moderation/messages/m1/accept',
+        {},
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(
+      expect.stringMatching(/rate limit/i),
+    );
+    expect(toastError).not.toHaveBeenCalledWith('Failed to accept the message');
+  });
+
+  it('surfaces honest fallback on accept POST TypeError/network collapse (LEG-2976)', async () => {
+    const user = userEvent.setup();
+    mockLoad({ messages: { ...emptyMessages, messages: [message], total: 1 } });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<MessageModeration />);
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: 'Accept' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/moderation/messages/m1/accept',
+        {},
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(
+      expect.stringMatching(/Failed to accept the message/i),
+    );
+    const msg = String(toastError.mock.calls.map((call) => call[0]).join('\n'));
+    expect(msg).not.toMatch(/Failed to fetch/i);
+    expect(msg).not.toMatch(/TypeError/i);
   });
 
   it('redact posts tip canon path and surfaces reputation delta (LEG-1579)', async () => {
@@ -254,7 +393,7 @@ describe('MessageModeration', () => {
       },
     });
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
 
     await user.click(screen.getByRole('button', { name: 'Redact' }));
@@ -270,6 +409,63 @@ describe('MessageModeration', () => {
     );
   });
 
+  it('surfaces formatAdminApiError on redact POST 403 (LEG-2645)', async () => {
+    const user = userEvent.setup();
+    mockLoad({ messages: { ...emptyMessages, messages: [message], total: 1 } });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockRejectedValue(
+      Object.assign(new Error('HTTP 403'), {
+        response: {
+          status: 403,
+          data: { detail: 'Missing scope admin.security.act' },
+        },
+      }),
+    );
+
+    render(<MessageModeration />);
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: 'Redact' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/moderation/messages/m1/redact',
+        {},
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(
+      expect.stringMatching(/admin\.security\.act|Missing scope|Access denied/i),
+    );
+    expect(toastError).not.toHaveBeenCalledWith('Failed to redact the message');
+  });
+
+  it('surfaces rate-limit copy on redact POST 429 (LEG-2645)', async () => {
+    const user = userEvent.setup();
+    mockLoad({ messages: { ...emptyMessages, messages: [message], total: 1 } });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockRejectedValue(
+      Object.assign(new Error('HTTP 429'), {
+        response: { status: 429 },
+      }),
+    );
+
+    render(<MessageModeration />);
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: 'Redact' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/moderation/messages/m1/redact',
+        {},
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(
+      expect.stringMatching(/rate limit/i),
+    );
+    expect(toastError).not.toHaveBeenCalledWith('Failed to redact the message');
+  });
+
   it('block posts tip canon path and surfaces formatAdminApiError on 403 (LEG-1579)', async () => {
     const user = userEvent.setup();
     mockLoad({ messages: { ...emptyMessages, messages: [message], total: 1 } });
@@ -280,7 +476,7 @@ describe('MessageModeration', () => {
       }),
     );
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
 
     await user.click(screen.getByRole('button', { name: 'Block' }));
@@ -296,12 +492,77 @@ describe('MessageModeration', () => {
     );
   });
 
+  it('surfaces rate-limit copy on block POST 429 (LEG-2665)', async () => {
+    const user = userEvent.setup();
+    mockLoad({ messages: { ...emptyMessages, messages: [message], total: 1 } });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockRejectedValue(
+      Object.assign(new Error('HTTP 429'), {
+        response: { status: 429, data: { detail: 'Too Many Requests' } },
+      }),
+    );
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: 'Block' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/moderation/messages/m1/block',
+        {},
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/rate limit/i));
+    expect(toastError).not.toHaveBeenCalledWith('Failed to block the message');
+  });
+
+  it('block escalation surfaces audit ledger deep link when flagged (LEG-2703)', async () => {
+    const user = userEvent.setup();
+    mockLoad({ messages: { ...emptyMessages, messages: [message], total: 1 } });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockResolvedValue({
+      data: {
+        success: true,
+        action: 'block',
+        message_id: 'm1',
+        rep_delta: -100,
+        sender_notified: true,
+        block_count_30d: 2,
+        escalation_audit_logged: true,
+      },
+    });
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: 'Block' }));
+
+    await waitFor(() => {
+      expect(toastSuccess).toHaveBeenCalledWith(
+        expect.stringMatching(/Message blocked\..*Escalation audit logged/),
+      );
+    });
+
+    const auditLink = screen.getByRole('link', { name: 'View audit ledger entry' });
+    expect(auditLink).toHaveAttribute(
+      'href',
+      buildEscalationAuditLedgerHref('sender-uuid'),
+    );
+  });
+
+  it('buildEscalationAuditLedgerHref encodes sender filter query (LEG-2703)', () => {
+    expect(buildEscalationAuditLedgerHref('sender-uuid')).toBe(
+      '/audit?tab=ledger&target_type=player&target_id=sender-uuid',
+    );
+  });
+
   it('does not call the API when the delete confirm is dismissed', async () => {
     const user = userEvent.setup();
     mockLoad({ messages: { ...emptyMessages, messages: [message], total: 1 } });
     confirmMock.mockResolvedValue(false);
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
 
     await user.click(screen.getByRole('button', { name: 'Delete' }));
@@ -316,7 +577,7 @@ describe('MessageModeration', () => {
     confirmMock.mockResolvedValue(true);
     vi.mocked(api.post).mockRejectedValue(new Error('server error'));
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
 
     await user.click(screen.getByRole('button', { name: 'Clear Flag' }));
@@ -346,7 +607,7 @@ describe('MessageModeration', () => {
       },
     });
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Bob')).toBeTruthy());
 
     await user.click(screen.getByRole('button', { name: 'Confirm Abuse' }));
@@ -358,6 +619,115 @@ describe('MessageModeration', () => {
     });
     expect(toastSuccess).toHaveBeenCalledWith(
       expect.stringContaining('0.80 → 0.50 (violation #2)'),
+    );
+  });
+
+  it('surfaces formatAdminApiError on beacon clear-flag POST 403 (LEG-2648)', async () => {
+    const user = userEvent.setup();
+    mockLoad({ beacons: { ...emptyBeacons, beacons: [beacon], total: 1 } });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockRejectedValue(
+      Object.assign(new Error('HTTP 403'), {
+        response: {
+          status: 403,
+          data: { detail: 'Missing scope admin.beacons.moderate' },
+        },
+      }),
+    );
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bob')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: 'Clear Flag' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/beacons/b1/clear-flag',
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith('Missing scope admin.beacons.moderate');
+    expect(toastError).not.toHaveBeenCalledWith('Failed to clear the beacon flag');
+  });
+
+  it('surfaces rate-limit copy on beacon clear-flag POST 429 (LEG-2648)', async () => {
+    const user = userEvent.setup();
+    mockLoad({ beacons: { ...emptyBeacons, beacons: [beacon], total: 1 } });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockRejectedValue(
+      Object.assign(new Error('HTTP 429'), {
+        response: { status: 429 },
+      }),
+    );
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bob')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: 'Clear Flag' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/beacons/b1/clear-flag',
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(
+      expect.stringMatching(/rate limit/i),
+    );
+    expect(toastError).not.toHaveBeenCalledWith('Failed to clear the beacon flag');
+  });
+
+  it('surfaces formatAdminApiError on confirm-abuse POST 403 (LEG-2649)', async () => {
+    const user = userEvent.setup();
+    mockLoad({ beacons: { ...emptyBeacons, beacons: [beacon], total: 1 } });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockRejectedValue(
+      Object.assign(new Error('HTTP 403'), {
+        response: { status: 403, data: {} },
+      }),
+    );
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bob')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: 'Confirm Abuse' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/beacons/b1/confirm-abuse',
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(
+      expect.stringMatching(/admin\.beacons\.moderate|Access denied/i),
+    );
+    expect(toastError).not.toHaveBeenCalledWith(
+      'Failed to confirm abuse for this beacon',
+    );
+  });
+
+  it('surfaces rate-limit copy on confirm-abuse POST 429 (LEG-2649)', async () => {
+    const user = userEvent.setup();
+    mockLoad({ beacons: { ...emptyBeacons, beacons: [beacon], total: 1 } });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockRejectedValue(
+      Object.assign(new Error('HTTP 429'), {
+        response: { status: 429 },
+      }),
+    );
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bob')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: 'Confirm Abuse' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/beacons/b1/confirm-abuse',
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(
+      expect.stringMatching(/rate limit/i),
+    );
+    expect(toastError).not.toHaveBeenCalledWith(
+      'Failed to confirm abuse for this beacon',
     );
   });
 
@@ -373,7 +743,7 @@ describe('MessageModeration', () => {
       },
     });
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Page 1 of 2')).toBeTruthy());
 
     await user.click(screen.getByRole('button', { name: 'Next' }));
@@ -386,7 +756,7 @@ describe('MessageModeration', () => {
   it('subscribes to flagged:message:alert and debounced-refetches on alert', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     mockLoad();
-    render(<MessageModeration />);
+    renderPage();
 
     await waitFor(() => {
       expect(subscribeMock).toHaveBeenCalledWith(
@@ -428,7 +798,7 @@ describe('MessageModeration', () => {
 
   it('does not register handlers for unrelated WS event types', async () => {
     mockLoad();
-    render(<MessageModeration />);
+    renderPage();
 
     await waitFor(() => expect(subscribeMock).toHaveBeenCalled());
     const events = subscribeMock.mock.calls.map((c) => c[0]);
@@ -440,7 +810,7 @@ describe('MessageModeration', () => {
   it('shows honest live-update demotion when WebSocket is disconnected', async () => {
     isConnectedMock = false;
     mockLoad();
-    render(<MessageModeration />);
+    renderPage();
 
     await waitFor(() => {
       expect(
@@ -468,11 +838,37 @@ describe('MessageModeration', () => {
       return Promise.resolve({ data: emptyBeacons });
     });
 
-    render(<MessageModeration />);
+    renderPage();
 
     await waitFor(() => {
       expect(screen.getByText(/Missing scope admin\.messages\.moderate/i)).toBeTruthy();
     });
+  });
+
+  it('shows rate-limit copy on 429 flagged-message load (LEG-2939)', async () => {
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url.startsWith('/api/v1/admin/messages/flagged')) {
+        return Promise.reject(
+          Object.assign(new Error('HTTP 429'), {
+            response: { status: 429 },
+          }),
+        );
+      }
+      if (url === '/api/v1/admin/messages/stats') {
+        return Promise.resolve({ data: emptyStats });
+      }
+      return Promise.resolve({ data: emptyBeacons });
+    });
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByText(/rate limit/i)).toBeTruthy();
+    });
+    expect(
+      screen.queryByText('Failed to load the flagged-message review queue.'),
+    ).toBeNull();
+    expect(screen.queryByText(/HTTP 429/i)).toBeNull();
   });
 
   it('shows rate-limit copy on 429 stats load (LEG-967)', async () => {
@@ -490,11 +886,66 @@ describe('MessageModeration', () => {
       return Promise.resolve({ data: emptyBeacons });
     });
 
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByText(/rate limit/i)).toBeTruthy();
+    });
+  });
+
+  it('surfaces scope denial on 403 flagged-beacon load (LEG-2719)', async () => {
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url.startsWith('/api/v1/admin/beacons/flagged')) {
+        return Promise.reject(
+          Object.assign(new Error('HTTP 403'), {
+            response: {
+              status: 403,
+              data: { detail: 'Missing scope admin.beacons.moderate' },
+            },
+          }),
+        );
+      }
+      if (url.startsWith('/api/v1/admin/messages/flagged')) {
+        return Promise.resolve({ data: emptyMessages });
+      }
+      if (url === '/api/v1/admin/messages/stats') {
+        return Promise.resolve({ data: emptyStats });
+      }
+      return Promise.resolve({ data: emptyBeacons });
+    });
+
+    render(<MessageModeration />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Missing scope admin\.beacons\.moderate/i)).toBeTruthy();
+    });
+    expect(screen.queryByText('No flagged sector beacons.')).toBeNull();
+  });
+
+  it('shows rate-limit copy on 429 flagged-beacon load (LEG-2719)', async () => {
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url.startsWith('/api/v1/admin/beacons/flagged')) {
+        return Promise.reject(
+          Object.assign(new Error('HTTP 429'), {
+            response: { status: 429 },
+          }),
+        );
+      }
+      if (url.startsWith('/api/v1/admin/messages/flagged')) {
+        return Promise.resolve({ data: emptyMessages });
+      }
+      if (url === '/api/v1/admin/messages/stats') {
+        return Promise.resolve({ data: emptyStats });
+      }
+      return Promise.resolve({ data: emptyBeacons });
+    });
+
     render(<MessageModeration />);
 
     await waitFor(() => {
       expect(screen.getByText(/rate limit/i)).toBeTruthy();
     });
+    expect(screen.queryByText('No flagged sector beacons.')).toBeNull();
   });
 
   it('select-all toggles every message on the current page', async () => {
@@ -508,7 +959,7 @@ describe('MessageModeration', () => {
       },
     });
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
 
     await user.click(
@@ -546,7 +997,7 @@ describe('MessageModeration', () => {
       },
     });
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
 
     await user.click(screen.getByRole('checkbox', { name: 'Select message m1' }));
@@ -595,7 +1046,7 @@ describe('MessageModeration', () => {
       },
     });
 
-    render(<MessageModeration />);
+    renderPage();
     await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
 
     await user.click(
@@ -611,5 +1062,123 @@ describe('MessageModeration', () => {
     });
     expect(toastWarning).not.toHaveBeenCalled();
     expect(toastSuccess).toHaveBeenCalledWith('Cleared flags on 2 messages.');
+  });
+
+  it('surfaces formatAdminApiError on bulk delete 403 (LEG-2442)', async () => {
+    const user = userEvent.setup();
+    mockLoad({ messages: { ...emptyMessages, messages: [message], total: 1 } });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockRejectedValue(
+      Object.assign(new Error('HTTP 403'), {
+        response: {
+          status: 403,
+          data: { detail: 'Missing scope admin.messages.moderate' },
+        },
+      }),
+    );
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+
+    await user.click(screen.getByRole('checkbox', { name: 'Select message m1' }));
+    await user.click(screen.getByRole('button', { name: 'Bulk Delete' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/messages/bulk-moderate',
+        { message_ids: ['m1'], action: 'delete' },
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(
+      'Missing scope admin.messages.moderate',
+    );
+    expect(toastError).not.toHaveBeenCalledWith('Failed to bulk-delete messages.');
+  });
+
+  it('surfaces rate-limit copy on bulk delete 429 (LEG-2442)', async () => {
+    const user = userEvent.setup();
+    mockLoad({ messages: { ...emptyMessages, messages: [message], total: 1 } });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockRejectedValue(
+      Object.assign(new Error('HTTP 429'), {
+        response: { status: 429 },
+      }),
+    );
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+
+    await user.click(screen.getByRole('checkbox', { name: 'Select message m1' }));
+    await user.click(screen.getByRole('button', { name: 'Bulk Delete' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/messages/bulk-moderate',
+        { message_ids: ['m1'], action: 'delete' },
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(
+      expect.stringMatching(/rate limit/i),
+    );
+    expect(toastError).not.toHaveBeenCalledWith('Failed to bulk-delete messages.');
+  });
+
+  it('surfaces formatAdminApiError on bulk clear-flag 403 (LEG-2442)', async () => {
+    const user = userEvent.setup();
+    mockLoad({ messages: { ...emptyMessages, messages: [message], total: 1 } });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockRejectedValue(
+      Object.assign(new Error('HTTP 403'), {
+        response: {
+          status: 403,
+          data: { detail: 'Missing scope admin.messages.moderate' },
+        },
+      }),
+    );
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+
+    await user.click(screen.getByRole('checkbox', { name: 'Select message m1' }));
+    await user.click(screen.getByRole('button', { name: 'Bulk Clear Flag' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/messages/bulk-moderate',
+        { message_ids: ['m1'], action: 'unflag' },
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(
+      'Missing scope admin.messages.moderate',
+    );
+    expect(toastError).not.toHaveBeenCalledWith('Failed to bulk-clear flags.');
+  });
+
+  it('surfaces rate-limit copy on bulk clear-flag 429 (LEG-2442)', async () => {
+    const user = userEvent.setup();
+    mockLoad({ messages: { ...emptyMessages, messages: [message], total: 1 } });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockRejectedValue(
+      Object.assign(new Error('HTTP 429'), {
+        response: { status: 429 },
+      }),
+    );
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+
+    await user.click(screen.getByRole('checkbox', { name: 'Select message m1' }));
+    await user.click(screen.getByRole('button', { name: 'Bulk Clear Flag' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/messages/bulk-moderate',
+        { message_ids: ['m1'], action: 'unflag' },
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(
+      expect.stringMatching(/rate limit/i),
+    );
+    expect(toastError).not.toHaveBeenCalledWith('Failed to bulk-clear flags.');
   });
 });

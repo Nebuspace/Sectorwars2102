@@ -1,12 +1,17 @@
 import React, { useCallback, useState } from 'react';
 import { api } from '../../utils/auth';
 import { formatAdminApiError } from '../../utils/adminApiError';
-import { useToast, useConfirm } from '../../contexts/ToastContext';
+import { useToast } from '../../contexts/ToastContext';
+import {
+  creditConfirmLabel,
+  useCreditInlineConfirm,
+} from '../../hooks/useCreditInlineConfirm';
 import './bounty-admin-panel.css';
 
 /**
  * LEG-331 — admin bounty force-cancel / collapse / faction-bounty controls.
  * Canon: sw2102-docs/FEATURES/gameplay/bounties.md (shipped ECONOMY_INTERVENE routes).
+ * ADR-0093 item 9 — credit actions > ₡1,000 confirm inline (useCreditInlineConfirm).
  */
 
 interface PlayerBountyEntry {
@@ -50,7 +55,7 @@ const FACTION_TYPES = [
 
 const BountyAdminPanel: React.FC = () => {
   const toast = useToast();
-  const confirm = useConfirm();
+  const { isArmed, gateCreditAction } = useCreditInlineConfirm();
 
   const [targetId, setTargetId] = useState('');
   const [list, setList] = useState<BountyListResponse | null>(null);
@@ -87,16 +92,9 @@ const BountyAdminPanel: React.FC = () => {
     }
   }, [targetId, toast]);
 
-  const forceCancel = async (bountyId: string) => {
+  const runForceCancel = async (bountyId: string) => {
     const id = targetId.trim();
     if (!id) return;
-    const ok = await confirm({
-      title: 'Force-cancel bounty',
-      message: `Refund placer principal (fee non-refundable) and remove bounty ${bountyId}?`,
-      confirmLabel: 'Force-cancel',
-      danger: true,
-    });
-    if (!ok) return;
     setMutating(bountyId);
     try {
       await api.post(
@@ -114,16 +112,15 @@ const BountyAdminPanel: React.FC = () => {
     }
   };
 
+  const onForceCancelClick = (bountyId: string, amount: number) => {
+    gateCreditAction(`force-cancel-${bountyId}`, amount, () => {
+      void runForceCancel(bountyId);
+    });
+  };
+
   const collapse = async () => {
     const id = targetId.trim();
     if (!id) return;
-    const ok = await confirm({
-      title: 'Collapse excess bounties',
-      message:
-        'Merge older entries over the soft cap (50) per placer. No credits move. Continue?',
-      confirmLabel: 'Collapse',
-    });
-    if (!ok) return;
     setMutating('collapse');
     try {
       const { data } = await api.post<{
@@ -145,7 +142,7 @@ const BountyAdminPanel: React.FC = () => {
     }
   };
 
-  const placeFactionBounty = async () => {
+  const runPlaceFactionBounty = async () => {
     const id = npcId.trim();
     const amount = parseInt(factionAmount, 10);
     const reason = factionReason.trim();
@@ -180,7 +177,20 @@ const BountyAdminPanel: React.FC = () => {
     }
   };
 
+  const onPlaceFactionBountyClick = () => {
+    const amount = parseInt(factionAmount, 10);
+    if (!Number.isFinite(amount)) {
+      void runPlaceFactionBounty();
+      return;
+    }
+    gateCreditAction('faction-bounty', amount, () => {
+      void runPlaceFactionBounty();
+    });
+  };
+
   const playerBounties = list?.player_bounties ?? [];
+  const parsedFactionAmount = parseInt(factionAmount, 10);
+  const factionAmountValid = Number.isFinite(parsedFactionAmount);
 
   return (
     <section className="section bounty-admin-panel" data-testid="bounty-admin-panel">
@@ -253,27 +263,34 @@ const BountyAdminPanel: React.FC = () => {
                 </tr>
               </thead>
               <tbody>
-                {playerBounties.map((b) => (
-                  <tr key={b.id}>
-                    <td className="font-mono text-xs">{b.id}</td>
-                    <td>
-                      {b.placed_by_name || '—'}
-                      <div className="font-mono text-xs bounty-admin-muted">{b.placed_by}</div>
-                    </td>
-                    <td>{b.amount?.toLocaleString?.() ?? b.amount ?? '—'}</td>
-                    <td>{b.type || 'player'}</td>
-                    <td>
-                      <button
-                        type="button"
-                        className="btn btn-sm btn-danger"
-                        disabled={mutating === b.id || b.type === 'system'}
-                        onClick={() => void forceCancel(b.id)}
-                      >
-                        Force-cancel
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {playerBounties.map((b) => {
+                  const amount = b.amount ?? 0;
+                  const forceCancelKey = `force-cancel-${b.id}`;
+                  const forceCancelArmed = isArmed(forceCancelKey);
+                  return (
+                    <tr key={b.id}>
+                      <td className="font-mono text-xs">{b.id}</td>
+                      <td>
+                        {b.placed_by_name || '—'}
+                        <div className="font-mono text-xs bounty-admin-muted">{b.placed_by}</div>
+                      </td>
+                      <td>{b.amount?.toLocaleString?.() ?? b.amount ?? '—'}</td>
+                      <td>{b.type || 'player'}</td>
+                      <td>
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-danger"
+                          disabled={mutating === b.id || b.type === 'system'}
+                          onClick={() => onForceCancelClick(b.id, amount)}
+                        >
+                          {forceCancelArmed
+                            ? creditConfirmLabel(amount, 'refund')
+                            : 'Force-cancel'}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -333,9 +350,11 @@ const BountyAdminPanel: React.FC = () => {
           type="button"
           className="btn btn-primary"
           disabled={mutating === 'faction'}
-          onClick={() => void placeFactionBounty()}
+          onClick={onPlaceFactionBountyClick}
         >
-          Place faction bounty
+          {isArmed('faction-bounty') && factionAmountValid
+            ? creditConfirmLabel(parsedFactionAmount)
+            : 'Place faction bounty'}
         </button>
       </div>
     </section>

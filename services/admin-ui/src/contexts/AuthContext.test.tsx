@@ -14,6 +14,8 @@ vi.mock('../utils/auth', () => ({
   },
 }));
 
+const mockedApi = vi.mocked(api, true);
+
 function jsonResponse(body: unknown, ok = true) {
   return Promise.resolve({
     ok,
