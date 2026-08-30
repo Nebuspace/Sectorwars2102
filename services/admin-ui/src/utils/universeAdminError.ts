@@ -17,6 +17,9 @@ export function formatUniverseAdminError(err: unknown, fallback: string): string
   }
   const detail = e?.response?.data?.detail;
   if (typeof detail === 'string' && detail.trim()) return detail;
+  // Transport collapse (TypeError / network) has no HTTP status — use fallback
+  // (mirrors formatAdminApiError), never leak raw Failed to fetch / TypeError.
+  if (status === undefined) return fallback;
   if (e?.message && e.message !== `HTTP ${status}`) return e.message;
   return fallback;
 }
