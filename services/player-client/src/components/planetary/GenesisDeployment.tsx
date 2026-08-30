@@ -12,7 +12,9 @@ interface GenesisDeploymentProps {
 /** Surface GS genesis quote 400 detail (`detail=str(e)`), else stable fallback. */
 export function formatGenesisQuotesLoadError(err: unknown): string {
   const message = err instanceof Error ? err.message : undefined;
+  // Network collapse (fetch TypeError) is not gameserver copy — use the fallback.
   const hasServerDetail =
+    !(err instanceof TypeError) &&
     typeof message === 'string' &&
     message.trim().length > 0 &&
     !/^API Error: \d+$/.test(message.trim());
@@ -24,7 +26,9 @@ export function formatGenesisQuotesLoadError(err: unknown): string {
 /** Pre-deploy price re-verify failure (LEG-2933 Soft-ORDER). */
 export function formatGenesisVerifyError(err: unknown): string {
   const message = err instanceof Error ? err.message : undefined;
+  // Network collapse (fetch TypeError) is not gameserver copy — use the fallback.
   const hasServerDetail =
+    !(err instanceof TypeError) &&
     typeof message === 'string' &&
     message.trim().length > 0 &&
     !/^API Error: \d+$/.test(message.trim());
@@ -36,7 +40,9 @@ export function formatGenesisVerifyError(err: unknown): string {
 /** deployGenesis POST failure (LEG-2933 Soft-ORDER). */
 export function formatGenesisDeployError(err: unknown): string {
   const message = err instanceof Error ? err.message : undefined;
+  // Network collapse (fetch TypeError) is not gameserver copy — use the fallback.
   const hasServerDetail =
+    !(err instanceof TypeError) &&
     typeof message === 'string' &&
     message.trim().length > 0 &&
     !/^API Error: \d+$/.test(message.trim());
