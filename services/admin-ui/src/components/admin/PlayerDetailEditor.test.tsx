@@ -178,7 +178,8 @@ describe('PlayerDetailEditor (LEG-2721 formatAdminApiError)', () => {
       );
     });
 
-    const alert = screen.getByRole('alert');
+    // findByRole: React setErrors after rejected PATCH is async — getByRole raced in CI.
+    const alert = await screen.findByRole('alert');
     expect(alert.textContent ?? '').toMatch(
       /PLAYERS_ADJUST_CREDITS|PLAYERS_SUSPEND|PLAYERS_ADJUST_REP|Access denied/i,
     );
@@ -210,7 +211,7 @@ describe('PlayerDetailEditor (LEG-2721 formatAdminApiError)', () => {
       );
     });
 
-    const alert = screen.getByRole('alert');
+    const alert = await screen.findByRole('alert');
     expect(alert.textContent ?? '').toMatch(/rate limit/i);
     expect(onSave).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();

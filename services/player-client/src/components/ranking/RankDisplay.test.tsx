@@ -129,4 +129,11 @@ describe('RankDisplay', () => {
       'Failed to load rank info',
     );
   });
+
+  it('formatRankDisplayLoadError falls back on TypeError network collapse (LEG-3017)', () => {
+    const text = formatRankDisplayLoadError(new TypeError('Failed to fetch'));
+    expect(text).toMatch(/Failed to load rank info/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
 });
