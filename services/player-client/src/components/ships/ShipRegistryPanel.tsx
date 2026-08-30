@@ -25,6 +25,17 @@ type Busy =
   | 'approve'
   | null;
 
+/** True when err looks like gameserver detail (not bare API Error: N / TypeError noise). */
+function hasShipRegistryServerDetail(err: unknown, message: string | undefined): boolean {
+  // Network collapse (fetch TypeError) is not gameserver copy — use the caller fallback.
+  if (err instanceof TypeError) return false;
+  return (
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim())
+  );
+}
+
 /** Surface gameserver registry refusal detail (string 404 or `{code,message}`). */
 export function formatShipRegistryActionError(err: unknown): string {
   let message = err instanceof Error ? err.message : undefined;
@@ -51,10 +62,7 @@ export function formatShipRegistryActionError(err: unknown): string {
     }
   }
 
-  const hasServerDetail =
-    typeof message === 'string' &&
-    message.trim().length > 0 &&
-    !/^API Error: \d+$/.test(message.trim());
+  const hasServerDetail = hasShipRegistryServerDetail(err, message);
 
   if (hasServerDetail) {
     if (code && !message!.includes(code)) {
