@@ -40,15 +40,32 @@ export const TIER_LABEL: Record<string, string> = {
   NONE: 'Uninsured', BASIC: 'Basic', STANDARD: 'Standard', PREMIUM: 'Premium'
 };
 
-/** Preserve gameserver detail on insurance status load refusal. */
-export function formatInsuranceLoadError(err: unknown): string {
+/** True when err.message looks like gameserver detail (not bare API Error: N / TypeError noise). */
+function hasInsuranceServerDetail(err: unknown): boolean {
+  // Network collapse (fetch TypeError) is not gameserver copy — use the caller fallback.
+  if (err instanceof TypeError) return false;
   const message = err instanceof Error ? err.message : undefined;
-  const hasServerDetail =
+  return (
     typeof message === 'string' &&
     message.trim().length > 0 &&
-    !/^API Error: \d+$/.test(message.trim());
-  if (hasServerDetail) return message!;
+    !/^API Error: \d+$/.test(message.trim())
+  );
+}
+
+/** Preserve gameserver detail on insurance status load refusal. */
+export function formatInsuranceLoadError(err: unknown): string {
+  if (hasInsuranceServerDetail(err)) {
+    return (err as Error).message;
+  }
   return 'Insurance is unavailable right now.';
+}
+
+/** Preserve gameserver detail on insurance purchase/upgrade refusal. */
+export function formatInsurancePurchaseError(err: unknown): string {
+  if (hasInsuranceServerDetail(err)) {
+    return (err as Error).message;
+  }
+  return 'Purchase failed.';
 }
 
 const InsuranceManager: React.FC<InsuranceManagerProps> = ({ shipId, playerCredits, onChanged, onClose }) => {
@@ -82,14 +99,9 @@ const InsuranceManager: React.FC<InsuranceManagerProps> = ({ shipId, playerCredi
       await load();
       onChanged?.();
     } catch (e) {
-      const message = e instanceof Error ? e.message : undefined;
-      const hasServerDetail =
-        typeof message === 'string' &&
-        message.trim().length > 0 &&
-        !/^API Error: \d+$/.test(message.trim());
       setMsg({
         kind: 'err',
-        text: hasServerDetail ? message! : 'Purchase failed.',
+        text: formatInsurancePurchaseError(e),
       });
     } finally {
       setBusyTier(null);
