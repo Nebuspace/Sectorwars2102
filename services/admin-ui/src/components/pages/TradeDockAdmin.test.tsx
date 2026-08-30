@@ -315,6 +315,26 @@ describe('TradeDockAdmin', () => {
     });
   });
 
+  it('surfaces honest fallback on force-cancel TypeError/network collapse (LEG-2974)', async () => {
+    await openReservationDetail();
+    vi.mocked(api.post).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    fireEvent.click(screen.getByLabelText('Force-cancel reservation r1'));
+    fireEvent.click(
+      await screen.findByRole('button', { name: /Confirm\? · ₡100,000 refund/ })
+    );
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/construction/reservations/r1/force-cancel'
+      );
+    });
+    const msg = String(toastError.mock.calls.map((call) => call[0]).join('\n'));
+    expect(msg).toMatch(/Force-cancel failed/i);
+    expect(msg).not.toMatch(/Failed to fetch/i);
+    expect(msg).not.toMatch(/TypeError/i);
+  });
+
   it('list load 403 surfaces formatAdminApiError scope helper (not generic Failed to load)', async () => {
     vi.mocked(api.get).mockRejectedValue({
       response: { status: 403, data: {} },
