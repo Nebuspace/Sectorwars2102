@@ -271,6 +271,32 @@ describe('TeamManager', () => {
     );
   });
 
+  it('formatTeamManagerLoadError falls back on TypeError network collapse', () => {
+    const text = formatTeamManagerLoadError(new TypeError('Failed to fetch'));
+    expect(text).toBe('Failed to load team data');
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('formatTeamManagerMutationError falls back on TypeError network collapse', () => {
+    const text = formatTeamManagerMutationError(
+      new TypeError('Failed to fetch'),
+      'Failed to create team',
+    );
+    expect(text).toBe('Failed to create team');
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('surfaces honest load fallback when getTeam rejects with TypeError', async () => {
+    mockGetTeam.mockRejectedValue(new TypeError('Failed to fetch'));
+    await mount();
+
+    expect(container.querySelector('.load-error')).not.toBeNull();
+    expect(container.textContent).toContain('Failed to load team data');
+    expect(container.textContent).not.toMatch(/Failed to fetch/i);
+    expect(container.textContent).not.toMatch(/TypeError/i);
+  });
 
   it('surfaces honest 404 load copy when getTeam rejects with bare status', async () => {
     mockGetTeam.mockRejectedValue(
