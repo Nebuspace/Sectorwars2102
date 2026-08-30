@@ -100,6 +100,28 @@ describe('CentralNexusManager (LEG-212 shared api)', () => {
     });
   });
 
+  it('surfaces honest fallback on cluster load TypeError/network collapse (LEG-3004)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/nexus/clusters')) {
+        throw new TypeError('Failed to fetch');
+      }
+      if (String(url).includes('/nexus/status')) {
+        return { data: { exists: false, status: 'not_generated', total_sectors: 0, total_ports: 0, total_planets: 0 } };
+      }
+      return { data: {} };
+    });
+
+    render(<CentralNexusManager />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to load clusters/i)).toBeTruthy();
+    });
+
+    const text = screen.getByText(/Failed to load clusters/i).textContent ?? '';
+    expect(text).not.toMatch(/TypeError/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+  });
 
   it('surfaces scope denial on 403 stats load', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
