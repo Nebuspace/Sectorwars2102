@@ -124,6 +124,23 @@ describe('RankProgress', () => {
     expect(formatRankProgressLoadError(err)).toBe('Failed to load rank progress');
   });
 
+  it('formatRankProgressLoadError falls back on TypeError network collapse (LEG-3020)', () => {
+    const text = formatRankProgressLoadError(new TypeError('Failed to fetch'));
+    expect(text).toMatch(/Failed to load rank progress/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('surfaces honest load fallback when getProgress rejects with TypeError', async () => {
+    mockGetProgress.mockRejectedValue(new TypeError('Failed to fetch'));
+    await mount();
+
+    const errorEl = container.querySelector('.rank-progress-error');
+    expect(errorEl?.textContent).toMatch(/Failed to load rank progress/i);
+    expect(errorEl?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(errorEl?.textContent).not.toMatch(/TypeError/i);
+  });
+
   it('renders compact rank insignia when rank_level and rank_tier are present', async () => {
     mockGetProgress.mockResolvedValue(FULL_PROGRESS);
     await mount();
