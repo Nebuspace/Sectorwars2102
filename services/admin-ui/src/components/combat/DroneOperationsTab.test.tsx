@@ -99,6 +99,17 @@ describe('DroneOperationsTab scope errors', () => {
     expect(document.body.textContent).not.toContain('Failed to load drone operations data.');
   });
 
+  it('surfaces honest fallback on all-reject TypeError/network collapse (LEG-3010)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+    render(<DroneOperationsTab />);
+    await waitFor(() => {
+      expect(document.body.textContent).toMatch(/Failed to load drone operations data/i);
+    });
+    const text = document.body.textContent ?? '';
+    expect(text).not.toMatch(/TypeError/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+  });
+
   it('reports all-reject 429 as admin rate-limit', async () => {
     vi.mocked(api.get).mockRejectedValue({ response: { status: 429 } });
     render(<DroneOperationsTab />);
