@@ -45,25 +45,31 @@ const TIER_NOTE: Record<string, string> = {
 
 const fmtPct = (n: number) => `${n > 0 ? '+' : ''}${n}%`;
 
-/** Preserve gameserver detail on maintenance status load refusal. */
-export function formatMaintenanceLoadError(err: unknown): string {
+/** True when err.message looks like gameserver detail (not bare API Error: N / TypeError noise). */
+function hasMaintenanceServerDetail(err: unknown): boolean {
+  // Network collapse (fetch TypeError) is not gameserver copy — use the caller fallback.
+  if (err instanceof TypeError) return false;
   const message = err instanceof Error ? err.message : undefined;
-  const hasServerDetail =
+  return (
     typeof message === 'string' &&
     message.trim().length > 0 &&
-    !/^API Error: \d+$/.test(message.trim());
-  if (hasServerDetail) return message!;
+    !/^API Error: \d+$/.test(message.trim())
+  );
+}
+
+/** Preserve gameserver detail on maintenance status load refusal. */
+export function formatMaintenanceLoadError(err: unknown): string {
+  if (hasMaintenanceServerDetail(err)) {
+    return (err as Error).message;
+  }
   return 'Maintenance data is unavailable.';
 }
 
 /** Preserve gameserver detail on repair refusal. */
 export function formatMaintenanceRepairError(err: unknown): string {
-  const message = err instanceof Error ? err.message : undefined;
-  const hasServerDetail =
-    typeof message === 'string' &&
-    message.trim().length > 0 &&
-    !/^API Error: \d+$/.test(message.trim());
-  if (hasServerDetail) return message!;
+  if (hasMaintenanceServerDetail(err)) {
+    return (err as Error).message;
+  }
   return 'Servicing failed.';
 }
 
