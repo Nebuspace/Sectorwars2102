@@ -149,6 +149,12 @@ interface MyStationView {
   revenue90d: number | null;
   revenue30d: number | null;
   monthly: Array<{ label: string; amount: number }>;
+  /** LEG-370 / LEG-371 — tip my-stations price lever fields */
+  priceAdjustmentLever: number | null;
+  dockingFee: number | null;
+  dockingFeeEnabled: boolean | null;
+  serviceChargeMultiplier: number | null;
+  storageRentalPerDay: number | null;
 }
 
 interface MonthView {
@@ -223,7 +229,12 @@ const normalizeMyStation = (raw: unknown): MyStationView => {
     acquisitionCost: pickNumber(o.acquisition_cost, o.purchase_price),
     revenue90d: pickNumber(revenue.last_90_days, o.revenue_90d),
     revenue30d: pickNumber(revenue.last_30_days, o.revenue_30d),
-    monthly
+    monthly,
+    priceAdjustmentLever: pickNumber(o.price_adjustment_lever),
+    dockingFee: pickNumber(o.docking_fee),
+    dockingFeeEnabled: pickBool(o.docking_fee_enabled),
+    serviceChargeMultiplier: pickNumber(o.service_charge_multiplier),
+    storageRentalPerDay: pickNumber(o.storage_rental_per_day),
   };
 };
 
@@ -566,6 +577,26 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
   useEffect(() => {
     fetchAll();
   }, [fetchAll]);
+
+  // LEG-371 — hydrate revenue levers from tip my-stations (LEG-370 keys).
+  useEffect(() => {
+    if (!myStation) return;
+    if (myStation.priceAdjustmentLever !== null) {
+      setPriceLeverPct(myStation.priceAdjustmentLever);
+    }
+    if (myStation.dockingFee !== null) {
+      setDockingFeeAmount(myStation.dockingFee);
+    }
+    if (myStation.dockingFeeEnabled !== null) {
+      setDockingFeeEnabled(myStation.dockingFeeEnabled);
+    }
+    if (myStation.serviceChargeMultiplier !== null) {
+      setServiceChargeMult(myStation.serviceChargeMultiplier);
+    }
+    if (myStation.storageRentalPerDay !== null) {
+      setStorageRentalPerDay(myStation.storageRentalPerDay);
+    }
+  }, [myStation]);
 
   // Load owner-only defense policy once ownership is confirmed
   useEffect(() => {

@@ -36,7 +36,7 @@ vi.mock('../../../services/websocket', () => ({
   },
 }));
 
-import { TeamWarPanel } from '../TeamWarPanel';
+import { TeamWarPanel, formatTeamWarLoadError, formatTeamWarActionError } from '../TeamWarPanel';
 
 const activeWar = (overrides: Partial<WarEntryApiResponse> = {}): WarEntryApiResponse => ({
   target_team_id: 'enemy-team-aaaaaaaa',
@@ -60,6 +60,12 @@ const victoryWar = (): WarEntryApiResponse => ({
   loser_team_id: 'enemy-team-bbbbbbbb',
   victory_at: '2026-07-02T12:00:00Z',
 });
+
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
 
 function setValue(el: HTMLInputElement | HTMLTextAreaElement, value: string) {
   const proto =
@@ -159,6 +165,100 @@ describe('TeamWarPanel', () => {
     });
     await flush();
     expect(mockDeclareWar).toHaveBeenCalledWith('team-1', 'new-enemy', '');
+  });
+
+  it('surfaces load 404 server detail', async () => {
+    mockListWars.mockRejectedValue(
+      Object.assign(new Error('Team not found'), { status: 404 }),
+    );
+    await mount();
+    expect(container.querySelector('[data-testid="team-war-load-error"]')?.textContent).toBe(
+      'Team not found',
+    );
+  });
+
+  it('formatTeamWarLoadError falls back on bare 404 without server detail', () => {
+    const err = Object.assign(new Error('API Error: 404'), { status: 404 });
+    expect(formatTeamWarLoadError(err)).toBe('Failed to load wars');
+  });
+
+  it('surfaces LIST 403 permission error in team-war-load-error (not empty list)', async () => {
+    mockListWars.mockRejectedValue(
+      apiRequestError(403, 'Team membership required to view wars.'),
+    );
+    await mount();
+
+    const alert = container.querySelector('[data-testid="team-war-load-error"]');
+    expect(alert?.getAttribute('role')).toBe('alert');
+    expect(alert?.textContent).toContain('Team membership required to view wars.');
+    expect(container.querySelector('[data-testid="team-war-list"]')).toBeNull();
+  });
+
+  it('surfaces LIST 429 rate-limit error in team-war-load-error', async () => {
+    mockListWars.mockRejectedValue(
+      apiRequestError(429, 'Rate limit exceeded — try again shortly.'),
+    );
+    await mount();
+
+    const alert = container.querySelector('[data-testid="team-war-load-error"]');
+    expect(alert?.getAttribute('role')).toBe('alert');
+    expect(alert?.textContent).toMatch(/rate limit exceeded/i);
+  });
+
+  it('surfaces declare 403 non-leader server detail', async () => {
+    mockDeclareWar.mockRejectedValue(
+      Object.assign(new Error('Only team leader can declare war'), { status: 403 }),
+    );
+    await mount({ isLeader: true });
+
+    const input = container.querySelector(
+      '[data-testid="team-war-target-input"]',
+    ) as HTMLInputElement;
+    const btn = container.querySelector(
+      '[data-testid="team-war-declare-btn"]',
+    ) as HTMLButtonElement;
+
+    await act(async () => {
+      setValue(input, 'enemy-team-aaaaaaaa');
+    });
+    await act(async () => {
+      btn.click();
+    });
+    await act(async () => {
+      btn.click();
+    });
+    await flush();
+
+    expect(container.querySelector('[data-testid="team-war-action-error"]')?.textContent).toBe(
+      'Only team leader can declare war',
+    );
+  });
+
+  it('formatTeamWarActionError falls back when detail absent', () => {
+    expect(formatTeamWarActionError(new Error('API Error: 500'))).toBe('Action failed');
+  });
+
+  it('surfaces ceasefire 403 permission error after two-click confirm', async () => {
+    mockCeasefire.mockRejectedValue(
+      apiRequestError(403, 'Only team leaders may request ceasefire.'),
+    );
+    mockListWars.mockResolvedValue([activeWar()]);
+    await mount({ isLeader: true });
+
+    const cease = container.querySelector(
+      '[data-testid="team-war-cease"]',
+    ) as HTMLButtonElement;
+    await act(async () => {
+      cease.click();
+    });
+    await act(async () => {
+      cease.click();
+    });
+    await flush();
+
+    const alert = container.querySelector('[data-testid="team-war-action-error"]');
+    expect(alert?.getAttribute('role')).toBe('alert');
+    expect(alert?.textContent).toContain('Only team leaders may request ceasefire.');
   });
 
   it('surfaces declare error payloads', async () => {

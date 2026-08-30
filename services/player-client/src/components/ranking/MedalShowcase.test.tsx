@@ -14,10 +14,12 @@ import { createRoot } from 'react-dom/client';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const mockGetMedals = vi.fn();
+const mockPinMe = vi.fn();
 
 vi.mock('../../services/api', () => ({
   medalsAPI: {
     getMe: (...a: unknown[]) => mockGetMedals(...a),
+    pinMe: (...a: unknown[]) => mockPinMe(...a),
   },
 }));
 
@@ -26,6 +28,12 @@ vi.mock('../../contexts/WebSocketContext', () => ({
 }));
 
 import MedalShowcase from './MedalShowcase';
+
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
 
 const makeMedal = (overrides: Record<string, unknown> = {}) => ({
   key: 'star_bronze',
@@ -42,6 +50,7 @@ describe('MedalShowcase', () => {
 
   beforeEach(() => {
     mockGetMedals.mockReset();
+    mockPinMe.mockReset();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -92,5 +101,80 @@ describe('MedalShowcase', () => {
     await mount();
 
     expect(container.querySelector('.medal-error')?.textContent).toBe('Network down');
+  });
+
+  it('surfaces 404 with server detail on initial load failure', async () => {
+    mockGetMedals.mockRejectedValue(apiRequestError(404, 'Player not found'));
+    await mount();
+
+    expect(container.querySelector('.medal-error')?.textContent).toBe('Player not found');
+  });
+
+  it('pins an earned medal via PUT /medals/me/pin and marks the card pinned', async () => {
+    mockGetMedals.mockResolvedValue({
+      earned: [makeMedal({ key: 'star_bronze' })],
+      available: [],
+      pinned_medal_id: null,
+    });
+    mockPinMe.mockResolvedValue({ pinned_medal_id: 'star_bronze', medal_count: 1 });
+    await mount();
+
+    const pinBtn = container.querySelector('.medal-pin-btn') as HTMLButtonElement;
+    expect(pinBtn).toBeTruthy();
+    expect(pinBtn.getAttribute('aria-pressed')).toBe('false');
+
+    await act(async () => {
+      pinBtn.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mockPinMe).toHaveBeenCalledWith('star_bronze');
+    expect(container.querySelector('.medal-card.earned.pinned')).toBeTruthy();
+    expect(
+      container.querySelector('.medal-pin-btn')?.getAttribute('aria-pressed'),
+    ).toBe('true');
+  });
+
+  it('unpins the active medal when pinMe is called with null', async () => {
+    mockGetMedals.mockResolvedValue({
+      earned: [makeMedal({ key: 'star_bronze' })],
+      available: [],
+      pinned_medal_id: 'star_bronze',
+    });
+    mockPinMe.mockResolvedValue({ pinned_medal_id: null, medal_count: 1 });
+    await mount();
+
+    const pinBtn = container.querySelector('.medal-pin-btn') as HTMLButtonElement;
+    expect(pinBtn.getAttribute('aria-pressed')).toBe('true');
+
+    await act(async () => {
+      pinBtn.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mockPinMe).toHaveBeenCalledWith(null);
+    expect(container.querySelector('.medal-card.earned.pinned')).toBeNull();
+  });
+
+  it('surfaces pin API errors without crashing the showcase', async () => {
+    mockGetMedals.mockResolvedValue({
+      earned: [makeMedal({ key: 'star_bronze' })],
+      available: [],
+      pinned_medal_id: null,
+    });
+    mockPinMe.mockRejectedValue(new Error('Medal not earned'));
+    await mount();
+
+    const pinBtn = container.querySelector('.medal-pin-btn') as HTMLButtonElement;
+    await act(async () => {
+      pinBtn.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.medal-pin-error')?.textContent).toBe('Medal not earned');
+    expect(container.querySelector('.medal-card.earned')).toBeTruthy();
   });
 });

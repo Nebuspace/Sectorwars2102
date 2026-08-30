@@ -139,6 +139,32 @@ describe('ModuleGridInterface', () => {
     expect(container.querySelector('.mgi-retry-btn')).toBeTruthy();
   });
 
+  it('surfaces getModules 403 permission detail in load error UI', async () => {
+    const err = new Error('You do not have permission to view this ship\'s modules');
+    (err as { status?: number }).status = 403;
+    getModules.mockRejectedValue(err);
+    await act(async () => {
+      root.render(<ModuleGridInterface ship={{ id: 'ship-1' }} />);
+      await flush();
+    });
+    expect(container.querySelector('.mgi-error')?.textContent).toContain(
+      'You do not have permission to view this ship\'s modules',
+    );
+    expect(container.querySelector('.mgi-retry-btn')).toBeTruthy();
+  });
+
+  it('surfaces getModules 404 Ship not found detail in load error UI', async () => {
+    const err = new Error('Ship not found');
+    (err as { status?: number }).status = 404;
+    getModules.mockRejectedValue(err);
+    await act(async () => {
+      root.render(<ModuleGridInterface ship={{ id: 'ship-1' }} />);
+      await flush();
+    });
+    expect(container.querySelector('.mgi-error')?.textContent).toContain('Ship not found');
+    expect(container.querySelector('.mgi-retry-btn')).toBeTruthy();
+  });
+
   it('opens an empty slot and installs a catalog module', async () => {
     getModules.mockResolvedValue(EMPTY_MODULES);
     installModule.mockResolvedValue({
@@ -170,6 +196,36 @@ describe('ModuleGridInterface', () => {
 
     expect(installModule).toHaveBeenCalledWith('ship-1', 0, 'engine', 1);
     expect(container.textContent).toMatch(/Engine fitted/);
+  });
+
+  it('surfaces installModule 429 rate-limit detail in action message', async () => {
+    getModules.mockResolvedValue(EMPTY_MODULES);
+    const err = new Error('Too many module install requests — try again shortly');
+    (err as { status?: number }).status = 429;
+    installModule.mockRejectedValue(err);
+
+    await act(async () => {
+      root.render(<ModuleGridInterface ship={{ id: 'ship-1' }} playerCredits={100000} />);
+      await flush();
+    });
+
+    const fitBtn = container.querySelector('button.mgi-slot-add');
+    await act(async () => {
+      fitBtn!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await flush();
+    });
+
+    const tierBtn = container.querySelector('button.mgi-tier-btn') as HTMLButtonElement | null;
+    await act(async () => {
+      tierBtn!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await flush();
+      await flush();
+    });
+
+    expect(installModule).toHaveBeenCalledWith('ship-1', 0, 'engine', 1);
+    expect(container.querySelector('.mgi-action-message')?.textContent).toBe(
+      'Too many module install requests — try again shortly',
+    );
   });
 
   it('shows GS before/after preview deltas on tier hover (no client bake math)', async () => {

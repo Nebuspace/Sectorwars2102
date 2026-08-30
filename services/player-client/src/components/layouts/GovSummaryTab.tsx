@@ -27,6 +27,39 @@ const formatMembershipType = (type: string | null): string => {
   return type.charAt(0).toUpperCase() + type.slice(1);
 };
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+/** Surface gameserver detail when membership/election load fails. */
+export function formatGovSummaryLoadError(err: unknown): string {
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim());
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You are not a member of this region.';
+  }
+
+  if (status === 404) {
+    if (hasServerDetail) return message!;
+    return 'Region not found.';
+  }
+
+  if (hasServerDetail) return message!;
+  return 'Failed to load governance data';
+}
+
 const nextElection = (elections: Election[]): Election | null => {
   const pendingOrActive = elections.filter(
     (e) => e.status === 'pending' || e.status === 'active'
@@ -77,7 +110,7 @@ const GovSummaryTab: React.FC = () => {
       })
       .catch((err: unknown) => {
         if (cancelled) return;
-        setError(err instanceof Error ? err.message : 'Failed to load governance data');
+        setError(formatGovSummaryLoadError(err));
         setLoading(false);
       });
     return () => {

@@ -280,6 +280,13 @@ describe('apiRequest via trade/combat/grey wrappers', () => {
     );
   });
 
+  it('miningAPI.getHarvestStatus GETs the harvest poll path (LEG-2731)', async () => {
+    const payload = { harvest_id: 'h1', status: 'PENDING', resolves_at: '2026-08-28T12:00:00Z' };
+    get.mockResolvedValue({ data: payload });
+    await expect(miningAPI.getHarvestStatus('h1')).resolves.toEqual(payload);
+    expect(get).toHaveBeenCalledWith('/api/v1/mining/harvest/h1', jsonHeaders);
+  });
+
   it('playerAPI.investigateFormation POSTs the formation id path', async () => {
     post.mockResolvedValue({ data: { reward_credits: 50 } });
     await expect(playerAPI.investigateFormation('f-1')).resolves.toEqual({
