@@ -99,7 +99,7 @@ const StationsManager: React.FC = () => {
       setPorts(ports.filter(p => p.id !== port.id));
       toast.success('Station deleted successfully');
     } catch (err: unknown) {
-      toast.error(`Failed to delete station: ${getErrorMessage(err)}`);
+      toast.error(getErrorMessage(err, 'Failed to delete station'));
     }
   };
 
@@ -433,7 +433,7 @@ const PortModal: React.FC<PortModalProps> = ({ port, mode, onClose, onSave }) =>
       await api.patch(`/api/v1/admin/ports/${port.id}`, payload);
       onSave({ ...port, name: formData.name, trade_volume: formData.trade_volume, owner_id: formData.owner_id || null });
     } catch (err: unknown) {
-      toast.error(`Failed to update port: ${getErrorMessage(err)}`);
+      toast.error(getErrorMessage(err, 'Failed to update port'));
     } finally {
       setSaving(false);
     }
@@ -678,7 +678,7 @@ const AddPortModal: React.FC<AddPortModalProps> = ({ onClose, onSave }) => {
       const response = await api.post('/api/v1/admin/ports', payload);
       onSave(response.data);
     } catch (err: unknown) {
-      toast.error(`Failed to create port: ${getErrorMessage(err)}`);
+      toast.error(getErrorMessage(err, 'Failed to create port'));
     } finally {
       setSaving(false);
     }
