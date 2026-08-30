@@ -61,6 +61,20 @@ describe('MultiAccountReview (LEG-1098 honesty banner)', () => {
       expect(document.body.textContent).toMatch(/rate limit/i);
     });
   });
+
+  it('surfaces honest fallback on cluster load TypeError/network collapse (LEG-3007)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<MultiAccountReview />);
+
+    await waitFor(() => {
+      expect(document.body.textContent).toMatch(/Failed to load clusters/i);
+    });
+
+    const text = document.body.textContent ?? '';
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
 });
 
 describe('MultiAccountReview scope errors (LEG-968)', () => {

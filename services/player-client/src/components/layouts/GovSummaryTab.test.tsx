@@ -173,6 +173,25 @@ describe('GovSummaryTab', () => {
     expect(formatGovSummaryLoadError(err)).toBe('Region not found.');
   });
 
+  it('formatGovSummaryLoadError falls back on TypeError network collapse (LEG-3009)', () => {
+    const text = formatGovSummaryLoadError(new TypeError('Failed to fetch'));
+    expect(text).toMatch(/Failed to load governance data/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('surfaces honest load fallback when getMyMembership rejects with TypeError', async () => {
+    mockCurrentSector = { region_id: 'region-1' };
+    mockGetMyMembership.mockRejectedValue(new TypeError('Failed to fetch'));
+    await mount();
+
+    const errorEl = container.querySelector('.sb-gov-error');
+    expect(errorEl?.textContent).toMatch(/Failed to load governance data/i);
+    expect(errorEl?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(errorEl?.textContent).not.toMatch(/TypeError/i);
+    expect(errorEl?.getAttribute('role')).toBe('alert');
+  });
+
   it('shows a status/aria-live loading state before the fetch resolves', async () => {
     mockCurrentSector = { region_id: 'region-1' };
     let resolveFn: (v: unknown) => void = () => {};
