@@ -309,6 +309,25 @@ describe('BountyAdminPanel', () => {
     expect(toastError).not.toHaveBeenCalledWith('Force-cancel failed');
   });
 
+  it('surfaces honest fallback on force-cancel POST TypeError/network collapse (LEG-2982)', async () => {
+    await loadTargetWithBounty();
+    vi.mocked(api.post).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await confirmForceCancel();
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/players/t1/bounties/b1/force-cancel',
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(
+      expect.stringMatching(/Force-cancel failed/i),
+    );
+    const msg = String(toastError.mock.calls.map((call) => call[0]).join('\n'));
+    expect(msg).not.toMatch(/Failed to fetch/i);
+    expect(msg).not.toMatch(/TypeError/i);
+  });
+
   it('surfaces formatAdminApiError on faction-bounty POST 403 (LEG-2880)', async () => {
     // Amount = 1000 posts in one click (no confirm gate); mirrors success-path harness.
     vi.mocked(api.post).mockRejectedValue(axiosError(403));
