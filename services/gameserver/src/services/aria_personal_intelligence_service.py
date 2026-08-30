@@ -27,7 +27,7 @@ from cryptography.fernet import Fernet
 import base64
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, func
+from sqlalchemy import select, and_, func, delete
 from sqlalchemy.orm import Session
 
 from src.models.player import Player
@@ -206,9 +206,10 @@ class ARIAPersonalIntelligenceService:
         
         return intelligence
 
-    # Canonical dedup window (WO-ARIA-MARKET-OBS, NO-CANON -- flagged for the
-    # DECISIONS batch): one market observation per (player, station,
-    # commodity) per 10 CANONICAL minutes, spanning every hook site that
+    # Canonical dedup window (WO-ARIA-MARKET-OBS; ratified 2026-08-10,
+    # DECISIONS.md aria-market-observation-dedup-window): one market
+    # observation per (player, station, commodity) per 10 CANONICAL minutes,
+    # spanning every hook site that
     # calls record_market_observation_sync for that station visit (dock,
     # market view, ...). Uses game_time.scaled_elapsed -- CANONICAL, not
     # wall-clock, matching this codebase's established clock-domain
@@ -917,7 +918,7 @@ class ARIAPersonalIntelligenceService:
     async def recall_memories(
         self, player_id: str, db: AsyncSession,
         memory_type: Optional[str] = None,
-        limit: int = 50,
+        limit: Optional[int] = 50,
     ) -> List[Dict[str, Any]]:
         """Recall (decrypt) an owner's own ARIA memories -- the read-back
         half of ``_create_memory``/``_encrypt_memory`` (WO-DRIFT-aria-rt-
@@ -946,7 +947,9 @@ class ARIAPersonalIntelligenceService:
         )
         if memory_type is not None:
             stmt = stmt.where(ARIAPersonalMemory.memory_type == memory_type)
-        stmt = stmt.order_by(ARIAPersonalMemory.created_at.desc()).limit(limit)
+        stmt = stmt.order_by(ARIAPersonalMemory.created_at.desc())
+        if limit is not None:
+            stmt = stmt.limit(limit)
 
         result = await db.execute(stmt)
         memories = result.scalars().all()
@@ -978,6 +981,63 @@ class ARIAPersonalIntelligenceService:
             })
 
         return recalled
+
+    async def export_personal_store(
+        self, player_id: str, db: AsyncSession,
+    ) -> Dict[str, Any]:
+        """Owner-scoped GDPR export (LEG-415 / aria-companion.md:173-175).
+
+        Memories decrypt via the same Tier-1 path as ``GET /ai/memories``
+        (``recall_memories``) with no journal page limit. Related personal
+        intelligence tables are counted, not decrypted — only
+        ``ARIAPersonalMemory.memory_content`` is Fernet-wrapped.
+        """
+        memories = await self.recall_memories(player_id, db, limit=None)
+        related_counts: Dict[str, int] = {}
+        for model in (
+            ARIAPersonalMemory,
+            ARIAMarketIntelligence,
+            ARIAExplorationMap,
+            ARIATradingObservation,
+            ARIAQuantumCache,
+            ARIASecurityLog,
+        ):
+            count_stmt = (
+                select(func.count())
+                .select_from(model)
+                .where(model.player_id == player_id)
+            )
+            result = await db.execute(count_stmt)
+            related_counts[model.__tablename__] = int(result.scalar_one())
+        return {
+            "player_id": player_id,
+            "memories": memories,
+            "related_row_counts": related_counts,
+        }
+
+    async def reset_personal_store(
+        self, player_id: str, db: AsyncSession,
+    ) -> Dict[str, int]:
+        """Delete only this player's ARIA personal tables (LEG-415).
+
+        Order: trading observations first (FK to market intelligence), then
+        the remaining aria-companion.md:169 tables. Never calls
+        ``cleanup_expired_data`` (global expired wipe).
+        """
+        deleted: Dict[str, int] = {}
+        for model in (
+            ARIATradingObservation,
+            ARIAPersonalMemory,
+            ARIAMarketIntelligence,
+            ARIAExplorationMap,
+            ARIAQuantumCache,
+            ARIASecurityLog,
+        ):
+            result = await db.execute(
+                delete(model).where(model.player_id == player_id)
+            )
+            deleted[model.__tablename__] = int(result.rowcount or 0)
+        return deleted
 
     # =============================================================================
     # HELPER METHODS
@@ -1250,6 +1310,57 @@ class ARIAPersonalIntelligenceService:
         )
         result = await db.execute(stmt)
         return result.scalar_one_or_none()
+
+    def market_intelligence_to_read_model(
+        self, intelligence: ARIAMarketIntelligence,
+    ) -> Dict[str, Any]:
+        """Map a stored row to the player-facing read shape (aria-companion.md:21-31).
+
+        Prediction fields remain empty until ``MIN_DATA_POINTS_FOR_PREDICTION``
+        observations — never fabricate prices on read."""
+        row: Dict[str, Any] = {
+            "commodity": intelligence.commodity,
+            "observation_count": intelligence.data_points,
+            "average_price": None,
+            "price_band": None,
+            "next_prediction": None,
+            "prediction_confidence": None,
+        }
+        if intelligence.data_points >= self.MIN_DATA_POINTS_FOR_PREDICTION:
+            row["average_price"] = intelligence.average_price
+            row["price_band"] = intelligence.price_volatility
+            row["next_prediction"] = intelligence.next_prediction
+            row["prediction_confidence"] = intelligence.prediction_confidence
+        return row
+
+    async def list_market_intelligence_at_station(
+        self,
+        player_id: str,
+        station_id: str,
+        db: AsyncSession,
+        commodity: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return the requester's own market-intelligence rows at a port (ADR-0016).
+
+        Wraps ``_get_market_intelligence`` for a single commodity; lists all
+        commodities for the player+station pair otherwise."""
+        if commodity:
+            intel = await self._get_market_intelligence(
+                player_id, station_id, commodity, db,
+            )
+            if not intel:
+                return []
+            return [self.market_intelligence_to_read_model(intel)]
+
+        stmt = select(ARIAMarketIntelligence).where(
+            and_(
+                ARIAMarketIntelligence.player_id == player_id,
+                ARIAMarketIntelligence.station_id == station_id,
+            )
+        )
+        result = await db.execute(stmt)
+        rows = result.scalars().all()
+        return [self.market_intelligence_to_read_model(r) for r in rows]
     
     async def _get_explored_sectors(self, player_id: str, 
                                   db: AsyncSession) -> List[ARIAExplorationMap]:

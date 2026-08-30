@@ -284,6 +284,26 @@ class NexusGenerationService:
                 capital_stats["capital_station_seeded"],
             )
 
+            # LEG-297: Capital welcome planet + Pioneer Office hub (is_population_hub).
+            # Canon: SYSTEMS/central-nexus-clusters.md gap 4; galaxy-generator-design.md
+            # TERRA at capital_sector; pioneer.py surfaces Pioneer Office on the hub.
+            logger.info("Seeding Central Nexus Capital welcome planet at Gateway Plaza...")
+            planet_stats = await self._seed_nexus_capital_planet(
+                session, str(nexus_region.id)
+            )
+            generation_stats["capital_planet_seeded"] = planet_stats[
+                "capital_planet_seeded"
+            ]
+            generation_stats["capital_planet_promoted"] = planet_stats.get(
+                "capital_planet_promoted", 0
+            )
+            logger.info(
+                "Gateway Plaza capital planet: sector %s, seeded=%s promoted=%s",
+                planet_stats["capital_sector"],
+                planet_stats["capital_planet_seeded"],
+                planet_stats.get("capital_planet_promoted", 0),
+            )
+
             # Create MarketPrice entries for all generated stations
             logger.info("Creating market prices for Central Nexus stations...")
             market_prices_created = await self._create_market_prices_for_nexus_stations(
@@ -722,25 +742,11 @@ class NexusGenerationService:
         """
         from src.models.planet import PlanetType, PlanetStatus
 
-        # Sector 1 gets a special starter planet
+        # Legacy Terran-sector-1 special case (dead in live Nexus generation).
         if sector_num == 1:
-            return {
-                "name": "Terra Nova Prime",
-                "sector_id": sector_num,
-                "region_id": region_id,
-                "type": PlanetType.TERRAN,
-                "status": PlanetStatus.HABITABLE,
-                "size": 9,  # Large
-                "position": 3,
-                "gravity": 1.0,
-                "temperature": 20.0,
-                "water_coverage": 70.0,
-                "habitability_score": 100,
-                "resource_richness": 2.0,
-                "resources": ["water", "minerals", "agriculture", "technology"],
-                # Canon (colonization.md:147 / ADR-0035): max_population = habitability_score × 1,000
-                "max_population": 100 * 1000
-            }
+            return self._build_capital_welcome_planet_row(
+                sector_id=sector_num, region_id=region_id
+            )
 
         # Random planet type
         planet_type = random.choice([
@@ -1289,6 +1295,87 @@ class NexusGenerationService:
         await session.execute(insert(Station), [row])
         return {
             "capital_station_seeded": 1,
+            "capital_sector": capital_sector,
+        }
+
+    @classmethod
+    def _build_capital_welcome_planet_row(
+        cls, *, sector_id: int, region_id: str
+    ) -> Dict[str, Any]:
+        """TERRA Capital welcome planet — Pioneer Office via is_population_hub.
+
+        No PioneerOffice table exists; pioneer.py / pioneer_service treat a
+        landed population-hub planet as the Office venue.
+        """
+        from src.models.planet import PlanetType, PlanetStatus
+
+        return {
+            "name": "Terra Nova Prime",
+            "sector_id": sector_id,
+            "region_id": region_id,
+            "type": PlanetType.TERRAN,
+            "status": PlanetStatus.HABITABLE,
+            "size": 9,
+            "position": 3,
+            "gravity": 1.0,
+            "temperature": 20.0,
+            "water_coverage": 70.0,
+            "habitability_score": 100,
+            "resource_richness": 2.0,
+            "resources": ["water", "minerals", "agriculture", "technology"],
+            # Canon (colonization.md:147 / ADR-0035): max_population = habitability × 1,000
+            "max_population": 100 * 1000,
+            "is_population_hub": True,
+        }
+
+    async def _seed_nexus_capital_planet(
+        self, session: AsyncSession, region_id: str
+    ) -> Dict[str, Any]:
+        """Seed TERRA population-hub at Gateway Plaza's first sector if absent."""
+        from src.models.planet import PlanetType, PlanetStatus
+
+        capital_sector = self._gateway_plaza_capital_sector_number()
+        existing_hub = await session.execute(
+            select(Planet).where(
+                Planet.region_id == region_id,
+                Planet.sector_id == capital_sector,
+                Planet.is_population_hub.is_(True),
+            )
+        )
+        if existing_hub.scalar_one_or_none() is not None:
+            return {
+                "capital_planet_seeded": 0,
+                "capital_planet_promoted": 0,
+                "capital_sector": capital_sector,
+            }
+
+        existing_any = await session.execute(
+            select(Planet).where(
+                Planet.region_id == region_id,
+                Planet.sector_id == capital_sector,
+            )
+        )
+        planet = existing_any.scalars().first()
+        if planet is not None:
+            planet.name = "Terra Nova Prime"
+            planet.type = PlanetType.TERRAN
+            planet.status = PlanetStatus.HABITABLE
+            planet.habitability_score = 100
+            planet.max_population = 100 * 1000
+            planet.is_population_hub = True
+            return {
+                "capital_planet_seeded": 0,
+                "capital_planet_promoted": 1,
+                "capital_sector": capital_sector,
+            }
+
+        row = self._build_capital_welcome_planet_row(
+            sector_id=capital_sector, region_id=region_id
+        )
+        await session.execute(insert(Planet), [row])
+        return {
+            "capital_planet_seeded": 1,
+            "capital_planet_promoted": 0,
             "capital_sector": capital_sector,
         }
 

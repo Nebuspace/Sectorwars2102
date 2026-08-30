@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from enum import Enum
 import os
 
+from src.core.config import settings
+
 
 logger = logging.getLogger(__name__)
 
@@ -172,7 +174,7 @@ class AIDialogueService:
     def __init__(self):
         self.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
         self.openai_api_key = os.getenv("OPENAI_API_KEY") 
-        self.ai_enabled = os.getenv("AI_DIALOGUE_ENABLED", "false").lower() == "true"
+        self.ai_enabled = settings.AI_DIALOGUE_ENABLED
         self.model_provider = os.getenv("AI_DIALOGUE_PROVIDER", "anthropic")
         self.model_name = os.getenv("AI_DIALOGUE_MODEL", "claude-3-sonnet-20240229")
         self.fallback_enabled = os.getenv("AI_DIALOGUE_FALLBACK", "true").lower() == "true"

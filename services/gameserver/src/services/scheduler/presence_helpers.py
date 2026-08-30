@@ -1075,14 +1075,14 @@ def _heal_candidates_query(db: Session):
     own doc-comment for why GREATEST (not COALESCE) is the right combinator
     here, and for the Postgres NULL-handling semantics this relies on.
 
-    QUEUE-HEAL-ENTRY-SHAPE (2026-07-16): two trailing columns added --
-    ``Ship.name`` and ``Ship.type`` -- via an OUTER join on
-    ``Player.current_ship_id == Ship.id`` (OUTER, not INNER: a candidate
-    with no current ship at all -- e.g. mid-eject -- must still surface
-    with NULL ship name/type, not be silently dropped from the candidate
-    set entirely). Feeds ``build_presence_entry``'s ``ship_name``/
-    ``ship_type`` so a healed entry stops hardcoding the literal string
-    "None" when the ship data was available all along."""
+    QUEUE-HEAL-ENTRY-SHAPE (2026-07-16): trailing Ship columns --
+    ``Ship.name``, ``Ship.type``, and (LEG-391) ``Ship.attack_turn_cost`` --
+    via an OUTER join on ``Player.current_ship_id == Ship.id`` (OUTER, not
+    INNER: a candidate with no current ship at all -- e.g. mid-eject -- must
+    still surface with NULL ship name/type/cost, not be silently dropped
+    from the candidate set entirely). Feeds ``build_presence_entry`` so a
+    healed entry stops hardcoding the literal string "None" when the ship
+    data was available all along."""
     from src.models.ship import Ship
     from src.models.user import User
 
@@ -1092,7 +1092,7 @@ def _heal_candidates_query(db: Session):
             Player.display_name_expr(User.username),
             Player.current_ship_id, Player.team_id, Player.intrasystem_pose,
             func.greatest(Player.last_activity_at, Player.last_game_login),
-            Ship.name, Ship.type,
+            Ship.name, Ship.type, Ship.attack_turn_cost,
         )
         .join(User, Player.user_id == User.id)
         .outerjoin(Ship, Player.current_ship_id == Ship.id)
@@ -1156,11 +1156,13 @@ def _heal_missing_or_poseless_presence_sync(db: Session, cutoff: datetime) -> "t
         by_sector: Dict[int, list] = defaultdict(list)
         for (
             pid, sid, username, ship_id, team_id, pose, last_game_login,
-            ship_name, ship_type,
+            ship_name, ship_type, attack_turn_cost,
         ) in candidate_rows:
             if not _is_presence_fresh(last_game_login, cutoff):
                 continue
-            by_sector[sid].append((pid, username, ship_id, team_id, pose, ship_name, ship_type))
+            by_sector[sid].append(
+                (pid, username, ship_id, team_id, pose, ship_name, ship_type, attack_turn_cost)
+            )
     except Exception:
         db.rollback()
         logger.exception(
@@ -1189,7 +1191,7 @@ def _heal_missing_or_poseless_presence_sync(db: Session, cutoff: datetime) -> "t
                 if isinstance(e, dict) and not e.get("is_npc") and e.get("player_id")
             }
             changed = False
-            for pid, username, ship_id, team_id, pose, ship_name, ship_type in players:
+            for pid, username, ship_id, team_id, pose, ship_name, ship_type, attack_turn_cost in players:
                 spid = str(pid)
                 if spid in by_pid:
                     idx = by_pid[spid]
@@ -1216,6 +1218,7 @@ def _heal_missing_or_poseless_presence_sync(db: Session, cutoff: datetime) -> "t
                     ship_name=ship_name,
                     ship_type=ship_type.name if ship_type else None,
                     team_id=team_id,
+                    attack_turn_cost=attack_turn_cost,
                 )
                 if pose is not None:
                     new_entry["pose"] = pose_public(pose)
