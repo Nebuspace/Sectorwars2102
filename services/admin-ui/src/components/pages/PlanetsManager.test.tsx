@@ -68,6 +68,20 @@ describe('PlanetsManager scope errors (LEG-966)', () => {
       expect(screen.getByText(/rate limit/i)).toBeTruthy();
     });
   });
+
+  it('surfaces honest fallback on load TypeError/network collapse (LEG-2999)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<PlanetsManager />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to fetch planets/i)).toBeTruthy();
+    });
+
+    const text = screen.getByText(/Failed to fetch planets/i).textContent ?? '';
+    expect(text).not.toMatch(/TypeError/i);
+    expect(text).not.toBe('Failed to fetch');
+  });
 });
 
 describe('PlanetsManager delete errors (LEG-2647)', () => {
