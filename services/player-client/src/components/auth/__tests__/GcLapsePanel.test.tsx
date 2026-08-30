@@ -122,4 +122,11 @@ describe('GcLapsePanel', () => {
   it('formatGcLapseRelocateError falls back when detail absent', () => {
     expect(formatGcLapseRelocateError(new Error('API Error: 400'))).toBe('Relocation failed');
   });
+
+  it('falls back on TypeError network collapse (LEG-3049)', () => {
+    const text = formatGcLapseRelocateError(new TypeError('Failed to fetch'));
+    expect(text).toMatch(/Relocation failed/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
 });
