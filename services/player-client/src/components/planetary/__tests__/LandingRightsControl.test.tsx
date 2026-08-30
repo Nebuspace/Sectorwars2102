@@ -53,6 +53,13 @@ describe('formatLandingRightsError (LEG-2952)', () => {
     const err = Object.assign(new Error('API Error: 429'), { status: 429 });
     expect(formatLandingRightsError(err)).toMatch(/rate limit exceeded/i);
   });
+
+  it('falls back on TypeError network collapse (LEG-3035)', () => {
+    const text = formatLandingRightsError(new TypeError('Failed to fetch'));
+    expect(text).toMatch(/Failed to update landing rights/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
 });
 
 describe('parseUuidList', () => {
