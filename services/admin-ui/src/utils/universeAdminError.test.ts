@@ -20,4 +20,10 @@ describe('formatUniverseAdminError (LEG-1213 invent=0 colonization)', () => {
   it('keeps detail for non-scope failures', () => {
     expect(formatUniverseAdminError(axiosError(500, 'boom'), 'Failed to update')).toBe('boom');
   });
+
+  it('uses fallback on TypeError/network collapse (LEG-3066)', () => {
+    expect(
+      formatUniverseAdminError(new TypeError('Failed to fetch'), 'Failed to update sector'),
+    ).toBe('Failed to update sector');
+  });
 });

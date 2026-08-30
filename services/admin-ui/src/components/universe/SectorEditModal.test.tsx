@@ -96,4 +96,30 @@ describe('SectorEditModal scope errors (LEG-1213)', () => {
       expect(screen.getByText(/rate limit/i)).toBeTruthy();
     });
   });
+
+  it('surfaces honest fallback on update TypeError/network collapse (LEG-3066)', async () => {
+    vi.mocked(api.put).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(
+      <MemoryRouter>
+        <SectorEditModal
+          isOpen
+          sector={sector as any}
+          onClose={() => {}}
+          onSave={() => {}}
+        />
+      </MemoryRouter>,
+    );
+
+    const nameInput = await screen.findByDisplayValue('Alpha');
+    fireEvent.change(nameInput, { target: { value: 'Beta' } });
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to update sector/i)).toBeTruthy();
+    });
+    const text = screen.getByText(/Failed to update sector/i).textContent ?? '';
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
 });
