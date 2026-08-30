@@ -325,3 +325,10 @@ describe('ProfessionsPanel', () => {
     expect(container.querySelector('.professions-panel')).toBeNull();
   });
 });
+
+  it('falls back on TypeError network collapse (LEG-3055)', () => {
+    const text = formatProfessionsLoadError(new TypeError('Failed to fetch'));
+    expect(text).toMatch(/Failed to load professions/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
