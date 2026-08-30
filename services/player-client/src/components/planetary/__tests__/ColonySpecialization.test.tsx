@@ -32,6 +32,13 @@ describe('formatColonySpecializeError', () => {
       'Failed to specialize colony',
     );
   });
+
+  it('falls back on TypeError network collapse (LEG-3044)', () => {
+    const text = formatColonySpecializeError(new TypeError('Failed to fetch'));
+    expect(text).toMatch(/Failed to specialize colony/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
 });
 
 const agri = SPECIALIZATIONS.find((s) => s.type === 'agricultural')!;
