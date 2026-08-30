@@ -45,7 +45,9 @@ const ROLE_META: Array<{ key: RoleKey; icon: string; label: string; cssClass: st
 /** Surface gameserver 400 detail on colonist allocate refusal (ownership / overflow). */
 export function formatColonistAllocateError(err: unknown): string {
   const message = err instanceof Error ? err.message : undefined;
+  // Network collapse (fetch TypeError) is not gameserver copy — use the fallback.
   const hasServerDetail =
+    !(err instanceof TypeError) &&
     typeof message === 'string' &&
     message.trim().length > 0 &&
     !/^API Error: \d+$/.test(message.trim());
