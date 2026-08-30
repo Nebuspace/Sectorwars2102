@@ -139,4 +139,11 @@ describe('TowConsentPanel', () => {
   it('formatTowActionError falls back when detail absent', () => {
     expect(formatTowActionError(new Error('API Error: 500'))).toBe('Tow action failed');
   });
+  it('formatTowActionError falls back on TypeError network collapse (LEG-3003)', () => {
+    const text = formatTowActionError(new TypeError('Failed to fetch'));
+    expect(text).toMatch(/Tow action failed/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
 });
