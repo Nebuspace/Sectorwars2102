@@ -77,6 +77,20 @@ describe('FirstLoginConversations scope errors (LEG-967)', () => {
       expect(screen.getByText(/rate limit/i)).toBeTruthy();
     });
   });
+
+  it('surfaces honest fallback on non-RBAC network collapse (LEG-3027)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<FirstLoginConversations />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/An error occurred/i)).toBeTruthy();
+    });
+
+    const text = screen.getByText(/An error occurred/i).textContent ?? '';
+    expect(text).not.toMatch(/TypeError/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+  });
 });
 
 const sampleConversation: ConversationSummary = {
