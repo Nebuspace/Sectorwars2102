@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 /**
  * InsuranceManager — load / buy / error (WO-TESTCOV-PLAYER-MODULE-GRID).
+ * LEG-3022 Soft-ORDER — TypeError / network honesty densify on this path
+ * (co-located InsuranceManager.test.tsx already covers LEG-2990; this file had zero).
  */
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -16,7 +18,7 @@ vi.mock('../../../services/api', () => ({
   },
 }));
 
-import InsuranceManager from '../InsuranceManager';
+import InsuranceManager, { formatInsuranceLoadError } from '../InsuranceManager';
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
@@ -115,9 +117,29 @@ describe('InsuranceManager', () => {
   });
 
   it('formatInsuranceLoadError falls back on bare API Error status', async () => {
-    const { formatInsuranceLoadError } = await import('../InsuranceManager');
     const err = Object.assign(new Error('API Error: 503'), { status: 503 });
     expect(formatInsuranceLoadError(err)).toBe('Insurance is unavailable right now.');
+  });
+
+  it('formatInsuranceLoadError falls back on TypeError network collapse (LEG-3022)', () => {
+    const text = formatInsuranceLoadError(new TypeError('Failed to fetch'));
+    expect(text).toMatch(/Insurance is unavailable right now/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('load TypeError surfaces unavailable copy without Failed to fetch / TypeError (LEG-3022)', async () => {
+    getInsurance.mockRejectedValue(new TypeError('Failed to fetch'));
+    await act(async () => {
+      root.render(<InsuranceManager shipId="ship-1" playerCredits={0} />);
+      await flush();
+    });
+    const alert = container.querySelector('[data-testid="ins-load-error"]');
+    expect(alert).toBeTruthy();
+    const text = alert!.textContent ?? '';
+    expect(text).toMatch(/Insurance is unavailable right now/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
   });
 
   it('disables buy when player cannot afford the premium', async () => {
