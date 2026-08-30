@@ -147,6 +147,22 @@ describe('SecurityDashboard cleanup + player action (LEG-1713)', () => {
     });
   });
 
+  it('surfaces honest fallback on cleanup POST TypeError/network collapse (LEG-3030)', async () => {
+    vi.mocked(api.post).mockRejectedValue(new TypeError('Failed to fetch'));
+    renderDash();
+
+    fireEvent.click(await screen.findByLabelText('Clean up old security data'));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith(
+        expect.stringMatching(/Failed to clean up security data/i),
+      );
+    });
+    const msg = String(toastError.mock.calls.map((call) => call[0]).join('\n'));
+    expect(msg).not.toMatch(/Failed to fetch/i);
+    expect(msg).not.toMatch(/TypeError/i);
+  });
+
   it('skips cleanup POST when operator cancels confirm', async () => {
     confirmMock.mockResolvedValue(false);
     renderDash();
