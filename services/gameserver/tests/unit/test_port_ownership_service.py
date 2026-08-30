@@ -270,10 +270,34 @@ class TestApplyMonth:
 
 class TestForcedSalePrice:
     """clamp(avg-monthly-revenue x 12 x condition, acquisition_cost,
-    2 x acquisition_cost); condition_multiplier is 1.0 in v1."""
+    2 x acquisition_cost); condition_multiplier from canon formula."""
 
-    def test_condition_multiplier_is_v1_default(self):
-        assert po.CONDITION_MULTIPLIER == 1.0
+    def test_pristine_station_multiplier_is_one(self):
+        station = SimpleNamespace(ownership={}, security_level="basic")
+        assert po.compute_condition_multiplier(station) == pytest.approx(1.0)
+
+    def test_security_none_reduces_by_15pct(self):
+        station = SimpleNamespace(ownership={}, security_level="none")
+        assert po.compute_condition_multiplier(station) == pytest.approx(0.85)
+
+    def test_recent_incident_reduces_by_10pct(self):
+        now = datetime(2026, 1, 8, 12, 0, tzinfo=UTC)
+        station = SimpleNamespace(
+            ownership={"last_defense_incident_at": "2026-01-08T12:00:00+00:00"},
+            security_level="basic",
+        )
+        assert po.compute_condition_multiplier(station, now=now) == pytest.approx(0.90)
+
+    def test_incident_older_than_7_days_has_no_defense_penalty(self):
+        now = datetime(2026, 1, 15, tzinfo=UTC)
+        station = SimpleNamespace(
+            ownership={"last_defense_incident_at": "2026-01-01T00:00:00+00:00"},
+            security_level="basic",
+        )
+        assert po.compute_condition_multiplier(station, now=now) == pytest.approx(1.0)
+
+    def test_forced_sale_value_applies_condition_multiplier(self):
+        assert po.forced_sale_value(60_000, 500_000, condition_multiplier=0.9) == 648_000
 
     def test_low_revenue_floors_at_acquisition_cost(self):
         # 10k/month x 12 = 120k < 500k floor.
@@ -289,6 +313,14 @@ class TestForcedSalePrice:
 
     def test_zero_revenue_still_pays_acquisition_cost(self):
         assert po.forced_sale_value(0, 300_000) == 300_000
+
+
+class TestStampDefenseIncident:
+    def test_stamp_writes_iso_timestamp(self):
+        station = SimpleNamespace(ownership=None)
+        now = datetime(2026, 8, 28, 5, 0, tzinfo=UTC)
+        po.stamp_defense_incident(station, now=now)
+        assert station.ownership["last_defense_incident_at"] == now.isoformat()
 
 
 class TestDisputeHeuristic:
@@ -489,3 +521,93 @@ class TestSettlementOwnerGuard:
         campaign = SimpleNamespace(monthly_history=[{"month": 0, "satisfied": True}])
         assert po._owner_at_eligibility(campaign) is None
         assert po._owner_at_eligibility(SimpleNamespace(monthly_history=None)) is None
+
+
+class TestOwnerPriceLeverFields:
+    """LEG-370: my-stations hydrate reads Station.price_modifiers levers."""
+
+    def test_unset_returns_honest_defaults(self):
+        station = SimpleNamespace(price_modifiers=None)
+        assert po._owner_price_lever_fields(station) == {
+            "price_adjustment_lever": 0.0,
+            "docking_fee": po.DOCKING_FEE_MIN,
+            "docking_fee_enabled": True,
+            "service_charge_multiplier": 1.0,
+            "storage_rental_per_day": po.STORAGE_RENTAL_MIN,
+        }
+        empty = SimpleNamespace(price_modifiers={})
+        assert po._owner_price_lever_fields(empty) == po._owner_price_lever_fields(station)
+
+    def test_stored_modifiers_round_trip(self):
+        station = SimpleNamespace(
+            price_modifiers={
+                "price_adjustment_lever": -0.05,
+                "docking_fee": 250,
+                "docking_fee_enabled": False,
+                "service_charge_multiplier": 1.5,
+                "storage_rental_per_day": 5000,
+            }
+        )
+        assert po._owner_price_lever_fields(station) == {
+            "price_adjustment_lever": -0.05,
+            "docking_fee": 250,
+            "docking_fee_enabled": False,
+            "service_charge_multiplier": 1.5,
+            "storage_rental_per_day": 5000,
+        }
+
+    def test_my_stations_includes_lever_fields(self):
+        station = SimpleNamespace(
+            id="s1",
+            name="Alpha",
+            tax_rate=0.1,
+            treasury_balance=100,
+            ownership={"acquisition_cost": 500_000},
+            price_modifiers={
+                "price_adjustment_lever": 0.02,
+                "docking_fee": 100,
+                "docking_fee_enabled": True,
+                "service_charge_multiplier": 0.9,
+                "storage_rental_per_day": 2000,
+            },
+        )
+        player = SimpleNamespace(id="p1")
+        db = SimpleNamespace()
+        db.query = lambda _model: SimpleNamespace(
+            filter=lambda *a, **k: SimpleNamespace(
+                order_by=lambda *a, **k: SimpleNamespace(all=lambda: [station])
+            )
+        )
+
+        import src.services.port_ownership_service as mod
+
+        original = mod.revenue_summary
+        mod.revenue_summary = lambda *_a, **_k: {"trailing_30d": 0}
+        try:
+            payload = po.my_stations(db, player)
+        finally:
+            mod.revenue_summary = original
+
+        assert len(payload["stations"]) == 1
+        row = payload["stations"][0]
+        assert row["station_id"] == "s1"
+        assert row["price_adjustment_lever"] == 0.02
+        assert row["docking_fee"] == 100
+        assert row["docking_fee_enabled"] is True
+        assert row["service_charge_multiplier"] == 0.9
+        assert row["storage_rental_per_day"] == 2000
+        assert row["expected_revenue_per_day"] is None
+
+
+class TestExpectedRevenuePerDay:
+    """Canon port-ownership.md:195-205 owner dashboard projection."""
+
+    def test_canon_worked_example(self):
+        # 60 trades/day × 1,000 cr × (1 − 0.05 region tax) × 30% owner cut.
+        assert po.expected_revenue_per_day(60, 1000, 0.05, 30) == 17_100
+
+    def test_zero_traffic_returns_zero(self):
+        assert po.expected_revenue_per_day(0, 1000, 0.05, 30) == 0
+
+    def test_zero_owner_pct_returns_zero(self):
+        assert po.expected_revenue_per_day(60, 1000, 0.05, 0) == 0
