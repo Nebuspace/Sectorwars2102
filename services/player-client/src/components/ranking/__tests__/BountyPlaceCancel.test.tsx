@@ -236,3 +236,10 @@ describe('BountyPlaceCancel', () => {
     expect(formatBountyCancelError(new Error('API Error: 400'))).toBe('Failed to cancel bounty');
   });
 });
+
+  it('falls back on TypeError network collapse (LEG-3056)', () => {
+    const text = formatBountyInspectLoadError(new TypeError('Failed to fetch'));
+    expect(text).toMatch(/Failed to load bounties on target/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
