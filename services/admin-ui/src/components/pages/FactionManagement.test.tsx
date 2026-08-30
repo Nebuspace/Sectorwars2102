@@ -190,6 +190,28 @@ describe('FactionManagement mutation errors (LEG-2610)', () => {
     expect(toastError).not.toHaveBeenCalledWith('Failed to update faction.');
   });
 
+  it('surfaces honest fallback on edit PUT TypeError/network collapse (LEG-2971)', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.put).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<FactionManagement />);
+    await waitFor(() => expect(screen.getByText('Test Faction')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: /^Edit$/i }));
+    await user.click(screen.getByRole('button', { name: /Save Changes/i }));
+
+    await waitFor(() => {
+      expect(api.put).toHaveBeenCalledWith(
+        `/api/v1/admin/factions/${sampleFaction.id}`,
+        expect.objectContaining({ name: sampleFaction.name }),
+      );
+    });
+    const msg = String(toastError.mock.calls.map((call) => call[0]).join('\n'));
+    expect(msg).toMatch(/Failed to update faction/i);
+    expect(msg).not.toMatch(/Failed to fetch/i);
+    expect(msg).not.toMatch(/TypeError/i);
+  });
+
   it('surfaces formatAdminApiError on territory PUT 403', async () => {
     const user = userEvent.setup();
     vi.mocked(api.put).mockRejectedValue(
