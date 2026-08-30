@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 /**
  * MaintenanceManager — load / service / affordability (WO-TESTCOV-PLAYER-MODULE-GRID).
+ * LEG-2992 Soft-ORDER — TypeError / network honesty densify (parallel LEG-2990 InsuranceManager).
  */
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -16,7 +17,10 @@ vi.mock('../../../services/api', () => ({
   },
 }));
 
-import MaintenanceManager from '../MaintenanceManager';
+import MaintenanceManager, {
+  formatMaintenanceLoadError,
+  formatMaintenanceRepairError,
+} from '../MaintenanceManager';
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
@@ -118,7 +122,6 @@ describe('MaintenanceManager', () => {
   });
 
   it('formatMaintenanceLoadError falls back on bare API Error status', async () => {
-    const { formatMaintenanceLoadError } = await import('../MaintenanceManager');
     const err = Object.assign(new Error('API Error: 500'), { status: 500 });
     expect(formatMaintenanceLoadError(err)).toBe('Maintenance data is unavailable.');
   });
@@ -178,6 +181,92 @@ describe('MaintenanceManager', () => {
     expect(container.querySelector('[data-testid="mnt-catastrophic-warn"]')).toBeNull();
     expect(container.querySelector('.mnt-bar-fill.critical')).toBeTruthy();
     expect(container.querySelector('.mnt-bar-fill.catastrophic')).toBeNull();
+  });
+});
+
+describe('formatMaintenance*Error TypeError honesty (LEG-2992)', () => {
+  it('formatMaintenanceLoadError falls back on TypeError network collapse', () => {
+    expect(formatMaintenanceLoadError(new TypeError('Failed to fetch'))).toBe(
+      'Maintenance data is unavailable.',
+    );
+  });
+
+  it('formatMaintenanceRepairError falls back on TypeError network collapse', () => {
+    expect(formatMaintenanceRepairError(new TypeError('Failed to fetch'))).toBe(
+      'Servicing failed.',
+    );
+  });
+
+  it('formatMaintenanceRepairError preserves gameserver detail', () => {
+    expect(formatMaintenanceRepairError(new Error('yard closed'))).toBe('yard closed');
+  });
+
+  it('formatMaintenanceRepairError falls back on bare API Error status', () => {
+    const err = Object.assign(new Error('API Error: 503'), { status: 503 });
+    expect(formatMaintenanceRepairError(err)).toBe('Servicing failed.');
+  });
+});
+
+describe('MaintenanceManager TypeError honesty (LEG-2992)', () => {
+  let container: HTMLElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    getMaintenanceStatus.mockReset();
+    repairMaintenance.mockReset();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it('load TypeError surfaces unavailable copy without Failed to fetch / TypeError', async () => {
+    getMaintenanceStatus.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await act(async () => {
+      root.render(<MaintenanceManager shipId="ship-1" playerCredits={0} />);
+      await flush();
+    });
+
+    const alert = container.querySelector('[data-testid="mnt-load-error"]');
+    expect(alert).toBeTruthy();
+    const text = alert!.textContent ?? '';
+    expect(text).toMatch(/Maintenance data is unavailable/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('repair TypeError surfaces Servicing failed without Failed to fetch / TypeError', async () => {
+    getMaintenanceStatus.mockResolvedValue(STATUS);
+    repairMaintenance.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await act(async () => {
+      root.render(<MaintenanceManager shipId="ship-1" playerCredits={20000} />);
+      await flush();
+    });
+
+    const service = Array.from(container.querySelectorAll('button.mnt-buy')).find(
+      (b) => b.textContent === 'Service',
+    );
+    expect(service).toBeTruthy();
+    await act(async () => {
+      service!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await flush();
+      await flush();
+    });
+
+    const err = container.querySelector('.mnt-error[role="alert"]');
+    expect(err).toBeTruthy();
+    const text = err!.textContent ?? '';
+    expect(text).toMatch(/Servicing failed/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
   });
 });
 
