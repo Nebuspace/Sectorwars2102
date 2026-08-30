@@ -65,6 +65,13 @@ describe('formatRecoveryActionError', () => {
   it('falls back when only bare API Error status is present', () => {
     expect(formatRecoveryActionError(new Error('API Error: 500'))).toBe('Recovery action failed');
   });
+
+  it('falls back on TypeError network collapse (LEG-3036)', () => {
+    const text = formatRecoveryActionError(new TypeError('Failed to fetch'));
+    expect(text).toMatch(/Recovery action failed/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
 });
 
 describe('RecoveryConsolePanel', () => {
