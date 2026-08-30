@@ -22,7 +22,7 @@ vi.mock('../../../contexts/WebSocketContext', () => ({
   }),
 }));
 
-import BountyBoard from '../BountyBoard';
+import BountyBoard, { formatBountyBoardLoadError } from '../BountyBoard';
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -138,6 +138,28 @@ describe('BountyBoard', () => {
     expect(alert?.getAttribute('role')).toBe('alert');
     expect(alert?.textContent).toMatch(/rate limit exceeded/i);
     expect(container.querySelector('[data-testid="bounty-board-empty"]')).toBeNull();
+  });
+
+  it('formatBountyBoardLoadError falls back on TypeError network collapse (LEG-3008)', () => {
+    const text = formatBountyBoardLoadError(new TypeError('Failed to fetch'));
+    expect(text).toMatch(/Failed to load bounty board/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('surfaces honest load fallback when getAvailable rejects with TypeError', async () => {
+    getAvailable.mockRejectedValue(new TypeError('Failed to fetch'));
+    await act(async () => {
+      root.render(<BountyBoard />);
+    });
+    await act(async () => {
+      await flush();
+    });
+    const alert = container.querySelector('[data-testid="bounty-board-error"]');
+    expect(alert?.getAttribute('role')).toBe('alert');
+    expect(alert?.textContent).toMatch(/Failed to load bounty board/i);
+    expect(alert?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(alert?.textContent).not.toMatch(/TypeError/i);
   });
 
   it('marks missing sector as unavailable without inventing a value', async () => {
