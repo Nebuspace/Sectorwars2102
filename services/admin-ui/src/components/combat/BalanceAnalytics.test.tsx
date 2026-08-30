@@ -47,4 +47,21 @@ describe('BalanceAnalytics (LEG-1099 scope errors)', () => {
     expect(alert).toMatch(/rate limit/i);
     expect(alert).not.toContain('HTTP 429');
   });
+
+  it('reports TypeError Failed to fetch as balance-analytics fallback, not raw TypeError', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<BalanceAnalytics />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(
+      /Failed to load balance analytics\. Please check if the gameserver is running\./i
+    );
+    expect(alert).not.toMatch(/Failed to fetch/i);
+    expect(alert).not.toMatch(/TypeError/i);
+  });
 });
