@@ -219,6 +219,20 @@ describe('ElectionCard', () => {
     );
   });
 
+  it('formatElectionVoteError falls back on TypeError network collapse', () => {
+    const text = formatElectionVoteError(new TypeError('Failed to fetch'));
+    expect(text).toMatch(/Failed to cast vote/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('formatElectionCandidacyError falls back on TypeError network collapse', () => {
+    const text = formatElectionCandidacyError(new TypeError('Failed to fetch'));
+    expect(text).toMatch(/Failed to register candidacy/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
   it('surfaces GS vote-reject detail in the validation strip (LEG-2938)', async () => {
     mockCastElectionVote.mockRejectedValue(
       Object.assign(new Error('Candidate suspended pending review'), { status: 403 }),
