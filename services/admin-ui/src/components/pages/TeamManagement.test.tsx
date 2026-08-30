@@ -49,4 +49,17 @@ describe('TeamManagement scope errors (LEG-968)', () => {
       expect(screen.getByText(/rate limit/i)).toBeTruthy();
     });
   });
+
+  it('surfaces honest fallback on load TypeError/network collapse (LEG-2981)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<TeamManagement />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to load team data/i)).toBeTruthy();
+    });
+    const text = screen.getByText(/Failed to load team data/i).textContent ?? '';
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
 });
