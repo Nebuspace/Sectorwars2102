@@ -59,6 +59,21 @@ describe('AdminActionLogPage scope errors (LEG-1039)', () => {
       expect(screen.getByText(/rate limit/i)).toBeTruthy();
     });
   });
+
+  it('surfaces honest fallback on non-RBAC network collapse (LEG-3025)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    renderLog();
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to load admin action log/i)).toBeTruthy();
+    });
+
+    const text =
+      screen.getByText(/Failed to load admin action log/i).textContent ?? '';
+    expect(text).not.toMatch(/TypeError/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+  });
 });
 
 function makeRow(id: string, stale: boolean) {
