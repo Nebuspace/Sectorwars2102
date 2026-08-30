@@ -136,6 +136,19 @@ describe('RankingLeaderboardPanel', () => {
     });
   });
 
+  it('surfaces honest fallback on load TypeError/network collapse (LEG-3019)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<RankingLeaderboardPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/Failed to load leaderboard/i);
+    });
+    const text = screen.getByRole('alert').textContent ?? '';
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
   it('reports a 429 as an admin rate-limit', async () => {
     vi.mocked(api.get).mockRejectedValue({ response: { status: 429 } });
 
