@@ -165,4 +165,21 @@ describe('BangGalaxyPage scope errors (LEG-1039)', () => {
     });
     expect(screen.queryByText('Failed to add player-owned region')).toBeNull();
   });
+
+  it('surfaces honest fallback on add-region TypeError/network collapse (LEG-2993)', async () => {
+    addPlayerOwnedRegion.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<BangGalaxyPage />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open add region' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm add region' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(
+        /Failed to add player-owned region/i,
+      );
+    });
+    const msg = String(screen.getByRole('alert').textContent ?? '');
+    expect(msg).not.toMatch(/Failed to fetch/i);
+    expect(msg).not.toMatch(/TypeError/i);
+  });
 });
