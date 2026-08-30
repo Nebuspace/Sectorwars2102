@@ -163,6 +163,32 @@ describe('RegionalGovernorDashboard (LEG-213)', () => {
     expect(screen.queryByText('Failed to load regional stats')).toBeNull();
   });
 
+  it('surfaces honest fallback on stats load TypeError/network collapse (LEG-3032)', async () => {
+    // Outer loadRegionalData 'Failed to load regional data' catch is unreachable when
+    // per-loader try/catch swallows — densify the live stats path (invent=0).
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url === '/api/v1/regions/my-region') return { data: region };
+      if (url === '/api/v1/regions/my-region/stats') {
+        throw new TypeError('Failed to fetch');
+      }
+      if (url.endsWith('/policies')) return { data: [] };
+      if (url.endsWith('/elections')) return { data: [] };
+      if (url.endsWith('/treaties')) return { data: [] };
+      if (url.endsWith('/members')) return { data: [] };
+      return { data: {} };
+    });
+
+    render(<RegionalGovernorDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/Failed to load regional stats/i);
+    });
+    const msg = screen.getByRole('alert').textContent ?? '';
+    expect(msg).not.toMatch(/Failed to fetch/i);
+    expect(msg).not.toMatch(/TypeError/i);
+  });
+
   it('shows admin rate-limit copy on 429 economy save', async () => {
     render(<RegionalGovernorDashboard />);
     await waitFor(() => expect(screen.getByText('Sol Reach')).toBeTruthy());

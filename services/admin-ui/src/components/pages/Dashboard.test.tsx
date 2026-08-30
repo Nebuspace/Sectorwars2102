@@ -165,4 +165,27 @@ describe('Dashboard (LEG-233)', () => {
     expect(msg).toMatch(/rate limit/i);
     expect(msg).not.toMatch(/Unable to load dashboard data/i);
   });
+
+  it('surfaces honest fallback on audit TypeError/network collapse (LEG-3028)', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/admin/audit/logs')) {
+        throw new TypeError('Failed to fetch');
+      }
+      return byUrl(url);
+    });
+
+    render(
+      <MemoryRouter>
+        <Dashboard />
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/Unable to load recent audit events/i)).toBeTruthy();
+    });
+
+    const msg = screen.getByText(/Unable to load recent audit events/i).textContent ?? '';
+    expect(msg).not.toMatch(/Failed to fetch/i);
+    expect(msg).not.toMatch(/TypeError/i);
+  });
 });
