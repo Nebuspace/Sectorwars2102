@@ -27,7 +27,7 @@ vi.mock('../../contexts/WebSocketContext', () => ({
   useWebSocket: () => ({ medalAwardedSignal: 0 }),
 }));
 
-import MedalShowcase from './MedalShowcase';
+import MedalShowcase, { formatMedalShowcaseLoadError } from './MedalShowcase';
 
 const apiRequestError = (status: number, message?: string) => {
   const err = new Error(message ?? `API Error: ${status}`);
@@ -177,4 +177,12 @@ describe('MedalShowcase', () => {
     expect(container.querySelector('.medal-pin-error')?.textContent).toBe('Medal not earned');
     expect(container.querySelector('.medal-card.earned')).toBeTruthy();
   });
+
+  it('formatMedalShowcaseLoadError falls back on TypeError network collapse (LEG-3013)', () => {
+    const text = formatMedalShowcaseLoadError(new TypeError('Failed to fetch'));
+    expect(text).toMatch(/Failed to load medals/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
 });
