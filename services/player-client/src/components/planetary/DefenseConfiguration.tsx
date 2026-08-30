@@ -22,7 +22,9 @@ interface DefenseType {
 /** Surface gameserver 400 detail on defenses update refusal. */
 export function formatDefenseUpdateError(err: unknown): string {
   const message = err instanceof Error ? err.message : undefined;
+  // Network collapse (fetch TypeError) is not gameserver copy — use the caller fallback.
   const hasServerDetail =
+    !(err instanceof TypeError) &&
     typeof message === 'string' &&
     message.trim().length > 0 &&
     !/^API Error: \d+$/.test(message.trim());

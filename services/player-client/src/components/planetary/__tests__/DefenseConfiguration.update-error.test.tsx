@@ -20,4 +20,11 @@ describe('formatDefenseUpdateError (LEG-2878)', () => {
   it('falls back for non-Error values', () => {
     expect(formatDefenseUpdateError(undefined)).toBe('Failed to update defenses');
   });
+
+  it('falls back on TypeError network collapse (LEG-3034)', () => {
+    const text = formatDefenseUpdateError(new TypeError('Failed to fetch'));
+    expect(text).toMatch(/Failed to update defenses/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
 });
