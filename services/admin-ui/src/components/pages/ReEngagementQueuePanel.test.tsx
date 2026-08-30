@@ -94,6 +94,21 @@ describe('ReEngagementQueuePanel', () => {
     expect(screen.getByText(/No rows for this filter/i)).toBeTruthy();
   });
 
+  it('surfaces honest fallback on load TypeError/network collapse (LEG-3011)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<ReEngagementQueuePanel />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(
+        /Failed to load re-engagement queue/i,
+      );
+    });
+    const text = screen.getByRole('alert').textContent ?? '';
+    expect(text).not.toMatch(/TypeError/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+  });
+
   it('surfaces admin rate-limit copy on load 429', async () => {
     vi.mocked(api.get).mockRejectedValue(
       Object.assign(new Error('HTTP 429'), {
