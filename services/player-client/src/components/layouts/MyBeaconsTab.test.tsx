@@ -34,7 +34,10 @@ vi.mock('../../contexts/GameContext', () => ({
   }),
 }));
 
-import MyBeaconsTab, { formatBeaconDeployError } from './MyBeaconsTab';
+import MyBeaconsTab, {
+  formatBeaconDeployError,
+  formatBeaconRowActionError,
+} from './MyBeaconsTab';
 
 const BEACON_A = {
   id: 'beacon-1',
@@ -245,4 +248,18 @@ describe('MyBeaconsTab', () => {
   it('formatBeaconDeployError falls back when detail absent', () => {
     expect(formatBeaconDeployError(new Error('API Error: 400'))).toBe('Deploy failed');
   });
+  it('formatBeaconDeployError falls back on TypeError network collapse (LEG-3005)', () => {
+    const text = formatBeaconDeployError(new TypeError('Failed to fetch'));
+    expect(text).toBe('Deploy failed');
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('formatBeaconRowActionError falls back on TypeError network collapse (LEG-3005)', () => {
+    const text = formatBeaconRowActionError(new TypeError('Failed to fetch'));
+    expect(text).toBe('Action failed');
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
 });
