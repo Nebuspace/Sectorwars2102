@@ -9,6 +9,8 @@ function serverDetail(err: unknown): string | undefined {
       ?.detail;
     if (typeof rawDetail === 'string' && rawDetail.trim()) return rawDetail.trim();
   }
+  // Network collapse (fetch TypeError) is not gameserver copy — use the fallback.
+  if (err instanceof TypeError) return undefined;
   const message = err instanceof Error ? err.message : undefined;
   if (
     typeof message === 'string' &&
