@@ -177,6 +177,26 @@ describe('UsersManager mutation errors (LEG-2623)', () => {
     expect(screen.queryByText('Failed to update user')).toBeNull();
   });
 
+  it('surfaces honest fallback on update PUT TypeError/network collapse (LEG-2970)', async () => {
+    const user = userEvent.setup();
+    mockAdmin.users = [samplePlayer];
+    vi.mocked(api.put).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    renderUsers();
+    await waitFor(() => expect(screen.getByText('testplayer')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: /^Edit$/i }));
+    await user.click(screen.getByRole('button', { name: /Save Changes/i }));
+
+    await waitFor(() => {
+      expect(api.put).toHaveBeenCalled();
+    });
+    const text = screen.getByText(/Failed to update user/i).textContent ?? '';
+    expect(text).toMatch(/Failed to update user/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
   it('surfaces formatAdminApiError on delete DELETE 403', async () => {
     const user = userEvent.setup();
     mockAdmin.users = [samplePlayer];
