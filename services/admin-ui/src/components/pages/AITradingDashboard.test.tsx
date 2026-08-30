@@ -67,4 +67,24 @@ describe('AITradingDashboard scope errors (LEG-923)', () => {
       expect(message).not.toMatch(/Failed to load AI trading data/);
     });
   });
+
+  it('surfaces honest fallback on load GET TypeError/network collapse (LEG-2989)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<AITradingDashboard />);
+
+    await waitFor(() => {
+      expect(api.get).toHaveBeenCalled();
+    });
+
+    await waitFor(() => {
+      const alert = document.querySelector('.alert-message');
+      expect(alert).toBeTruthy();
+      expect(alert?.textContent).toMatch(/Failed to load AI trading data/i);
+    });
+
+    const msg = document.querySelector('.alert-message')?.textContent ?? '';
+    expect(msg).not.toMatch(/Failed to fetch/i);
+    expect(msg).not.toMatch(/TypeError/i);
+  });
 });
