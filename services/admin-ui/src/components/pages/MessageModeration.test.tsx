@@ -352,6 +352,31 @@ describe('MessageModeration', () => {
     expect(toastError).not.toHaveBeenCalledWith('Failed to accept the message');
   });
 
+  it('surfaces honest fallback on accept POST TypeError/network collapse (LEG-2976)', async () => {
+    const user = userEvent.setup();
+    mockLoad({ messages: { ...emptyMessages, messages: [message], total: 1 } });
+    confirmMock.mockResolvedValue(true);
+    vi.mocked(api.post).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<MessageModeration />);
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: 'Accept' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/moderation/messages/m1/accept',
+        {},
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(
+      expect.stringMatching(/Failed to accept the message/i),
+    );
+    const msg = String(toastError.mock.calls.map((call) => call[0]).join('\n'));
+    expect(msg).not.toMatch(/Failed to fetch/i);
+    expect(msg).not.toMatch(/TypeError/i);
+  });
+
   it('redact posts tip canon path and surfaces reputation delta (LEG-1579)', async () => {
     const user = userEvent.setup();
     mockLoad({ messages: { ...emptyMessages, messages: [message], total: 1 } });
