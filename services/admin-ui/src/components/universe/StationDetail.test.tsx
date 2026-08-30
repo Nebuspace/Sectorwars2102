@@ -227,6 +227,25 @@ describe('StationDetail Soft-HOLD scope errors (LEG-1213 residual after Soft-ORD
       expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
     });
   });
+
+  it('surfaces formatAdminApiError fallback on update TypeError (LEG-3059)', async () => {
+    vi.mocked(api.patch).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<PortDetail port={basePort} onBack={() => {}} />);
+    fireEvent.click(screen.getByText('Outpost Alpha'));
+    const input = await screen.findByDisplayValue('Outpost Alpha');
+    fireEvent.change(input, { target: { value: 'Renamed' } });
+    fireEvent.click(screen.getByRole('button', { name: '✓' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Failed to update name/i);
+    expect(alert).not.toMatch(/TypeError/i);
+    expect(alert).not.toMatch(/Failed to fetch/i);
+  });
 });
 
 describe('StationDetail Soft-ORDER demote silent no-ops (LEG-1472)', () => {
