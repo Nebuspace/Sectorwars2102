@@ -134,7 +134,9 @@ export const SPECIALIZATIONS: SpecializationInfo[] = [
 /** Surface GS specialize PUT 400 detail (`detail=str(e)`), else stable fallback. */
 export function formatColonySpecializeError(err: unknown): string {
   const message = err instanceof Error ? err.message : undefined;
+  // Network collapse (fetch TypeError) is not gameserver copy — use the fallback.
   const hasServerDetail =
+    !(err instanceof TypeError) &&
     typeof message === 'string' &&
     message.trim().length > 0 &&
     !/^API Error: \d+$/.test(message.trim());

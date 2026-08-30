@@ -54,6 +54,13 @@ describe('formatTradeCascadeError (LEG-2957)', () => {
       'Failed to plan trade cascade.',
     );
   });
+
+  it('falls back on TypeError network collapse (LEG-3057)', () => {
+    const text = formatTradeCascadeError(new TypeError('Failed to fetch'));
+    expect(text).toMatch(/Failed to plan trade cascade\./i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
 });
 
 describe('TradeCascadePanel', () => {
