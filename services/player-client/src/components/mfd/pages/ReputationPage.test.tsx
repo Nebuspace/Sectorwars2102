@@ -263,6 +263,13 @@ describe('ReputationPage', () => {
     );
   });
 
+  it('falls back on TypeError network collapse (LEG-3045)', () => {
+    const text = formatReputationLoadError(new TypeError('Failed to fetch'));
+    expect(text).toMatch(/Failed to load faction standings/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
   it('shows INSUFFICIENT DATA when playerState is unavailable', async () => {
     mockGetReputation.mockResolvedValue([]);
     mockPlayerState = null;
