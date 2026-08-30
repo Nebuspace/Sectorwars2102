@@ -66,6 +66,13 @@ describe('formatOwnershipTransferError (LEG-2954)', () => {
       'Failed to load transfer status.',
     );
   });
+
+  it('falls back on TypeError network collapse (LEG-3048)', () => {
+    const text = formatOwnershipTransferError(new TypeError('Failed to fetch'));
+    expect(text).toMatch(/Transfer request failed/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
 });
 
 describe('OwnershipTransferControl', () => {
