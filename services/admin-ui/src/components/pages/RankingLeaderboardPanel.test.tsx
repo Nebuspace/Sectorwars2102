@@ -158,4 +158,18 @@ describe('RankingLeaderboardPanel', () => {
       expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
     });
   });
+
+  it('surfaces honest fallback on load TypeError/network collapse (LEG-3006)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<RankingLeaderboardPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/Failed to load leaderboard/i);
+    });
+
+    const msg = screen.getByRole('alert').textContent ?? '';
+    expect(msg).not.toMatch(/Failed to fetch/i);
+    expect(msg).not.toMatch(/TypeError/i);
+  });
 });
