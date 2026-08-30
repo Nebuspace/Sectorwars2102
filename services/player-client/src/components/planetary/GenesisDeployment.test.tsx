@@ -111,6 +111,13 @@ describe('formatGenesisQuotesLoadError', () => {
   it('falls back on non-Error throwables', () => {
     expect(formatGenesisQuotesLoadError('boom')).toBe('Failed to load genesis pricing');
   });
+
+  it('falls back on TypeError network collapse (LEG-3054)', () => {
+    const text = formatGenesisQuotesLoadError(new TypeError('Failed to fetch'));
+    expect(text).toMatch(/Failed to load genesis pricing/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
 });
 
 describe('formatGenesisVerifyError', () => {
@@ -122,6 +129,13 @@ describe('formatGenesisVerifyError', () => {
     expect(formatGenesisVerifyError(new Error('API Error: 503'))).toBe(
       'Failed to verify genesis pricing',
     );
+  });
+
+  it('falls back on TypeError network collapse (LEG-3054)', () => {
+    const text = formatGenesisVerifyError(new TypeError('Failed to fetch'));
+    expect(text).toMatch(/Failed to verify genesis pricing/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
   });
 });
 
@@ -136,6 +150,13 @@ describe('formatGenesisDeployError', () => {
     expect(formatGenesisDeployError(new Error('API Error: 500'))).toBe(
       'Failed to deploy Genesis Device',
     );
+  });
+
+  it('falls back on TypeError network collapse (LEG-3054)', () => {
+    const text = formatGenesisDeployError(new TypeError('Failed to fetch'));
+    expect(text).toMatch(/Failed to deploy Genesis Device/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
   });
 });
 
