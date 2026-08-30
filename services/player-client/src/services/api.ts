@@ -759,6 +759,13 @@ export const fleetAPI = {
       method: 'POST'
     }),
 
+  /** Relocate fleet + member ships (LEG-49 / LEG-133). Destination is Sector row UUID. */
+  move: (fleetId: string, sectorId: string) =>
+    apiRequest(`/api/v1/fleets/${fleetId}/move`, {
+      method: 'POST',
+      body: JSON.stringify({ sector_id: sectorId }),
+    }),
+
   initiateBattle: (fleetId: string, defenderFleetId: string) =>
     apiRequest(`/api/v1/fleets/${fleetId}/initiate-battle`, {
       method: 'POST',
@@ -964,6 +971,10 @@ export const miningAPI = {
 
   /** LEG-2574 tip GET — owner claim licenses (active + recently expired). */
   listLicenses: () => apiRequest('/api/v1/mining/licenses'),
+
+  /** LEG-2731 tip GET — poll async harvest row until terminal. */
+  getHarvestStatus: (harvestId: string) =>
+    apiRequest(`/api/v1/mining/harvest/${encodeURIComponent(harvestId)}`),
 };
 
 /** First-login gate / onboarding session (GameContext + FirstLoginContext). */
@@ -1085,6 +1096,16 @@ export const medalsAPI = {
   /** Clear-on-view offline award queue (GET /api/v1/medals/unviewed). */
   getUnviewed: (): Promise<{ unviewed: string[] }> =>
     apiRequest('/api/v1/medals/unviewed'),
+
+  /** Set or clear the public pinned medal (PUT /api/v1/medals/me/pin — LEG-59). */
+  pinMe: (pinned_medal_id: string | null): Promise<{
+    pinned_medal_id: string | null;
+    medal_count: number;
+  }> =>
+    apiRequest('/api/v1/medals/me/pin', {
+      method: 'PUT',
+      body: JSON.stringify({ pinned_medal_id }),
+    }),
 };
 
 // Bounty APIs — place / getOnTarget / getAvailable tip-PRESENT; cancel binds
@@ -2694,5 +2715,58 @@ export type AriaMarketIntelList = {
 export const ariaMarketAPI = {
   getMarketIntelligence: (stationId: string): Promise<AriaMarketIntelList> =>
     apiRequest(`/api/v1/ai/market-intelligence/${encodeURIComponent(stationId)}`),
+};
+
+/** LEG-725 — ARIA explored-sector trade cascade (POST /ai/trade-cascade). */
+export type TradeCascadeRequest = {
+  start_sector_id: string;
+  target_profit: number;
+  max_jumps?: number;
+};
+
+export type TradeCascadeStep = {
+  step: number;
+  sector: string;
+  station: string;
+  action: string;
+  commodity: string;
+  expected_price: number;
+  confidence: number;
+  based_on: string;
+};
+
+export type TradeCascadePlan = {
+  cascade_id: string;
+  player_id: string;
+  total_profit: number;
+  total_jumps: number;
+  profit_per_jump: number;
+  confidence: number;
+  steps: TradeCascadeStep[];
+};
+
+export type TradeCascadeRefusal = {
+  error: string;
+  message: string;
+  explored_sectors?: number;
+  suggestion?: string;
+};
+
+export type TradeCascadeResponse = TradeCascadePlan | TradeCascadeRefusal;
+
+export const isTradeCascadeRefusal = (
+  payload: TradeCascadeResponse,
+): payload is TradeCascadeRefusal => 'error' in payload && typeof payload.error === 'string';
+
+export const ariaTradeCascadeAPI = {
+  planTradeCascade: (body: TradeCascadeRequest): Promise<TradeCascadeResponse> =>
+    apiRequest('/api/v1/ai/trade-cascade', {
+      method: 'POST',
+      body: JSON.stringify({
+        start_sector_id: body.start_sector_id,
+        target_profit: body.target_profit,
+        max_jumps: body.max_jumps ?? 5,
+      }),
+    }),
 };
 

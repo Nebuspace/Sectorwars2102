@@ -60,6 +60,34 @@ async function terraformingRequest(endpoint: string, options: RequestOptions = {
   return response.json();
 }
 
+function terraformingServerDetail(err: unknown): string | undefined {
+  const message = err instanceof Error ? err.message : undefined;
+  if (
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim())
+  ) {
+    return message.trim();
+  }
+  return undefined;
+}
+
+export function formatTerraformingStatusError(err: unknown): string {
+  return terraformingServerDetail(err) ?? 'Failed to load terraforming status';
+}
+
+export function formatTerraformingStartError(err: unknown): string {
+  return terraformingServerDetail(err) ?? 'Failed to start terraforming';
+}
+
+export function formatTerraformingCancelError(err: unknown): string {
+  return terraformingServerDetail(err) ?? 'Failed to cancel terraforming';
+}
+
+export function formatTerraformingConfirmBiomeError(err: unknown): string {
+  return terraformingServerDetail(err) ?? 'Biome could not be confirmed yet.';
+}
+
 const terraformingAPI = {
   getStatus: (planetId: string) =>
     terraformingRequest(`/api/v1/planets/${planetId}/terraforming/status`),
@@ -292,7 +320,7 @@ const TerraformingPanel: React.FC<TerraformingPanelProps> = ({
           setAvailability('unavailable');
         } else if (!silent) {
           setAvailability('error');
-          setErrorMessage(err instanceof Error ? err.message : 'Failed to load terraforming status');
+          setErrorMessage(formatTerraformingStatusError(err));
         }
       }
     },
@@ -348,7 +376,7 @@ const TerraformingPanel: React.FC<TerraformingPanelProps> = ({
       await fetchStatus(true);
       onUpdate?.();
     } catch (err) {
-      setActionMessage(err instanceof Error ? err.message : 'Failed to start terraforming');
+      setActionMessage(formatTerraformingStartError(err));
     } finally {
       setActionLoading(false);
     }
@@ -369,7 +397,7 @@ const TerraformingPanel: React.FC<TerraformingPanelProps> = ({
       await fetchStatus(true);
       onUpdate?.();
     } catch (err) {
-      setActionMessage(err instanceof Error ? err.message : 'Failed to cancel terraforming');
+      setActionMessage(formatTerraformingCancelError(err));
     } finally {
       setActionLoading(false);
     }
@@ -400,9 +428,7 @@ const TerraformingPanel: React.FC<TerraformingPanelProps> = ({
       // hold 24 ticks (held 7)") — surface it verbatim so the player
       // understands what's still required.
       setCapstoneError(true);
-      setCapstoneMessage(
-        err instanceof Error ? err.message : 'Biome could not be confirmed yet.'
-      );
+      setCapstoneMessage(formatTerraformingConfirmBiomeError(err));
     } finally {
       setCapstoneLoading(false);
     }
