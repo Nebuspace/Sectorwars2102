@@ -34,7 +34,9 @@ export function formatRecoveryActionError(err: unknown): string {
     }
   }
 
+  // Network collapse (fetch TypeError) is not gameserver copy — use the fallback.
   const hasServerDetail =
+    !(err instanceof TypeError) &&
     typeof message === 'string' &&
     message.trim().length > 0 &&
     !/^API Error: \d+$/.test(message.trim());
