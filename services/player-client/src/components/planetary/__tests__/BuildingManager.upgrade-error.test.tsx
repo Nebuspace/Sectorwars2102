@@ -18,4 +18,11 @@ describe('formatBuildingUpgradeError (LEG-2877)', () => {
   it('falls back for non-Error values', () => {
     expect(formatBuildingUpgradeError(null)).toBe('Failed to upgrade building');
   });
+
+  it('falls back on TypeError network collapse (LEG-3029)', () => {
+    const text = formatBuildingUpgradeError(new TypeError('Failed to fetch'));
+    expect(text).toMatch(/Failed to upgrade building/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
 });
