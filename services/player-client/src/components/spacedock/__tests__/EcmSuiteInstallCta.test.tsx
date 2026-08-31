@@ -58,6 +58,12 @@ describe('formatEcmSuiteInstallError TypeError densify (LEG-3098)', () => {
     expect(text).not.toMatch(/TypeError/i);
   });
 
+  it('falls back on axios Network Error / Failed to fetch non-TypeError (LEG-3297)', () => {
+    expect(formatEcmSuiteInstallError(new Error('Network Error'))).toBe('ECM Suite install failed');
+    expect(formatEcmSuiteInstallError(new Error('Failed to fetch'))).toBe('ECM Suite install failed');
+    expect(formatEcmSuiteInstallError(new Error('   '))).toBe('ECM Suite install failed');
+  });
+
   it('preserves server detail for non-TypeError errors', () => {
     const err = Object.assign(new Error('insufficient credits'), {
       response: { data: { detail: 'Not enough credits for ECM Suite.' } },

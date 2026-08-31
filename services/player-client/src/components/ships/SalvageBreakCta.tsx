@@ -9,13 +9,28 @@ export interface SalvageBreakInProgress {
   eta_hours?: number;
 }
 
-/** Surface GS salvage-break detail; hide fetch TypeError noise (LEG-3144). */
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+/** Surface GS salvage-break detail; hide fetch TypeError / network-collapse noise (LEG-3144 / LEG-3298). */
 export function formatSalvageBreakError(err: unknown): string {
+  const transportFallback = 'Salvage break failed — check your connection and try again.';
   if (err instanceof TypeError) {
-    return 'Salvage break failed — check your connection and try again.';
+    return transportFallback;
   }
 
   let message = err instanceof Error ? err.message : undefined;
+  if (typeof message === 'string' && isNetworkCollapseMessage(message)) {
+    return transportFallback;
+  }
+
   let code: string | undefined;
   if (err && typeof err === 'object') {
     const typed = err as { code?: unknown; data?: { detail?: unknown } };

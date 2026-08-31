@@ -171,17 +171,33 @@ const buildingComplete = (b: GridBuilding): string | null | undefined =>
 
 const GRID_LOAD_FAILED_FALLBACK = 'Failed to load planet grid';
 
-/** Exported for TypeError/network honesty Vitest (LEG-3263). */
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+/** Exported for TypeError/network honesty Vitest (LEG-3263 / LEG-3294). */
 export function formatGridLoadError(err: unknown): string {
   if (err instanceof TypeError) return GRID_LOAD_FAILED_FALLBACK;
-  if (err instanceof Error && err.message) return err.message;
+  if (err instanceof Error && err.message) {
+    if (isNetworkCollapseMessage(err.message)) return GRID_LOAD_FAILED_FALLBACK;
+    return err.message;
+  }
   return GRID_LOAD_FAILED_FALLBACK;
 }
 
-/** Exported for TypeError/network honesty Vitest (LEG-3263). */
+/** Exported for TypeError/network honesty Vitest (LEG-3263 / LEG-3294). */
 export function formatGridActionError(err: unknown, fallback: string): string {
   if (err instanceof TypeError) return fallback;
-  if (err instanceof Error && err.message) return err.message;
+  if (err instanceof Error && err.message) {
+    if (isNetworkCollapseMessage(err.message)) return fallback;
+    return err.message;
+  }
   return fallback;
 }
 

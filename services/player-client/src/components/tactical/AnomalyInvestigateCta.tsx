@@ -9,15 +9,29 @@ type Props = {
 
 const INVESTIGATE_FALLBACK = 'Investigation failed. Please try again.';
 
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
 export function formatAnomalyInvestigateError(
   err: unknown,
   fallback = INVESTIGATE_FALLBACK,
 ): string {
   if (err instanceof TypeError) return fallback;
-  const detail =
-    (err as { response?: { data?: { detail?: string } }; message?: string })
-      ?.response?.data?.detail ?? (err as { message?: string })?.message;
-  if (typeof detail === 'string' && detail) return detail;
+  const responseDetail =
+    (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+  if (typeof responseDetail === 'string' && responseDetail) return responseDetail;
+  const message = (err as { message?: string })?.message;
+  if (typeof message === 'string' && message) {
+    if (isNetworkCollapseMessage(message)) return fallback;
+    return message;
+  }
   return fallback;
 }
 

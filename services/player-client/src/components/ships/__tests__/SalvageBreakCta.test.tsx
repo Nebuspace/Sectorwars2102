@@ -52,6 +52,19 @@ describe('SalvageBreakCta (LEG-3144)', () => {
     expect(text).toMatch(/check your connection/i);
     expect(text).not.toMatch(/Failed to fetch/i);
   });
+  it('formatSalvageBreakError hides axios Network Error / Failed to fetch (LEG-3298)', () => {
+    expect(formatSalvageBreakError(new Error('Network Error'))).toBe(
+      'Salvage break failed — check your connection and try again.',
+    );
+    expect(formatSalvageBreakError(new Error('Failed to fetch'))).toBe(
+      'Salvage break failed — check your connection and try again.',
+    );
+    expect(formatSalvageBreakError(new Error('   '))).toBe(
+      'Salvage break failed — check your connection and try again.',
+    );
+    expect(formatSalvageBreakError(new Error('Network Error'))).not.toMatch(/Network Error/i);
+  });
+
 
   it('isSalvageBreakEligibleContact requires drifting pin-locked hull', () => {
     expect(
