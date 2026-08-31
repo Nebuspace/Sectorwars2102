@@ -3,6 +3,15 @@ import { gameAPI } from '../../services/api';
 import type { Planet } from '../../types/planetary';
 import EmptyState from '../common/EmptyState';
 
+const COLONIES_ROSTER_LOAD_FALLBACK = 'Failed to load colonies';
+
+/** Exported for TypeError/network honesty Vitest (LEG-3103). */
+export function formatColoniesRosterLoadError(err: unknown, fallback: string): string {
+  if (err instanceof TypeError) return fallback;
+  if (err instanceof Error && err.message) return err.message;
+  return fallback;
+}
+
 /**
  * ColoniesRosterTab — the StatusBar dossier dropdown's "Colonies" tab
  * (WO-UI0-STATUSBAR sub-part a, Accept #5). Per the ratified cockpit-redesign
@@ -27,9 +36,9 @@ const ColoniesRosterTab: React.FC = () => {
         if (cancelled) return;
         setPlanets(response?.planets || []);
       })
-      .catch(() => {
+      .catch((err) => {
         if (cancelled) return;
-        setError('Failed to load colonies');
+        setError(formatColoniesRosterLoadError(err, COLONIES_ROSTER_LOAD_FALLBACK));
       });
     return () => {
       cancelled = true;
