@@ -165,17 +165,33 @@ interface TacticalTargetPageProps {
 const HAIL_FAILED_FALLBACK = 'TRANSMISSION FAILED';
 const ENGAGE_FAILED_FALLBACK = 'Combat system error — try again.';
 
-/** Exported for TypeError/network honesty Vitest (LEG-3261). */
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+/** Exported for TypeError/network honesty Vitest (LEG-3261 / LEG-3304). */
 export function formatTacticalTargetHailError(err: unknown): string {
   if (err instanceof TypeError) return HAIL_FAILED_FALLBACK;
-  if (err instanceof Error && err.message) return err.message;
+  if (err instanceof Error && err.message) {
+    if (isNetworkCollapseMessage(err.message)) return HAIL_FAILED_FALLBACK;
+    return err.message;
+  }
   return HAIL_FAILED_FALLBACK;
 }
 
-/** Exported for TypeError/network honesty Vitest (LEG-3261). */
+/** Exported for TypeError/network honesty Vitest (LEG-3261 / LEG-3304). */
 export function formatTacticalTargetEngageError(err: unknown): string {
   if (err instanceof TypeError) return ENGAGE_FAILED_FALLBACK;
-  if (err instanceof Error && err.message) return err.message;
+  if (err instanceof Error && err.message) {
+    if (isNetworkCollapseMessage(err.message)) return ENGAGE_FAILED_FALLBACK;
+    return err.message;
+  }
   return ENGAGE_FAILED_FALLBACK;
 }
 

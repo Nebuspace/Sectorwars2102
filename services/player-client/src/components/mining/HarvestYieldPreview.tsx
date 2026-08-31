@@ -18,16 +18,28 @@ export const HARVEST_GATE_COPY: Record<string, string> = {
   already_mining: 'Mining laser already deployed — wait for the current harvest to finish.',
 };
 
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
 export function harvestGateMessage(
   reason: unknown,
   fallback = 'Yield preview failed. Please try again.',
 ): string {
   if (reason instanceof TypeError) return fallback;
   if (reason instanceof Error && reason.message.length > 0) {
+    if (isNetworkCollapseMessage(reason.message)) return fallback;
     const key = reason.message;
     return HARVEST_GATE_COPY[key] || key;
   }
   if (typeof reason === 'string' && reason.length > 0) {
+    if (isNetworkCollapseMessage(reason)) return fallback;
     return HARVEST_GATE_COPY[reason] || reason;
   }
   return fallback;

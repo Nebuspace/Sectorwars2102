@@ -7,11 +7,22 @@ import SectorRetreatControl from '../SectorRetreatControl';
 import { useNavThreatRollup } from '../useNavThreatRollup';
 import { NAV_THREAT_BAND_CLASS } from '../navThreat';
 
-/** Exported for TypeError densify tests (LEG-3146). */
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+/** Exported for TypeError densify tests (LEG-3146 / LEG-3302). */
 export function formatTacticalThreatError(err: unknown, fallback: string): string {
   if (err instanceof TypeError) return fallback;
   const message = err instanceof Error ? err.message : undefined;
   if (typeof message === 'string' && message.trim() && !/^API Error: \d+$/.test(message.trim())) {
+    if (isNetworkCollapseMessage(message)) return fallback;
     return message.trim();
   }
   return fallback;

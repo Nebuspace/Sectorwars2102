@@ -45,10 +45,23 @@ export function formatAriaMemoryLoadError(err: unknown): string {
   return fallback;
 }
 
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
 export function formatAriaMemoryActionError(err: unknown, fallback: string): string {
   if (err instanceof TypeError) return fallback;
   const message = err instanceof Error ? err.message : undefined;
-  if (typeof message === 'string' && message.trim().length > 0) return message;
+  if (typeof message === 'string' && message.trim().length > 0) {
+    if (isNetworkCollapseMessage(message)) return fallback;
+    return message;
+  }
   return fallback;
 }
 
