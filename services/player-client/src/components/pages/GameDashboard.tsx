@@ -25,7 +25,7 @@ import { NAV_THREAT_BAND_CLASS } from '../tactical/navThreat';
 import { formatColonyGrowthPerDay, formatColonyPhase } from '../planetary/colonyVitals';
 import Galaxy3DRenderer from '../galaxy/Galaxy3DRenderer';
 import AutopilotHud from '../hud/AutopilotHud';
-import QuantumDriveConsole from '../quantum/QuantumDriveConsole';
+import QuantumDriveConsole, { formatQuantumDriveApiError } from '../quantum/QuantumDriveConsole';
 import GatewrightPanel from '../gatewright/GatewrightPanel';
 import TacticalMonitor from '../tactical/TacticalMonitor';
 import SolarSalvagePage from '../tactical/pages/SolarSalvagePage';
@@ -198,6 +198,13 @@ interface QuantumRefineryStripProps {
   onRefine: () => Promise<{ quantum_charges: number; quantum_shards: number }>;
 }
 
+const QUANTUM_REFINERY_FAILED_FALLBACK = 'Charge refinement failed';
+
+/** Exported for TypeError/network honesty Vitest (LEG-3315). */
+export function formatQuantumRefineryError(err: unknown): string {
+  return formatQuantumDriveApiError(err, QUANTUM_REFINERY_FAILED_FALLBACK);
+}
+
 const QuantumRefineryStrip: React.FC<QuantumRefineryStripProps> = ({ status, onRefine }) => {
   const [isRefining, setIsRefining] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -215,8 +222,8 @@ const QuantumRefineryStrip: React.FC<QuantumRefineryStripProps> = ({ status, onR
     try {
       const result = await onRefine();
       setNotice(`Charge refined — ${result.quantum_charges} loaded, ${result.quantum_shards} shards remain.`);
-    } catch (e: any) {
-      setError(e?.response?.data?.detail || 'Charge refinement failed');
+    } catch (e: unknown) {
+      setError(formatQuantumRefineryError(e));
     } finally {
       setIsRefining(false);
     }
