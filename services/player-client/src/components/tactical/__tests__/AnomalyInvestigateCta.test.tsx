@@ -25,6 +25,18 @@ describe('formatAnomalyInvestigateError TypeError densify (LEG-3095)', () => {
     expect(text).not.toMatch(/TypeError/i);
   });
 
+  it('falls back on axios Network Error / Failed to fetch non-TypeError (LEG-3296)', () => {
+    expect(formatAnomalyInvestigateError(new Error('Network Error'))).toBe(
+      'Investigation failed. Please try again.',
+    );
+    expect(formatAnomalyInvestigateError(new Error('Failed to fetch'))).toBe(
+      'Investigation failed. Please try again.',
+    );
+    expect(formatAnomalyInvestigateError(new Error('   '))).toBe(
+      'Investigation failed. Please try again.',
+    );
+  });
+
   it('preserves server detail for non-TypeError errors', () => {
     const err = Object.assign(new Error('sector_locked'), {
       response: { data: { detail: 'Sector is locked by another captain.' } },

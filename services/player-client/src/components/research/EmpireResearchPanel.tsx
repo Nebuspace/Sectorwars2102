@@ -114,6 +114,16 @@ export function formatEmpireResearchLoadError(err: unknown): string {
 }
 
 /** Exported for TypeError densify tests — accept/unlock mutation catch paths. */
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
 export function formatEmpireResearchMutationError(err: unknown, fallback: string): string {
   if (err instanceof TypeError) return fallback;
   if (err && typeof err === 'object') {
@@ -124,7 +134,10 @@ export function formatEmpireResearchMutationError(err: unknown, fallback: string
       if (typeof detail === 'string' && detail) return detail;
     }
     const msg = (err as { message?: string }).message;
-    if (typeof msg === 'string' && msg) return msg;
+    if (typeof msg === 'string' && msg) {
+      if (isNetworkCollapseMessage(msg)) return fallback;
+      return msg;
+    }
   }
   return fallback;
 }

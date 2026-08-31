@@ -29,17 +29,33 @@ const formatHistoryTimestamp = (iso: string): string => {
 const OPTIMIZE_FAILED_FALLBACK = 'Failed to optimize route.';
 const HISTORY_FAILED_FALLBACK = 'Failed to load recent plans.';
 
-/** Exported for TypeError/network honesty Vitest (LEG-3264). */
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+/** Exported for TypeError/network honesty Vitest (LEG-3264 / LEG-3292). */
 export function formatRouteOptimizeError(err: unknown): string {
   if (err instanceof TypeError) return OPTIMIZE_FAILED_FALLBACK;
-  if (err instanceof Error && err.message) return err.message;
+  if (err instanceof Error && err.message) {
+    if (isNetworkCollapseMessage(err.message)) return OPTIMIZE_FAILED_FALLBACK;
+    return err.message;
+  }
   return OPTIMIZE_FAILED_FALLBACK;
 }
 
-/** Exported for TypeError/network honesty Vitest (LEG-3264). */
+/** Exported for TypeError/network honesty Vitest (LEG-3264 / LEG-3292). */
 export function formatRouteHistoryError(err: unknown): string {
   if (err instanceof TypeError) return HISTORY_FAILED_FALLBACK;
-  if (err instanceof Error && err.message) return err.message;
+  if (err instanceof Error && err.message) {
+    if (isNetworkCollapseMessage(err.message)) return HISTORY_FAILED_FALLBACK;
+    return err.message;
+  }
   return HISTORY_FAILED_FALLBACK;
 }
 
