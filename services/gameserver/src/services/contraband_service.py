@@ -272,18 +272,26 @@ class ContrabandService:
         return station is not None and station.type == StationType.BLACK_MARKET
 
     def _passes_rep_gate(self, player_id: uuid.UUID) -> bool:
-        """True iff the player's Fringe-Alliance (OUTLAWS) reputation is at least
+        """True iff effective Fringe-Alliance (OUTLAWS) standing is at least
         RECOGNIZED (brief §1.1 / [OPEN-1]).
 
-        The Reputation row keys on ``faction_id``, so resolve the OUTLAWS faction
-        first. A missing faction row (un-seeded roster) or a missing reputation
-        row both read as "below gate" — the conservative default: a player with no
-        Fringe standing is NOT vouched in.
+        Uses ``resolve_effective_faction_standing_value`` so a teamed player
+        consumes team AVERAGE (or configured) aggregate standing — same
+        interaction-gate resolver as dock/trade. Solo players still use
+        personal ``Reputation.current_value``. A missing OUTLAWS faction row
+        fails closed. Missing personal/team standing reads as value 0
+        (NEUTRAL) via the resolver — also below gate.
 
-        Tier comparison uses ``Reputation.numeric_level`` (an ordered −8..+8
-        scale) so the gate is a clean ordinal compare rather than a fragile
-        enum-identity check.
+        Tier compare: map continuous value through
+        ``FactionService._calculate_reputation_level`` (RECOGNIZED ≥ +50) then
+        ordinal-rank against ``GATE_MIN_LEVEL``. Detection ``rep_term`` stays on
+        the personal_reputation axis (ADR-0062) and is untouched here.
         """
+        from src.services.faction_service import (
+            FactionService,
+            resolve_effective_faction_standing_value,
+        )
+
         faction = (
             self.db.query(Faction)
             .filter(Faction.faction_type == GATE_FACTION)
@@ -297,18 +305,11 @@ class ContrabandService:
             )
             return False
 
-        reputation = (
-            self.db.query(Reputation)
-            .filter(
-                Reputation.player_id == player_id,
-                Reputation.faction_id == faction.id,
-            )
-            .first()
+        value, _source = resolve_effective_faction_standing_value(
+            self.db, player_id, faction.id
         )
-        if reputation is None:
-            return False
-
-        return self._level_rank(reputation.current_level) >= self._level_rank(GATE_MIN_LEVEL)
+        level = FactionService(self.db)._calculate_reputation_level(value)
+        return self._level_rank(level) >= self._level_rank(GATE_MIN_LEVEL)
 
     @staticmethod
     def _level_rank(level: ReputationLevel) -> int:
