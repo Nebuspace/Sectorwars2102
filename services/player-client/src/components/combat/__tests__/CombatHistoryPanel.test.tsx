@@ -61,6 +61,20 @@ describe('CombatHistoryPanel', () => {
     expect(err?.textContent).toContain('API Error: 503');
   });
 
+  it('load TypeError surfaces fallback without Failed to fetch / TypeError (LEG-3163)', async () => {
+    getHistory.mockRejectedValue(new TypeError('Failed to fetch'));
+    await act(async () => {
+      root.render(<CombatHistoryPanel />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const err = container.querySelector('[data-testid="combat-history-error"]');
+    expect(err?.textContent).toBe('Failed to load combat history');
+    expect(err?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(err?.textContent).not.toMatch(/TypeError/i);
+  });
+
   it('Next bumps offset by limit (pagination + scoping assumptions)', async () => {
     getHistory
       .mockResolvedValueOnce({

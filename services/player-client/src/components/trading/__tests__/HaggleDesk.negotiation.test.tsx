@@ -22,7 +22,7 @@ vi.mock('../../../services/api', () => ({
   tradingAPI: { quote: mockQuote },
 }));
 
-import HaggleDesk from '../HaggleDesk';
+import HaggleDesk, { formatHaggleError } from '../HaggleDesk';
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -235,5 +235,61 @@ describe('HaggleDesk — negotiation money path', () => {
     await renderDesk();
     expect(container.textContent).toContain('Negotiations closed');
     expect(container.querySelector('.haggle-open-btn')).toBeNull();
+  });
+
+  describe('TypeError densify (LEG-3102)', () => {
+    it('formatHaggleError falls back on TypeError network collapse', () => {
+      const text = formatHaggleError(new TypeError('Failed to fetch'));
+      expect(text).toBe('The trader turned away.');
+      expect(text).not.toMatch(/Failed to fetch/i);
+      expect(text).not.toMatch(/TypeError/i);
+    });
+
+    it('formatHaggleError preserves server detail for non-TypeError errors', () => {
+      const err = Object.assign(new Error('request failed'), {
+        response: { data: { detail: 'Commodity locked for this docking session.' } },
+      });
+      expect(formatHaggleError(err)).toBe('Commodity locked for this docking session.');
+    });
+
+    it('status TypeError surfaces honest fallback without Failed to fetch', async () => {
+      mockStatus.mockRejectedValue(new TypeError('Failed to fetch'));
+      await renderDesk();
+      const alert = container.querySelector('.haggle-error');
+      expect(alert?.textContent).toBe('The trader turned away.');
+      expect(alert?.textContent).not.toMatch(/Failed to fetch/i);
+      expect(alert?.textContent).not.toMatch(/TypeError/i);
+    });
+
+    it('open TypeError surfaces honest fallback without Failed to fetch', async () => {
+      mockOpen.mockRejectedValue(new TypeError('Failed to fetch'));
+      await renderDesk();
+      await act(async () => {
+        (container.querySelector('.haggle-open-btn') as HTMLButtonElement).click();
+        await flush();
+      });
+      const alert = container.querySelector('.haggle-error');
+      expect(alert?.textContent).toBe('The trader turned away.');
+      expect(alert?.textContent).not.toMatch(/Failed to fetch/i);
+      expect(alert?.textContent).not.toMatch(/TypeError/i);
+    });
+
+    it('offer TypeError surfaces honest fallback without Failed to fetch', async () => {
+      mockOpen.mockResolvedValue(OPEN_CARD);
+      mockOffer.mockRejectedValue(new TypeError('Failed to fetch'));
+      await renderDesk();
+      await act(async () => {
+        (container.querySelector('.haggle-open-btn') as HTMLButtonElement).click();
+        await flush();
+      });
+      await act(async () => {
+        (container.querySelector('.haggle-submit-btn') as HTMLButtonElement).click();
+        await flush();
+      });
+      const alert = container.querySelector('.haggle-error');
+      expect(alert?.textContent).toBe('The trader turned away.');
+      expect(alert?.textContent).not.toMatch(/Failed to fetch/i);
+      expect(alert?.textContent).not.toMatch(/TypeError/i);
+    });
   });
 });
