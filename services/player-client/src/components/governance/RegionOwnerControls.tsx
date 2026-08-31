@@ -6,6 +6,34 @@ import RegionInvitePanel from './RegionInvitePanel';
 import RegionTradeDockPanel from './RegionTradeDockPanel';
 import RegionTreatyPanel from './RegionTreatyPanel';
 
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
+};
+
+const REGION_PROBE_UNAVAILABLE = 'Region status unavailable — try again shortly.';
+
+/**
+ * Map region-ownership probe failures to user-visible copy.
+ * Returns null for the expected not-owner 404 heuristic (message contains
+ * "found") — apiRequest does not preserve HTTP status on thrown Error.
+ */
+export function formatRegionOwnerProbeError(err: unknown): string | null {
+  const message =
+    err instanceof Error ? err.message : String((err as { message?: unknown })?.message ?? '');
+  if (message.toLowerCase().includes('found')) return null;
+  if (err instanceof TypeError || isNetworkCollapseMessage(message)) {
+    return REGION_PROBE_UNAVAILABLE;
+  }
+  return REGION_PROBE_UNAVAILABLE;
+}
+
 /**
  * RegionOwnerControls — self-contained region/governance/owner-tools bundle
  * (WO-UI0-STATUSBAR sub-part b). Relocated verbatim out of GameDashboard's
@@ -78,18 +106,7 @@ const RegionOwnerControls: React.FC = () => {
         setOwnedRegionId(null);
         setOwnedRegionName(null);
         setOwnedRegionChoices([]);
-        // Distinguish the EXPECTED "not an owner" 404 (silent, as before)
-        // from a genuine transient failure (network error, 500, etc — now
-        // surfaced). apiRequest (services/api.ts) does not preserve the
-        // HTTP status on the thrown Error, only `.message` — so this is a
-        // text heuristic, not a status check: the gameserver's stable 404
-        // detail string is "No region found for this user"
-        // (regional_governance.py verify_region_owner), and this repo's own
-        // test fixture for that case uses "Not Found" — both contain
-        // "found" case-insensitively, which no real transient-error message
-        // (network/500/parse failures) plausibly does.
-        const message = String((err as any)?.message || '');
-        setProbeError(message.toLowerCase().includes('found') ? null : 'Region status unavailable — try again shortly.');
+        setProbeError(formatRegionOwnerProbeError(err));
       } finally {
         if (!cancelled) setLoading(false);
       }
