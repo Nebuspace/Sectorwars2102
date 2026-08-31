@@ -152,6 +152,68 @@ describe('LanguageSwitcher', () => {
     expect(german?.querySelector('.completion-text')?.textContent).toBe('26%');
   });
 
+  it('soft-falls back without leaking TypeError/Failed to fetch on network collapse (LEG-3499)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockRejectedValue(new TypeError('Failed to fetch')),
+    );
+
+    await act(async () => {
+      root.render(<LanguageSwitcher variant="full" />);
+    });
+    await act(async () => {
+      await flush();
+      await flush();
+    });
+
+    expect(container.textContent).not.toMatch(/Failed to fetch/i);
+    expect(container.textContent).not.toMatch(/TypeError/i);
+    expect(container.querySelector('.language-text')?.textContent).toBe('English');
+
+    await act(async () => {
+      (container.querySelector('.player-language-button') as HTMLButtonElement).click();
+      await flush();
+    });
+
+    const options = Array.from(container.querySelectorAll('.language-option')).map(
+      (el) => el.textContent,
+    );
+    expect(options.some((t) => t?.includes('Español'))).toBe(true);
+    expect(container.textContent).not.toMatch(/Failed to fetch/i);
+    expect(container.textContent).not.toMatch(/TypeError/i);
+  });
+
+  it('soft-falls back without leaking Failed to fetch on axios-style network Error (LEG-3499)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockRejectedValue(new Error('Failed to fetch')),
+    );
+
+    await act(async () => {
+      root.render(<LanguageSwitcher variant="full" />);
+    });
+    await act(async () => {
+      await flush();
+      await flush();
+    });
+
+    expect(container.textContent).not.toMatch(/Failed to fetch/i);
+    expect(container.textContent).not.toMatch(/TypeError/i);
+    expect(container.querySelector('.language-text')?.textContent).toBe('English');
+
+    await act(async () => {
+      (container.querySelector('.player-language-button') as HTMLButtonElement).click();
+      await flush();
+    });
+
+    const options = Array.from(container.querySelectorAll('.language-option')).map(
+      (el) => el.textContent,
+    );
+    expect(options.some((t) => t?.includes('Español'))).toBe(true);
+    expect(container.textContent).not.toMatch(/Failed to fetch/i);
+    expect(container.textContent).not.toMatch(/TypeError/i);
+  });
+
   it('calls i18n.changeLanguage when a different option is chosen', async () => {
     await act(async () => {
       root.render(<LanguageSwitcher variant="full" showProgress={false} />);
