@@ -67,15 +67,31 @@ const normalizeDrone = (raw: unknown): DroneRow | null => {
   };
 };
 
-/** TypeError (fetch network collapse) → fallback; preserve axios/gameserver detail otherwise. */
+/** Transport collapse copy is not gameserver detail (LEG-3281 densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+/** TypeError / network collapse → fallback; preserve axios/gameserver detail otherwise. */
 export function formatDroneFleetError(error: unknown, fallback: string): string {
   if (error instanceof TypeError) return fallback;
   const e = asRecord(error);
   const response = asRecord(e?.response);
   const data = asRecord(response?.data);
   const raw = data?.detail ?? data?.message ?? e?.message;
-  if (typeof raw === 'string' && raw) return raw;
-  if (error instanceof Error && error.message) return error.message;
+  if (typeof raw === 'string' && raw) {
+    if (isNetworkCollapseMessage(raw)) return fallback;
+    return raw;
+  }
+  if (error instanceof Error && error.message) {
+    if (isNetworkCollapseMessage(error.message)) return fallback;
+    return error.message;
+  }
   return fallback;
 }
 

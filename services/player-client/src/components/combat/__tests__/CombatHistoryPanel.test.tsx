@@ -15,7 +15,7 @@ vi.mock('../../../services/api', () => ({
   },
 }));
 
-import CombatHistoryPanel from '../CombatHistoryPanel';
+import CombatHistoryPanel, { formatCombatHistoryError } from '../CombatHistoryPanel';
 
 describe('CombatHistoryPanel', () => {
   let container: HTMLElement;
@@ -73,6 +73,14 @@ describe('CombatHistoryPanel', () => {
     expect(err?.textContent).toBe('Failed to load combat history');
     expect(err?.textContent).not.toMatch(/Failed to fetch/i);
     expect(err?.textContent).not.toMatch(/TypeError/i);
+  });
+
+  it('formatCombatHistoryError densifies Network Error / Failed to fetch non-TypeError (LEG-3280)', () => {
+    const fallback = 'Failed to load combat history';
+    expect(formatCombatHistoryError(new Error('Network Error'), fallback)).toBe(fallback);
+    expect(formatCombatHistoryError(new Error('Failed to fetch'), fallback)).toBe(fallback);
+    expect(formatCombatHistoryError(new Error('   '), fallback)).toBe(fallback);
+    expect(formatCombatHistoryError(new Error('API Error: 503'), fallback)).toBe('API Error: 503');
   });
 
   it('Next bumps offset by limit (pagination + scoping assumptions)', async () => {

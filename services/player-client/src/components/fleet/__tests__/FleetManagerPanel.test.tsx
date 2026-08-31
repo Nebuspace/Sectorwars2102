@@ -158,6 +158,13 @@ describe('formatFleetManagerError TypeError densify (LEG-3092)', () => {
     expect(text).not.toMatch(/TypeError/i);
   });
 
+  it('falls back on axios Network Error / Failed to fetch non-TypeError (LEG-3279)', () => {
+    expect(formatFleetManagerError(new Error('Network Error'))).toBe('Fleet request failed');
+    expect(formatFleetManagerError(new Error('Failed to fetch'))).toBe('Fleet request failed');
+    expect(formatFleetManagerError(new Error(''))).toBe('Fleet request failed');
+    expect(formatFleetManagerError(new Error('   '))).toBe('Fleet request failed');
+  });
+
   it('preserves non-generic Error.message detail when not TypeError', () => {
     expect(formatFleetManagerError(new Error('dock_request_denied'))).toBe('dock_request_denied');
   });
