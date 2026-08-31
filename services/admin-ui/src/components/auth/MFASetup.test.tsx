@@ -107,4 +107,18 @@ describe('MFASetup API errors (LEG-3172)', () => {
       expect(screen.getByText('Verification failed')).toBeTruthy();
     });
   });
+
+  it('surfaces formatAdminApiError fallback on mfa/generate TypeError (LEG-3322)', async () => {
+    mockedApi.post.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<MFASetup />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Failed to generate MFA secret')).toBeTruthy();
+    });
+
+    const error = screen.getByText('Failed to generate MFA secret').textContent ?? '';
+    expect(error).not.toMatch(/Failed to fetch/i);
+    expect(error).not.toMatch(/TypeError/i);
+  });
 });
