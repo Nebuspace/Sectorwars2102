@@ -245,6 +245,12 @@ describe('HaggleDesk — negotiation money path', () => {
       expect(text).not.toMatch(/TypeError/i);
     });
 
+    it('formatHaggleError falls back on axios Network Error (LEG-3505)', () => {
+      const text = formatHaggleError(new Error('Network Error'));
+      expect(text).toBe('The trader turned away.');
+      expect(text).not.toMatch(/Network Error/i);
+    });
+
     it('formatHaggleError preserves server detail for non-TypeError errors', () => {
       const err = Object.assign(new Error('request failed'), {
         response: { data: { detail: 'Commodity locked for this docking session.' } },

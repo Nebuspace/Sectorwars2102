@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { formatCredits } from '../../utils/formatters';
 import aiTradingService from '../../services/aiTradingService';
 import type { TradingRecommendation } from '../ai/types';
+import { isTradingNetworkCollapseMessage } from './networkCollapse';
 import './trading-recommendations.css';
 
 function httpStatus(err: unknown): number | undefined {
@@ -24,6 +25,7 @@ export function formatRecommendationsLoadError(err: unknown): string {
   const hasServerDetail =
     typeof message === 'string' &&
     message.trim().length > 0 &&
+    !isTradingNetworkCollapseMessage(message) &&
     !/^Failed to fetch recommendations:/i.test(message.trim()) &&
     !/^API Error: \d+$/.test(message.trim());
 

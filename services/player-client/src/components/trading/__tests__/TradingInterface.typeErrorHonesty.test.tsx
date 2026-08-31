@@ -17,6 +17,12 @@ describe('TradingInterface TypeError densify (LEG-3134)', () => {
     expect(text).not.toMatch(/TypeError/i);
   });
 
+  it('formatTradingExecuteError falls back on axios Network Error (LEG-3505)', () => {
+    const text = formatTradingExecuteError(new Error('Network Error'), 'ore');
+    expect(text).toBe('Failed to execute trade');
+    expect(text).not.toMatch(/Network Error/i);
+  });
+
   it('formatTradingExecuteError preserves server detail when not TypeError', () => {
     const err = Object.assign(new Error('insufficient credits'), {
       response: { data: { detail: 'Not enough credits for this trade.' } },
@@ -38,10 +44,22 @@ describe('TradingInterface TypeError densify (LEG-3134)', () => {
     expect(text).not.toMatch(/TypeError/i);
   });
 
+  it('formatTradingDockError falls back on axios Network Error (LEG-3505)', () => {
+    const text = formatTradingDockError(new Error('Network Error'));
+    expect(text).toBe('Failed to dock at station.');
+    expect(text).not.toMatch(/Network Error/i);
+  });
+
   it('formatTradingBumpError falls back on TypeError network collapse', () => {
     const text = formatTradingBumpError(new TypeError('Failed to fetch'));
     expect(text).toMatch(/Bump failed/i);
     expect(text).not.toMatch(/Failed to fetch/i);
     expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('formatTradingBumpError falls back on axios Network Error (LEG-3505)', () => {
+    const text = formatTradingBumpError(new Error('Network Error'));
+    expect(text).toMatch(/Bump failed/i);
+    expect(text).not.toMatch(/Network Error/i);
   });
 });

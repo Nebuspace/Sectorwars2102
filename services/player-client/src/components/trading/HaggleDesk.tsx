@@ -81,6 +81,8 @@ interface TradeQuoteResult {
   total: number;
 }
 
+import { isTradingNetworkCollapseMessage } from './networkCollapse';
+
 export function formatHaggleError(e: unknown): string {
   if (e instanceof TypeError) return 'The trader turned away.';
   if (e && typeof e === 'object') {
@@ -92,7 +94,10 @@ export function formatHaggleError(e: unknown): string {
       if (typeof rec.message === 'string' && rec.message) return rec.message;
     }
     const msg = (e as { message?: string }).message;
-    if (typeof msg === 'string' && msg) return msg;
+    if (typeof msg === 'string' && msg) {
+      if (isTradingNetworkCollapseMessage(msg)) return 'The trader turned away.';
+      return msg;
+    }
   }
   return 'The trader turned away.';
 }

@@ -19,7 +19,17 @@ vi.mock('../../../services/aiTradingService', () => ({
   },
 }));
 
-import TradingRecommendationsPanel from '../TradingRecommendationsPanel';
+import TradingRecommendationsPanel, {
+  formatRecommendationsLoadError,
+} from '../TradingRecommendationsPanel';
+
+describe('formatRecommendationsLoadError TypeError densify (LEG-3505)', () => {
+  it('falls back on axios Network Error without leaking transport text', () => {
+    const text = formatRecommendationsLoadError(new Error('Network Error'));
+    expect(text).toBe('Failed to load trading recommendations');
+    expect(text).not.toMatch(/Network Error/i);
+  });
+});
 
 describe('TradingRecommendationsPanel TypeError honesty (LEG-3237)', () => {
   let container: HTMLElement;

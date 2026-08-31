@@ -6,6 +6,7 @@ import {
   isTradeCascadeRefusal,
   TradeCascadePlan,
 } from '../../services/api';
+import { isTradingNetworkCollapseMessage } from './networkCollapse';
 import './trade-cascade.css';
 
 function httpStatus(err: unknown): number | undefined {
@@ -27,6 +28,7 @@ export function formatTradeCascadeError(err: unknown): string {
     !(err instanceof TypeError) &&
     typeof message === 'string' &&
     message.trim().length > 0 &&
+    !isTradingNetworkCollapseMessage(message) &&
     !/^API Error: \d+$/.test(message.trim());
 
   if (status === 403) {

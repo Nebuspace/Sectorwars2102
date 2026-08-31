@@ -96,12 +96,18 @@ interface DockFullInfo {
   bump_cost: number;
 }
 
+import { isTradingNetworkCollapseMessage } from './networkCollapse';
+
 const formatName = (name: string) => name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 
 /** Surface GS trade detail; hide fetch TypeError noise (LEG-3134). */
 export function formatTradingExecuteError(err: unknown, resourceType: string): string {
   if (err instanceof TypeError) return 'Failed to execute trade';
-  const error = err as { response?: { data?: { detail?: string; message?: string } } };
+  const error = err as { response?: { data?: { detail?: string; message?: string } }; message?: string };
+  const transportMessage = err instanceof Error ? err.message : error.message;
+  if (typeof transportMessage === 'string' && isTradingNetworkCollapseMessage(transportMessage)) {
+    return 'Failed to execute trade';
+  }
   const serverMessage: string = error.response?.data?.detail || error.response?.data?.message || '';
   let content = serverMessage || 'Failed to execute trade';
   if (serverMessage.includes('does not sell')) {
@@ -114,13 +120,21 @@ export function formatTradingExecuteError(err: unknown, resourceType: string): s
 
 export function formatTradingDockError(err: unknown): string {
   if (err instanceof TypeError) return 'Failed to dock at station.';
-  const error = err as { response?: { data?: { detail?: string; message?: string } } };
+  const error = err as { response?: { data?: { detail?: string; message?: string } }; message?: string };
+  const transportMessage = err instanceof Error ? err.message : error.message;
+  if (typeof transportMessage === 'string' && isTradingNetworkCollapseMessage(transportMessage)) {
+    return 'Failed to dock at station.';
+  }
   return error.response?.data?.detail || error.response?.data?.message || 'Failed to dock at station.';
 }
 
 export function formatTradingBumpError(err: unknown): string {
   if (err instanceof TypeError) return 'Bump failed — the slip may have already changed hands.';
-  const error = err as { response?: { data?: { detail?: string; message?: string } } };
+  const error = err as { response?: { data?: { detail?: string; message?: string } }; message?: string };
+  const transportMessage = err instanceof Error ? err.message : error.message;
+  if (typeof transportMessage === 'string' && isTradingNetworkCollapseMessage(transportMessage)) {
+    return 'Bump failed — the slip may have already changed hands.';
+  }
   return (
     error.response?.data?.detail ||
     error.response?.data?.message ||

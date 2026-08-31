@@ -19,7 +19,7 @@ vi.mock('../../../services/api', () => ({
   tradingAPI: { quote: vi.fn() },
 }));
 
-import HaggleDesk from '../HaggleDesk';
+import HaggleDesk, { formatHaggleError } from '../HaggleDesk';
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -127,5 +127,26 @@ describe('HaggleDesk TypeError honesty (LEG-3241)', () => {
     expect(alert?.textContent).toBe('The trader turned away.');
     expect(container.textContent).not.toMatch(/Failed to fetch/i);
     expect(container.textContent).not.toMatch(/TypeError/i);
+  });
+
+  it('formatHaggleError falls back on axios Network Error (LEG-3505)', () => {
+    const text = formatHaggleError(new Error('Network Error'));
+    expect(text).toBe('The trader turned away.');
+    expect(text).not.toMatch(/Network Error/i);
+  });
+
+  it('open Network Error surfaces trader fallback without Network Error in DOM (LEG-3505)', async () => {
+    mockOpen.mockRejectedValue(new Error('Network Error'));
+
+    await renderDesk();
+
+    await act(async () => {
+      (container.querySelector('.haggle-open-btn') as HTMLButtonElement).click();
+      await flush();
+    });
+
+    const alert = container.querySelector('.haggle-error[role="alert"]');
+    expect(alert?.textContent).toBe('The trader turned away.');
+    expect(container.textContent).not.toMatch(/Network Error/i);
   });
 });

@@ -28,7 +28,15 @@ vi.mock('../../../services/api', async (importOriginal) => {
   };
 });
 
-import TradeCascadePanel from '../TradeCascadePanel';
+import TradeCascadePanel, { formatTradeCascadeError } from '../TradeCascadePanel';
+
+describe('formatTradeCascadeError TypeError densify (LEG-3505)', () => {
+  it('falls back on axios Network Error without leaking transport text', () => {
+    const text = formatTradeCascadeError(new Error('Network Error'));
+    expect(text).toBe('Failed to plan trade cascade.');
+    expect(text).not.toMatch(/Network Error/i);
+  });
+});
 
 describe('TradeCascadePanel TypeError honesty (LEG-3238)', () => {
   let container: HTMLElement;
