@@ -1899,7 +1899,13 @@ def _check_faction_rep_layers(db: Session, player: Player, reqs: Dict[str, Any])
             )
 
 
-def check_traversal_access(db: Session, player: Player, tunnel: WarpTunnel) -> None:
+def check_traversal_access(
+    db: Session,
+    player: Player,
+    tunnel: WarpTunnel,
+    *,
+    actor_ship: Optional["Ship"] = None,
+) -> None:
     """Enforce the gate's access mode — plus any optional layered gates
     (WO-GWQ-GATE-TOLL: faction-rep min/max) — for a player attempting
     traversal.
@@ -1915,6 +1921,11 @@ def check_traversal_access(db: Session, player: Player, tunnel: WarpTunnel) -> N
     The owner is identified by WarpTunnel.created_by_player_id (the gate's
     owner FK on the traversable row, kept in sync with WarpGate.player_id on
     transfer)."""
+    from src.services.interdictor_abilities_service import ship_has_ability
+
+    if actor_ship is not None and ship_has_ability(actor_ship, "concord_authorization"):
+        return
+
     # Only player-built gates are access-controlled. A natural/generator tunnel
     # has no created_by_player_id and is always open.
     if tunnel is None or tunnel.created_by_player_id is None \
@@ -2075,7 +2086,12 @@ def _has_24h_team_tenure(db: Session, traverser_id, owner: Optional[Player], now
 
 
 def collect_toll(
-    db: Session, traverser: Player, tunnel: WarpTunnel, now: Optional[datetime] = None,
+    db: Session,
+    traverser: Player,
+    tunnel: WarpTunnel,
+    now: Optional[datetime] = None,
+    *,
+    actor_ship: Optional["Ship"] = None,
 ) -> Dict[str, Any]:
     """warp-gates.md "Toll system" + ADR-0049 — atomic per-traversal toll on
     a player-built gate. `now` is optional (defaults to datetime.now(UTC)),
@@ -2146,7 +2162,10 @@ def collect_toll(
     exempt_reason: Optional[str] = None
     charged = 0
 
-    if is_owner:
+    from src.services.interdictor_abilities_service import ship_has_ability
+    if actor_ship is not None and ship_has_ability(actor_ship, "concord_authorization"):
+        exempt_reason = "concord_authorization"
+    elif is_owner:
         exempt_reason = "owner"
     elif fee == 0:
         exempt_reason = "free"
