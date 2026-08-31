@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 /**
  * LEG-3204 Soft-ORDER — DialogueExchange submit-error TypeError honesty.
+ * LEG-3404 Soft-ORDER — axios-shaped Network Error densify.
  */
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -55,6 +56,13 @@ describe('formatDialogueSubmitError TypeError honesty (LEG-3204)', () => {
     expect(
       formatDialogueSubmitError(new Error('ERR_DIALOGUE_CLOSED'), 'Failed to send your response. Please try again.'),
     ).toBe('ERR_DIALOGUE_CLOSED');
+  });
+
+  it('falls back on axios-shaped Network Error (LEG-3404)', () => {
+    const fallback = 'Failed to send your response. Please try again.';
+    const text = formatDialogueSubmitError(new Error('Network Error'), fallback);
+    expect(text).toBe(fallback);
+    expect(text).not.toMatch(/Network Error/i);
   });
 });
 
