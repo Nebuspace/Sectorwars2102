@@ -37,6 +37,16 @@ export function isEcmSuiteHullCompatible(
   return (ECM_SUITE_COMPATIBLE_HULLS as readonly string[]).includes(norm);
 }
 
+export function formatEcmSuiteInstallError(err: unknown): string {
+  const fallback = 'ECM Suite install failed';
+  if (err instanceof TypeError) return fallback;
+  const detail =
+    (err as { response?: { data?: { detail?: string } }; message?: string })
+      ?.response?.data?.detail ?? (err as { message?: string })?.message;
+  if (typeof detail === 'string' && detail) return detail;
+  return fallback;
+}
+
 export interface EcmSuiteInstallCtaProps {
   shipId?: string | null;
   shipType?: string | null;
@@ -113,13 +123,8 @@ const EcmSuiteInstallCta: React.FC<EcmSuiteInstallCtaProps> = ({
         message: result?.message,
       });
       void refreshEquipment();
-    } catch (err: any) {
-      const detail = err?.response?.data?.detail ?? err?.message;
-      setInstallError(
-        typeof detail === 'string' && detail
-          ? detail
-          : 'ECM Suite install failed',
-      );
+    } catch (err: unknown) {
+      setInstallError(formatEcmSuiteInstallError(err));
     } finally {
       setIsInstalling(false);
     }
