@@ -441,3 +441,69 @@ describe('EconomyDashboard mutation errors (LEG-2600)', () => {
     expect(toastError).not.toHaveBeenCalledWith('Failed to delete price alert');
   });
 });
+
+describe('EconomyDashboard axios Network Error densify (LEG-3398)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    toastError.mockReset();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('collapses axios-shaped Network Error on primary load to honest fallback', async () => {
+    // Reject only market+metrics so primaryBothFailed && errors.length===2
+    // uses the gameserver-running combined fallback.
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/economy/market-data')) {
+        throw new Error('Network Error');
+      }
+      if (url.includes('/economy/metrics')) {
+        throw new Error('Network Error');
+      }
+      if (url.includes('/economy/price-alerts')) return { data: [] };
+      if (url.includes('/economy/dashboard-summary')) return okSummary;
+      return { data: {} };
+    });
+
+    render(<EconomyDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+    const text = screen.getByRole('alert').textContent ?? '';
+    expect(text).toMatch(/Failed to load economic data|gameserver is running/i);
+    expect(text).not.toBe('Network Error');
+    expect(text).not.toContain('Network Error');
+  });
+
+  it('collapses axios-shaped Network Error on create-alert POST to honest toast', async () => {
+    const user = userEvent.setup();
+    mockSuccessfulLoads();
+    vi.mocked(api.post).mockRejectedValue(new Error('Network Error'));
+
+    render(<EconomyDashboard />);
+    await waitFor(() => expect(screen.getByLabelText(/^Station$/)).toBeTruthy());
+
+    await user.selectOptions(screen.getByLabelText(/^Station$/), 'st1');
+    await user.selectOptions(screen.getByLabelText(/^Commodity$/), 'ore');
+    await user.type(screen.getByLabelText(/Threshold Value/i), '15');
+    await user.click(screen.getByRole('button', { name: /Create Alert/i }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/economy/create-alert',
+        expect.objectContaining({ station_id: 'st1', commodity: 'ore' }),
+      );
+      expect(toastError).toHaveBeenCalled();
+    });
+    const msg = String(toastError.mock.calls[0][0]);
+    expect(msg).toMatch(/Failed to create price alert/i);
+    expect(msg).not.toBe('Network Error');
+    expect(msg).not.toContain('Network Error');
+  });
+});
