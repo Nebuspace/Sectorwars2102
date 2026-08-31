@@ -1129,6 +1129,21 @@ class MovementService:
                 "turn_cost": 0,
             }
 
+        # Interdictor Field (police-forces.md): movement lock while active.
+        try:
+            from src.services.interdictor_abilities_service import (
+                interdictor_field_blocks_movement,
+                movement_block_message,
+            )
+            if interdictor_field_blocks_movement(player.current_ship):
+                return {
+                    "success": False,
+                    "message": movement_block_message(),
+                    "turn_cost": 0,
+                }
+        except Exception as e:
+            logger.error("Interdictor Field move-guard failed: %s", e)
+
         # Carrier ship-hangar (WO-AE; ships.md:338-340): a ship docked inside a
         # Carrier is an inert passenger — it cannot move independently. The
         # pilot rides along when the Carrier moves, or pays 1 turn to undock and
@@ -2521,6 +2536,11 @@ class MovementService:
                     "turn_cost tech-modifier skipped (non-fatal)", exc_info=True
                 )
 
+        from src.services.interdictor_abilities_service import (
+            warp_turn_cost_with_interdictor_field,
+        )
+        base_cost = warp_turn_cost_with_interdictor_field(base_cost, ship)
+
         # No turn cost can be less than 1
         return max(1, base_cost)
 
@@ -3260,7 +3280,11 @@ class MovementService:
                 # once here is the correct shape, not just a safe one.
                 self._maybe_dispatch_police_engagement(player, sector)
             if has_patrol_presence:
-                self._maybe_roll_patrol_contraband_scan(player, sector)
+                from src.services.interdictor_abilities_service import (
+                    sector_has_contraband_scanner_patrol,
+                )
+                if sector_has_contraband_scanner_patrol(self.db, sector):
+                    self._maybe_roll_patrol_contraband_scan(player, sector)
 
         # WO-CMB-NPC-INITIATED-1 lane C (human ruling, 2026-07-10) — pirate
         # trigger. VERIFY-FIRST found this leg's police_patrol_ships block

@@ -924,6 +924,15 @@ def _maybe_initiate_police_combat_inner(
     if npc_ship is None:
         return []
 
+    from src.services.interdictor_abilities_service import (
+        disrupt_phase1_beacons_near_sector,
+        ship_has_ability,
+    )
+    if ship_has_ability(npc_ship, "beacon_disruptor"):
+        disrupt_phase1_beacons_near_sector(
+            db, sector.sector_id, disruptor_ship=npc_ship,
+        )
+
     from src.services.npc_combat_initiation_service import initiate_npc_combat
 
     trigger = f"police_{engagement.offense_type}"
