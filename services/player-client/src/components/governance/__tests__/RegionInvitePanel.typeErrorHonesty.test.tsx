@@ -65,6 +65,13 @@ describe('formatRegionInviteError TypeError densify (LEG-3164)', () => {
       formatRegionInviteError(new Error('ERR_NOT_REGION_OWNER'), 'Invite registry unreachable. Try again.'),
     ).toBe('You are not the owner of this region.');
   });
+
+  it('falls back on axios Network Error / Failed to fetch non-TypeError (LEG-3285)', () => {
+    const fallback = 'Invite registry unreachable. Try again.';
+    expect(formatRegionInviteError(new Error('Network Error'), fallback)).toBe(fallback);
+    expect(formatRegionInviteError(new Error('Failed to fetch'), fallback)).toBe(fallback);
+    expect(formatRegionInviteError(new Error(''), fallback)).toBe(fallback);
+  });
 });
 
 describe('RegionInvitePanel TypeError densify (LEG-3164)', () => {
