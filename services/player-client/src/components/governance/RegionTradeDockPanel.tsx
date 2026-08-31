@@ -114,7 +114,12 @@ const STATION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-
 // shown as a raw number.
 const isNetworkCollapseMessage = (msg: string): boolean => {
   const trimmed = msg.trim();
-  return !trimmed || /^failed to fetch$/i.test(trimmed) || /^networkerror$/i.test(trimmed);
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
 };
 
 /** Exported for TypeError/network honesty Vitest (LEG-3262). */
