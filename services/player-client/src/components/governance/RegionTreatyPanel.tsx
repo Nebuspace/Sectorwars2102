@@ -37,10 +37,21 @@ const mapTreatyErrCode = (msg: string): string | null => {
   }
 };
 
-/** TypeError network collapse → fallback; ERR_* codes and gameserver messages preserved. */
+/** Transport collapse copy is not gameserver detail (LEG-3286 densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+/** TypeError / network collapse → fallback; ERR_* codes and gameserver messages preserved. */
 export function formatRegionTreatyError(err: unknown, fallback: string): string {
   if (err instanceof TypeError) return fallback;
   const msg = err instanceof Error ? err.message : '';
+  if (isNetworkCollapseMessage(msg)) return fallback;
   const mapped = mapTreatyErrCode(msg);
   if (mapped) return mapped;
   return msg || fallback;
