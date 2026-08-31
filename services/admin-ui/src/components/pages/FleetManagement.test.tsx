@@ -439,3 +439,50 @@ describe('FleetManagement TypeError densify (LEG-3067)', () => {
     expect(text).not.toBe('Failed to fetch');
   });
 });
+
+describe('FleetManagement axios Network Error densify (LEG-3400)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.put).mockReset();
+    toastSuccess.mockReset();
+    toastError.mockReset();
+    confirmMock.mockReset();
+    confirmMock.mockResolvedValue(true);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('collapses axios-shaped Network Error on load to honest fallback', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
+
+    render(<FleetManagement />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to fetch fleet data/i)).toBeTruthy();
+    });
+    const text = screen.getByText(/Failed to fetch fleet data/i).textContent ?? '';
+    expect(text).toMatch(/Failed to fetch fleet data/i);
+    expect(text).not.toBe('Network Error');
+    expect(text).not.toContain('Network Error');
+  });
+
+  it('collapses axios-shaped Network Error on update PUT to honest toast', async () => {
+    mockFleetGets();
+    render(<FleetManagement />);
+    await screen.findByText('Nebula Runner');
+    vi.mocked(api.put).mockRejectedValue(new Error('Network Error'));
+
+    fireEvent.click(screen.getByLabelText('Edit Ship'));
+    fireEvent.submit(modalForm(/Edit Ship/));
+
+    await waitFor(() => {
+      expect(api.put).toHaveBeenCalledWith(
+        `/api/v1/admin/ships/${sampleShip.id}`,
+        expect.anything(),
+      );
+    });
+    const msg = String(toastError.mock.calls.map((call) => call[0]).join('\n'));
+    expect(msg).toMatch(/Failed to update ship/i);
+    expect(msg).not.toBe('Network Error');
+    expect(msg).not.toContain('Network Error');
+  });
+});
