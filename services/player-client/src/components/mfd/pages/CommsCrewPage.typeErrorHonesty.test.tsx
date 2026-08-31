@@ -40,7 +40,7 @@ describe('CommsCrewPage TypeError densify (LEG-3073)', () => {
     expect(text).not.toMatch(/TypeError/i);
   });
 
-  it('formatCommsThreadsLoad/Send/Flag/Purge fall back on axios Network Error / Failed to fetch (LEG-3351)', () => {
+  it('formatCommsThreadsLoad/Send/Flag/Purge fall back on axios Network Error / Failed to fetch (LEG-3353)', () => {
     expect(formatCommsThreadsLoadError(new Error('Network Error'))).toBe('Failed to load threads');
     expect(formatCommsThreadsLoadError(new Error('Failed to fetch'))).toBe('Failed to load threads');
     expect(formatCommsThreadsLoadError(new Error('Network Error'))).not.toBe('Network Error');
