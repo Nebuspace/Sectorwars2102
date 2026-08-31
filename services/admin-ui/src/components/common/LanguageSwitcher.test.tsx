@@ -124,3 +124,29 @@ describe('LanguageSwitcher progress HTTP honesty (LEG-1265)', () => {
     expect(screen.getByRole('alert').textContent ?? '').toMatch(/rate limit/i);
   });
 });
+
+describe('LanguageSwitcher TypeError densify (LEG-3174)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('uses static launch-complete fallback on progress TypeError without raw transport text in DOM', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+    const user = userEvent.setup();
+    render(<LanguageSwitcher />);
+
+    await user.click(screen.getByTitle('Change Language'));
+
+    await waitFor(() => {
+      expect(screen.getByText('Español')).toBeInTheDocument();
+    });
+
+    expect(screen.queryByText('0%')).not.toBeInTheDocument();
+    expect(screen.getByText('Français')).toBeInTheDocument();
+
+    const text = document.body.textContent ?? '';
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+});
