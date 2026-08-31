@@ -28,6 +28,7 @@ vi.mock('../../../services/api', async (importOriginal) => {
 
 import EcmSuiteInstallCta, {
   ECM_SUITE_INSTALL_COST_CR,
+  formatEcmSuiteInstallError,
   isEcmSuiteHullCompatible,
 } from '../EcmSuiteInstallCta';
 
@@ -46,6 +47,24 @@ describe('isEcmSuiteHullCompatible', () => {
     expect(isEcmSuiteHullCompatible('CARGO_HAULER')).toBe(false);
     expect(isEcmSuiteHullCompatible('FAST_COURIER')).toBe(false);
     expect(isEcmSuiteHullCompatible(null)).toBe(false);
+  });
+});
+
+describe('formatEcmSuiteInstallError TypeError densify (LEG-3098)', () => {
+  it('falls back on TypeError network collapse', () => {
+    const text = formatEcmSuiteInstallError(new TypeError('Failed to fetch'));
+    expect(text).toBe('ECM Suite install failed');
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('preserves server detail for non-TypeError errors', () => {
+    const err = Object.assign(new Error('insufficient credits'), {
+      response: { data: { detail: 'Not enough credits for ECM Suite.' } },
+    });
+    expect(formatEcmSuiteInstallError(err)).toBe(
+      'Not enough credits for ECM Suite.',
+    );
   });
 });
 
@@ -155,5 +174,34 @@ describe('EcmSuiteInstallCta — LEG-126', () => {
     expect(container.querySelector('[data-testid="ecm-suite-cta"]')).toBeNull();
     expect(container.querySelector('[data-testid="ecm-suite-install-btn"]')).toBeNull();
     expect(getUpgradesMock).not.toHaveBeenCalled();
+  });
+
+  it('install TypeError surfaces fallback without Failed to fetch / TypeError (LEG-3098)', async () => {
+    getUpgradesMock.mockResolvedValue({
+      success: true,
+      equipment: {
+        ecm_suite: { installed: false, cost: ECM_SUITE_INSTALL_COST_CR },
+      },
+      equipped: {},
+    });
+    installEquipmentMock.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await mount({});
+
+    const btn = container.querySelector(
+      '[data-testid="ecm-suite-install-btn"]',
+    ) as HTMLButtonElement | null;
+    expect(btn).toBeTruthy();
+
+    await act(async () => {
+      btn!.click();
+      await Promise.resolve();
+    });
+
+    const alert = container.querySelector('.tactical-equip-cta-err');
+    expect(alert).toBeTruthy();
+    expect(alert?.textContent).toBe('ECM Suite install failed');
+    expect(alert?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(alert?.textContent).not.toMatch(/TypeError/i);
   });
 });
