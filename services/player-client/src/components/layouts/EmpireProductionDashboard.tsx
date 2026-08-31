@@ -21,6 +21,14 @@ const formatNumber = (num: number): string => {
 const rate = (planet: Planet, key: 'fuel' | 'organics' | 'equipment'): number =>
   planet.productionRates?.[key] ?? 0;
 
+const EMPIRE_PRODUCTION_LOAD_FALLBACK = 'Failed to load production data';
+
+/** Exported for TypeError densify tests — initial owned-planets load failure path. */
+export function formatEmpireProductionLoadError(err: unknown): string {
+  if (err instanceof TypeError) return EMPIRE_PRODUCTION_LOAD_FALLBACK;
+  return EMPIRE_PRODUCTION_LOAD_FALLBACK;
+}
+
 /**
  * EmpireProductionDashboard — read-only empire-wide production summary for
  * the StatusBar dossier (LEG-516 / LEG-DEC-230). Distinct from
@@ -39,9 +47,9 @@ const EmpireProductionDashboard: React.FC = () => {
         if (cancelled) return;
         setPlanets(response?.planets ?? []);
       })
-      .catch(() => {
+      .catch((err: unknown) => {
         if (cancelled) return;
-        setError('Failed to load production data');
+        setError(formatEmpireProductionLoadError(err));
       });
     return () => {
       cancelled = true;
