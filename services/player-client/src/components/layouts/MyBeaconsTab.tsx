@@ -56,6 +56,12 @@ export function formatBeaconDeployError(err: unknown): string {
   return 'Deploy failed';
 }
 
+export function formatBeaconLoadError(err: unknown): string {
+  const detail = serverDetail(err);
+  if (detail) return detail;
+  return 'Failed to load your beacons';
+}
+
 export function formatBeaconRowActionError(err: unknown): string {
   const detail = serverDetail(err);
   if (detail) return detail;
@@ -92,9 +98,9 @@ const MyBeaconsTab: React.FC = () => {
         if (cancelled) return;
         setBeacons(res?.beacons || []);
       })
-      .catch(() => {
+      .catch((err) => {
         if (cancelled) return;
-        setError('Failed to load your beacons');
+        setError(formatBeaconLoadError(err));
       });
     return () => {
       cancelled = true;

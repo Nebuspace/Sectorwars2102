@@ -89,6 +89,30 @@ export class FirstLoginAlreadyCompletedError extends Error {
   }
 }
 
+/** True when message is bare transport collapse, not gameserver first-login detail. */
+const isFirstLoginNetworkCollapse = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+/** Collapse TypeError/network tokens to caller-provided fallback (LEG-3318). */
+export function formatFirstLoginError(err: unknown, fallback: string): string {
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    !(err instanceof TypeError) &&
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isFirstLoginNetworkCollapse(message);
+
+  if (hasServerDetail) return message!;
+  return fallback;
+}
+
 interface FirstLoginContextType {
   requiresFirstLogin: boolean;
   isLoading: boolean;
@@ -194,7 +218,7 @@ export const FirstLoginProvider: React.FC<{ children: ReactNode }> = ({ children
       return requiresFirst;
     } catch (error) {
       console.error('Error checking first login status:', error);
-      setError('Failed to check first login status.');
+      setError(formatFirstLoginError(error, 'Failed to check first login status.'));
       return undefined;
     } finally {
       setIsLoading(false);
@@ -257,7 +281,7 @@ export const FirstLoginProvider: React.FC<{ children: ReactNode }> = ({ children
       } else if (status === 500) {
         setError('Server error. Please try again in a few moments.');
       } else {
-        setError('Failed to start first login session.');
+        setError(formatFirstLoginError(error, 'Failed to start first login session.'));
       }
     } finally {
       setIsLoading(false);
@@ -333,7 +357,7 @@ export const FirstLoginProvider: React.FC<{ children: ReactNode }> = ({ children
       } else if (error.code === 'ERR_NETWORK') {
         setError('Network error. Please check your connection.');
       } else {
-        setError('Failed to claim ship. Please try again.');
+        setError(formatFirstLoginError(error, 'Failed to claim ship. Please try again.'));
       }
     } finally {
       setIsLoading(false);
