@@ -26,4 +26,16 @@ describe('formatUniverseAdminError (LEG-1213 invent=0 colonization)', () => {
       formatUniverseAdminError(new TypeError('Failed to fetch'), 'Failed to save planet changes'),
     ).toBe('Failed to save planet changes');
   });
+
+  it('uses fallback on TypeError/network collapse (LEG-3065)', () => {
+    expect(
+      formatUniverseAdminError(new TypeError('Failed to fetch'), 'Failed to load port data'),
+    ).toBe('Failed to load port data');
+  });
+
+  it('uses fallback on TypeError/network collapse (LEG-3066)', () => {
+    expect(
+      formatUniverseAdminError(new TypeError('Failed to fetch'), 'Failed to update sector'),
+    ).toBe('Failed to update sector');
+  });
 });
