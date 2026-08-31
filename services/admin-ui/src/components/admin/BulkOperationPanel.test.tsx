@@ -143,6 +143,35 @@ describe('BulkOperationPanel (LEG-904)', () => {
     });
   });
 
+  it('surfaces formatAdminApiError fallback on submit TypeError (LEG-3257)', async () => {
+    vi.mocked(api.post).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(
+      <BulkOperationPanel
+        selectedPlayers={[makePlayer('p1', 'Alpha')]}
+        onClose={() => {}}
+        onComplete={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByText('Adjust Credits'));
+    fireEvent.change(screen.getByLabelText('Credit delta'), { target: { value: '10' } });
+    fireEvent.change(screen.getByLabelText('Reason (required, audit-visible)'), {
+      target: { value: 'test' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Execute' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm Execute' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Bulk operation failed/i);
+    expect(alert).not.toMatch(/Failed to fetch/i);
+    expect(alert).not.toMatch(/TypeError/i);
+  });
+
   it('lists selected players with overflow truncation at 10', () => {
     const players = Array.from({ length: 12 }, (_, index) =>
       makePlayer(`p${index + 1}`, `Player${index + 1}`),
