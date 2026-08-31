@@ -131,15 +131,27 @@ export const SPECIALIZATIONS: SpecializationInfo[] = [
  * (WO-RETIRE-COLONY-SPECIALIZATION-MODAL removed the unused modal shell).
  */
 
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
+};
+
 /** Surface GS specialize PUT 400 detail (`detail=str(e)`), else stable fallback. */
 export function formatColonySpecializeError(err: unknown): string {
   const message = err instanceof Error ? err.message : undefined;
-  // Network collapse (fetch TypeError) is not gameserver copy — use the fallback.
+  // Network collapse (fetch TypeError / axios transport) is not gameserver copy — use the fallback.
   const hasServerDetail =
     !(err instanceof TypeError) &&
     typeof message === 'string' &&
     message.trim().length > 0 &&
-    !/^API Error: \d+$/.test(message.trim());
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNetworkCollapseMessage(message);
 
   if (hasServerDetail) return message!;
   return 'Failed to specialize colony';
