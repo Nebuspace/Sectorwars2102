@@ -16,7 +16,9 @@ vi.mock('../../../services/api', () => ({
   gameAPI: { planetary: { getOwnedPlanets } },
 }));
 
-import EmpireProductionDashboard from '../EmpireProductionDashboard';
+import EmpireProductionDashboard, {
+  formatEmpireProductionLoadError,
+} from '../EmpireProductionDashboard';
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -85,9 +87,33 @@ describe('EmpireProductionDashboard', () => {
     await act(async () => {
       await flush();
     });
-    expect(container.querySelector('.sb-production-error')?.textContent).toBe(
+    expect(container.querySelector('.sb-production-error')?.textContent).toBe('boom');
+  });
+
+  it('formatEmpireProductionLoadError falls back on TypeError network collapse (LEG-3173)', () => {
+    const text = formatEmpireProductionLoadError(
+      new TypeError('Failed to fetch'),
       'Failed to load production data',
     );
+    expect(text).toMatch(/Failed to load production data/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('load TypeError surfaces honest fallback without Failed to fetch / TypeError (LEG-3173)', async () => {
+    getOwnedPlanets.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await act(async () => {
+      root.render(<EmpireProductionDashboard />);
+    });
+    await act(async () => {
+      await flush();
+    });
+
+    const errorEl = container.querySelector('.sb-production-error');
+    expect(errorEl?.textContent).toMatch(/Failed to load production data/i);
+    expect(errorEl?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(errorEl?.textContent).not.toMatch(/TypeError/i);
   });
 
   it('renders EmptyState when there are no colonies', async () => {
