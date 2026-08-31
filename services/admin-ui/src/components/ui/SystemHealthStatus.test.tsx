@@ -170,4 +170,16 @@ describe('SystemHealthStatus TypeError densify (LEG-3175)', () => {
     expect(text).not.toMatch(/Failed to fetch/i);
     expect(text).not.toMatch(/TypeError/i);
   });
+
+  it('shows offline on axios-shaped Network Error without leaking raw transport text (LEG-3312)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
+
+    render(<SystemHealthStatus />);
+
+    await waitFor(() => expect(screen.getByText(/Offline/)).toBeInTheDocument());
+
+    const text = document.body.textContent ?? '';
+    expect(text).not.toContain('Network Error');
+    expect(text).not.toMatch(/TypeError/i);
+  });
 });
