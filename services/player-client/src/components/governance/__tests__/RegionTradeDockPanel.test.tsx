@@ -44,7 +44,7 @@ vi.mock('../../../services/api', () => ({
   },
 }));
 
-import RegionTradeDockPanel from '../RegionTradeDockPanel';
+import RegionTradeDockPanel, { friendlyError } from '../RegionTradeDockPanel';
 
 // Two-microtask flush for a Promise.all-based fetch-on-mount effect —
 // established idiom (see CitadelManager.catalog.test.tsx).
@@ -371,5 +371,86 @@ describe('RegionTradeDockPanel', () => {
     expect(container.querySelector('.rtd-progress-card')?.textContent).toContain(
       'awaiting activation'
     );
+  });
+});
+
+describe('RegionTradeDockPanel TypeError densify (LEG-3262)', () => {
+  let container: HTMLElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    mockGetMyRegion.mockReset();
+    mockGetMyReservations.mockReset();
+    mockGetReservation.mockReset();
+    mockInitiate.mockReset();
+  });
+
+  afterEach(async () => {
+    await act(async () => { root.unmount(); });
+    container.remove();
+    vi.clearAllMocks();
+  });
+
+  it('friendlyError falls back on Failed to fetch network collapse', () => {
+    const loadFallback = 'TradeDock construction status unreachable. Try again.';
+    const text = friendlyError('Failed to fetch', loadFallback);
+    expect(text).toBe(loadFallback);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('load TypeError surfaces fallback without Failed to fetch / TypeError in DOM', async () => {
+    mockGetMyRegion.mockRejectedValue(new TypeError('Failed to fetch'));
+    mockGetMyReservations.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await act(async () => {
+      root.render(<RegionTradeDockPanel regionId="region-1" isOwner={true} />);
+    });
+    await flush();
+
+    const err = container.querySelector('.rtd-validation-strip');
+    expect(err?.textContent).toContain('TradeDock construction status unreachable');
+    expect(err?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(err?.textContent).not.toMatch(/TypeError/i);
+    expect(container.textContent).not.toMatch(/Failed to fetch/i);
+    expect(container.textContent).not.toMatch(/TypeError/i);
+  });
+
+  it('initiate TypeError surfaces fallback without Failed to fetch / TypeError in DOM', async () => {
+    mockGetMyRegion.mockResolvedValue(ELIGIBLE_REGION);
+    mockGetMyReservations.mockResolvedValue(NO_RESERVATIONS);
+    mockInitiate.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await act(async () => {
+      root.render(<RegionTradeDockPanel regionId="region-1" isOwner={true} />);
+    });
+    await flush();
+
+    const input = container.querySelector('.rtd-station-input') as HTMLInputElement;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
+      setter.call(input, VALID_STATION_ID);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    const initiateBtn = container.querySelector('.rtd-btn.primary') as HTMLButtonElement;
+    await act(async () => {
+      initiateBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    const confirmBtn = container.querySelector('.rtd-btn.primary.commit') as HTMLButtonElement;
+    await act(async () => {
+      confirmBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    const strip = container.querySelector('.rtd-validation-strip');
+    expect(strip?.textContent).toContain('TradeDock construction request rejected');
+    expect(strip?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(strip?.textContent).not.toMatch(/TypeError/i);
+    expect(container.textContent).not.toMatch(/Failed to fetch/i);
+    expect(container.textContent).not.toMatch(/TypeError/i);
   });
 });

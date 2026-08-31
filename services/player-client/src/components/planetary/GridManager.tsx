@@ -169,6 +169,22 @@ const techGateOf = (entry: CatalogEntry): string | null =>
 const buildingComplete = (b: GridBuilding): string | null | undefined =>
   b.complete_at ?? b.completeAt;
 
+const GRID_LOAD_FAILED_FALLBACK = 'Failed to load planet grid';
+
+/** Exported for TypeError/network honesty Vitest (LEG-3263). */
+export function formatGridLoadError(err: unknown): string {
+  if (err instanceof TypeError) return GRID_LOAD_FAILED_FALLBACK;
+  if (err instanceof Error && err.message) return err.message;
+  return GRID_LOAD_FAILED_FALLBACK;
+}
+
+/** Exported for TypeError/network honesty Vitest (LEG-3263). */
+export function formatGridActionError(err: unknown, fallback: string): string {
+  if (err instanceof TypeError) return fallback;
+  if (err instanceof Error && err.message) return err.message;
+  return fallback;
+}
+
 const GridManager: React.FC<GridManagerProps> = ({ planetId, playerCredits, onUpdate }) => {
   const [view, setView] = useState<GridView | null>(null);
   const [loading, setLoading] = useState(true);
@@ -190,8 +206,8 @@ const GridManager: React.FC<GridManagerProps> = ({ planetId, playerCredits, onUp
       const data = await gridAPI.getGrid(planetId);
       setView(data);
       setError(null);
-    } catch (err: any) {
-      setError(err?.message || 'Failed to load planet grid');
+    } catch (err: unknown) {
+      setError(formatGridLoadError(err));
     } finally {
       setLoading(false);
     }
@@ -275,10 +291,10 @@ const GridManager: React.FC<GridManagerProps> = ({ planetId, playerCredits, onUp
         setPopupPlot(null);
         await fetchGrid();
         onUpdate?.();
-      } catch (err: any) {
+      } catch (err: unknown) {
         // apiRequest surfaces the server's human message for 402 (insufficient
         // credits) / 403 (research gate) / 400 (invalid placement) alike.
-        setActionMessage({ kind: 'err', text: err?.message || 'Placement failed' });
+        setActionMessage({ kind: 'err', text: formatGridActionError(err, 'Placement failed') });
       } finally {
         setActionLoading(false);
       }
@@ -301,8 +317,8 @@ const GridManager: React.FC<GridManagerProps> = ({ planetId, playerCredits, onUp
         setSelectedBuildingId(null);
         await fetchGrid();
         onUpdate?.();
-      } catch (err: any) {
-        setActionMessage({ kind: 'err', text: err?.message || 'Decommission failed' });
+      } catch (err: unknown) {
+        setActionMessage({ kind: 'err', text: formatGridActionError(err, 'Decommission failed') });
       } finally {
         setActionLoading(false);
       }
@@ -332,8 +348,8 @@ const GridManager: React.FC<GridManagerProps> = ({ planetId, playerCredits, onUp
         setSelectedPlot(null);
         await fetchGrid();
         onUpdate?.();
-      } catch (err: any) {
-        setActionMessage({ kind: 'err', text: err?.message || 'Plot action failed' });
+      } catch (err: unknown) {
+        setActionMessage({ kind: 'err', text: formatGridActionError(err, 'Plot action failed') });
       } finally {
         setActionLoading(false);
       }

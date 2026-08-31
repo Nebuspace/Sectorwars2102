@@ -26,6 +26,23 @@ const formatHistoryTimestamp = (iso: string): string => {
   return Number.isNaN(date.getTime()) ? iso : date.toLocaleString();
 };
 
+const OPTIMIZE_FAILED_FALLBACK = 'Failed to optimize route.';
+const HISTORY_FAILED_FALLBACK = 'Failed to load recent plans.';
+
+/** Exported for TypeError/network honesty Vitest (LEG-3264). */
+export function formatRouteOptimizeError(err: unknown): string {
+  if (err instanceof TypeError) return OPTIMIZE_FAILED_FALLBACK;
+  if (err instanceof Error && err.message) return err.message;
+  return OPTIMIZE_FAILED_FALLBACK;
+}
+
+/** Exported for TypeError/network honesty Vitest (LEG-3264). */
+export function formatRouteHistoryError(err: unknown): string {
+  if (err instanceof TypeError) return HISTORY_FAILED_FALLBACK;
+  if (err instanceof Error && err.message) return err.message;
+  return HISTORY_FAILED_FALLBACK;
+}
+
 type DisplayedRoute =
   | { kind: 'live'; data: RouteOptimizeResponse }
   | { kind: 'history'; data: RouteHistoryEntry };
@@ -101,9 +118,9 @@ const RoutePlannerPanel: React.FC = () => {
         riskTolerance
       });
       setDisplayed({ kind: 'live', data: response });
-    } catch (err: any) {
+    } catch (err: unknown) {
       // API error -> visible error state, never a fabricated route.
-      setError(err?.message || 'Failed to optimize route.');
+      setError(formatRouteOptimizeError(err));
     } finally {
       setLoading(false);
     }
@@ -119,8 +136,8 @@ const RoutePlannerPanel: React.FC = () => {
     try {
       const rows = await routeOptimizerService.getHistory();
       setHistory(rows);
-    } catch (err: any) {
-      setHistoryError(err?.message || 'Failed to load recent plans.');
+    } catch (err: unknown) {
+      setHistoryError(formatRouteHistoryError(err));
     } finally {
       setHistoryLoading(false);
     }
