@@ -13,6 +13,15 @@ import './combat-interface.css';
 
 const DEFAULT_LIMIT = 20;
 
+const COMBAT_HISTORY_LOAD_FALLBACK = 'Failed to load combat history';
+
+/** Exported for TypeError/network honesty Vitest (LEG-3163). */
+export function formatCombatHistoryError(err: unknown, fallback: string): string {
+  if (err instanceof TypeError) return fallback;
+  if (err instanceof Error && err.message) return err.message;
+  return fallback;
+}
+
 function counterpartLabel(item: CombatHistoryItem): string {
   if (item.opponent?.name) return item.opponent.name;
   if (item.target?.name) return item.target.name;
@@ -37,7 +46,7 @@ export const CombatHistoryPanel: React.FC = () => {
         setOffset(nextOffset);
       } catch (e) {
         setData(null);
-        setError(e instanceof Error ? e.message : 'Failed to load combat history');
+        setError(formatCombatHistoryError(e, COMBAT_HISTORY_LOAD_FALLBACK));
       } finally {
         setLoading(false);
       }

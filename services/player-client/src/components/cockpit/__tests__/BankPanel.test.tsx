@@ -30,7 +30,7 @@ vi.mock('../../../hooks/useResourceCatalog', () => ({
   }),
 }));
 
-import BankPanel, { isStarportPrimeStation, shipCargoFree } from '../BankPanel';
+import BankPanel, { bankErrorMessage, isStarportPrimeStation, shipCargoFree } from '../BankPanel';
 
 const flush = () => act(async () => { await Promise.resolve(); });
 
@@ -48,6 +48,24 @@ describe('isStarportPrimeStation / shipCargoFree', () => {
   it('computes free cargo from used/contents shapes', () => {
     expect(shipCargoFree({ cargo_capacity: 100, cargo: { used: 40, contents: { fuel: 40 } } })).toBe(60);
     expect(shipCargoFree({ cargo_capacity: 50, cargo: { contents: { ore: 12, fuel: 8 } } })).toBe(30);
+  });
+});
+
+describe('bankErrorMessage (LEG-3100)', () => {
+  it('falls back on TypeError network collapse', () => {
+    const text = bankErrorMessage(new TypeError('Failed to fetch'));
+    expect(text).toBe('Bank request failed');
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('preserves server detail for non-TypeError errors', () => {
+    const err = {
+      message: 'Withdrawal exceeds access-override balance',
+      data: { detail: { available_at_this_port: 120 } },
+    };
+    expect(bankErrorMessage(err)).toContain('Withdrawal exceeds access-override balance');
+    expect(bankErrorMessage(err)).toContain('available here: 120');
   });
 });
 
@@ -154,5 +172,26 @@ describe('BankPanel', () => {
     await flush();
     expect(container.textContent).toContain('Withdrawal exceeds access-override balance');
     expect(onAfterWithdraw).not.toHaveBeenCalled();
+  });
+
+  it('getBalance TypeError surfaces honest fallback without Failed to fetch', async () => {
+    getBalance.mockRejectedValue(new TypeError('Failed to fetch'));
+    await renderPanel({ isDocked: true, isStarportPrime: true });
+    const alert = container.querySelector('.bank-panel-error');
+    expect(alert?.textContent).toBe('Bank request failed');
+    expect(alert?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(alert?.textContent).not.toMatch(/TypeError/i);
+  });
+
+  it('withdrawCredits TypeError surfaces honest fallback without Failed to fetch', async () => {
+    withdrawCredits.mockRejectedValue(new TypeError('Failed to fetch'));
+    await renderPanel({ isDocked: true, isStarportPrime: false });
+    await act(async () => { buttonByText(container, 'Max')!.click(); });
+    await act(async () => { buttonByText(container, 'Withdraw credits')!.click(); });
+    await flush();
+    const alert = container.querySelector('.bank-panel-error');
+    expect(alert?.textContent).toBe('Bank request failed');
+    expect(alert?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(alert?.textContent).not.toMatch(/TypeError/i);
   });
 });

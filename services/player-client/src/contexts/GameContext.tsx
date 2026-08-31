@@ -67,6 +67,8 @@ export interface Sector {
   nebula_type?: string;
   quantum_field_strength?: number;
   color_hex?: string;
+  /** In-progress salvage breaks visible in-sector (LEG-333). */
+  salvage_breaks?: Array<{ ship_id: string; completes_at?: string; eta_hours?: number }>;
 }
 
 export interface Planet {

@@ -15,6 +15,7 @@ import { ThemeProvider } from './themes/ThemeProvider'
 // Import components
 import LoginPage from './components/pages/LoginPage'
 import RegisterForm from './components/auth/RegisterForm'
+import JoinInviteLanding from './components/auth/JoinInviteLanding'
 import OAuthCallback from './components/auth/OAuthCallback'
 import LandingPage from './components/landing/LandingPage'
 import GameShellRoute from './components/layouts/GameShellRoute'
@@ -60,6 +61,28 @@ interface ApiResponse {
   environment?: string;
   version?: string;
   ping?: number;
+}
+
+function RegisterRoute() {
+  const navigate = useNavigate();
+  return (
+    <RegisterForm
+      onRegisterSuccess={() => navigate('/')}
+      switchToLogin={() => navigate('/login')}
+      onClose={() => navigate('/')}
+    />
+  );
+}
+
+function LoginRoute() {
+  const navigate = useNavigate();
+  return (
+    <LoginPage
+      onLoginSuccess={() => navigate('/')}
+      switchToRegister={() => navigate('/register')}
+      onClose={() => navigate('/')}
+    />
+  );
 }
 
 function MainApp() {
@@ -270,6 +293,9 @@ function App() {
               <FirstLoginProvider>
                 <Routes>
               <Route path="/oauth-callback" element={<OAuthCallback />} />
+              <Route path="/join" element={<JoinInviteLanding />} />
+              <Route path="/register" element={<RegisterRoute />} />
+              <Route path="/login" element={<LoginRoute />} />
               {import.meta.env.DEV && DebugPage && (
                 <Route path="/debug" element={<Suspense fallback={<div>Loading…</div>}><DebugPage /></Suspense>} />
               )}

@@ -49,6 +49,8 @@ interface NavigationMapProps {
    * near the destination node. Omitted/empty renders nothing extra.
    */
   oneWayEdges?: { from: number; to: number }[];
+  /** Static known-graph threat bands keyed by sector_id (GET /nav/threat). */
+  threatBands?: Record<number, string>;
 }
 
 interface Node {
@@ -90,7 +92,8 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
   height = 600,
   course = null,
   currentHopIndex = 0,
-  oneWayEdges = []
+  oneWayEdges = [],
+  threatBands = {},
 }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const [nodes, setNodes] = useState<Node[]>([]);
@@ -582,6 +585,18 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
                     style={{ pointerEvents: 'none' }}
                   >
                     {truncateLabel(node.sector.name)}
+                  </text>
+                )}
+                {threatBands[node.id] && (
+                  <text
+                    x={node.x}
+                    y={node.y + nodeSize + (isCurrent || isHovered || isAvailable ? 26 : 14)}
+                    textAnchor="middle"
+                    className={`node-threat-band threat-${String(threatBands[node.id]).toLowerCase()}`}
+                    fontSize="7"
+                    style={{ pointerEvents: 'none' }}
+                  >
+                    {threatBands[node.id]}
                   </text>
                 )}
 

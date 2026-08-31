@@ -62,7 +62,7 @@ const EXPIRY_PRESETS = [
 // owner-readable copy. Unknown codes fall through to the raw message so nothing
 // is swallowed. The 409 cap codes are the ones the brief calls out as needing
 // clear messaging.
-const friendlyError = (msg: string, fallback: string): string => {
+const mapInviteErrorMessage = (msg: string, fallback: string): string => {
   switch (msg) {
     case 'ERR_NOT_REGION_OWNER':
       return 'You are not the owner of this region.';
@@ -84,6 +84,14 @@ const friendlyError = (msg: string, fallback: string): string => {
       return msg || fallback;
   }
 };
+
+/** Surface GS invite ERR_* detail; hide fetch TypeError noise (LEG-3164). */
+export function formatRegionInviteError(err: unknown, fallback: string): string {
+  // Network collapse (fetch TypeError) is not gameserver copy — use the fallback.
+  if (err instanceof TypeError) return fallback;
+  const raw = err instanceof Error ? err.message : String(err ?? '');
+  return mapInviteErrorMessage(raw, fallback);
+}
 
 const fmtDateTime = (iso?: string | null): string => {
   if (!iso) return '—';
@@ -172,9 +180,8 @@ const RegionInvitePanel: React.FC<RegionInvitePanelProps> = ({
       setInvites(list);
       setListError(null);
     } catch (e) {
-      const raw = e instanceof Error ? e.message : '';
       console.error('Region invite list error:', e);
-      setListError(friendlyError(raw, 'Invite registry unreachable. Try again.'));
+      setListError(formatRegionInviteError(e, 'Invite registry unreachable. Try again.'));
     } finally {
       setListLoading(false);
     }
@@ -234,8 +241,7 @@ const RegionInvitePanel: React.FC<RegionInvitePanelProps> = ({
       }
       await fetchInvites();
     } catch (e) {
-      const raw = e instanceof Error ? e.message : '';
-      setCreateError(friendlyError(raw, 'Invite mint rejected.'));
+      setCreateError(formatRegionInviteError(e, 'Invite mint rejected.'));
     } finally {
       setCreating(false);
     }
@@ -256,8 +262,10 @@ const RegionInvitePanel: React.FC<RegionInvitePanelProps> = ({
       setMinted((m) => (m && m.id === inviteId ? null : m));
       await fetchInvites();
     } catch (e) {
-      const raw = e instanceof Error ? e.message : '';
-      setRevokeErrors((prev) => ({ ...prev, [inviteId]: friendlyError(raw, 'Revoke rejected.') }));
+      setRevokeErrors((prev) => ({
+        ...prev,
+        [inviteId]: formatRegionInviteError(e, 'Revoke rejected.'),
+      }));
     } finally {
       setRevokeBusyId(null);
     }
