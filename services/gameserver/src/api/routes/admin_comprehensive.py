@@ -14,6 +14,7 @@ import uuid
 
 from src.core.database import get_db
 from src.auth.admin_scopes import (
+    ARIA_AUDIT,
     ECONOMY_INTERVENE,
     GALAXY_MANAGE,
     PLAYERS_ADJUST_CREDITS,
@@ -1735,7 +1736,7 @@ async def get_security_alerts(current_admin: User = Depends(require_scope(PLAYER
 @router.get("/security/player/{player_id}/risk", summary="Get player risk assessment")
 async def get_player_risk_assessment(
     player_id: str,
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW))
+    current_admin: User = Depends(require_scope(ARIA_AUDIT))
 ):
     """
     Get detailed risk assessment for a specific player including:
@@ -1759,7 +1760,7 @@ async def get_player_risk_assessment(
 @router.get("/security/player/{player_id}/status", summary="Get player security status")
 async def get_player_security_status(
     player_id: str,
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW))
+    current_admin: User = Depends(require_scope(ARIA_AUDIT))
 ):
     """
     Get current security status for a specific player including:
@@ -1814,7 +1815,7 @@ class PlayerSecurityAction(BaseModel):
 async def take_security_action(
     player_id: str,
     action: PlayerSecurityAction,
-    current_admin: User = Depends(require_scope(SECURITY_ACT)),
+    current_admin: User = Depends(require_scope(ARIA_AUDIT)),
     db: Session = Depends(get_db),
 ):
     """
