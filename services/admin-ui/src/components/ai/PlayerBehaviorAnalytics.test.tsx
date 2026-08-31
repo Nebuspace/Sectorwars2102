@@ -50,7 +50,15 @@ describe('PlayerBehaviorAnalytics scope honesty (LEG-1206)', () => {
     expect(screen.getByRole('alert').textContent ?? '').toMatch(/rate limit/i);
   });
 
-  it('reports TypeError Failed to fetch as Failed to load behavior analytics fallback, not raw TypeError', async () => {
+});
+
+describe('PlayerBehaviorAnalytics TypeError densify (LEG-3189)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('reports TypeError Failed to fetch as scope-honest fallback, not raw transport text', async () => {
     vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
 
     render(<PlayerBehaviorAnalytics />);
