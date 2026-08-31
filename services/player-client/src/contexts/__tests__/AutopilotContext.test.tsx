@@ -365,6 +365,14 @@ describe('formatAutopilotMovementError TypeError densify (LEG-3332)', () => {
   });
 });
 
+describe('formatAutopilotMovementError Error Network Error densify (LEG-3402)', () => {
+  it('falls back on Error Network Error without raw Network Error', () => {
+    const text = formatAutopilotMovementError(new Error('Network Error'));
+    expect(text).toBe('Movement failed');
+    expect(text).not.toMatch(/Network Error/i);
+  });
+});
+
 describe('AutopilotContext — abort', () => {
   it('pauses with the given reason when a course is set', async () => {
     navPlotMock.mockResolvedValue(reachable([hop()]));
