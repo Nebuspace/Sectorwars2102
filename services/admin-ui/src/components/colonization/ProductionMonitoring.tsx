@@ -4,12 +4,13 @@ import { api } from '../../utils/auth';
 import { formatAdminApiError } from '../../utils/adminApiError';
 import './production-monitoring.css';
 
+type CommodityKey = 'fuel_ore' | 'organics' | 'equipment';
+
 interface ProductionData {
   timestamp: string;
-  energy: number;
-  minerals: number;
-  food: number;
-  water: number;
+  fuel_ore: number;
+  organics: number;
+  equipment: number;
 }
 
 interface ProductionTrend {
@@ -23,7 +24,7 @@ interface ProductionTrend {
 
 interface ProductionAlert {
   id: string;
-  type: 'shortage' | 'surplus' | 'efficiency' | 'maintenance';
+  type: 'overflow' | 'starvation';
   severity: 'low' | 'medium' | 'high';
   resource: string;
   colony: string;
@@ -32,12 +33,7 @@ interface ProductionAlert {
 }
 
 interface ProductionStats {
-  totalProduction: {
-    energy: number;
-    minerals: number;
-    food: number;
-    water: number;
-  };
+  totalProduction: Record<CommodityKey, number>;
   topProducers: Array<{
     colonyId: string;
     colonyName: string;
@@ -52,11 +48,25 @@ interface ProductionStats {
   }>;
 }
 
+const COMMODITY_LABELS: Record<CommodityKey, string> = {
+  fuel_ore: 'Fuel Ore',
+  organics: 'Organics',
+  equipment: 'Equipment',
+};
 
+const COMMODITY_COLORS: Record<CommodityKey, string> = {
+  fuel_ore: 'rgb(255, 206, 86)',
+  organics: 'rgb(75, 192, 192)',
+  equipment: 'rgb(54, 162, 235)',
+};
+
+const formatResourceLabel = (resource: string) =>
+  COMMODITY_LABELS[resource as CommodityKey] ??
+  resource.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 
 export const ProductionMonitoring: React.FC = () => {
   const [timeRange, setTimeRange] = useState<'hour' | 'day' | 'week' | 'month'>('day');
-  const [selectedResource, setSelectedResource] = useState<'all' | 'energy' | 'minerals' | 'food' | 'water'>('all');
+  const [selectedResource, setSelectedResource] = useState<'all' | CommodityKey>('all');
   const [productionHistory, setProductionHistory] = useState<ProductionData[]>([]);
   const [trends, setTrends] = useState<ProductionTrend[]>([]);
   const [alerts, setAlerts] = useState<ProductionAlert[]>([]);
@@ -75,7 +85,6 @@ export const ProductionMonitoring: React.FC = () => {
 
   const loadProductionData = async () => {
     try {
-      // Shipped route (admin_colonization.py) — shared authenticated client (LEG-143 sibling).
       const response = await api.get<{
         history?: ProductionData[];
         trends?: ProductionTrend[];
@@ -109,50 +118,37 @@ export const ProductionMonitoring: React.FC = () => {
     }
   };
 
-
   const getChartData = () => {
-    const labels = productionHistory.map(data => {
+    const labels = productionHistory.map((data) => {
       const date = new Date(data.timestamp);
       if (timeRange === 'hour') return date.toLocaleTimeString();
-      if (timeRange === 'day') return date.getHours() + ':00';
+      if (timeRange === 'day') return date.toLocaleString();
       return date.toLocaleDateString();
     });
 
     const datasets = [];
-    const colors = {
-      energy: 'rgb(255, 206, 86)',
-      minerals: 'rgb(54, 162, 235)',
-      food: 'rgb(75, 192, 192)',
-      water: 'rgb(153, 102, 255)',
-    };
+    const commodities: CommodityKey[] =
+      selectedResource === 'all'
+        ? ['fuel_ore', 'organics', 'equipment']
+        : [selectedResource];
 
-    if (selectedResource === 'all') {
-      Object.entries(colors).forEach(([resource, color]) => {
-        datasets.push({
-          label: resource.charAt(0).toUpperCase() + resource.slice(1),
-          data: productionHistory.map(data => data[resource as keyof typeof data]),
-          borderColor: color,
-          backgroundColor: color.replace('rgb', 'rgba').replace(')', ', 0.1)'),
-          tension: 0.1,
-        });
-      });
-    } else {
+    commodities.forEach((commodity) => {
       datasets.push({
-        label: selectedResource.charAt(0).toUpperCase() + selectedResource.slice(1),
-        data: productionHistory.map(data => data[selectedResource as keyof typeof data]),
-        borderColor: colors[selectedResource],
-        backgroundColor: colors[selectedResource].replace('rgb', 'rgba').replace(')', ', 0.1)'),
+        label: COMMODITY_LABELS[commodity],
+        data: productionHistory.map((data) => data[commodity]),
+        borderColor: COMMODITY_COLORS[commodity],
+        backgroundColor: COMMODITY_COLORS[commodity].replace('rgb', 'rgba').replace(')', ', 0.1)'),
         tension: 0.1,
       });
-    }
+    });
 
     return { labels, datasets };
   };
 
   const getEfficiencyData = () => {
-    const data = trends.map(t => t.efficiency);
-    const labels = trends.map(t => t.resource.charAt(0).toUpperCase() + t.resource.slice(1));
-    const colors = trends.map(t => {
+    const data = trends.map((t) => t.efficiency);
+    const labels = trends.map((t) => formatResourceLabel(t.resource));
+    const colors = trends.map((t) => {
       if (t.efficiency >= 90) return 'rgb(75, 192, 192)';
       if (t.efficiency >= 70) return 'rgb(255, 206, 86)';
       return 'rgb(255, 99, 132)';
@@ -179,10 +175,8 @@ export const ProductionMonitoring: React.FC = () => {
 
   const getAlertIcon = (type: ProductionAlert['type']) => {
     switch (type) {
-      case 'shortage': return '⚠️';
-      case 'surplus': return '📦';
-      case 'efficiency': return '⚙️';
-      case 'maintenance': return '🔧';
+      case 'overflow': return '📦';
+      case 'starvation': return '⚠️';
       default: return '❓';
     }
   };
@@ -196,9 +190,7 @@ export const ProductionMonitoring: React.FC = () => {
     }
   };
 
-  const formatNumber = (num: number) => {
-    return new Intl.NumberFormat().format(num);
-  };
+  const formatNumber = (num: number) => new Intl.NumberFormat().format(num);
 
   if (loading) {
     return <div className="production-monitoring loading">Loading production data...</div>;
@@ -239,7 +231,7 @@ export const ProductionMonitoring: React.FC = () => {
         <div className="header-controls">
           <select
             value={timeRange}
-            onChange={(e) => setTimeRange(e.target.value as any)}
+            onChange={(e) => setTimeRange(e.target.value as typeof timeRange)}
             className="time-range-select"
           >
             <option value="hour">Last Hour</option>
@@ -249,14 +241,13 @@ export const ProductionMonitoring: React.FC = () => {
           </select>
           <select
             value={selectedResource}
-            onChange={(e) => setSelectedResource(e.target.value as any)}
+            onChange={(e) => setSelectedResource(e.target.value as typeof selectedResource)}
             className="resource-select"
           >
-            <option value="all">All Resources</option>
-            <option value="energy">Energy</option>
-            <option value="minerals">Minerals</option>
-            <option value="food">Food</option>
-            <option value="water">Water</option>
+            <option value="all">All Commodities</option>
+            <option value="fuel_ore">Fuel Ore</option>
+            <option value="organics">Organics</option>
+            <option value="equipment">Equipment</option>
           </select>
           <button
             className={`refresh-button ${autoRefresh ? 'active' : ''}`}
@@ -269,30 +260,36 @@ export const ProductionMonitoring: React.FC = () => {
 
       <div className="monitoring-grid">
         <div className="alerts-container">
-          <h3>Production Alerts</h3>
+          <h3>Tick Warnings</h3>
           <div className="alerts-list">
-            {alerts.map(alert => (
-              <div
-                key={alert.id}
-                className={`alert-item ${alert.severity}`}
-                style={{ borderLeftColor: getSeverityColor(alert.severity) }}
-              >
-                <div className="alert-header">
-                  <span className="alert-icon">{getAlertIcon(alert.type)}</span>
-                  <span className="alert-colony">{alert.colony}</span>
-                  <span className="alert-time">
-                    {new Date(alert.timestamp).toLocaleTimeString()}
-                  </span>
+            {alerts.length === 0 ? (
+              <p className="alerts-empty" data-testid="production-alerts-empty">
+                No overflow or starvation warnings — all colonies healthy at last tick.
+              </p>
+            ) : (
+              alerts.map((alert) => (
+                <div
+                  key={alert.id}
+                  className={`alert-item ${alert.severity}`}
+                  style={{ borderLeftColor: getSeverityColor(alert.severity) }}
+                >
+                  <div className="alert-header">
+                    <span className="alert-icon">{getAlertIcon(alert.type)}</span>
+                    <span className="alert-colony">{alert.colony}</span>
+                    <span className="alert-time">
+                      {new Date(alert.timestamp).toLocaleTimeString()}
+                    </span>
+                  </div>
+                  <div className="alert-message">{alert.message}</div>
+                  <div className="alert-resource">Resource: {formatResourceLabel(alert.resource)}</div>
                 </div>
-                <div className="alert-message">{alert.message}</div>
-                <div className="alert-resource">Resource: {alert.resource}</div>
-              </div>
-            ))}
+              ))
+            )}
           </div>
         </div>
 
         <div className="chart-container production-chart">
-          <h3>Production Over Time</h3>
+          <h3>Commodity Stockpiles</h3>
           <div style={{ position: 'relative', height: '300px', width: '100%' }}>
             <Line
               data={getChartData()}
@@ -316,13 +313,13 @@ export const ProductionMonitoring: React.FC = () => {
         </div>
 
         <div className="trends-container">
-          <h3>Resource Trends</h3>
+          <h3>Commodity Totals</h3>
           <div className="trends-list">
-            {trends.map(trend => (
+            {trends.map((trend) => (
               <div key={trend.resource} className="trend-item">
                 <div className="trend-header">
                   <span className="trend-resource">
-                    {trend.resource.charAt(0).toUpperCase() + trend.resource.slice(1)}
+                    {formatResourceLabel(trend.resource)}
                   </span>
                   <span className="trend-icon">{getTrendIcon(trend.trend)}</span>
                 </div>
@@ -341,7 +338,7 @@ export const ProductionMonitoring: React.FC = () => {
                   </div>
                 </div>
                 <div className="efficiency-bar">
-                  <span className="efficiency-label">Efficiency: {trend.efficiency}%</span>
+                  <span className="efficiency-label">Within cap: {trend.efficiency}%</span>
                   <div className="bar-background">
                     <div
                       className="bar-fill"
@@ -359,7 +356,7 @@ export const ProductionMonitoring: React.FC = () => {
         </div>
 
         <div className="chart-container efficiency-chart">
-          <h3>Production Efficiency</h3>
+          <h3>Cap Utilization</h3>
           <div style={{ position: 'relative', height: '250px', width: '100%' }}>
             <Doughnut
               data={getEfficiencyData()}
@@ -377,14 +374,14 @@ export const ProductionMonitoring: React.FC = () => {
         </div>
 
         <div className="stats-container">
-          <h3>Production Statistics</h3>
+          <h3>Stockpile Statistics</h3>
           <div className="stats-section">
-            <h4>Total Production</h4>
+            <h4>Empire Totals</h4>
             <div className="total-production">
               {stats && Object.entries(stats.totalProduction).map(([resource, amount]) => (
                 <div key={resource} className="production-stat">
                   <span className="resource-name">
-                    {resource.charAt(0).toUpperCase() + resource.slice(1)}
+                    {formatResourceLabel(resource)}
                   </span>
                   <span className="resource-amount">{formatNumber(amount)}</span>
                 </div>
@@ -393,13 +390,13 @@ export const ProductionMonitoring: React.FC = () => {
           </div>
 
           <div className="stats-section">
-            <h4>Top Producers</h4>
+            <h4>Top Stockpiles</h4>
             <div className="top-producers">
               {stats?.topProducers.slice(0, 5).map((producer, index) => (
                 <div key={index} className="producer-item">
                   <span className="producer-rank">#{index + 1}</span>
                   <span className="producer-name">{producer.colonyName}</span>
-                  <span className="producer-resource">{producer.resource}</span>
+                  <span className="producer-resource">{formatResourceLabel(producer.resource)}</span>
                   <span className="producer-amount">{formatNumber(producer.amount)}</span>
                 </div>
               ))}
@@ -409,13 +406,19 @@ export const ProductionMonitoring: React.FC = () => {
           <div className="stats-section">
             <h4>Production Bottlenecks</h4>
             <div className="bottlenecks">
-              {stats?.bottlenecks.map((bottleneck, index) => (
-                <div key={index} className="bottleneck-item">
-                  <span className="bottleneck-colony">{bottleneck.colonyName}</span>
-                  <span className="bottleneck-issue">{bottleneck.issue}</span>
-                  <span className="bottleneck-impact">-{bottleneck.impact}%</span>
-                </div>
-              ))}
+              {stats?.bottlenecks.length ? (
+                stats.bottlenecks.map((bottleneck, index) => (
+                  <div key={index} className="bottleneck-item">
+                    <span className="bottleneck-colony">{bottleneck.colonyName}</span>
+                    <span className="bottleneck-issue">{bottleneck.issue}</span>
+                    <span className="bottleneck-impact">-{bottleneck.impact}%</span>
+                  </div>
+                ))
+              ) : (
+                <p className="bottlenecks-empty" data-testid="production-bottlenecks-empty">
+                  No active bottlenecks.
+                </p>
+              )}
             </div>
           </div>
         </div>
