@@ -1,54 +1,64 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import ErrorBoundary from './ErrorBoundary';
 
-function ThrowingChild({ shouldThrow }: { shouldThrow: boolean }) {
-  if (shouldThrow) {
-    throw new Error('Test render crash');
-  }
-  return <div>Healthy child content</div>;
+function ThrowOnRender({ message }: { message: string }) {
+  throw new Error(message);
 }
 
-describe('ErrorBoundary crash fallback (LEG-3167)', () => {
+describe('ErrorBoundary crash fallback (LEG-3178)', () => {
+  const reload = vi.fn();
+  const originalLocation = window.location;
+
   beforeEach(() => {
+    reload.mockReset();
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...originalLocation, reload },
+    });
     vi.spyOn(console, 'error').mockImplementation(() => {});
   });
 
   afterEach(() => {
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: originalLocation,
+    });
     vi.restoreAllMocks();
   });
 
-  it('renders healthy children when no error occurs', () => {
+  it('renders healthy children when no error', () => {
     render(
       <ErrorBoundary>
-        <ThrowingChild shouldThrow={false} />
+        <div>healthy child</div>
       </ErrorBoundary>,
     );
 
-    expect(screen.getByText('Healthy child content')).toBeTruthy();
+    expect(screen.getByText('healthy child')).toBeTruthy();
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
-  it('shows alert fallback with error name and message when a child throws', () => {
+  it('shows fallback panel when a child throws on render', () => {
     render(
       <ErrorBoundary>
-        <ThrowingChild shouldThrow />
+        <ThrowOnRender message="render boom" />
       </ErrorBoundary>,
     );
 
     const alert = screen.getByRole('alert');
     expect(alert).toBeTruthy();
-    expect(screen.getByText(/This page crashed/i)).toBeTruthy();
-    expect(screen.getByText(/Error: Test render crash/)).toBeTruthy();
+    expect(screen.getByText('This page crashed')).toBeTruthy();
+    expect(screen.getByText(/Error: render boom/)).toBeTruthy();
   });
 
-  it('shows a reload button in the crash fallback', () => {
+  it('calls window.location.reload when Reload Page is clicked', () => {
     render(
       <ErrorBoundary>
-        <ThrowingChild shouldThrow />
+        <ThrowOnRender message="reload test" />
       </ErrorBoundary>,
     );
 
-    expect(screen.getByRole('button', { name: /Reload Page/i })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Reload Page' }));
+    expect(reload).toHaveBeenCalledTimes(1);
   });
 });
