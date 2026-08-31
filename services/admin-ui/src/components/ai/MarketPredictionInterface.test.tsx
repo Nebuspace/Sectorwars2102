@@ -51,7 +51,15 @@ describe('MarketPredictionInterface scope honesty (LEG-1206)', () => {
     expect(alert).toMatch(/rate limit/i);
   });
 
-  it('reports TypeError Failed to fetch as Failed to load predictions fallback, not raw TypeError', async () => {
+});
+
+describe('MarketPredictionInterface TypeError densify (LEG-3188)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('reports predictions load TypeError as scope-honest fallback via role=alert', async () => {
     vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
 
     render(<MarketPredictionInterface />);
@@ -64,6 +72,27 @@ describe('MarketPredictionInterface scope honesty (LEG-1206)', () => {
     expect(alert).toMatch(/Failed to load predictions/i);
     expect(alert).not.toMatch(/Failed to fetch/i);
     expect(alert).not.toMatch(/TypeError/i);
+  });
+
+  it('does not leak raw TypeError when accuracy poll collapses but predictions succeed', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/accuracy')) {
+        throw new TypeError('Failed to fetch');
+      }
+      return { data: [] };
+    });
+
+    render(<MarketPredictionInterface />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Active Predictions/i)).toBeTruthy();
+    });
+
+    expect(screen.queryByRole('alert')).toBeNull();
+
+    const text = document.body.textContent ?? '';
+    expect(text).not.toMatch(/TypeError/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
   });
 });
 
