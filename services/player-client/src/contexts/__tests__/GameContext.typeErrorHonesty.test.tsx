@@ -349,3 +349,53 @@ describe('GameContext TypeError densify (LEG-3324)', () => {
     expect(text).not.toMatch(/Failed to fetch/i);
   });
 });
+
+describe('GameContext Error Network Error densify (LEG-3401)', () => {
+  it('formatSetActiveShipError falls back on Error Network Error', () => {
+    const text = formatSetActiveShipError(new Error('Network Error'));
+    expect(text).toBe('Failed to set active ship');
+    expect(text).not.toMatch(/Network Error/i);
+  });
+
+  it('formatGetAvailableMovesError falls back on Error Network Error', () => {
+    const text = formatGetAvailableMovesError(new Error('Network Error'));
+    expect(text).toBe('Failed to get available moves');
+    expect(text).not.toMatch(/Network Error/i);
+  });
+
+  it('formatRefreshPlayerStateError falls back on Error Network Error', () => {
+    const text = formatRefreshPlayerStateError(new Error('Network Error'));
+    expect(text).toBe('Failed to load player state');
+    expect(text).not.toMatch(/Network Error/i);
+  });
+
+  it('formatMoveToSectorError falls back on Error Network Error', () => {
+    const text = formatMoveToSectorError(new Error('Network Error'));
+    expect(text).toBe('Failed to move to sector');
+    expect(text).not.toMatch(/Network Error/i);
+  });
+
+  it('formatScanLatentTunnelsError falls back on Error Network Error', () => {
+    const text = formatScanLatentTunnelsError(new Error('Network Error'));
+    expect(text).toBe('Failed to scan for latent tunnels');
+    expect(text).not.toMatch(/Network Error/i);
+  });
+
+  it('formatDockAtStationError falls back on Error Network Error', () => {
+    const text = formatDockAtStationError(new Error('Network Error'));
+    expect(text).toBe('Failed to dock at port');
+    expect(text).not.toMatch(/Network Error/i);
+  });
+
+  it('formatBuyResourceError falls back on Error Network Error', () => {
+    const text = formatBuyResourceError(new Error('Network Error'));
+    expect(text).toBe('Failed to buy resource');
+    expect(text).not.toMatch(/Network Error/i);
+  });
+
+  it('formatSellResourceError falls back on Error Network Error', () => {
+    const text = formatSellResourceError(new Error('Network Error'));
+    expect(text).toBe('Failed to sell resource');
+    expect(text).not.toMatch(/Network Error/i);
+  });
+});
