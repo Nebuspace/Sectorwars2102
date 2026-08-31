@@ -7,9 +7,20 @@ import {
 } from '../../services/regionTerminateApi';
 import '../universe/bang/wipe-galaxy-confirm-dialog.css';
 
+const GAMESERVER_UNREACHABLE =
+  'Network error — could not reach the gameserver. Check your connection and try again.';
+
+function isTransportCollapse(err: unknown): boolean {
+  if (err instanceof TypeError) return true;
+  if (!(err instanceof Error)) return false;
+  const msg = err.message.trim();
+  // Axios-shaped transport failures and empty-message collapses — never raw to operators.
+  return msg === '' || msg === 'Network Error';
+}
+
 export function formatRegionTerminateError(err: unknown): string {
-  if (err instanceof TypeError) {
-    return 'Network error — could not reach the gameserver. Check your connection and try again.';
+  if (isTransportCollapse(err)) {
+    return GAMESERVER_UNREACHABLE;
   }
   return formatAdminApiError(err, {
     fallback: 'Region termination failed',

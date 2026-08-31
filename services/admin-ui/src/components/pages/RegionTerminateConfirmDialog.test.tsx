@@ -97,4 +97,14 @@ describe('RegionTerminateConfirmDialog (LEG-3206)', () => {
       'Network error — could not reach the gameserver. Check your connection and try again.',
     );
   });
+
+  it('formatRegionTerminateError densifies axios Network Error / empty message (LEG-3301)', () => {
+    const honest =
+      'Network error — could not reach the gameserver. Check your connection and try again.';
+    expect(formatRegionTerminateError(new Error('Network Error'))).toBe(honest);
+    expect(formatRegionTerminateError(new Error(''))).toBe(honest);
+    expect(formatRegionTerminateError(new Error('Network Error'))).not.toBe(
+      'Network Error',
+    );
+  });
 });
