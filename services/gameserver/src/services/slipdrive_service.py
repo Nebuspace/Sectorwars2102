@@ -258,6 +258,12 @@ def begin_charge(
         raise SlipdriveError("You cannot charge the Slipdrive on a planet surface -- lift off first")
     if ship.status == ShipStatus.HARMONIZING:
         raise SlipdriveError("This Warp Jumper is anchored to a beacon and harmonizing -- it cannot charge the Slipdrive")
+    from src.services.interdictor_abilities_service import (
+        interdictor_field_blocks_movement,
+        movement_block_message,
+    )
+    if interdictor_field_blocks_movement(ship):
+        raise SlipdriveError(movement_block_message())
 
     existing = _slot(ship)
     if existing:
