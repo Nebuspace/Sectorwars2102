@@ -1,7 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { api } from '../../utils/auth';
+import { detailFromResponse, formatAdminApiError } from '../../utils/adminApiError';
 import './mfa-setup.css';
+
+const mfaGenerateError = (err: unknown): string =>
+  detailFromResponse(err) ??
+  formatAdminApiError(err, { fallback: 'Failed to generate MFA secret' });
+
+const mfaVerifyError = (err: unknown): string =>
+  detailFromResponse(err) ?? formatAdminApiError(err, { fallback: 'Verification failed' });
 
 interface MFASetupProps {
   onSetupComplete?: () => void;
@@ -47,8 +55,8 @@ export const MFASetup: React.FC<MFASetupProps> = ({ onSetupComplete, onCancel })
       const data = response.data as MFAGenerateResponse;
       setSecret(data.secret);
       setQrCodeUrl(data.qr_code_data_url);
-    } catch (err: any) {
-      setError(err.response?.data?.detail || 'Failed to generate MFA secret');
+    } catch (err: unknown) {
+      setError(mfaGenerateError(err));
     } finally {
       setLoading(false);
     }
@@ -77,8 +85,8 @@ export const MFASetup: React.FC<MFASetupProps> = ({ onSetupComplete, onCancel })
 
       setBackupCodes(data.backup_codes || []);
       setStep('backup');
-    } catch (err: any) {
-      setError(err.response?.data?.detail || 'Verification failed');
+    } catch (err: unknown) {
+      setError(mfaVerifyError(err));
     } finally {
       setLoading(false);
     }
@@ -91,8 +99,8 @@ export const MFASetup: React.FC<MFASetupProps> = ({ onSetupComplete, onCancel })
     try {
       // MFA setup is complete, notify parent component
       onSetupComplete?.();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to enable MFA');
+    } catch (err: unknown) {
+      setError(formatAdminApiError(err, { fallback: 'Failed to enable MFA' }));
     } finally {
       setLoading(false);
     }
