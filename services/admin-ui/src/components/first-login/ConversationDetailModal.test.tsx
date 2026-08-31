@@ -81,14 +81,14 @@ describe('ConversationDetailModal export/guard (LEG-3131)', () => {
   describe('default JSON export', () => {
     let createObjectURL: ReturnType<typeof vi.fn>;
     let revokeObjectURL: ReturnType<typeof vi.fn>;
-    let clickSpy: ReturnType<typeof vi.fn>;
+    let clickSpy: ReturnType<typeof vi.fn<() => void>>;
     let appendChildSpy: ReturnType<typeof vi.spyOn>;
     let removeChildSpy: ReturnType<typeof vi.spyOn>;
 
     beforeEach(() => {
       createObjectURL = vi.fn(() => 'blob:mock-url');
       revokeObjectURL = vi.fn();
-      clickSpy = vi.fn();
+      clickSpy = vi.fn<() => void>();
 
       vi.stubGlobal('URL', {
         createObjectURL: createObjectURL,
