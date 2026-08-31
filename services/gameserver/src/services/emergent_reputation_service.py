@@ -553,6 +553,31 @@ EMERGENT_ACTIONS: Dict[str, EmergentAction] = {
             "without impound (+10; one-shot per Wanted cycle)"
         ),
     ),
+    # LEG-3388 — Shadow Syndicate: "Fence a Cargo Wreck cargo at a Syndicate
+    # fence venue | +5 / 5,000 cr fenced" (factions-and-teams.md SS table,
+    # line 164). Per-block magnitude is +5 (not +1); wired via
+    # apply_trade_volume_rep on successful syndicate_fence_service.fence_cargo
+    # using GROSS market_value (not the 70% payout).
+    "FENCE_SYNDICATE_VOLUME_SS": EmergentAction(
+        name="FENCE_SYNDICATE_VOLUME_SS",
+        deltas=[FactionDelta(FactionType.SYNDICATE, 5)],
+        doc_source=(
+            "factions-and-teams.md SS: Fence a Cargo Wreck cargo at a "
+            "Syndicate fence venue (+5 / 5,000 cr fenced)"
+        ),
+    ),
+    # LEG-3389 — Shadow Syndicate: "Sell stolen-flagged commodity (origin =
+    # early-grace salvage) | +10 / transaction" (factions-and-teams.md SS
+    # table, line 165). Fence path already requires flagged_origin consumption;
+    # one-shot apply_emergent_action per successful fence_cargo transaction.
+    "STOLEN_FLAGGED_SALE_SS": EmergentAction(
+        name="STOLEN_FLAGGED_SALE_SS",
+        deltas=[FactionDelta(FactionType.SYNDICATE, 10)],
+        doc_source=(
+            "factions-and-teams.md SS: Sell stolen-flagged commodity "
+            "(origin = early-grace salvage) (+10 / transaction)"
+        ),
+    ),
 }
 
 
