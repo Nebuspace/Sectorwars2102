@@ -17,6 +17,43 @@
   align-items: center;
   gap: 0.5rem;
   flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.aria-memory-journal-actions {
+  display: flex;
+  gap: 0.35rem;
+  margin-left: auto;
+}
+
+.aria-memory-journal-action-btn {
+  background: transparent;
+  color: inherit;
+  border: 1px solid rgba(212, 175, 55, 0.45);
+  padding: 0.15rem 0.45rem;
+  font: inherit;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.aria-memory-journal-action-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.aria-memory-journal-action-btn-danger {
+  border-color: rgba(224, 112, 112, 0.65);
+  color: #e07070;
+}
+
+.aria-memory-journal-action-status {
+  flex-shrink: 0;
+}
+
+.aria-memory-journal-notice {
+  margin: 0;
+  opacity: 0.9;
 }
 
 .aria-memory-journal-filter-label {
