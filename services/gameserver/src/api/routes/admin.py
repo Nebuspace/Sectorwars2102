@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Header
 from sqlalchemy.orm import Session
 from sqlalchemy import text, func, desc, or_
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime, timezone
 import logging
+import uuid
 
 from src.core.database import get_db
 from src.auth.admin_scopes import (
@@ -12,9 +13,15 @@ from src.auth.admin_scopes import (
     PLAYERS_ADJUST_CREDITS,
     PLAYERS_SUSPEND,
     PLAYERS_VIEW,
+    REGIONS_TERMINATE,
 )
 from src.auth.dependencies import require_all_scopes, require_scope
 from src.services.admin_action_attempt import admin_action_attempt
+from src.services.region_lifecycle_service import (
+    AdminRegionTerminationError,
+    admin_execute_region_termination,
+    admin_region_terminate_preview,
+)
 from src.models.user import User
 from src.models.player import Player
 from src.models.ship import Ship
@@ -283,6 +290,76 @@ async def get_all_regions(
     } for region in regions]
 
     return {"regions": region_list}
+
+
+class RegionTerminateRequest(BaseModel):
+    reason: str = Field(..., min_length=1)
+
+
+def _map_admin_region_termination_error(exc: AdminRegionTerminationError) -> HTTPException:
+    if exc.code == "not_found":
+        return HTTPException(status_code=404, detail=exc.detail)
+    if exc.code == "already_terminated":
+        return HTTPException(status_code=409, detail=exc.detail)
+    return HTTPException(status_code=422, detail=exc.detail)
+
+
+@router.get("/regions/{region_id}/terminate-preview", response_model=dict)
+async def get_region_terminate_preview(
+    region_id: uuid.UUID,
+    current_admin: User = Depends(require_scope(REGIONS_TERMINATE)),
+    db: Session = Depends(get_db),
+):
+    """Preview dependent-entity counts before admin region termination."""
+    try:
+        return admin_region_terminate_preview(db, region_id)
+    except AdminRegionTerminationError as exc:
+        raise _map_admin_region_termination_error(exc) from exc
+
+
+@router.post("/regions/{region_id}/terminate", response_model=dict)
+async def post_region_terminate(
+    region_id: uuid.UUID,
+    body: RegionTerminateRequest,
+    x_confirm_region_name: Optional[str] = Header(
+        default=None,
+        alias="X-Confirm-Region-Name",
+        description="Must match the region's exact name to authorise termination.",
+    ),
+    current_admin: User = Depends(require_scope(REGIONS_TERMINATE)),
+    db: Session = Depends(get_db),
+):
+    """Hard-terminate a player-owned region and run the ADR-0050 cleanup cascade."""
+    region = db.query(Region).filter(Region.id == region_id).first()
+    if region is None:
+        raise HTTPException(status_code=404, detail="Region not found")
+    if x_confirm_region_name is None or x_confirm_region_name != region.name:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "X-Confirm-Region-Name header missing or does not match region "
+                "name; termination refused."
+            ),
+        )
+
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=REGIONS_TERMINATE,
+        action="region_terminate",
+        target_type="region",
+        target_id=str(region_id),
+        payload={"reason": body.reason.strip(), "regionName": region.name},
+    ) as attempt:
+        try:
+            result = admin_execute_region_termination(db, region_id)
+        except AdminRegionTerminationError as exc:
+            raise _map_admin_region_termination_error(exc) from exc
+        outbox = result.pop("_outbox")
+        attempt.succeed(payload={**result, "reason": body.reason.strip()})
+
+    outbox.flush()
+    return result
 
 
 @router.get("/regions/{region_id}/zones", response_model=dict)
