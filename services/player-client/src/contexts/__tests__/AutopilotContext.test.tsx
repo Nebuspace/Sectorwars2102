@@ -39,7 +39,12 @@ vi.mock('../../services/warpCinematicBus', () => ({
   WARP_ARRIVE_MS: 3400,
 }));
 
-import { AutopilotProvider, useAutopilot, type AutopilotContextValue } from '../AutopilotContext';
+import {
+  AutopilotProvider,
+  formatAutopilotMovementError,
+  useAutopilot,
+  type AutopilotContextValue,
+} from '../AutopilotContext';
 
 const WARP_TURN_MS = 3000;
 const AUTOPILOT_POST_ARRIVE_MS = 3400;
@@ -334,6 +339,29 @@ describe('AutopilotContext — hop-resolution branches', () => {
     moveToSectorMock.mockRejectedValue({});
     await setUpEngagedHop();
     expect(latestState!.pauseReason).toBe('Movement failed');
+  });
+
+  it('densifies TypeError network collapse without raw Failed to fetch / TypeError in pauseReason (LEG-3332)', async () => {
+    moveToSectorMock.mockRejectedValue(new TypeError('Failed to fetch'));
+    await setUpEngagedHop();
+    expect(latestState!.status).toBe('paused');
+    expect(latestState!.pauseReason).toBe('Movement failed');
+    expect(latestState!.pauseReason).not.toMatch(/TypeError/i);
+    expect(latestState!.pauseReason).not.toMatch(/Failed to fetch/i);
+  });
+});
+
+describe('formatAutopilotMovementError TypeError densify (LEG-3332)', () => {
+  it('falls back on TypeError network collapse', () => {
+    const text = formatAutopilotMovementError(new TypeError('Failed to fetch'));
+    expect(text).toBe('Movement failed');
+    expect(text).not.toMatch(/TypeError/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+  });
+
+  it('preserves server detail for structured API errors', () => {
+    const err = { response: { data: { detail: 'Insufficient fuel' } } };
+    expect(formatAutopilotMovementError(err)).toBe('Insufficient fuel');
   });
 });
 
