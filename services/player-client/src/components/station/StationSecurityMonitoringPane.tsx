@@ -31,6 +31,16 @@ const UPGRADE_COST_HINT: Record<string, number> = {
   premium: 750_000,
 };
 
+/** Transport collapse copy is not gameserver detail (LEG-3289 densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
 /** Exported for TypeError densify tests — fetch/upgrade/downgrade catch paths use this. */
 export function formatStationSecurityError(err: unknown, fallback: string): string {
   if (err instanceof TypeError) return fallback;
@@ -42,7 +52,10 @@ export function formatStationSecurityError(err: unknown, fallback: string): stri
       if (typeof detail === 'string' && detail) return detail;
     }
     const msg = (err as { message?: string }).message;
-    if (typeof msg === 'string' && msg) return msg;
+    if (typeof msg === 'string' && msg) {
+      if (isNetworkCollapseMessage(msg)) return fallback;
+      return msg;
+    }
   }
   return fallback;
 }

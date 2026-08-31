@@ -46,6 +46,12 @@ describe('formatRegionTreatyError TypeError densify (LEG-3153)', () => {
       'treaty_server_detail',
     );
   });
+
+  it('falls back on axios Network Error / Failed to fetch non-TypeError (LEG-3286)', () => {
+    expect(formatRegionTreatyError(new Error('Network Error'), fallback)).toBe(fallback);
+    expect(formatRegionTreatyError(new Error('Failed to fetch'), fallback)).toBe(fallback);
+    expect(formatRegionTreatyError(new Error('   '), fallback)).toBe(fallback);
+  });
 });
 
 describe('RegionTreatyPanel load TypeError densify (LEG-3153)', () => {

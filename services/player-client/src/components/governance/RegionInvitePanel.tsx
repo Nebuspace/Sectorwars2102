@@ -85,11 +85,21 @@ const mapInviteErrorMessage = (msg: string, fallback: string): string => {
   }
 };
 
-/** Surface GS invite ERR_* detail; hide fetch TypeError noise (LEG-3164). */
+/** Surface GS invite ERR_* detail; hide fetch/axios network collapse (LEG-3164 / LEG-3285). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
 export function formatRegionInviteError(err: unknown, fallback: string): string {
-  // Network collapse (fetch TypeError) is not gameserver copy — use the fallback.
+  // Network collapse (fetch TypeError / axios Network Error) is not gameserver copy.
   if (err instanceof TypeError) return fallback;
   const raw = err instanceof Error ? err.message : String(err ?? '');
+  if (isNetworkCollapseMessage(raw)) return fallback;
   return mapInviteErrorMessage(raw, fallback);
 }
 

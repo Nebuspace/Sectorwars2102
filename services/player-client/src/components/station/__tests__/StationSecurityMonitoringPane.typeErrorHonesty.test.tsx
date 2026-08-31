@@ -30,4 +30,11 @@ describe('formatStationSecurityError (LEG-3160)', () => {
       'Station not found',
     );
   });
+
+  it('falls back on axios Network Error / Failed to fetch non-TypeError (LEG-3289)', () => {
+    const fallback = 'Failed to load security tier';
+    expect(formatStationSecurityError(new Error('Network Error'), fallback)).toBe(fallback);
+    expect(formatStationSecurityError(new Error('Failed to fetch'), fallback)).toBe(fallback);
+    expect(formatStationSecurityError(new Error('   '), fallback)).toBe(fallback);
+  });
 });
