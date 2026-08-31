@@ -31,6 +31,7 @@ vi.mock('../../../services/api', async (importOriginal) => {
 
 import TractorBeamInstallCta, {
   TRACTOR_BEAM_INSTALL_COST_CR,
+  formatTractorBeamInstallError,
   isTractorBeamHullCompatible,
 } from '../TractorBeamInstallCta';
 
@@ -49,6 +50,24 @@ describe('isTractorBeamHullCompatible', () => {
     expect(isTractorBeamHullCompatible('SCOUT')).toBe(false);
     expect(isTractorBeamHullCompatible('COLONY_SHIP')).toBe(false);
     expect(isTractorBeamHullCompatible(null)).toBe(false);
+  });
+});
+
+describe('formatTractorBeamInstallError TypeError densify (LEG-3099)', () => {
+  it('falls back on TypeError network collapse', () => {
+    const text = formatTractorBeamInstallError(new TypeError('Failed to fetch'));
+    expect(text).toMatch(/Tractor Beam install failed/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('preserves axios detail when not TypeError', () => {
+    const err = {
+      response: { data: { detail: 'Insufficient credits for tractor beam install.' } },
+    };
+    expect(formatTractorBeamInstallError(err)).toBe(
+      'Insufficient credits for tractor beam install.',
+    );
   });
 });
 
@@ -159,5 +178,34 @@ describe('TractorBeamInstallCta — LEG-120', () => {
     expect(container.querySelector('[data-testid="tractor-beam-cta"]')).toBeNull();
     expect(container.querySelector('[data-testid="tractor-beam-install-btn"]')).toBeNull();
     expect(getUpgradesMock).not.toHaveBeenCalled();
+  });
+
+  it('install TypeError surfaces fallback without Failed to fetch / TypeError (LEG-3099)', async () => {
+    getUpgradesMock.mockResolvedValue({
+      success: true,
+      equipment: {
+        tractor_beam: { installed: false, cost: TRACTOR_BEAM_INSTALL_COST_CR },
+      },
+      equipped: {},
+    });
+    installEquipmentMock.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await mount({});
+
+    const btn = container.querySelector(
+      '[data-testid="tractor-beam-install-btn"]',
+    ) as HTMLButtonElement | null;
+    expect(btn).toBeTruthy();
+
+    await act(async () => {
+      btn!.click();
+      await Promise.resolve();
+    });
+
+    const alert = container.querySelector('.tractor-beam-cta-err');
+    expect(alert).toBeTruthy();
+    expect(alert?.textContent).toMatch(/Tractor Beam install failed/i);
+    expect(alert?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(alert?.textContent).not.toMatch(/TypeError/i);
   });
 });

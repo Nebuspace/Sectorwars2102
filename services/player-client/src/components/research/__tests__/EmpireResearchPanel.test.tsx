@@ -47,7 +47,10 @@ vi.mock('../../../contexts/WebSocketContext', () => ({
   }),
 }));
 
-import EmpireResearchPanel from '../EmpireResearchPanel';
+import EmpireResearchPanel, {
+  formatEmpireResearchLoadError,
+  formatEmpireResearchMutationError,
+} from '../EmpireResearchPanel';
 
 const NOW = Date.parse('2026-08-09T12:00:00Z');
 
@@ -387,5 +390,57 @@ describe('EmpireResearchPanel', () => {
     await flush();
     expect(mockGetCockpit).toHaveBeenCalled();
     expect(container.querySelector('.empire-research-loading')).toBeNull();
+  });
+
+  describe('TypeError densify (LEG-3101)', () => {
+    it('formatEmpireResearchLoadError falls back on TypeError network collapse', () => {
+      const text = formatEmpireResearchLoadError(new TypeError('Failed to fetch'));
+      expect(text).toBe('Failed to load research cockpit');
+      expect(text).not.toMatch(/Failed to fetch/i);
+      expect(text).not.toMatch(/TypeError/i);
+    });
+
+    it('formatEmpireResearchMutationError preserves server detail for non-TypeError errors', () => {
+      expect(
+        formatEmpireResearchMutationError(new Error('insufficient credits'), 'Could not start directive'),
+      ).toBe('insufficient credits');
+    });
+
+    it('cockpit load TypeError surfaces honest fallback on initial mount', async () => {
+      mockGetCockpit.mockRejectedValue(new TypeError('Failed to fetch'));
+      await mount();
+      const errorEl = container.querySelector('.empire-research-error');
+      expect(errorEl?.textContent).toContain('Failed to load research cockpit');
+      expect(errorEl?.textContent).not.toMatch(/Failed to fetch/i);
+      expect(errorEl?.textContent).not.toMatch(/TypeError/i);
+    });
+
+    it('accept TypeError surfaces honest fallback without Failed to fetch', async () => {
+      mockGetOffers.mockResolvedValue({ offers: [offer()] });
+      mockStartContract.mockRejectedValue(new TypeError('Failed to fetch'));
+      await mount();
+      await act(async () => {
+        (container.querySelector('.accept-btn') as HTMLButtonElement).click();
+      });
+      await flush();
+      const msg = container.querySelector('.er-message.err');
+      expect(msg?.textContent).toBe('Could not start directive');
+      expect(msg?.textContent).not.toMatch(/Failed to fetch/i);
+      expect(msg?.textContent).not.toMatch(/TypeError/i);
+    });
+
+    it('unlock TypeError surfaces honest fallback without Failed to fetch', async () => {
+      mockGetCockpit.mockResolvedValue(cockpit({ techTree: [techNode({ id: 'node-a' })] }));
+      mockUnlockNode.mockRejectedValue(new TypeError('Failed to fetch'));
+      await mount();
+      await act(async () => {
+        (container.querySelector('.unlock-btn') as HTMLButtonElement).click();
+      });
+      await flush();
+      const msg = container.querySelector('.er-message.err');
+      expect(msg?.textContent).toBe('Could not unlock tech node');
+      expect(msg?.textContent).not.toMatch(/Failed to fetch/i);
+      expect(msg?.textContent).not.toMatch(/TypeError/i);
+    });
   });
 });

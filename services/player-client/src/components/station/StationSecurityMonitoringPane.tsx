@@ -31,6 +31,22 @@ const UPGRADE_COST_HINT: Record<string, number> = {
   premium: 750_000,
 };
 
+/** Exported for TypeError densify tests — fetch/upgrade/downgrade catch paths use this. */
+export function formatStationSecurityError(err: unknown, fallback: string): string {
+  if (err instanceof TypeError) return fallback;
+  if (err && typeof err === 'object') {
+    const resp = (err as { response?: { data?: unknown } }).response;
+    const data = resp?.data ?? (err as { data?: unknown }).data;
+    if (data && typeof data === 'object') {
+      const detail = (data as Record<string, unknown>).detail;
+      if (typeof detail === 'string' && detail) return detail;
+    }
+    const msg = (err as { message?: string }).message;
+    if (typeof msg === 'string' && msg) return msg;
+  }
+  return fallback;
+}
+
 const fmtCountdown = (iso: string | null | undefined, nowMs: number): string => {
   if (!iso) return '—';
   const target = Date.parse(iso);
@@ -70,9 +86,8 @@ const StationSecurityMonitoringPane: React.FC<StationSecurityMonitoringPaneProps
       const next = await stationSecurityAPI.getSecurityStatus(stationId);
       setStatus(next);
     } catch (e: unknown) {
-      const err = e as { message?: string };
       setStatus(null);
-      setError(err?.message || 'Failed to load security tier');
+      setError(formatStationSecurityError(e, 'Failed to load security tier'));
     } finally {
       setLoading(false);
     }
@@ -108,8 +123,10 @@ const StationSecurityMonitoringPane: React.FC<StationSecurityMonitoringPaneProps
       setActionMsg({ ok: true, text: result.message });
       await fetchStatus();
     } catch (e: unknown) {
-      const err = e as { message?: string };
-      setActionMsg({ ok: false, text: err?.message || `${kind} failed` });
+      setActionMsg({
+        ok: false,
+        text: formatStationSecurityError(e, `${kind} failed`),
+      });
     } finally {
       setBusy(null);
     }
