@@ -1,0 +1,38 @@
+// @vitest-environment jsdom
+/**
+ * LEG-3468 Soft-ORDER — CitadelManager Network Error densify.
+ */
+import { describe, it, expect } from 'vitest';
+import {
+  formatCitadelLoadError,
+  formatCitadelUpgradeError,
+} from '../CitadelManager';
+
+describe('CitadelManager TypeError densify (LEG-3468)', () => {
+  it('formatCitadelLoadError falls back on TypeError network collapse', () => {
+    const text = formatCitadelLoadError(new TypeError('Failed to fetch'));
+    expect(text).toBe('Failed to load citadel info');
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('formatCitadelUpgradeError falls back on TypeError network collapse', () => {
+    const text = formatCitadelUpgradeError(new TypeError('Failed to fetch'));
+    expect(text).toBe('Upgrade failed');
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('falls back on axios Network Error / Failed to fetch', () => {
+    expect(formatCitadelLoadError(new Error('Network Error'))).toBe('Failed to load citadel info');
+    expect(formatCitadelLoadError(new Error('Failed to fetch'))).toBe('Failed to load citadel info');
+    expect(formatCitadelUpgradeError(new Error('Network Error'))).toBe('Upgrade failed');
+    expect(formatCitadelUpgradeError(new Error('Failed to fetch'))).toBe('Upgrade failed');
+    expect(formatCitadelLoadError(new Error('Network Error'))).not.toMatch(/Network Error/i);
+  });
+
+  it('preserves non-generic Error.message detail when not TypeError', () => {
+    expect(formatCitadelLoadError(new Error('citadel_offline'))).toBe('citadel_offline');
+    expect(formatCitadelUpgradeError(new Error('upgrade_denied'))).toBe('upgrade_denied');
+  });
+});
