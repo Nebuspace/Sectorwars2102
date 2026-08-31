@@ -26,6 +26,15 @@
   gap: var(--spacing-md);
 }
 
+.alerts-empty,
+.bottlenecks-empty {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  padding: var(--spacing-md);
+  text-align: center;
+  font-style: italic;
+}
+
 .monitoring-header h2 {
   margin: 0;
   color: var(--text-primary);
