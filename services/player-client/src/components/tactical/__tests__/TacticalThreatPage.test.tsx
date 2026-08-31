@@ -196,6 +196,20 @@ describe('TacticalThreatPage', () => {
     expect(msg.getAttribute('role')).toBe('status');
   });
 
+  it('LAY mine-deploy TypeError densifies to connection fallback (LEG-3323)', async () => {
+    mockDeployMines.mockRejectedValue(new TypeError('Failed to fetch'));
+    await mount();
+
+    const btn = container.querySelector('[data-testid="threat-lay-mines"]')!;
+    await click(btn);
+
+    const msg = container.querySelector('.threat-msg')!;
+    expect(msg.textContent).toMatch(/check your connection/i);
+    expect(msg.textContent).not.toMatch(/Failed to fetch/i);
+    expect(msg.textContent).not.toMatch(/TypeError/i);
+    expect(msg.classList.contains('ok')).toBe(false);
+  });
+
   it('LAY limpet sends limpet_mine when that type is selected', async () => {
     mockDeployMines.mockResolvedValue({ message: 'ok' });
     await mount();
