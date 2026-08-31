@@ -15,6 +15,11 @@ const {
   mockGetAvailableMoves,
   mockGetCurrentShip,
   mockSetActive,
+  mockMove,
+  mockScanLatentTunnels,
+  mockDock,
+  mockBuy,
+  mockSell,
 } = vi.hoisted(() => ({
   mockGet: vi.fn(),
   mockPost: vi.fn(),
@@ -24,6 +29,11 @@ const {
   mockGetAvailableMoves: vi.fn(),
   mockGetCurrentShip: vi.fn(),
   mockSetActive: vi.fn(),
+  mockMove: vi.fn(),
+  mockScanLatentTunnels: vi.fn(),
+  mockDock: vi.fn(),
+  mockBuy: vi.fn(),
+  mockSell: vi.fn(),
 }));
 
 vi.mock('../../services/apiClient', () => ({
@@ -41,6 +51,8 @@ vi.mock('../../services/api', async () => {
       getCurrentSector: (...a: unknown[]) => mockGetCurrentSector(...a),
       getShips: (...a: unknown[]) => mockGetShips(...a),
       getAvailableMoves: (...a: unknown[]) => mockGetAvailableMoves(...a),
+      move: (...a: unknown[]) => mockMove(...a),
+      scanLatentTunnels: (...a: unknown[]) => mockScanLatentTunnels(...a),
     },
     shipAPI: {
       ...actual.shipAPI,
@@ -65,6 +77,13 @@ vi.mock('../../services/api', async () => {
         refine_cooldown_ends_at: null,
       }),
     },
+    tradingAPI: {
+      ...actual.tradingAPI,
+      dock: (...a: unknown[]) => mockDock(...a),
+      buy: (...a: unknown[]) => mockBuy(...a),
+      sell: (...a: unknown[]) => mockSell(...a),
+      getMarket: vi.fn().mockResolvedValue({ resources: [] }),
+    },
   };
 });
 
@@ -77,6 +96,12 @@ import {
   useGame,
   formatSetActiveShipError,
   formatGetAvailableMovesError,
+  formatRefreshPlayerStateError,
+  formatMoveToSectorError,
+  formatScanLatentTunnelsError,
+  formatDockAtStationError,
+  formatBuyResourceError,
+  formatSellResourceError,
 } from '../GameContext';
 
 function defaultGet(url: string) {
@@ -124,6 +149,11 @@ describe('GameContext TypeError densify (LEG-3265)', () => {
     mockGetCurrentSector.mockResolvedValue({ sector_id: 1, name: 'Home' });
     mockGetAvailableMoves.mockResolvedValue({ moves: [2, 3] });
     mockSetActive.mockResolvedValue({ success: true });
+    mockMove.mockResolvedValue({ success: true });
+    mockScanLatentTunnels.mockResolvedValue({ success: true, revealed: false });
+    mockDock.mockResolvedValue({ success: true });
+    mockBuy.mockResolvedValue({ success: true });
+    mockSell.mockResolvedValue({ success: true });
     captured = null;
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -192,5 +222,130 @@ describe('GameContext TypeError densify (LEG-3265)', () => {
     expect(err?.textContent).not.toMatch(/TypeError/i);
     expect(container.textContent).not.toMatch(/Failed to fetch/i);
     expect(container.textContent).not.toMatch(/TypeError/i);
+  });
+
+  it('refreshPlayerState TypeError surfaces stable fallback without Failed to fetch / TypeError in DOM (LEG-3324)', async () => {
+    mockGetState.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await act(async () => {
+      await captured!.refreshPlayerState();
+      await flush();
+    });
+
+    const err = container.querySelector('[data-testid="game-error"]');
+    expect(err?.textContent).toBe('Failed to load player state');
+    expect(err?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(err?.textContent).not.toMatch(/TypeError/i);
+  });
+
+  it('moveToSector TypeError surfaces stable fallback without Failed to fetch / TypeError in DOM (LEG-3324)', async () => {
+    mockMove.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await act(async () => {
+      try {
+        await captured!.moveToSector(2);
+      } catch {
+        /* expected throw */
+      }
+      await flush();
+    });
+
+    const err = container.querySelector('[data-testid="game-error"]');
+    expect(err?.textContent).toBe('Failed to move to sector');
+    expect(err?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(err?.textContent).not.toMatch(/TypeError/i);
+  });
+
+  it('scanForLatentTunnels TypeError surfaces stable fallback without Failed to fetch / TypeError in DOM (LEG-3324)', async () => {
+    mockScanLatentTunnels.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await act(async () => {
+      try {
+        await captured!.scanForLatentTunnels();
+      } catch {
+        /* expected throw */
+      }
+      await flush();
+    });
+
+    const err = container.querySelector('[data-testid="game-error"]');
+    expect(err?.textContent).toBe('Failed to scan for latent tunnels');
+    expect(err?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(err?.textContent).not.toMatch(/TypeError/i);
+  });
+
+  it('dockAtStation TypeError surfaces stable fallback without Failed to fetch / TypeError in DOM (LEG-3324)', async () => {
+    mockDock.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await act(async () => {
+      try {
+        await captured!.dockAtStation('station-1');
+      } catch {
+        /* expected throw */
+      }
+      await flush();
+    });
+
+    const err = container.querySelector('[data-testid="game-error"]');
+    expect(err?.textContent).toBe('Failed to dock at port');
+    expect(err?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(err?.textContent).not.toMatch(/TypeError/i);
+  });
+
+  it('buyResource TypeError surfaces stable fallback without Failed to fetch / TypeError in DOM (LEG-3324)', async () => {
+    mockBuy.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await act(async () => {
+      try {
+        await captured!.buyResource('station-1', 'ore', 1);
+      } catch {
+        /* expected throw */
+      }
+      await flush();
+    });
+
+    const err = container.querySelector('[data-testid="game-error"]');
+    expect(err?.textContent).toBe('Failed to buy resource');
+    expect(err?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(err?.textContent).not.toMatch(/TypeError/i);
+  });
+});
+
+describe('GameContext TypeError densify (LEG-3324)', () => {
+  it('formatRefreshPlayerStateError falls back on TypeError network collapse', () => {
+    const text = formatRefreshPlayerStateError(new TypeError('Failed to fetch'));
+    expect(text).toBe('Failed to load player state');
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('formatMoveToSectorError falls back on TypeError network collapse', () => {
+    const text = formatMoveToSectorError(new TypeError('Failed to fetch'));
+    expect(text).toBe('Failed to move to sector');
+    expect(text).not.toMatch(/Failed to fetch/i);
+  });
+
+  it('formatScanLatentTunnelsError falls back on TypeError network collapse', () => {
+    const text = formatScanLatentTunnelsError(new TypeError('Network Error'));
+    expect(text).toBe('Failed to scan for latent tunnels');
+    expect(text).not.toMatch(/Network Error/i);
+  });
+
+  it('formatDockAtStationError falls back on TypeError network collapse', () => {
+    const text = formatDockAtStationError(new TypeError('Failed to fetch'));
+    expect(text).toBe('Failed to dock at port');
+    expect(text).not.toMatch(/Failed to fetch/i);
+  });
+
+  it('formatBuyResourceError falls back on TypeError network collapse', () => {
+    const text = formatBuyResourceError(new TypeError('Failed to fetch'));
+    expect(text).toBe('Failed to buy resource');
+    expect(text).not.toMatch(/Failed to fetch/i);
+  });
+
+  it('formatSellResourceError falls back on TypeError network collapse', () => {
+    const text = formatSellResourceError(new TypeError('Failed to fetch'));
+    expect(text).toBe('Failed to sell resource');
+    expect(text).not.toMatch(/Failed to fetch/i);
   });
 });
