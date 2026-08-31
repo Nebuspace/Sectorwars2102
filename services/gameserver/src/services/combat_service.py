@@ -3878,6 +3878,16 @@ class CombatService:
             logger.error("Tractor equipment read failed (continuing without lock): %s", e)
             attacker_has_tractor = False
 
+        defender_interdictor_locked = False
+        if defender is not None and defender_ship is not None:
+            from src.services.interdictor_abilities_service import (
+                interdictor_field_blocks_movement,
+                maybe_apply_interdictor_on_npc_attack,
+            )
+            if attacker is None and attacker_ship is not None:
+                maybe_apply_interdictor_on_npc_attack(attacker_ship, defender_ship)
+            defender_interdictor_locked = interdictor_field_blocks_movement(defender_ship)
+
         if defender is not None:
             defender_ship = defender.current_ship
             defender_name = defender.username
@@ -4229,6 +4239,8 @@ class CombatService:
                     # way). Damage/outcome otherwise unchanged.
                     if attacker_has_tractor:
                         escape_pct = 0
+                    if defender_interdictor_locked:
+                        escape_pct = 0
                     if escape_pct > 0 and random.randint(1, 100) <= escape_pct:
                         fled_result = CombatResult.DEFENDER_FLED
                         combat_details.append({
@@ -4267,6 +4279,12 @@ class CombatService:
 
             if fled_result is not None:
                 break
+
+            if defender is not None and defender_ship is not None:
+                from src.services.interdictor_abilities_service import (
+                    decrement_interdictor_field_round,
+                )
+                decrement_interdictor_field_round(defender_ship)
 
             # Check if combat ends due to round limit
             if round_number >= 10:

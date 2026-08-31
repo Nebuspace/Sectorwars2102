@@ -529,8 +529,7 @@ SHIP_SPECIFICATIONS = {
             "GENESIS_CONTAINMENT": 2,
             "MAINTENANCE_SYSTEM": 3
         },
-        # Inert v1 — Interdictor Field deferred (police-forces.md:121-127);
-        # Contraband Scanner detection formula also deferred (police-forces.md:144).
+        # Interdictor Field + Contraband Scanner (police-forces.md:154-196).
         "special_abilities": ["interdictor_field", "contraband_scanner"],
         "description": "Federation Police special-issue pursuit hull, built for sustained pursuit through Federation Zone sectors. Outguns a Defender in single combat but is no fleet flagship. NPC-only: never sold, salvaged, or claimed.",
         "acquisition_methods": [],
@@ -587,8 +586,7 @@ SHIP_SPECIFICATIONS = {
             "MAINTENANCE_SYSTEM": 3
         },
         # Inert v1 — Interdictor Field deferred (police-forces.md:121-127);
-        # Beacon Disruptor and Concord Authorization likewise inert until
-        # warp-gate construction / gate-toll slices land.
+        # Interdictor Field + Beacon Disruptor + Concord Authorization (police-forces.md).
         "special_abilities": ["interdictor_field", "beacon_disruptor", "concord_authorization"],
         "description": "Nexus Sentinel Corps special-issue hull. Tougher than the Marshal Interdictor — its mandate is hub-level governance of the Central Nexus, holding the line against well-equipped gate-builders. NPC-only: never sold, salvaged, or claimed.",
         "acquisition_methods": [],

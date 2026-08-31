@@ -637,6 +637,12 @@ def jump(
         )
     if ship.status == ShipStatus.HARMONIZING:
         raise QuantumError("This Warp Jumper is anchored to a beacon and harmonizing — it cannot jump")
+    from src.services.interdictor_abilities_service import (
+        interdictor_field_blocks_movement,
+        movement_block_message,
+    )
+    if interdictor_field_blocks_movement(ship):
+        raise QuantumError(movement_block_message(), error_code="ERR_INTERDICTOR_FIELD")
     if _cooldown_active(ship.quantum_jump_cooldown_until):
         raise QuantumError(
             f"Quantum drive is in cooldown until "
