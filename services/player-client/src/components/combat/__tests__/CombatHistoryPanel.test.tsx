@@ -142,4 +142,43 @@ describe('CombatHistoryPanel', () => {
       expect(arg).not.toHaveProperty('playerId');
     }
   });
+
+  it('renders opponent pinned medal via PlayerNamePlate (LEG-3234)', async () => {
+    getHistory.mockResolvedValue({
+      items: [
+        {
+          id: 'c1',
+          timestamp: '2026-08-17T12:00:00Z',
+          combat_type: 'ship_vs_ship',
+          role: 'attacker',
+          result: 'attacker_win',
+          sector_id: 7,
+          drones_lost: 0,
+          ship_destroyed: false,
+          opponent: {
+            id: 'p2',
+            displayName: 'Rival',
+            pinned_medal_id: 'bronze_cluster',
+            medal_count: 4,
+          },
+        },
+      ],
+      total: 1,
+      limit: 20,
+      offset: 0,
+    });
+
+    await act(async () => {
+      root.render(<CombatHistoryPanel />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const plate = container.querySelector('.ch-foe [data-testid="player-name-plate"]') as HTMLElement;
+    expect(plate).not.toBeNull();
+    expect(plate.getAttribute('data-pinned-medal')).toBe('bronze_cluster');
+    expect(plate.querySelector('[data-testid="player-name-plate-count"]')?.textContent).toBe('4');
+    expect(plate.textContent).toContain('Rival');
+  });
 });

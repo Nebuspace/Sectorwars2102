@@ -11,6 +11,7 @@ import marketStreamService from '../../services/marketStream';
 import HaggleDesk from './HaggleDesk';
 import RoutePlannerPanel from './RoutePlannerPanel';
 import TradeCascadePanel from './TradeCascadePanel';
+import TradingRecommendationsPanel from './TradingRecommendationsPanel';
 import './trading-interface.css';
 
 /* TRADE LEDGER shell (Law 3) — module-level so the frame keeps its
@@ -894,6 +895,7 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
         </div>
         <RoutePlannerPanel />
         <TradeCascadePanel />
+        <TradingRecommendationsPanel />
         <div className="not-docked-message">
           <div className="message-icon">🚀</div>
           <h3>Dock at a Station to Trade</h3>
@@ -1311,6 +1313,7 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
           above `.trading-content` and ate vertical budget on every dock. */}
       <RoutePlannerPanel />
       <TradeCascadePanel />
+      <TradingRecommendationsPanel />
 
       {/* Trade Modal - Rendered via Portal to escape stacking context */}
       {showConfirmDialog && selectedResource && marketInfo && createPortal(
