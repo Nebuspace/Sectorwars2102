@@ -11,6 +11,15 @@ interface TeamChatProps {
   members: TeamMember[];
 }
 
+const SEND_FAILED_FALLBACK = 'Failed to send message.';
+
+/** Exported for TypeError/network honesty Vitest (LEG-3256). */
+export function formatTeamChatSendError(err: unknown): string {
+  if (err instanceof TypeError) return SEND_FAILED_FALLBACK;
+  if (err instanceof Error && err.message) return err.message;
+  return SEND_FAILED_FALLBACK;
+}
+
 export const TeamChat: React.FC<TeamChatProps> = ({ teamId, playerId, members }) => {
   const [messages, setMessages] = useState<TeamMessageApiResponse[]>([]);
   const [newMessage, setNewMessage] = useState('');
@@ -58,7 +67,7 @@ export const TeamChat: React.FC<TeamChatProps> = ({ teamId, playerId, members })
       setNewMessage('');
       await loadMessages();
     } catch (error) {
-      setSendError(error instanceof Error ? error.message : 'Failed to send message.');
+      setSendError(formatTeamChatSendError(error));
     } finally {
       setSending(false);
     }
