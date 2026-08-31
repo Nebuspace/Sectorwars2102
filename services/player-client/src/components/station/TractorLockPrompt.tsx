@@ -13,6 +13,9 @@ import './tractor-lock-prompt.css';
 
 /** Normalize GS/API detail from apiRequest Error.message, axios-shaped response, or object detail. */
 function tractorLockServerDetail(err: unknown): string | undefined {
+  // Network collapse (fetch TypeError) is not gameserver copy.
+  if (err instanceof TypeError) return undefined;
+
   if (err && typeof err === 'object') {
     const rawDetail =
       (err as { response?: { data?: { detail?: unknown } } }).response?.data?.detail ??
