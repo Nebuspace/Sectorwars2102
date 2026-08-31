@@ -33,6 +33,16 @@ export function isPlanetaryLanderHullCompatible(
   return (PLANETARY_LANDER_COMPATIBLE_HULLS as readonly string[]).includes(norm);
 }
 
+export function formatPlanetaryLanderInstallError(err: unknown): string {
+  const fallback = 'Planetary Lander install failed';
+  if (err instanceof TypeError) return fallback;
+  const detail =
+    (err as { response?: { data?: { detail?: string } }; message?: string })
+      ?.response?.data?.detail ?? (err as { message?: string })?.message;
+  if (typeof detail === 'string' && detail) return detail;
+  return fallback;
+}
+
 export interface PlanetaryLanderInstallCtaProps {
   shipId?: string | null;
   shipType?: string | null;
@@ -111,13 +121,8 @@ const PlanetaryLanderInstallCta: React.FC<PlanetaryLanderInstallCtaProps> = ({
         message: result?.message,
       });
       void refreshEquipment();
-    } catch (err: any) {
-      const detail = err?.response?.data?.detail ?? err?.message;
-      setInstallError(
-        typeof detail === 'string' && detail
-          ? detail
-          : 'Planetary Lander install failed',
-      );
+    } catch (err: unknown) {
+      setInstallError(formatPlanetaryLanderInstallError(err));
     } finally {
       setIsInstalling(false);
     }
