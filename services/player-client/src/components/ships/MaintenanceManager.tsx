@@ -46,10 +46,22 @@ const TIER_NOTE: Record<string, string> = {
 const fmtPct = (n: number) => `${n > 0 ? '+' : ''}${n}%`;
 
 /** True when err.message looks like gameserver detail (not bare API Error: N / TypeError noise). */
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
+};
+
 function hasMaintenanceServerDetail(err: unknown): boolean {
-  // Network collapse (fetch TypeError) is not gameserver copy — use the caller fallback.
+  // Network collapse (fetch TypeError / axios transport) is not gameserver copy — use the caller fallback.
   if (err instanceof TypeError) return false;
   const message = err instanceof Error ? err.message : undefined;
+  if (typeof message === 'string' && isNetworkCollapseMessage(message)) return false;
   return (
     typeof message === 'string' &&
     message.trim().length > 0 &&
