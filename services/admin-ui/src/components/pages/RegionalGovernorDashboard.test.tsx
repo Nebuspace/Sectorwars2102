@@ -394,6 +394,57 @@ describe('RegionalGovernorDashboard (LEG-213)', () => {
     });
     expect(screen.queryByText('Failed to start election')).toBeNull();
   });
+
+  it('collapses axios-shaped Network Error on regional stats load (LEG-3356)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url === '/api/v1/regions/my-region') return { data: region };
+      if (url === '/api/v1/regions/my-region/stats') {
+        throw new Error('Network Error');
+      }
+      if (url.endsWith('/policies')) return { data: [] };
+      if (url.endsWith('/elections')) return { data: [] };
+      if (url.endsWith('/treaties')) return { data: [] };
+      if (url.endsWith('/members')) return { data: [] };
+      return { data: {} };
+    });
+
+    render(<RegionalGovernorDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/Failed to load regional stats/i);
+    });
+    const msg = screen.getByRole('alert').textContent ?? '';
+    expect(msg).not.toBe('Network Error');
+    expect(msg).not.toContain('Network Error');
+    expect(msg).not.toMatch(/TypeError/i);
+  });
+
+  it('collapses axios-shaped Network Error on economy save mutation (LEG-3356)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    render(<RegionalGovernorDashboard />);
+    await waitFor(() => expect(screen.getByText('Sol Reach')).toBeTruthy());
+
+    vi.mocked(api.put).mockRejectedValueOnce(new Error('Network Error'));
+
+    fireEvent.click(screen.getByRole('button', { name: /economy/i }));
+
+    const saveBtn = await waitFor(() => {
+      const buttons = screen.getAllByRole('button');
+      const match = buttons.find((b) => /save|update/i.test(b.textContent || ''));
+      if (!match) throw new Error('save button not found');
+      return match;
+    });
+    fireEvent.click(saveBtn);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/Failed to update economic configuration/i);
+    });
+    const msg = screen.getByRole('alert').textContent ?? '';
+    expect(msg).not.toBe('Network Error');
+    expect(msg).not.toContain('Network Error');
+    expect(msg).not.toMatch(/TypeError/i);
+  });
 });
 
 describe('BeaconSectorCap (LEG-1014)', () => {

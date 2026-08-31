@@ -16,4 +16,10 @@ describe('TowConsentPanel TypeError densify (LEG-3089)', () => {
   it('preserves non-generic Error.message detail when not TypeError', () => {
     expect(formatTowActionError(new Error('tow_target_unavailable'))).toBe('tow_target_unavailable');
   });
+
+  it('formatTowActionError falls back on axios Network Error / Failed to fetch (LEG-3364)', () => {
+    expect(formatTowActionError(new Error('Network Error'))).toBe('Tow action failed');
+    expect(formatTowActionError(new Error('Failed to fetch'))).toBe('Tow action failed');
+    expect(formatTowActionError(new Error('Network Error'))).not.toMatch(/Network Error/i);
+  });
 });
