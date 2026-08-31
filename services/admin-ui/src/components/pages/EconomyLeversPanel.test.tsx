@@ -164,6 +164,20 @@ describe('EconomyLeversPanel (LEG-30)', () => {
     expect(String(toastError.mock.calls[0][0])).toMatch(/rate limit/i);
   });
 
+  it('collapses axios-shaped Network Error to gameserver-unreachable fallback on load (LEG-3326)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
+
+    render(<EconomyLeversPanel />);
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalled();
+    });
+    const msg = String(toastError.mock.calls[0][0]);
+    expect(msg).toMatch(/Gameserver unreachable|network error loading economy levers/i);
+    expect(msg).not.toBe('Network Error');
+    expect(msg).not.toContain('Network Error');
+  });
+
   it('reports a 403 on insurance save via formatAdminApiError (LEG-2740)', async () => {
     vi.mocked(api.get).mockResolvedValue({ data: emptySnapshot });
     vi.mocked(api.patch).mockRejectedValue({ response: { status: 403 } });
