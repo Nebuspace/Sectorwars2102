@@ -2,9 +2,22 @@ import React from 'react';
 import { useGame } from '../../contexts/GameContext';
 import { combatAPI } from '../../services/api';
 
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
 export function formatSectorRetreatError(error: unknown, fallback: string): string {
   if (error instanceof TypeError) return fallback;
-  if (error instanceof Error && error.message) return error.message;
+  if (error instanceof Error && error.message) {
+    if (isNetworkCollapseMessage(error.message)) return fallback;
+    return error.message;
+  }
   return fallback;
 }
 

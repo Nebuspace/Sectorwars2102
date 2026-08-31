@@ -57,6 +57,12 @@ describe('formatStealthModuleInstallError TypeError densify (LEG-3097)', () => {
     expect(text).not.toMatch(/TypeError/i);
   });
 
+  it('falls back on axios Network Error / Failed to fetch non-TypeError (LEG-3297)', () => {
+    expect(formatStealthModuleInstallError(new Error('Network Error'))).toBe('Stealth Module install failed');
+    expect(formatStealthModuleInstallError(new Error('Failed to fetch'))).toBe('Stealth Module install failed');
+    expect(formatStealthModuleInstallError(new Error('   '))).toBe('Stealth Module install failed');
+  });
+
   it('preserves server detail for non-TypeError errors', () => {
     const err = Object.assign(new Error('insufficient credits'), {
       response: { data: { detail: 'Not enough credits for Stealth Module.' } },

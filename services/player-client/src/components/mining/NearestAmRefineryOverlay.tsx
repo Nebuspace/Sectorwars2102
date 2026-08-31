@@ -16,10 +16,23 @@ type NearestPayload = {
 
 const NEAREST_AM_REFINERY_FALLBACK = 'Nearest AM refinery lookup failed';
 
-/** Exported for TypeError/network honesty Vitest (LEG-3245). */
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+/** Exported for TypeError/network honesty Vitest (LEG-3245 / LEG-3298). */
 export function formatNearestAmRefineryError(err: unknown, fallback = NEAREST_AM_REFINERY_FALLBACK): string {
   if (err instanceof TypeError) return fallback;
-  if (err instanceof Error && err.message) return err.message;
+  if (err instanceof Error && err.message) {
+    if (isNetworkCollapseMessage(err.message)) return fallback;
+    return err.message;
+  }
   return fallback;
 }
 

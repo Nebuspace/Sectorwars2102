@@ -400,6 +400,19 @@ describe('EmpireResearchPanel', () => {
       expect(text).not.toMatch(/TypeError/i);
     });
 
+    it('formatEmpireResearchMutationError falls back on axios Network Error / Failed to fetch (LEG-3291)', () => {
+      expect(formatEmpireResearchMutationError(new Error('Network Error'), 'Could not start directive')).toBe(
+        'Could not start directive',
+      );
+      expect(formatEmpireResearchMutationError(new Error('Failed to fetch'), 'Could not start directive')).toBe(
+        'Could not start directive',
+      );
+      expect(formatEmpireResearchMutationError(new Error('   '), 'Could not start directive')).toBe(
+        'Could not start directive',
+      );
+      expect(formatEmpireResearchLoadError(new Error('Network Error'))).toBe('Failed to load research cockpit');
+    });
+
     it('formatEmpireResearchMutationError preserves server detail for non-TypeError errors', () => {
       expect(
         formatEmpireResearchMutationError(new Error('insufficient credits'), 'Could not start directive'),
