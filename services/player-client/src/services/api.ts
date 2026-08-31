@@ -139,6 +139,16 @@ export interface CombatHistoryResponse {
   offset: number;
 }
 
+/** POST /combat/retreat — flee current sector to a connected warp (LEG-3107). */
+export interface SectorRetreatResponse {
+  success: boolean;
+  message: string;
+  newSectorId?: number | null;
+  escapeChance?: number | null;
+  turnsConsumed: number;
+  turnsRemaining: number;
+}
+
 // Combat APIs
 export const combatAPI = {
   engage: (targetType: 'ship' | 'planet' | 'port', targetId: string) =>
@@ -152,6 +162,10 @@ export const combatAPI = {
 
   retreat: (combatId: string) =>
     apiRequest(`/api/v1/combat/${combatId}/retreat`, { method: 'POST' }),
+
+  /** Sector flee — random connected warp; costs 3 turns (LEG-3107). */
+  retreatFromSector: (): Promise<SectorRetreatResponse> =>
+    apiRequest('/api/v1/combat/retreat', { method: 'POST' }),
 
   /** Paginated own-combat log (LEG-372). Server scopes to current player. */
   getHistory: (opts?: { limit?: number; offset?: number }): Promise<CombatHistoryResponse> => {
@@ -528,8 +542,51 @@ export const planetaryAPI = {
     }),
 };
 
+/** GET/POST /station-security/stations/{id} — security tier readout + owner upgrade/downgrade (LEG-3105/3106). */
+export interface StationSecurityStatus {
+  station_id: string;
+  tier: 'none' | 'basic' | 'standard' | 'premium' | string;
+  pending_upgrade_to?: string | null;
+  upgrade_completes_at?: string | null;
+  pending_downgrade?: boolean;
+  downgrade_completes_at?: string | null;
+  upkeep_collected?: number;
+}
+
+export interface StationSecurityUpgradeResponse {
+  message: string;
+  station_id: string;
+  current_tier: string;
+  upgrade_to: string;
+  cost: number;
+  completes_at: string;
+  credits?: number;
+}
+
+export interface StationSecurityDowngradeResponse {
+  message: string;
+  station_id: string;
+  current_tier: string;
+  downgrade_to: string;
+  cost: number;
+  completes_at: string;
+}
+
 /** Station-protection tractor lock (Guarantee #2) — player responses. */
 export const stationSecurityAPI = {
+  getSecurityStatus: (stationId: string): Promise<StationSecurityStatus> =>
+    apiRequest(`/api/v1/station-security/stations/${stationId}`),
+
+  upgradeSecurity: (stationId: string): Promise<StationSecurityUpgradeResponse> =>
+    apiRequest(`/api/v1/station-security/stations/${stationId}/upgrade`, {
+      method: 'POST',
+    }),
+
+  downgradeSecurity: (stationId: string): Promise<StationSecurityDowngradeResponse> =>
+    apiRequest(`/api/v1/station-security/stations/${stationId}/downgrade`, {
+      method: 'POST',
+    }),
+
   getTractorLock: (stationId: string): Promise<{
     locked: boolean;
     reason?: string;
