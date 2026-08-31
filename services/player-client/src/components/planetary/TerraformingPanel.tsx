@@ -61,6 +61,9 @@ async function terraformingRequest(endpoint: string, options: RequestOptions = {
 }
 
 function terraformingServerDetail(err: unknown): string | undefined {
+  // Network collapse (fetch TypeError) is not gameserver copy.
+  if (err instanceof TypeError) return undefined;
+
   const message = err instanceof Error ? err.message : undefined;
   if (
     typeof message === 'string' &&
