@@ -5,6 +5,9 @@ import { useGame } from '../../contexts/GameContext';
 import './carrier-hangar-panel.css';
 
 function serverDetail(err: unknown): string | undefined {
+  // Network collapse (fetch TypeError) is not gameserver copy.
+  if (err instanceof TypeError) return undefined;
+
   if (err && typeof err === 'object') {
     const rawDetail = (err as { response?: { data?: { detail?: unknown } } }).response?.data
       ?.detail;
