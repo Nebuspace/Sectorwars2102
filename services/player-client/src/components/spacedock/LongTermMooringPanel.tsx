@@ -17,7 +17,11 @@ export const LONG_TERM_MOORING_MAX_DAYS = 30;
 
 type Busy = 'acquire' | 'release' | null;
 
-function errMessage(e: unknown): string {
+const MOORING_FAILED_FALLBACK = 'Long-term mooring request failed';
+
+/** Exported for TypeError/network honesty Vitest (LEG-3255). */
+export function errMessage(e: unknown): string {
+  if (e instanceof TypeError) return MOORING_FAILED_FALLBACK;
   if (e && typeof e === 'object') {
     const any = e as { message?: string; status?: number; data?: any };
     if (any.status === 409) {
@@ -36,7 +40,7 @@ function errMessage(e: unknown): string {
     }
     if (typeof any.message === 'string' && any.message) return any.message;
   }
-  return 'Long-term mooring request failed';
+  return MOORING_FAILED_FALLBACK;
 }
 
 const LongTermMooringPanel: React.FC = () => {
