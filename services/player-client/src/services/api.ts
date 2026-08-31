@@ -2742,6 +2742,17 @@ export type AriaDataStream = {
   transparency_visible: boolean;
 };
 
+export type AriaPersonalStoreExport = {
+  player_id: string;
+  memories: AriaMemory[];
+  related_row_counts: Record<string, number>;
+};
+
+export type AriaPersonalStoreReset = {
+  status: string;
+  deleted: Record<string, number>;
+};
+
 export const ariaMemoryAPI = {
   getMemories: (opts?: { memoryType?: string; limit?: number }): Promise<AriaMemory[]> => {
     const params = new URLSearchParams();
@@ -2752,6 +2763,12 @@ export const ariaMemoryAPI = {
   },
   getDataIndex: (): Promise<AriaDataStream[]> =>
     apiRequest('/api/v1/ai/data-index'),
+  /** LEG-415 / LEG-3121 — owner JWT export of decrypted personal store. */
+  exportPersonalStore: (): Promise<AriaPersonalStoreExport> =>
+    apiRequest('/api/v1/ai/memories/dump'),
+  /** LEG-415 / LEG-3121 — owner JWT reset of personal ARIA tables. */
+  resetPersonalStore: (): Promise<AriaPersonalStoreReset> =>
+    apiRequest('/api/v1/ai/memories/reset', { method: 'POST' }),
 };
 
 /** LEG-1937 — docked ARIA market-intelligence GET (owner JWT; 403 if not docked / cannot trade). */
