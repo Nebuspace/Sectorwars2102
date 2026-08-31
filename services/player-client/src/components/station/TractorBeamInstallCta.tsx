@@ -34,6 +34,32 @@ export function isTractorBeamHullCompatible(
   return (TRACTOR_BEAM_COMPATIBLE_HULLS as readonly string[]).includes(norm);
 }
 
+/** Normalize GS/API detail from axios-shaped response or Error.message. */
+function tractorBeamInstallServerDetail(err: unknown): string | undefined {
+  // Network collapse (fetch TypeError) is not gameserver copy.
+  if (err instanceof TypeError) return undefined;
+
+  if (err && typeof err === 'object') {
+    const rawDetail = (err as { response?: { data?: { detail?: unknown } } }).response?.data
+      ?.detail;
+    if (typeof rawDetail === 'string' && rawDetail.trim()) return rawDetail.trim();
+  }
+  const message = err instanceof Error ? err.message : undefined;
+  if (
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim())
+  ) {
+    return message.trim();
+  }
+  return undefined;
+}
+
+/** Surface gameserver tractor-beam install refusal detail. */
+export function formatTractorBeamInstallError(err: unknown): string {
+  return tractorBeamInstallServerDetail(err) ?? 'Tractor Beam install failed';
+}
+
 export interface TractorBeamInstallCtaProps {
   shipId?: string | null;
   shipType?: string | null;
@@ -112,13 +138,8 @@ const TractorBeamInstallCta: React.FC<TractorBeamInstallCtaProps> = ({
         message: result?.message,
       });
       void refreshEquipment();
-    } catch (err: any) {
-      const detail = err?.response?.data?.detail ?? err?.message;
-      setInstallError(
-        typeof detail === 'string' && detail
-          ? detail
-          : 'Tractor Beam install failed',
-      );
+    } catch (err: unknown) {
+      setInstallError(formatTractorBeamInstallError(err));
     } finally {
       setIsInstalling(false);
     }
