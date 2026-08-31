@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 /**
  * LEG-397 — MemoryJournalPanel Vitest (list / filter / empty / error).
+ * LEG-3121 — export + reset controls.
  */
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -8,15 +9,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockGetMemories = vi.fn();
 const mockGetDataIndex = vi.fn();
+const mockExportPersonalStore = vi.fn();
+const mockResetPersonalStore = vi.fn();
 
 vi.mock('../../../services/api', () => ({
   ariaMemoryAPI: {
     getMemories: (...a: unknown[]) => mockGetMemories(...a),
     getDataIndex: (...a: unknown[]) => mockGetDataIndex(...a),
+    exportPersonalStore: (...a: unknown[]) => mockExportPersonalStore(...a),
+    resetPersonalStore: (...a: unknown[]) => mockResetPersonalStore(...a),
   },
 }));
 
-import MemoryJournalPanel, { formatAriaMemoryLoadError } from '../MemoryJournalPanel';
+import MemoryJournalPanel, {
+  ariaMemoryExportFilename,
+  formatAriaMemoryLoadError,
+} from '../MemoryJournalPanel';
 
 const sampleMemory = {
   id: 'mem-1',
@@ -34,6 +42,8 @@ describe('MemoryJournalPanel', () => {
   beforeEach(() => {
     mockGetMemories.mockReset();
     mockGetDataIndex.mockReset();
+    mockExportPersonalStore.mockReset();
+    mockResetPersonalStore.mockReset();
     mockGetDataIndex.mockResolvedValue([
       {
         key: 'market',
@@ -148,5 +158,117 @@ describe('MemoryJournalPanel', () => {
       'ARIA memory recall temporarily unavailable',
     );
     expect(formatAriaMemoryLoadError(err)).toBe('ARIA memory recall temporarily unavailable');
+  });
+
+  it('exports personal store and triggers JSON download', async () => {
+    const exportPayload = {
+      player_id: 'player-1',
+      memories: [sampleMemory],
+      related_row_counts: { aria_personal_memories: 1 },
+    };
+    mockGetMemories.mockResolvedValue([sampleMemory]);
+    mockExportPersonalStore.mockResolvedValue(exportPayload);
+
+    const createObjectURL = vi.fn(() => 'blob:aria-export');
+    const revokeObjectURL = vi.fn();
+    const click = vi.fn();
+    const originalCreateElement = document.createElement.bind(document);
+    const createElementSpy = vi
+      .spyOn(document, 'createElement')
+      .mockImplementation((tag: string, options?: ElementCreationOptions) => {
+        if (tag === 'a') {
+          return { click, download: '', href: '' } as unknown as HTMLAnchorElement;
+        }
+        return originalCreateElement(tag, options);
+      });
+    vi.stubGlobal('URL', { createObjectURL, revokeObjectURL });
+
+    await act(async () => {
+      root.render(<MemoryJournalPanel />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const exportBtn = Array.from(container.querySelectorAll('button')).find(
+      (btn) => btn.textContent === 'Export',
+    );
+    expect(exportBtn).toBeTruthy();
+
+    await act(async () => {
+      exportBtn!.click();
+      await Promise.resolve();
+    });
+
+    expect(mockExportPersonalStore).toHaveBeenCalledTimes(1);
+    expect(createObjectURL).toHaveBeenCalled();
+    expect(click).toHaveBeenCalled();
+    expect(container.textContent).toContain('ARIA memory export downloaded.');
+
+    createElementSpy.mockRestore();
+    vi.unstubAllGlobals();
+  });
+
+  it('resets personal store after confirmation and reloads journal', async () => {
+    mockGetMemories.mockResolvedValueOnce([sampleMemory]).mockResolvedValueOnce([]);
+    mockResetPersonalStore.mockResolvedValue({
+      status: 'success',
+      deleted: { aria_personal_memories: 1 },
+    });
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    await act(async () => {
+      root.render(<MemoryJournalPanel />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const resetBtn = Array.from(container.querySelectorAll('button')).find(
+      (btn) => btn.textContent === 'Reset',
+    );
+    expect(resetBtn).toBeTruthy();
+
+    await act(async () => {
+      resetBtn!.click();
+      await Promise.resolve();
+    });
+
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(mockResetPersonalStore).toHaveBeenCalledTimes(1);
+    expect(mockGetMemories).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain('ARIA personal memory data reset.');
+
+    confirmSpy.mockRestore();
+  });
+
+  it('does not reset when confirmation is declined', async () => {
+    mockGetMemories.mockResolvedValue([sampleMemory]);
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+
+    await act(async () => {
+      root.render(<MemoryJournalPanel />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const resetBtn = Array.from(container.querySelectorAll('button')).find(
+      (btn) => btn.textContent === 'Reset',
+    );
+
+    await act(async () => {
+      resetBtn!.click();
+      await Promise.resolve();
+    });
+
+    expect(mockResetPersonalStore).not.toHaveBeenCalled();
+    confirmSpy.mockRestore();
+  });
+
+  it('builds a stable export filename', () => {
+    expect(ariaMemoryExportFilename(new Date('2026-08-31T03:00:00.000Z'))).toBe(
+      'aria-memory-export-2026-08-31T03-00-00-000Z.json',
+    );
   });
 });
