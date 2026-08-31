@@ -103,6 +103,25 @@ export function formatSpaceDockRegistryLookupError(
   return 'Lookup failed.';
 }
 
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+/** Collapse fetch/transport TypeErrors for spacedock shell actions (LEG-3325). */
+export function formatSpaceDockShellError(error: unknown, fallback: string): string {
+  if (error instanceof TypeError) return fallback;
+  if (error instanceof Error && error.message) {
+    if (isNetworkCollapseMessage(error.message)) return fallback;
+    return error.message;
+  }
+  return fallback;
+}
+
 // Venue type definitions
 type VenueType = 'hub' | 'trading' | 'shipyard' | 'construction' | 'portoffice' | 'contracts' | 'genesis' | 'armory' | 'services' | 'gambling' | 'mining' | 'refining';
 type GamblingGame = 'menu' | 'slots' | 'dice' | 'blackjack' | 'lottery';
@@ -1524,11 +1543,7 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
       Promise.allSettled([refreshPlayerState(), fetchShipData()]);
     } catch (error) {
       console.error('Mining laser install error:', error);
-      setLaserError(
-        error instanceof Error && error.message
-          ? error.message
-          : 'Mining laser install failed',
-      );
+      setLaserError(formatSpaceDockShellError(error, 'Mining laser install failed'));
     } finally {
       setLaserBusy(false);
     }
