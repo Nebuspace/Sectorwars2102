@@ -88,3 +88,30 @@ describe('AITradingDashboard scope errors (LEG-923)', () => {
     expect(msg).not.toMatch(/TypeError/i);
   });
 });
+
+describe('AITradingDashboard axios Network Error densify (LEG-3407)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('collapses axios-shaped Network Error on load to honest fallback', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
+
+    render(<AITradingDashboard />);
+
+    await waitFor(() => {
+      expect(api.get).toHaveBeenCalled();
+    });
+
+    await waitFor(() => {
+      const alert = document.querySelector('.alert-message');
+      expect(alert).toBeTruthy();
+      expect(alert?.textContent).toMatch(/Failed to load AI trading data/i);
+    });
+
+    const msg = document.querySelector('.alert-message')?.textContent ?? '';
+    expect(msg).not.toBe('Network Error');
+    expect(msg).not.toContain('Network Error');
+  });
+});
