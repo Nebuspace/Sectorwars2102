@@ -43,6 +43,36 @@ import { useGame } from './GameContext';
  */
 export const AUTOPILOT_POST_ARRIVE_MS = WARP_ARRIVE_MS;
 
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isAutopilotNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
+};
+
+/**
+ * Autopilot hop movement catch — prefer structured axios detail; densify
+ * TypeError / Failed to fetch to fallback. Exported for Vitest (LEG-3332).
+ */
+export function formatAutopilotMovementError(err: unknown, fallback = 'Movement failed'): string {
+  const e = err as {
+    response?: { data?: { detail?: unknown; message?: unknown } };
+    message?: string;
+  };
+  const raw = e?.response?.data?.detail ?? e?.response?.data?.message;
+  if (typeof raw === 'string' && raw.trim()) return raw;
+  if (err instanceof TypeError) return fallback;
+  if (!e?.response && typeof e?.message === 'string') {
+    if (isAutopilotNetworkCollapseMessage(e.message)) return fallback;
+    if (e.message.trim()) return e.message;
+  }
+  return fallback;
+}
+
 // Re-export plot types (canonical definitions live on navAPI / api.ts).
 export type { CourseHop, CoursePlot, CourseReachable, CourseUnreachable };
 
@@ -262,14 +292,10 @@ export const AutopilotProvider: React.FC<{ children: React.ReactNode }> = ({
         await wait(AUTOPILOT_POST_ARRIVE_MS);
         if (cancelledRef.current) return;
         void executeHop();
-      } catch (err: any) {
+      } catch (err: unknown) {
         if (cancelledRef.current) return;
-        const msg: string =
-          err?.response?.data?.detail ||
-          err?.message ||
-          'Movement failed';
         setStatus('paused');
-        setPauseReason(msg);
+        setPauseReason(formatAutopilotMovementError(err));
       }
     };
 
