@@ -307,6 +307,19 @@ interface TerraformStatus {
 // (server enforces the same MIN_TARGET; mirrored here for the inline reason).
 const TERRAFORM_MAX_HABITABILITY = 90;
 
+const TERRAFORMING_START_FAILED_FALLBACK = 'Terraforming start failed';
+
+/** Exported for TypeError/network honesty Vitest (LEG-3272). */
+export function formatTerraformingStartError(err: unknown): string {
+  if (err instanceof TypeError) return TERRAFORMING_START_FAILED_FALLBACK;
+  if (err instanceof Error && err.message) return err.message;
+  if (err && typeof err === 'object') {
+    const msg = (err as { message?: unknown }).message;
+    if (typeof msg === 'string' && msg) return msg;
+  }
+  return TERRAFORMING_START_FAILED_FALLBACK;
+}
+
 // Render an absolute estimatedCompletion (ISO) as a compact, human countdown
 // ("~3h 20m left" / "~12m left"). Falls back to null when the field is absent
 // (legacy projects) so the caller can degrade to the tick readout.
@@ -399,8 +412,9 @@ const TerraformHeaderPanel: React.FC<{
       // START debited the ladder credit cost server-side; re-pull player
       // state so the cockpit credit readout reflects the spend immediately.
       try { await refreshPlayerState(); } catch { /* non-fatal */ }
-    } catch (e: any) {
-      setError(e?.message || 'Terraforming start failed');
+    } catch (e: unknown) {
+      // TypeError/network → stable fallback (LEG-3272); keep server Error.detail.
+      setError(formatTerraformingStartError(e));
     } finally {
       setConfirming(false);
       setBusy(false);
