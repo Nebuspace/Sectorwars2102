@@ -45,6 +45,7 @@ vi.mock('../../../services/api', () => ({
   navAPI: {
     getChart: (...a: unknown[]) => mockGetChart(...a),
     plot: (...a: unknown[]) => mockPlot(...a),
+    getThreat: () => Promise.resolve([]),
   },
   regionOwnerAPI: { getMyRegion: (...a: unknown[]) => mockGetMyRegion(...a) },
   sectorAPI: { sectorWrecks: () => Promise.resolve([]), getContents: vi.fn().mockResolvedValue({ star: null, bodies: [] }), },
