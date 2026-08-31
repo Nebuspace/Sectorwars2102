@@ -527,6 +527,19 @@ EMERGENT_ACTIONS: Dict[str, EmergentAction] = {
             "contraband scan with cargo (+10 / evasion)"
         ),
     ),
+    # LEG-3377 — Fringe Alliance: "Survive a Suspect Status cycle (1+ hour) |
+    # +15 | one-shot per cycle" (factions-and-teams.md FA table, line 156).
+    # Wired at suspect_service.clear_expired_suspects when the scheduled cycle
+    # length (suspect_until − suspect_declared_at) is >= 1h; dedup ledger in
+    # player.settings prevents double-award within the same cycle anchor.
+    "SURVIVE_SUSPECT_CYCLE_FA": EmergentAction(
+        name="SURVIVE_SUSPECT_CYCLE_FA",
+        deltas=[FactionDelta(FactionType.OUTLAWS, 15)],
+        doc_source=(
+            "factions-and-teams.md FA: Survive a Suspect Status cycle "
+            "(1+ hour) (+15; one-shot per cycle)"
+        ),
+    ),
 }
 
 
