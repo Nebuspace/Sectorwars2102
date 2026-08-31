@@ -29,7 +29,9 @@ const formatCountdown = (ms: number): string => {
   return hours > 0 ? `${hours}:${mm}:${ss}` : `${mm}:${ss}`;
 };
 
-const errDetail = (e: unknown, fallback: string): string => {
+/** RefiningVenue surfaces errors via this panel — exported for TypeError densify tests. */
+export function formatCrystalRefiningError(e: unknown, fallback: string): string {
+  if (e instanceof TypeError) return fallback;
   if (e && typeof e === 'object') {
     const resp = (e as { response?: { data?: unknown } }).response;
     const data = resp?.data ?? (e as { data?: unknown }).data;
@@ -41,7 +43,7 @@ const errDetail = (e: unknown, fallback: string): string => {
     if (typeof msg === 'string' && msg) return msg;
   }
   return fallback;
-};
+}
 
 const CrystalRefiningPanel: React.FC<CrystalRefiningPanelProps> = ({
   shards,
@@ -110,7 +112,7 @@ const CrystalRefiningPanel: React.FC<CrystalRefiningPanelProps> = ({
           `Refined 1 Quantum Crystal (balance ${result.quantum_crystals ?? crystals + 1}).`,
       );
     } catch (e) {
-      setError(errDetail(e, 'Crystal refine rejected.'));
+      setError(formatCrystalRefiningError(e, 'Crystal refine rejected.'));
     } finally {
       setBusy(null);
     }
@@ -132,7 +134,7 @@ const CrystalRefiningPanel: React.FC<CrystalRefiningPanelProps> = ({
       }
       await afterSuccess(result.message || 'Lumen refine started — 12h wall clock.');
     } catch (e) {
-      setError(errDetail(e, 'Lumen refine start rejected.'));
+      setError(formatCrystalRefiningError(e, 'Lumen refine start rejected.'));
     } finally {
       setBusy(null);
     }
@@ -146,7 +148,7 @@ const CrystalRefiningPanel: React.FC<CrystalRefiningPanelProps> = ({
       const result = (await refiningAPI.collectLumen()) as { message?: string };
       await afterSuccess(result.message || 'Lumen Crystal collected.');
     } catch (e) {
-      setError(errDetail(e, 'Lumen collect rejected.'));
+      setError(formatCrystalRefiningError(e, 'Lumen collect rejected.'));
     } finally {
       setBusy(null);
     }

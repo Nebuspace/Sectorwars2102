@@ -766,6 +766,40 @@ class ContrabandService:
         }
 
     # ------------------------------------------------------------------
+    # Patrol scan (police-forces.md — contraband_scan_hit offense trigger)
+    # ------------------------------------------------------------------
+    def roll_patrol_contraband_scan(
+        self,
+        player: Player,
+        ship: Ship,
+    ) -> Dict[str, Any]:
+        """Read-only contraband roll when a player enters a patrolled sector.
+
+        Canon (police-forces.md:40,:179): passing patrol scans the hold;
+        ``P(detected) = 0.3 / max(1, ship.evasion / 10)``. A hit dispatches
+        police via ``route_engagement(..., offense_type="contraband_scan_hit")``
+        on the movement path — this method does NOT confiscate cargo or levy
+        fines (that is the customs/transit-scan path).
+        """
+        if ship is None:
+            return {"scanned": False, "detected": False, "reason": "no_ship"}
+        if self._worst_held_meta(self._cargo(ship).get("contents", {})) is None:
+            return {"scanned": False, "detected": False, "reason": "no_contraband"}
+
+        try:
+            evasion = float(getattr(ship, "evasion", 0) or 0)
+        except (TypeError, ValueError):
+            evasion = 0.0
+        p_detect = 0.3 / max(1.0, evasion / 10.0)
+        p_detect = self._clamp(p_detect, 0.0, 1.0)
+        detected = _RNG.random() < p_detect
+        return {
+            "scanned": True,
+            "detected": detected,
+            "probability": round(p_detect, 4),
+        }
+
+    # ------------------------------------------------------------------
     # Transit scan (WO-K2 — the movement-path detection hook)
     # ------------------------------------------------------------------
     def scan_in_transit(
