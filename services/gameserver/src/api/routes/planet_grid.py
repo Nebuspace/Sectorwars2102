@@ -184,6 +184,22 @@ def _ct1_kind(kind: str):
     return str(ct1) if ct1 else None
 
 
+def _apply_ct1_defense_decommission(planet: Planet, kind: str, db) -> bool:
+    """Decrement CT1 defense count and cancel citadel upgrade if prereqs break.
+
+    LEG-3147: ``handle_prerequisite_loss`` must run in the same transaction as
+    the defense-building decrement (citadels.md:329).
+    """
+    if not _bump_ct1_defense(planet, kind, -1):
+        return False
+    ct1 = _ct1_kind(kind)
+    if ct1:
+        from src.services.citadel_service import CitadelService
+
+        CitadelService(db).handle_prerequisite_loss(planet.id, ct1)
+    return True
+
+
 def _bump_ct1_defense(planet: Planet, kind: str, delta: int) -> bool:
     """± operational CT1 defense count on ``planet.active_events``. Returns True if mutated.
 
@@ -456,7 +472,7 @@ async def decommission_building(
     planet.structures = structures
     flag_modified(planet, "structures")
     removed = res.get("removed") if isinstance(res.get("removed"), dict) else {}
-    if _bump_ct1_defense(planet, str(removed.get("kind") or ""), -1):
+    if _apply_ct1_defense_decommission(planet, str(removed.get("kind") or ""), db):
         flag_modified(planet, "active_events")
     db.commit()
 
