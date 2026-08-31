@@ -21,6 +21,28 @@ interface ShipSelectorProps {
   onClose?: () => void;
 }
 
+const SHIP_CHANGE_FAILED_FALLBACK = 'Failed to change ship. Please try again.';
+
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isShipSelectorNetworkCollapse = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+/** Exported for TypeError/network honesty Vitest (LEG-3316). */
+export function formatShipSelectorError(err: unknown): string {
+  if (err instanceof TypeError) return SHIP_CHANGE_FAILED_FALLBACK;
+  if (err instanceof Error && err.message) {
+    if (isShipSelectorNetworkCollapse(err.message)) return SHIP_CHANGE_FAILED_FALLBACK;
+    return err.message;
+  }
+  return SHIP_CHANGE_FAILED_FALLBACK;
+}
+
 /* HANGAR console shell (Law 3) — module-level so React never remounts the
    frame (or the children) when the component re-renders between states.
    Renders just the framed instrument — no GameLayout wrapper (removed
@@ -159,7 +181,7 @@ export const ShipSelector: React.FC<ShipSelectorProps> = ({
         setTimeout(onClose, 500); // Brief delay to show success
       }
     } catch (err) {
-      setError('Failed to change ship. Please try again.');
+      setError(formatShipSelectorError(err));
       console.error('Ship change failed:', err);
     } finally {
       setIsChangingShip(false);

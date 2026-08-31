@@ -526,6 +526,33 @@ export function formatGetAvailableMovesError(err: unknown): string {
   return 'Failed to get available moves';
 }
 
+const isPlanetaryNetworkCollapse = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+/** Exported for planetary action TypeError/network honesty Vitest (LEG-3320). */
+export function formatPlanetaryActionError(err: unknown, fallback: string): string {
+  if (err instanceof TypeError) return fallback;
+  const any = err as {
+    response?: { data?: { detail?: string; message?: string } };
+    message?: string;
+  };
+  const detail = any.response?.data?.detail ?? any.response?.data?.message;
+  if (typeof detail === 'string' && detail.trim() && !isPlanetaryNetworkCollapse(detail)) {
+    return detail;
+  }
+  if (err instanceof Error && err.message) {
+    if (isPlanetaryNetworkCollapse(err.message)) return fallback;
+    return err.message;
+  }
+  return fallback;
+}
+
 export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const { user, isAuthenticated } = useAuth();
   const [isLoading, setIsLoading] = useState(false);
@@ -1089,7 +1116,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       // only unexpected failures should raise the global system alert.
       const status = error.response?.status;
       if (status !== 400 && status !== 403) {
-        setError(error.response?.data?.detail || error.response?.data?.message || 'Failed to claim planet');
+        setError(formatPlanetaryActionError(error, 'Failed to claim planet'));
       }
       throw error;
     }
@@ -1108,7 +1135,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       return data;
     } catch (error: any) {
       console.error('Error landing on planet:', error);
-      setError(error.response?.data?.detail || error.response?.data?.message || 'Failed to land on planet');
+      setError(formatPlanetaryActionError(error, 'Failed to land on planet'));
       throw error;
     }
   };
@@ -1125,7 +1152,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       return data;
     } catch (error: any) {
       console.error('Error leaving planet:', error);
-      setError(error.response?.data?.detail || error.response?.data?.message || 'Failed to leave planet');
+      setError(formatPlanetaryActionError(error, 'Failed to leave planet'));
       throw error;
     }
   };
@@ -1142,7 +1169,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       return data;
     } catch (error: any) {
       console.error('Error renaming planet:', error);
-      setError(error.response?.data?.detail || error.response?.data?.message || 'Failed to rename planet');
+      setError(formatPlanetaryActionError(error, 'Failed to rename planet'));
       throw error;
     }
   };
@@ -1199,7 +1226,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       return data;
     } catch (error: any) {
       console.error('Error updating planet defenses:', error);
-      setError(error.response?.data?.detail || 'Failed to update defenses');
+      setError(formatPlanetaryActionError(error, 'Failed to update defenses'));
       throw error;
     }
   };
@@ -1218,7 +1245,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       return data;
     } catch (error: any) {
       console.error('Error upgrading building:', error);
-      setError(error.response?.data?.detail || 'Failed to upgrade building');
+      setError(formatPlanetaryActionError(error, 'Failed to upgrade building'));
       throw error;
     }
   };
@@ -1243,7 +1270,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       // apiRequest attaches `.status` (axios `.response.status` for raw calls).
       const status = error.status ?? error.response?.status;
       if (status !== 400 && status !== 403) {
-        setError(error.response?.data?.detail || error.message || 'Failed to transfer colonists');
+        setError(formatPlanetaryActionError(error, 'Failed to transfer colonists'));
       }
       throw error;
     }

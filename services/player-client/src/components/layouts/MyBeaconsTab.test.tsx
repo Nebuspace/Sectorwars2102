@@ -36,6 +36,7 @@ vi.mock('../../contexts/GameContext', () => ({
 
 import MyBeaconsTab, {
   formatBeaconDeployError,
+  formatBeaconLoadError,
   formatBeaconRowActionError,
 } from './MyBeaconsTab';
 
@@ -141,7 +142,7 @@ describe('MyBeaconsTab', () => {
     await mount();
 
     const errorEl = container.querySelector('.sb-beacons-error');
-    expect(errorEl?.textContent).toBe('Failed to load your beacons');
+    expect(errorEl?.textContent).toBe('Network down');
     expect(errorEl?.getAttribute('role')).toBe('alert');
   });
 
@@ -260,6 +261,24 @@ describe('MyBeaconsTab', () => {
     expect(text).toBe('Action failed');
     expect(text).not.toMatch(/Failed to fetch/i);
     expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('formatBeaconLoadError falls back on TypeError network collapse (LEG-3317)', () => {
+    const text = formatBeaconLoadError(new TypeError('Failed to fetch'));
+    expect(text).toBe('Failed to load your beacons');
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('load TypeError surfaces fallback without Failed to fetch / TypeError in DOM (LEG-3317)', async () => {
+    mockMine.mockRejectedValue(new TypeError('Failed to fetch'));
+    await mount();
+
+    const err = container.querySelector('.sb-beacons-error');
+    expect(err?.textContent).toBe('Failed to load your beacons');
+    expect(err?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(err?.textContent).not.toMatch(/TypeError/i);
+    expect(container.textContent).not.toMatch(/Failed to fetch/i);
   });
 
 });
