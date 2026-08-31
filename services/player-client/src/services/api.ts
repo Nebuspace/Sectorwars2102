@@ -528,8 +528,22 @@ export const planetaryAPI = {
     }),
 };
 
+/** GET /station-security/stations/{id} — on-dock security tier readout. */
+export interface StationSecurityStatus {
+  station_id: string;
+  tier: 'none' | 'basic' | 'standard' | 'premium' | string;
+  pending_upgrade_to?: string | null;
+  upgrade_completes_at?: string | null;
+  pending_downgrade?: boolean;
+  downgrade_completes_at?: string | null;
+  upkeep_collected?: number;
+}
+
 /** Station-protection tractor lock (Guarantee #2) — player responses. */
 export const stationSecurityAPI = {
+  getSecurityStatus: (stationId: string): Promise<StationSecurityStatus> =>
+    apiRequest(`/api/v1/station-security/stations/${stationId}`),
+
   getTractorLock: (stationId: string): Promise<{
     locked: boolean;
     reason?: string;
