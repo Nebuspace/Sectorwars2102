@@ -47,6 +47,7 @@ from src.models.faction import Faction, FactionType
 from src.models.player import Player
 from src.models.reputation import Reputation
 from src.services.faction_service import FACTION_RIVALRIES, apply_faction_rep_delta
+from src.services.multi_account_service import participation_weight
 
 logger = logging.getLogger(__name__)
 
@@ -821,14 +822,18 @@ class EmergentReputationService:
                     if pool_clamped:
                         award = remaining
 
+                    pw = participation_weight(self.db, player_id)
+                    award = int(round(award * pw))
+
                     if award <= 0:
                         # Event happened (cargo delivered / NPC killed) but the
-                        # rep delta drops to 0 (N-V1) or the cap left no room.
+                        # rep delta drops to 0 (N-V1), the cap left no room, or
+                        # participation_weight discounted it away (HARD → 0).
                         logger.info(
                             "Throttle: %s rep award for player %s faction %s "
-                            "clamped to 0 (cap=%s pool=%s; pool used %d/%d)",
+                            "clamped to 0 (cap=%s pool=%s pw=%s; pool used %d/%d)",
                             action, player_id, fcode, cap_clamped, pool_clamped,
-                            int(bucket["global_rep"]), GLOBAL_REP_POOL_PER_DAY,
+                            pw, int(bucket["global_rep"]), GLOBAL_REP_POOL_PER_DAY,
                         )
                         applied.append({
                             "faction": fd.faction.name,
@@ -837,8 +842,11 @@ class EmergentReputationService:
                             "applied": False,
                             "direct": True,
                             "throttled": (
-                                "global_pool" if pool_clamped else "combined_cap"
+                                "participation_weight"
+                                if pw == 0.0
+                                else ("global_pool" if pool_clamped else "combined_cap")
                             ),
+                            "participation_weight": pw,
                         })
                         continue
 
@@ -854,6 +862,7 @@ class EmergentReputationService:
                         "direct": True,
                         "cap_clamped": cap_clamped,
                         "pool_clamped": pool_clamped,
+                        "participation_weight": pw,
                     })
 
                     # 2) Rivalry cascade — fires on an actually-awarded
