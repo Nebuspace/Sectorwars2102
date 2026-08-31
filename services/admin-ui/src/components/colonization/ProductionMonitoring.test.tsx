@@ -178,4 +178,38 @@ describe('ProductionMonitoring (LEG-3194)', () => {
     expect(alert).not.toBe('Failed to fetch');
     expect(alert).not.toMatch(/Failed to load production data/i);
   });
+
+  it('collapses axios-shaped Network Error to gameserver-unreachable fallback (LEG-3337)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
+
+    render(<ProductionMonitoring />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Gameserver unreachable|network error fetching production/i);
+    expect(alert).not.toBe('Network Error');
+    expect(alert).not.toContain('Network Error');
+    expect(alert).not.toContain('Failed to fetch');
+    expect(alert).not.toContain('TypeError');
+  });
+
+  it('collapses non-TypeError Failed to fetch to gameserver-unreachable fallback (LEG-3337)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Failed to fetch'));
+
+    render(<ProductionMonitoring />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Gameserver unreachable|network error fetching production/i);
+    expect(alert).not.toBe('Failed to fetch');
+    expect(alert).not.toContain('Failed to fetch');
+    expect(alert).not.toContain('Network Error');
+    expect(alert).not.toContain('TypeError');
+  });
 });
