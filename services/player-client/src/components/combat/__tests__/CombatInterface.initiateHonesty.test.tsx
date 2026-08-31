@@ -30,4 +30,11 @@ describe('formatCombatInitiateError', () => {
       'Combat action rate limit exceeded — wait a moment and try again.',
     );
   });
+
+  it('falls back on TypeError network collapse (LEG-3060)', () => {
+    const text = formatCombatInitiateError(new TypeError('Failed to fetch'));
+    expect(text).toMatch(/Combat system error\. Please try again\./i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
 });

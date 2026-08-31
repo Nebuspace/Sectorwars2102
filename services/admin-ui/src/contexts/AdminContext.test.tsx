@@ -272,6 +272,25 @@ describe('AdminContext / AdminProvider', () => {
     );
   });
 
+  it('surfaces honest fallback on loadAdminStats TypeError/network collapse (LEG-3061)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+    const user = userEvent.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>
+    );
+
+    await user.click(screen.getByText('load-stats'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error')).toHaveTextContent('Failed to load admin statistics'),
+    );
+    expect(screen.getByTestId('error').textContent).not.toMatch(/Failed to fetch/i);
+    expect(screen.getByTestId('error').textContent).not.toMatch(/TypeError/i);
+  });
+
   it('surfaces loadUsers 429 as admin rate-limit (LEG-1254)', async () => {
     mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
     vi.mocked(api.get).mockRejectedValue(httpErr(429));
