@@ -40,7 +40,7 @@ vi.mock('../../../services/api', () => ({
   },
 }));
 
-import GridManager from '../GridManager';
+import GridManager, { formatGridLoadError, formatGridActionError } from '../GridManager';
 import type { ComponentProps } from 'react';
 
 const catalogEntry = (overrides: Record<string, unknown> = {}) => ({
@@ -531,5 +531,78 @@ describe('GridManager', () => {
         "Research tool 'grid_survey' is not unlocked",
       );
     });
+  });
+});
+
+describe('GridManager TypeError densify (LEG-3263)', () => {
+  let container: HTMLElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    mockGetGrid.mockReset();
+    mockPlace.mockReset();
+    mockGetGrid.mockResolvedValue(gridView());
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  const mount = async () => {
+    await act(async () => {
+      root.render(<GridManager planetId="planet-1" playerCredits={1000} />);
+    });
+    await flush();
+  };
+
+  it('formatGridLoadError falls back on TypeError network collapse', () => {
+    const text = formatGridLoadError(new TypeError('Failed to fetch'));
+    expect(text).toBe('Failed to load planet grid');
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('formatGridActionError falls back on TypeError network collapse', () => {
+    const text = formatGridActionError(new TypeError('Failed to fetch'), 'Placement failed');
+    expect(text).toBe('Placement failed');
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('load TypeError surfaces fallback without Failed to fetch / TypeError in DOM', async () => {
+    mockGetGrid.mockRejectedValue(new TypeError('Failed to fetch'));
+    await mount();
+
+    const err = container.querySelector('.grid-error');
+    expect(err?.textContent).toContain('Failed to load planet grid');
+    expect(err?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(err?.textContent).not.toMatch(/TypeError/i);
+    expect(container.textContent).not.toMatch(/Failed to fetch/i);
+    expect(container.textContent).not.toMatch(/TypeError/i);
+  });
+
+  it('place TypeError surfaces fallback inside popup without Failed to fetch / TypeError in DOM', async () => {
+    mockPlace.mockRejectedValue(new TypeError('Failed to fetch'));
+    await mount();
+    await act(async () => {
+      (container.querySelector('.grid-cell.placeable') as HTMLButtonElement).click();
+    });
+    await act(async () => {
+      (container.querySelector('.catalog-item') as HTMLButtonElement).click();
+    });
+    await flush();
+
+    const err = container.querySelector('.grid-popup-error');
+    expect(err?.textContent).toContain('Placement failed');
+    expect(err?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(err?.textContent).not.toMatch(/TypeError/i);
+    expect(container.textContent).not.toMatch(/Failed to fetch/i);
+    expect(container.textContent).not.toMatch(/TypeError/i);
   });
 });
