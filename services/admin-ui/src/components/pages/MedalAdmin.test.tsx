@@ -763,8 +763,9 @@ describe('MedalAdmin Network Error densify (LEG-3355)', () => {
       }
       return { data: { players: [{ id: 'p1', username: 'Ace' }] } };
     });
-    vi.mocked(api.post).mockImplementation(async (_url: string, body: { dry_run?: boolean }) => {
-      if (body?.dry_run) {
+    vi.mocked(api.post).mockImplementation(async (_url: string, body?: unknown) => {
+      const payload = body as { dry_run?: boolean } | undefined;
+      if (payload?.dry_run) {
         return {
           data: {
             success: true,
