@@ -180,6 +180,16 @@ describe('GovSummaryTab', () => {
     expect(text).not.toMatch(/TypeError/i);
   });
 
+  it('does not crash on a fully malformed (empty object) membership response', async () => {
+    mockCurrentSector = { region_id: 'region-1' };
+    mockGetMyMembership.mockResolvedValue({});
+
+    await expect(mount()).resolves.not.toThrow();
+    expect(container.querySelector('.sb-gov-error')).toBeNull();
+    expect(container.textContent).toContain('Not Yet a Citizen');
+    expect(mockListElections).not.toHaveBeenCalled();
+  });
+
   it('surfaces honest load fallback when getMyMembership rejects with TypeError', async () => {
     mockCurrentSector = { region_id: 'region-1' };
     mockGetMyMembership.mockRejectedValue(new TypeError('Failed to fetch'));

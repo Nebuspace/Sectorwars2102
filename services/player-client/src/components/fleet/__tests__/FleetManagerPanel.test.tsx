@@ -204,6 +204,31 @@ describe('FleetManagerPanel', () => {
     expect(container.querySelector('[data-testid="fleet-empty"]')?.textContent).toMatch(/No fleets/);
   });
 
+  it('does not crash on malformed getFleets payloads (empty object / non-array)', async () => {
+    getFleets.mockResolvedValue({});
+    await act(async () => {
+      root.render(<FleetManagerPanel />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(container.querySelector('[data-testid="fleet-empty"]')?.textContent).toMatch(/No fleets/);
+    expect(container.querySelector('[data-testid="fleet-manager-error"]')).toBeNull();
+  });
+
+  it('surfaces honest fleet error when getFleets rejects with TypeError', async () => {
+    getFleets.mockRejectedValue(new TypeError('Failed to fetch'));
+    await act(async () => {
+      root.render(<FleetManagerPanel />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const errEl = container.querySelector('[data-testid="fleet-manager-error"]');
+    expect(errEl?.textContent).toMatch(/Fleet request failed/i);
+    expect(errEl?.textContent).not.toMatch(/Failed to fetch/i);
+  });
+
   it('lists fleets and loads composition on select', async () => {
     getFleets.mockResolvedValue([sampleFleet]);
     getFleetMembers.mockResolvedValue([
