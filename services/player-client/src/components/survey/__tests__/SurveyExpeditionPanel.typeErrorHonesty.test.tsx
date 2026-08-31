@@ -55,6 +55,13 @@ describe('formatSurveyExpeditionError TypeError densify (LEG-3154)', () => {
       'expedition_denied',
     );
   });
+
+  it('falls back on axios Network Error / Failed to fetch non-TypeError (LEG-3288)', () => {
+    const fallback = 'Failed to launch expedition';
+    expect(formatSurveyExpeditionError(new Error('Network Error'), fallback)).toBe(fallback);
+    expect(formatSurveyExpeditionError(new Error('Failed to fetch'), fallback)).toBe(fallback);
+    expect(formatSurveyExpeditionError(new Error(''), fallback)).toBe(fallback);
+  });
 });
 
 describe('SurveyExpeditionPanel integration TypeError densify (LEG-3154)', () => {
