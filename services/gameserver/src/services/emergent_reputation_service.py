@@ -515,6 +515,18 @@ EMERGENT_ACTIONS: Dict[str, EmergentAction] = {
             "whitelist warp gate (TF −5, FC +5, FA +5, SS +10; MG/AM/NS/PI 0)"
         ),
     ),
+    # LEG-3375 — Fringe Alliance: "Successfully evade a Federation contraband
+    # scan with cargo | +10 / evasion" (factions-and-teams.md FA table, line 153).
+    # Wired at contraband_service.scan_in_transit on the CLEAN transit path only
+    # (scanned=True, detected=False) — not sell-side, not patrol, not cooldown skip.
+    "CONTRABAND_TRANSIT_EVADE_FA": EmergentAction(
+        name="CONTRABAND_TRANSIT_EVADE_FA",
+        deltas=[FactionDelta(FactionType.OUTLAWS, 10)],
+        doc_source=(
+            "factions-and-teams.md FA: Successfully evade a Federation "
+            "contraband scan with cargo (+10 / evasion)"
+        ),
+    ),
 }
 
 
