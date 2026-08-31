@@ -67,14 +67,17 @@ const normalizeDrone = (raw: unknown): DroneRow | null => {
   };
 };
 
-const errorMessage = (error: unknown, fallback: string): string => {
+/** TypeError (fetch network collapse) → fallback; preserve axios/gameserver detail otherwise. */
+export function formatDroneFleetError(error: unknown, fallback: string): string {
+  if (error instanceof TypeError) return fallback;
   const e = asRecord(error);
   const response = asRecord(e?.response);
   const data = asRecord(response?.data);
   const raw = data?.detail ?? data?.message ?? e?.message;
   if (typeof raw === 'string' && raw) return raw;
+  if (error instanceof Error && error.message) return error.message;
   return fallback;
-};
+}
 
 export const DroneFleetPanel: React.FC = () => {
   const { currentSector, playerState } = useGame();
@@ -125,7 +128,7 @@ export const DroneFleetPanel: React.FC = () => {
         : [];
       setDeployments(deploymentRows);
     } catch (err) {
-      setError(errorMessage(err, 'Could not load drone fleet.'));
+      setError(formatDroneFleetError(err, 'Could not load drone fleet.'));
     } finally {
       setLoading(false);
     }
@@ -144,7 +147,7 @@ export const DroneFleetPanel: React.FC = () => {
     try {
       await fn();
     } catch (err) {
-      setError(errorMessage(err, 'Drone fleet action failed.'));
+      setError(formatDroneFleetError(err, 'Drone fleet action failed.'));
     } finally {
       setBusy(null);
     }
