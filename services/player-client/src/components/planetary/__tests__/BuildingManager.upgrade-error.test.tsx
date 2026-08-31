@@ -25,4 +25,14 @@ describe('formatBuildingUpgradeError (LEG-2877)', () => {
     expect(text).not.toMatch(/Failed to fetch/i);
     expect(text).not.toMatch(/TypeError/i);
   });
+
+  it('falls back on axios Network Error / Failed to fetch non-TypeError (LEG-3277)', () => {
+    expect(formatBuildingUpgradeError(new Error('Failed to fetch'))).toBe(
+      'Failed to upgrade building',
+    );
+    expect(formatBuildingUpgradeError(new Error('Network Error'))).toBe(
+      'Failed to upgrade building',
+    );
+    expect(formatBuildingUpgradeError(new Error('   '))).toBe('Failed to upgrade building');
+  });
 });
