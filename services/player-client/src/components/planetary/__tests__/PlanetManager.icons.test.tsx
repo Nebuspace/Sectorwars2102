@@ -46,7 +46,10 @@ vi.mock('../../../contexts/WebSocketContext', () => ({
   useWebSocket: () => ({ planetaryEventSignal: 0 }),
 }));
 
+import { gameAPI } from '../../../services/api';
 import { PlanetManager } from '../PlanetManager';
+
+const getOwnedPlanets = gameAPI.planetary.getOwnedPlanets as ReturnType<typeof vi.fn>;
 
 describe('PlanetManager — colony roster column glyphs', () => {
   let container: HTMLElement;
@@ -56,6 +59,7 @@ describe('PlanetManager — colony roster column glyphs', () => {
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
+    getOwnedPlanets.mockReset().mockResolvedValue({ planets: [PLANET] });
   });
 
   afterEach(async () => {
@@ -80,5 +84,47 @@ describe('PlanetManager — colony roster column glyphs', () => {
     expect(headers.some((h) => h?.startsWith(`${resourceIcon('fuel')} Fuel`))).toBe(true);
     expect(headers.some((h) => h?.startsWith(`${resourceIcon('organics')} Org`))).toBe(true);
     expect(headers.some((h) => h?.startsWith(`${resourceIcon('equipment')} Equip`))).toBe(true);
+  });
+});
+
+describe('PlanetManager TypeError densify (LEG-3269)', () => {
+  let container: HTMLElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    getOwnedPlanets.mockReset();
+  });
+
+  afterEach(async () => {
+    await act(async () => { root.unmount(); });
+    container.remove();
+    vi.clearAllMocks();
+  });
+
+  it('load TypeError surfaces Failed to load planets without Failed to fetch / TypeError', async () => {
+    getOwnedPlanets.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await act(async () => {
+      root.render(
+        <EmbeddedContext.Provider value={true}>
+          <PlanetManager />
+        </EmbeddedContext.Provider>
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const err = container.querySelector('.planet-manager.error .planet-scan-text.warning');
+    expect(err?.textContent).toBe('Failed to load planets');
+    expect(err?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(err?.textContent).not.toMatch(/TypeError/i);
+    expect(container.textContent).not.toMatch(/Failed to fetch/i);
+    expect(container.textContent).not.toMatch(/TypeError/i);
   });
 });

@@ -12,11 +12,31 @@ import { useGame, type Planet, type MigrationContract, type PioneerOffice } from
 const COHORT_PRESETS = [100, 500, 1000, 5000, 10000];
 const MAX_COHORT = 10000;
 
-const axiosErrorMessage = (error: unknown, fallback: string): string => {
+/** Network-collapse / empty transport noise — never leak into .po-error (LEG-3266). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
+};
+
+/**
+ * Prefer structured API detail/message; densify TypeError / Failed to fetch /
+ * Network Error / empty transport noise to the caller fallback. Exported for
+ * TypeError densify Vitest (LEG-3266).
+ */
+export const axiosErrorMessage = (error: unknown, fallback: string): string => {
   const e = error as { response?: { data?: { detail?: unknown; message?: unknown } }; message?: string };
   const raw = e?.response?.data?.detail ?? e?.response?.data?.message;
   if (typeof raw === 'string' && raw) return raw;
-  if (!e?.response && typeof e?.message === 'string' && e.message) return e.message;
+  if (error instanceof TypeError) return fallback;
+  if (!e?.response && typeof e?.message === 'string') {
+    if (isNetworkCollapseMessage(e.message)) return fallback;
+    if (e.message.trim()) return e.message;
+  }
   return fallback;
 };
 
