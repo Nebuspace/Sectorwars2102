@@ -110,7 +110,7 @@ const GovSummaryTab: React.FC = () => {
         return (governanceAPI.listElections(regionId) as Promise<Election[]>)
           .then((electionData) => {
             if (cancelled) return;
-            setElections(electionData || []);
+            setElections(Array.isArray(electionData) ? electionData : []);
           })
           .finally(() => {
             if (!cancelled) setLoading(false);
