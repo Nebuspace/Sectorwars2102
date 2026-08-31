@@ -16,7 +16,7 @@ vi.mock('../../../services/api', () => ({
   },
 }));
 
-import Leaderboard from '../Leaderboard';
+import Leaderboard, { formatLeaderboardLoadError } from '../Leaderboard';
 
 const apiRequestError = (status: number, message?: string) => {
   const err = new Error(message ?? `API Error: ${status}`);
@@ -247,4 +247,12 @@ describe('Leaderboard', () => {
     expect(container.querySelector('[data-testid="player-name-plate-medal"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="player-name-plate-count"]')).toBeNull();
   });
+
+  it('formatLeaderboardLoadError falls back on TypeError network collapse (LEG-3016)', () => {
+    const text = formatLeaderboardLoadError(new TypeError('Failed to fetch'));
+    expect(text).toMatch(/Failed to load leaderboard/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
 });

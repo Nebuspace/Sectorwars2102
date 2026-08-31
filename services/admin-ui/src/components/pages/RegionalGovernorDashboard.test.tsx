@@ -163,6 +163,32 @@ describe('RegionalGovernorDashboard (LEG-213)', () => {
     expect(screen.queryByText('Failed to load regional stats')).toBeNull();
   });
 
+  it('surfaces honest fallback on stats load TypeError/network collapse (LEG-3032)', async () => {
+    // Outer loadRegionalData 'Failed to load regional data' catch is unreachable when
+    // per-loader try/catch swallows — densify the live stats path (invent=0).
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url === '/api/v1/regions/my-region') return { data: region };
+      if (url === '/api/v1/regions/my-region/stats') {
+        throw new TypeError('Failed to fetch');
+      }
+      if (url.endsWith('/policies')) return { data: [] };
+      if (url.endsWith('/elections')) return { data: [] };
+      if (url.endsWith('/treaties')) return { data: [] };
+      if (url.endsWith('/members')) return { data: [] };
+      return { data: {} };
+    });
+
+    render(<RegionalGovernorDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/Failed to load regional stats/i);
+    });
+    const msg = screen.getByRole('alert').textContent ?? '';
+    expect(msg).not.toMatch(/Failed to fetch/i);
+    expect(msg).not.toMatch(/TypeError/i);
+  });
+
   it('shows admin rate-limit copy on 429 economy save', async () => {
     render(<RegionalGovernorDashboard />);
     await waitFor(() => expect(screen.getByText('Sol Reach')).toBeTruthy());
@@ -445,6 +471,120 @@ describe('BeaconSectorCap (LEG-1014)', () => {
     });
     await waitFor(() => {
       expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
+    });
+  });
+});
+
+describe('RegionalGovernorDashboard region terminate (LEG-3206)', () => {
+  beforeEach(() => {
+    vi.mocked(useAuth).mockReturnValue({ user: { is_admin: true } } as any);
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    mockRegionalGets(false);
+  });
+
+  it('shows admin danger zone and posts terminate with reason + confirm header', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url === '/api/v1/regions/my-region') return { data: region };
+      if (url.endsWith('/stats')) return { data: {} };
+      if (url.endsWith('/policies')) return { data: [] };
+      if (url.endsWith('/elections')) return { data: [] };
+      if (url.endsWith('/treaties')) return { data: [] };
+      if (url.endsWith('/members')) return { data: [] };
+      if (url.includes('/terminate-preview')) {
+        return {
+          data: {
+            regionId: region.id,
+            regionName: region.name,
+            displayName: region.display_name,
+            status: 'active',
+            regionType: 'player_owned',
+            planetCount: 1,
+            stationCount: 0,
+            sectorCount: 12,
+            playerStakeholderCount: 0,
+            terminable: true,
+          },
+        };
+      }
+      if (url === '/api/v1/admin/regions') return { data: { regions: [region] } };
+      return { data: {} };
+    });
+    vi.mocked(api.post).mockResolvedValue({ data: { success: true } });
+
+    render(<RegionalGovernorDashboard />);
+    await waitFor(() => screen.getByText('Sol Reach'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Terminate Region…' }));
+    await waitFor(() => screen.getByLabelText(/Type the region name/i));
+
+    fireEvent.change(screen.getByLabelText(/Type the region name/i), {
+      target: { value: region.name },
+    });
+    fireEvent.change(screen.getByLabelText(/Reason \(required/i), {
+      target: { value: 'nonpayment' },
+    });
+    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.click(screen.getByRole('button', { name: 'Terminate Region' }));
+
+    await waitFor(() => {
+      expect(vi.mocked(api.post)).toHaveBeenCalledWith(
+        `/api/v1/admin/regions/${region.id}/terminate`,
+        { reason: 'nonpayment' },
+        expect.objectContaining({
+          headers: expect.objectContaining({ 'X-Confirm-Region-Name': region.name }),
+        }),
+      );
+    });
+  });
+
+  it('surfaces scope denial on terminate POST 403', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url === '/api/v1/regions/my-region') return { data: region };
+      if (url.endsWith('/stats')) return { data: {} };
+      if (url.endsWith('/policies')) return { data: [] };
+      if (url.endsWith('/elections')) return { data: [] };
+      if (url.endsWith('/treaties')) return { data: [] };
+      if (url.endsWith('/members')) return { data: [] };
+      if (url.includes('/terminate-preview')) {
+        return {
+          data: {
+            regionId: region.id,
+            regionName: region.name,
+            displayName: region.display_name,
+            status: 'active',
+            regionType: 'player_owned',
+            planetCount: 0,
+            stationCount: 0,
+            sectorCount: 0,
+            playerStakeholderCount: 0,
+            terminable: true,
+          },
+        };
+      }
+      if (url === '/api/v1/admin/regions') return { data: { regions: [region] } };
+      return { data: {} };
+    });
+    vi.mocked(api.post).mockRejectedValue(
+      httpErr(403, 'Missing scope admin.regions.terminate'),
+    );
+
+    render(<RegionalGovernorDashboard />);
+    await waitFor(() => screen.getByText('Sol Reach'));
+    fireEvent.click(screen.getByRole('button', { name: 'Terminate Region…' }));
+    await waitFor(() => screen.getByLabelText(/Type the region name/i));
+
+    fireEvent.change(screen.getByLabelText(/Type the region name/i), {
+      target: { value: region.name },
+    });
+    fireEvent.change(screen.getByLabelText(/Reason \(required/i), {
+      target: { value: 'test' },
+    });
+    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.click(screen.getByRole('button', { name: 'Terminate Region' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/Missing scope admin\.regions\.terminate/i);
     });
   });
 });

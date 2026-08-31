@@ -341,6 +341,24 @@ describe('FleetManagement ship CRUD+teleport formatAdminApiError (LEG-2395)', ()
     });
   });
 
+  it('surfaces honest fallback on update PUT TypeError/network collapse (LEG-2973)', async () => {
+    await readyFleet();
+    vi.mocked(api.put).mockRejectedValue(new TypeError('Failed to fetch'));
+    fireEvent.click(screen.getByLabelText('Edit Ship'));
+    fireEvent.submit(modalForm(/Edit Ship/));
+
+    await waitFor(() => {
+      expect(api.put).toHaveBeenCalledWith(
+        `/api/v1/admin/ships/${sampleShip.id}`,
+        expect.anything(),
+      );
+    });
+    const msg = String(toastError.mock.calls.map((call) => call[0]).join('\n'));
+    expect(msg).toMatch(/Failed to update ship/i);
+    expect(msg).not.toMatch(/Failed to fetch/i);
+    expect(msg).not.toMatch(/TypeError/i);
+  });
+
   it('delete 403 surfaces formatAdminApiError fleet-manage scope copy', async () => {
     await readyFleet();
     vi.mocked(api.delete).mockRejectedValue({
@@ -395,5 +413,29 @@ describe('FleetManagement ship CRUD+teleport formatAdminApiError (LEG-2395)', ()
     await waitFor(() => {
       expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/rate limit/i));
     });
+  });
+});
+
+describe('FleetManagement TypeError densify (LEG-3067)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    toastSuccess.mockReset();
+    toastError.mockReset();
+  });
+
+  it('surfaces honest fallback on fleet load network collapse', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<FleetManagement />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to fetch fleet data/i)).toBeTruthy();
+    });
+
+    const text = screen.getByText(/Failed to fetch fleet data/i).textContent ?? '';
+    expect(text).toMatch(/Failed to fetch fleet data/i);
+    expect(text).not.toMatch(/TypeError/i);
+    // Raw TypeError.message alone — not the invent=0 fallback phrase
+    expect(text).not.toBe('Failed to fetch');
   });
 });

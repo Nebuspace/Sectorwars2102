@@ -2,6 +2,10 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { formatAdminApiError, axiosResponseStatus } from '../../utils/adminApiError';
 import { api } from '../../utils/auth';
+import { postRegionTerminate } from '../../services/regionTerminateApi';
+import RegionTerminateConfirmDialog, {
+  formatRegionTerminateError,
+} from './RegionTerminateConfirmDialog';
 import './regional-governor-dashboard.css';
 
 interface Region {
@@ -151,6 +155,11 @@ const RegionalGovernorDashboard: React.FC = () => {
   const [beaconCap, setBeaconCap] = useState<number | null>(null);
   const [beaconCapInput, setBeaconCapInput] = useState<number>(10);
   const [beaconCapLoading, setBeaconCapLoading] = useState(false);
+
+  // Admin region termination (LEG-3206 / LEG-DEC-103)
+  const [showTerminateDialog, setShowTerminateDialog] = useState(false);
+  const [terminateBusy, setTerminateBusy] = useState(false);
+  const [terminateError, setTerminateError] = useState<string | null>(null);
 
   useEffect(() => {
     loadRegionalData();
@@ -416,6 +425,28 @@ const RegionalGovernorDashboard: React.FC = () => {
     }
   };
 
+  const handleRegionTerminate = async (confirmRegionName: string, reason: string) => {
+    if (!region?.id) return;
+    setTerminateBusy(true);
+    setTerminateError(null);
+    try {
+      await postRegionTerminate(region.id, confirmRegionName, reason);
+      setShowTerminateDialog(false);
+      setSuccess(`Region "${region.display_name}" terminated successfully`);
+      await loadRegionalData();
+    } catch (err) {
+      if (err instanceof TypeError) {
+        setTerminateError(
+          'Network error — could not reach the gameserver. Check your connection and try again.',
+        );
+      } else {
+        setTerminateError(formatRegionTerminateError(err));
+      }
+    } finally {
+      setTerminateBusy(false);
+    }
+  };
+
   const formatNumber = (num: number | null | undefined) => {
     if (num == null || Number.isNaN(num)) return '—';
     return num.toLocaleString();
@@ -588,6 +619,37 @@ const RegionalGovernorDashboard: React.FC = () => {
                 </button>
               </div>
             </div>
+
+            {isAdmin && (
+              <div
+                className="admin-danger-zone"
+                style={{
+                  margin: '16px 0',
+                  padding: '12px 16px',
+                  border: '1px solid rgba(239, 68, 68, 0.45)',
+                  borderRadius: '6px',
+                  background: 'rgba(239, 68, 68, 0.08)',
+                }}
+              >
+                <h3 style={{ margin: '0 0 8px 0', color: '#fca5a5' }}>Admin — Danger Zone</h3>
+                <p style={{ margin: '0 0 12px 0', fontSize: '0.85rem', color: '#fecaca' }}>
+                  Requires <code>admin.regions.terminate</code> scope. Irreversible region teardown
+                  with mandatory reason and typed-name confirmation (LEG-DEC-103).
+                </p>
+                <button
+                  type="button"
+                  className="action-button"
+                  style={{ background: '#b91c1c', color: '#fff' }}
+                  onClick={() => {
+                    setTerminateError(null);
+                    setShowTerminateDialog(true);
+                  }}
+                  disabled={loading || terminateBusy}
+                >
+                  Terminate Region…
+                </button>
+              </div>
+            )}
             {/* Regional Overview */}
             <div className="overview-grid">
               <div className="stat-card">
@@ -1173,6 +1235,21 @@ const RegionalGovernorDashboard: React.FC = () => {
           </div>
         )}
       </div>
+
+      {showTerminateDialog && region?.id && (
+        <RegionTerminateConfirmDialog
+          regionId={region.id}
+          onCancel={() => {
+            if (!terminateBusy) {
+              setShowTerminateDialog(false);
+              setTerminateError(null);
+            }
+          }}
+          onConfirm={handleRegionTerminate}
+          busy={terminateBusy}
+          error={terminateError}
+        />
+      )}
     </div>
   );
 };

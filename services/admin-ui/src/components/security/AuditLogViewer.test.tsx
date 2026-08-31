@@ -120,4 +120,20 @@ describe('AuditLogViewer (LEG-174)', () => {
     expect(alert).toMatch(/network error|unreachable/i);
     expect(alert).not.toContain('not implemented');
   });
+
+  it('surfaces honest fallback on load TypeError/network collapse (LEG-3043)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<AuditLogViewer />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Gameserver unreachable — network error fetching audit logs/i);
+    expect(alert).not.toMatch(/Failed to fetch/i);
+    expect(alert).not.toMatch(/TypeError/i);
+    expect(alert).not.toContain('not implemented');
+  });
 });

@@ -177,6 +177,35 @@ describe('PolicyCard', () => {
     expect(formatPolicyVoteError(err)).toBe('You are not allowed to vote on this policy.');
   });
 
+  it('formatPolicyVoteError falls back on TypeError network collapse (LEG-3021)', () => {
+    const text = formatPolicyVoteError(new TypeError('Failed to fetch'));
+    expect(text).toMatch(/Failed to cast vote/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('surfaces honest vote fallback when castPolicyVote rejects with TypeError', async () => {
+    mockCastPolicyVote.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await act(async () => {
+      root.render(
+        <PolicyCard policy={VOTING_POLICY} regionId="region-1" canVote={true} onChanged={() => {}} />
+      );
+    });
+    await armAye();
+    const confirmBtn = container.querySelector('.gov-btn.primary.commit') as HTMLButtonElement;
+    await act(async () => {
+      confirmBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const strip = container.querySelector('.gov-validation-strip');
+    expect(strip?.textContent).toMatch(/Failed to cast vote/i);
+    expect(strip?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(strip?.textContent).not.toMatch(/TypeError/i);
+  });
+
   it('surfaces GS vote-reject detail in the validation strip (LEG-2944)', async () => {
     mockCastPolicyVote.mockRejectedValue(
       Object.assign(new Error('Policy suspended pending review'), { status: 403 }),

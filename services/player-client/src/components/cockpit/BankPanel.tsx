@@ -44,7 +44,9 @@ const clampAmount = (n: number, max: number): number => {
 
 const commodityTurnCost = (qty: number): number => Math.ceil(Math.max(0, qty) / 100);
 
-function bankErrorMessage(err: unknown): string {
+/** Exported for TypeError densify tests — balance load + withdraw catch paths use this. */
+export function bankErrorMessage(err: unknown): string {
+  if (err instanceof TypeError) return 'Bank request failed';
   const e = err as { message?: string; data?: { detail?: unknown } };
   const detail = e?.data?.detail;
   let extra = '';

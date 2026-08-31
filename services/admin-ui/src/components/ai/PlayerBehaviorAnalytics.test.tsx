@@ -49,4 +49,27 @@ describe('PlayerBehaviorAnalytics scope honesty (LEG-1206)', () => {
 
     expect(screen.getByRole('alert').textContent ?? '').toMatch(/rate limit/i);
   });
+
+});
+
+describe('PlayerBehaviorAnalytics TypeError densify (LEG-3189)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('reports TypeError Failed to fetch as scope-honest fallback, not raw transport text', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<PlayerBehaviorAnalytics />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Failed to load behavior analytics/i);
+    expect(alert).not.toMatch(/Failed to fetch/i);
+    expect(alert).not.toMatch(/TypeError/i);
+  });
 });

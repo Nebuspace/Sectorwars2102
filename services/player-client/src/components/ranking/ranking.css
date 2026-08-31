@@ -251,6 +251,48 @@
   background: rgba(255, 215, 0, 0.05);
 }
 
+.medal-card.earned.pinned {
+  border-color: rgba(0, 217, 255, 0.55);
+  box-shadow: 0 0 8px rgba(0, 217, 255, 0.25);
+}
+
+.medal-pin-btn {
+  margin-top: 6px;
+  padding: 2px 8px;
+  font-size: 0.75rem;
+  line-height: 1.2;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.25);
+  color: #ccc;
+  cursor: pointer;
+}
+
+.medal-pin-btn:hover:not(:disabled) {
+  border-color: var(--color-primary, #00d9ff);
+  color: var(--color-primary, #00d9ff);
+}
+
+.medal-pin-btn.active {
+  border-color: var(--color-primary, #00d9ff);
+  background: rgba(0, 217, 255, 0.12);
+}
+
+.medal-pin-btn:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.medal-pin-error {
+  margin: 0 0 8px;
+  padding: 6px 10px;
+  font-size: 0.75rem;
+  color: #ffb4b4;
+  background: rgba(255, 80, 80, 0.12);
+  border: 1px solid rgba(255, 80, 80, 0.35);
+  border-radius: 4px;
+}
+
 .medal-card.unearned {
   opacity: 0.45;
 }

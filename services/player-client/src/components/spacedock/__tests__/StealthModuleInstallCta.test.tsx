@@ -28,6 +28,7 @@ vi.mock('../../../services/api', async (importOriginal) => {
 
 import StealthModuleInstallCta, {
   STEALTH_MODULE_INSTALL_COST_CR,
+  formatStealthModuleInstallError,
   isStealthModuleHullCompatible,
 } from '../StealthModuleInstallCta';
 
@@ -45,6 +46,24 @@ describe('isStealthModuleHullCompatible', () => {
     expect(isStealthModuleHullCompatible('DEFENDER')).toBe(false);
     expect(isStealthModuleHullCompatible('CARRIER')).toBe(false);
     expect(isStealthModuleHullCompatible(null)).toBe(false);
+  });
+});
+
+describe('formatStealthModuleInstallError TypeError densify (LEG-3097)', () => {
+  it('falls back on TypeError network collapse', () => {
+    const text = formatStealthModuleInstallError(new TypeError('Failed to fetch'));
+    expect(text).toBe('Stealth Module install failed');
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('preserves server detail for non-TypeError errors', () => {
+    const err = Object.assign(new Error('insufficient credits'), {
+      response: { data: { detail: 'Not enough credits for Stealth Module.' } },
+    });
+    expect(formatStealthModuleInstallError(err)).toBe(
+      'Not enough credits for Stealth Module.',
+    );
   });
 });
 
@@ -160,5 +179,34 @@ describe('StealthModuleInstallCta — LEG-126', () => {
       container.querySelector('[data-testid="stealth-module-install-btn"]'),
     ).toBeNull();
     expect(getUpgradesMock).not.toHaveBeenCalled();
+  });
+
+  it('install TypeError surfaces fallback without Failed to fetch / TypeError (LEG-3097)', async () => {
+    getUpgradesMock.mockResolvedValue({
+      success: true,
+      equipment: {
+        stealth_module: { installed: false, cost: STEALTH_MODULE_INSTALL_COST_CR },
+      },
+      equipped: {},
+    });
+    installEquipmentMock.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await mount({});
+
+    const btn = container.querySelector(
+      '[data-testid="stealth-module-install-btn"]',
+    ) as HTMLButtonElement | null;
+    expect(btn).toBeTruthy();
+
+    await act(async () => {
+      btn!.click();
+      await Promise.resolve();
+    });
+
+    const alert = container.querySelector('.tactical-equip-cta-err');
+    expect(alert).toBeTruthy();
+    expect(alert?.textContent).toBe('Stealth Module install failed');
+    expect(alert?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(alert?.textContent).not.toMatch(/TypeError/i);
   });
 });

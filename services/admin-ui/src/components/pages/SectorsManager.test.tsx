@@ -113,4 +113,19 @@ describe('SectorsManager (LEG-399)', () => {
 
     expect(screen.queryByText(/not implemented/i)).toBeNull();
   });
+
+  it('surfaces honest fallback on sectors load TypeError/network collapse (LEG-3031)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<SectorsManager />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Gameserver unreachable — network error fetching sectors/i);
+    expect(alert).not.toMatch(/TypeError/i);
+    expect(alert).not.toMatch(/Failed to fetch/i);
+  });
 });

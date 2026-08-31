@@ -308,6 +308,21 @@ describe('StationsManager update-stock-levels (LEG-1712)', () => {
     });
   });
 
+  it('surfaces honest fallback on stock-levels TypeError/network collapse (LEG-2972)', async () => {
+    vi.mocked(api.post).mockRejectedValue(new TypeError('Failed to fetch'));
+    render(<StationsManager />);
+
+    fireEvent.click(await screen.findByLabelText('Update port stock levels'));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith('/api/v1/admin/ports/update-stock-levels');
+    });
+    const msg = String(toastError.mock.calls.map((call) => call[0]).join('\n'));
+    expect(msg).toMatch(/Failed to update port stock levels/i);
+    expect(msg).not.toMatch(/Failed to fetch/i);
+    expect(msg).not.toMatch(/TypeError/i);
+  });
+
   it('skips stock-levels POST when operator cancels confirm', async () => {
     confirmMock.mockResolvedValue(false);
     render(<StationsManager />);

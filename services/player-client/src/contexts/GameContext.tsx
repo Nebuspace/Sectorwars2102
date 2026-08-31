@@ -67,6 +67,8 @@ export interface Sector {
   nebula_type?: string;
   quantum_field_strength?: number;
   color_hex?: string;
+  /** In-progress salvage breaks visible in-sector (LEG-333). */
+  salvage_breaks?: Array<{ ship_id: string; completes_at?: string; eta_hours?: number }>;
 }
 
 export interface Planet {
@@ -512,6 +514,18 @@ interface GameContextType {
 // other usage still goes through useGame() below.
 export const GameContext = createContext<GameContextType | undefined>(undefined);
 
+/** Exported for TypeError/network honesty Vitest (LEG-3265). */
+export function formatSetActiveShipError(err: unknown): string {
+  if (err instanceof TypeError) return 'Failed to set active ship';
+  return 'Failed to set active ship';
+}
+
+/** Exported for TypeError/network honesty Vitest (LEG-3265). */
+export function formatGetAvailableMovesError(err: unknown): string {
+  if (err instanceof TypeError) return 'Failed to get available moves';
+  return 'Failed to get available moves';
+}
+
 export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const { user, isAuthenticated } = useAuth();
   const [isLoading, setIsLoading] = useState(false);
@@ -767,7 +781,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       await loadShips();
     } catch (error) {
       console.error('Error setting active ship:', error);
-      setError('Failed to set active ship');
+      setError(formatSetActiveShipError(error));
     }
   };
   
@@ -811,7 +825,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       setAvailableMoves(data);
     } catch (error) {
       console.error('Error getting available moves:', error);
-      setError('Failed to get available moves');
+      setError(formatGetAvailableMovesError(error));
     }
   };
 

@@ -21,6 +21,7 @@ from src.models.ship import Ship
 from src.models.sector import Sector
 from src.models.team import Team
 from src.services.admin_action_attempt import admin_action_attempt
+from src.services.planetary_service import storage_cap_for, STARVATION_WARNING_KEY
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -29,10 +30,9 @@ logger = logging.getLogger(__name__)
 
 class ProductionData(BaseModel):
     timestamp: str
-    energy: int
-    minerals: int
-    food: int
-    water: int
+    fuel_ore: int
+    organics: int
+    equipment: int
 
 class ProductionTrend(BaseModel):
     resource: str
@@ -141,212 +141,175 @@ class PlanetTickResult(BaseModel):
 
 # Production Monitoring Endpoint
 
+_COMMODITY_KEYS = ("fuel_ore", "organics", "equipment")
+
+
+def _planet_events(planet: Planet) -> Dict[str, Any]:
+    events = planet.active_events
+    return events if isinstance(events, dict) else {}
+
+
+def _stockpile_totals(planets: List[Planet]) -> Dict[str, int]:
+    return {
+        "fuel_ore": sum(p.fuel_ore or 0 for p in planets),
+        "organics": sum(p.organics or 0 for p in planets),
+        "equipment": sum(p.equipment or 0 for p in planets),
+    }
+
+
+def _alerts_from_planets(planets: List[Planet]) -> List[ProductionAlert]:
+    alerts: List[ProductionAlert] = []
+    for planet in planets:
+        events = _planet_events(planet)
+        overflow = events.get("overflow_warning")
+        if isinstance(overflow, dict):
+            resources = overflow.get("resources") or {}
+            cap = overflow.get("cap")
+            at = overflow.get("at") or datetime.now(timezone.utc).isoformat()
+            for resource, wasted in resources.items():
+                alerts.append(ProductionAlert(
+                    id=f"{planet.id}-overflow-{resource}",
+                    type="overflow",
+                    severity="high",
+                    resource=str(resource),
+                    colony=planet.name,
+                    message=(
+                        f"Storage overflow at {planet.name}: {int(wasted):,} {resource} wasted"
+                        + (f" (cap {int(cap):,})" if cap is not None else "")
+                    ),
+                    timestamp=at,
+                ))
+        starvation = events.get(STARVATION_WARNING_KEY)
+        if isinstance(starvation, dict):
+            deficit = starvation.get("food_deficit", 0)
+            lost = starvation.get("colonists_lost", 0)
+            at = starvation.get("at") or datetime.now(timezone.utc).isoformat()
+            alerts.append(ProductionAlert(
+                id=f"{planet.id}-starvation",
+                type="starvation",
+                severity="high",
+                resource="organics",
+                colony=planet.name,
+                message=(
+                    f"Food deficit at {planet.name}: {int(deficit):,} organics short, "
+                    f"{int(lost):,} colonists lost"
+                ),
+                timestamp=at,
+            ))
+    alerts.sort(key=lambda a: a.timestamp, reverse=True)
+    return alerts
+
+
 @router.get("/colonization/production")
 async def get_colony_production(
     timeRange: str = Query("day", pattern="^(hour|day|week|month)$"),
-    resource: str = Query("all", pattern="^(all|energy|minerals|food|water)$"),
+    resource: str = Query("all", pattern="^(all|fuel_ore|organics|equipment)$"),
     current_admin: User = Depends(require_scope(REGIONS_VIEW)),
     db: Session = Depends(get_db)
 ):
-    """Get colony production data for monitoring"""
-    try:
-        # Calculate time filter
-        now = datetime.now(timezone.utc)
-        if timeRange == "hour":
-            start_time = now - timedelta(hours=1)
-            interval_minutes = 5
-        elif timeRange == "day":
-            start_time = now - timedelta(days=1)
-            interval_minutes = 60
-        elif timeRange == "week":
-            start_time = now - timedelta(weeks=1)
-            interval_minutes = 360
-        else:  # month
-            start_time = now - timedelta(days=30)
-            interval_minutes = 1440
+    """Get colony production data for monitoring.
 
-        # Get colonized planets with production data
+    Returns aggregate commodity stockpiles and per-planet tick warnings
+    (overflow_warning / starvation_warning) stamped by the production tick.
+  timeRange is accepted for UI compatibility but history is a current snapshot
+    — no synthetic time series is fabricated.
+    """
+    try:
+        now = datetime.now(timezone.utc)
+
         planets = db.query(Planet).filter(
             Planet.owner_id.isnot(None),
             Planet.colonized_at.isnot(None)
         ).all()
 
-        # Generate production history data
-        history = []
-        current_time = start_time
-        while current_time <= now:
-            # Calculate production based on planet buildings and production settings
-            # Base production on population and planet characteristics
-            energy_prod = 0
-            minerals_prod = 0
-            food_prod = 0
-            water_prod = 0
-            
-            for p in planets:
-                # Base production on population (if any)
-                pop_multiplier = min(p.population / 1000000, 10) if p.population else 1
-                
-                # Energy production
-                energy_base = 100 * pop_multiplier
-                if hasattr(p, 'production') and p.production:
-                    energy_base += p.production.get('fuel', 0) * 50
-                if hasattr(p, 'fuel_ore'):
-                    energy_base += (p.fuel_ore or 0) * 10
-                energy_prod += energy_base
-                
-                # Minerals production
-                minerals_base = 80 * pop_multiplier
-                if hasattr(p, 'mine_level') and p.mine_level:
-                    minerals_base += p.mine_level * 50
-                if hasattr(p, 'equipment'):
-                    minerals_base += (p.equipment or 0) * 5
-                minerals_prod += minerals_base
-                
-                # Food production
-                food_base = 120 * pop_multiplier
-                if hasattr(p, 'farm_level') and p.farm_level:
-                    food_base += p.farm_level * 75
-                if hasattr(p, 'organics'):
-                    food_base += (p.organics or 0) * 8
-                food_prod += food_base
-                
-                # Water production (based on water coverage and population)
-                water_base = 60 * pop_multiplier
-                if hasattr(p, 'water_coverage') and p.water_coverage:
-                    water_base += p.water_coverage * 10
-                water_prod += water_base
-            
-            # Derived deterministically from real planet fields above;
-            # no random jitter — the series only changes when the data does.
-            # int() because the pop_multiplier math yields floats and the
-            # ProductionData fields are ints (pydantic v2 rejects floats).
-            history.append(ProductionData(
-                timestamp=current_time.isoformat(),
-                energy=max(0, int(energy_prod)),
-                minerals=max(0, int(minerals_prod)),
-                food=max(0, int(food_prod)),
-                water=max(0, int(water_prod))
+        totals = _stockpile_totals(planets)
+
+        history = [ProductionData(
+            timestamp=now.isoformat(),
+            fuel_ore=totals["fuel_ore"],
+            organics=totals["organics"],
+            equipment=totals["equipment"],
+        )]
+
+        trends: List[ProductionTrend] = []
+        for res in _COMMODITY_KEYS:
+            if resource != "all" and resource != res:
+                continue
+            current_val = totals[res]
+            capped_total = 0
+            for planet in planets:
+                cap = storage_cap_for(planet.citadel_level or 0)
+                if cap > 0:
+                    stock = getattr(planet, res, 0) or 0
+                    capped_total += min(stock, cap)
+            efficiency = (capped_total / current_val * 100) if current_val > 0 else 100.0
+            trends.append(ProductionTrend(
+                resource=res,
+                current=current_val,
+                average=current_val,
+                peak=current_val,
+                trend="stable",
+                efficiency=round(efficiency, 1),
             ))
-            current_time += timedelta(minutes=interval_minutes)
 
-        # Calculate trends
-        trends = []
-        resources = ['energy', 'minerals', 'food', 'water']
-        for res in resources:
-            if resource == 'all' or resource == res:
-                values = [getattr(h, res) for h in history]
-                current_val = values[-1] if values else 0
-                avg_val = sum(values) / len(values) if values else 0
-                peak_val = max(values) if values else 0
-                
-                # Determine trend
-                if len(values) > 1:
-                    recent_avg = sum(values[-5:]) / len(values[-5:])
-                    older_avg = sum(values[:-5]) / (len(values) - 5) if len(values) > 5 else avg_val
-                    if recent_avg > older_avg * 1.1:
-                        trend = 'increasing'
-                    elif recent_avg < older_avg * 0.9:
-                        trend = 'decreasing'
-                    else:
-                        trend = 'stable'
-                else:
-                    trend = 'stable'
-                
-                efficiency = (current_val / peak_val * 100) if peak_val > 0 else 0
-                
-                trends.append(ProductionTrend(
-                    resource=res,
-                    current=current_val,
-                    average=int(avg_val),
-                    peak=peak_val,
-                    trend=trend,
-                    efficiency=efficiency
-                ))
+        alerts = _alerts_from_planets(planets)
 
-        # No real alert source exists: there is no production alert table,
-        # threshold engine, or telemetry that detects shortages/surpluses/
-        # maintenance issues. Return an empty list rather than randomly
-        # fabricated alerts.
-        alerts: List[ProductionAlert] = []
-
-        # Calculate stats
         total_production = {
-            'energy': sum(getattr(h, 'energy', 0) for h in history[-24:]),
-            'minerals': sum(getattr(h, 'minerals', 0) for h in history[-24:]),
-            'food': sum(getattr(h, 'food', 0) for h in history[-24:]),
-            'water': sum(getattr(h, 'water', 0) for h in history[-24:])
+            "fuel_ore": totals["fuel_ore"],
+            "organics": totals["organics"],
+            "equipment": totals["equipment"],
         }
 
-        # Get top producers
-        top_producers = []
-        for planet in sorted(planets, key=lambda p: p.population if p.population else 0, reverse=True)[:5]:
-            for res in resources:
-                if resource == 'all' or resource == res:
-                    # Calculate production for this planet
-                    pop_multiplier = min(planet.population / 1000000, 10) if planet.population else 1
-                    
-                    energy_val = 100 * pop_multiplier
-                    if hasattr(planet, 'production') and planet.production:
-                        energy_val += planet.production.get('fuel', 0) * 50
-                    if hasattr(planet, 'fuel_ore'):
-                        energy_val += (planet.fuel_ore or 0) * 10
-                    
-                    minerals_val = 80 * pop_multiplier
-                    if hasattr(planet, 'mine_level') and planet.mine_level:
-                        minerals_val += planet.mine_level * 50
-                    if hasattr(planet, 'equipment'):
-                        minerals_val += (planet.equipment or 0) * 5
-                    
-                    food_val = 120 * pop_multiplier
-                    if hasattr(planet, 'farm_level') and planet.farm_level:
-                        food_val += planet.farm_level * 75
-                    if hasattr(planet, 'organics'):
-                        food_val += (planet.organics or 0) * 8
-                    
-                    water_val = 60 * pop_multiplier
-                    if hasattr(planet, 'water_coverage') and planet.water_coverage:
-                        water_val += planet.water_coverage * 10
-                    
-                    production_map = {
-                        'energy': int(energy_val),
-                        'minerals': int(minerals_val),
-                        'food': int(food_val),
-                        'water': int(water_val)
-                    }
-                    
-                    production = production_map.get(res, 0)
-                    if production > 0:
-                        top_producers.append({
-                            'colonyId': str(planet.id),
-                            'colonyName': planet.name,
-                            'resource': res,
-                            'amount': production
-                        })
+        top_producers: List[Dict[str, Any]] = []
+        for res in _COMMODITY_KEYS:
+            if resource != "all" and resource != res:
+                continue
+            ranked = sorted(
+                planets,
+                key=lambda p: getattr(p, res, 0) or 0,
+                reverse=True,
+            )
+            for planet in ranked[:5]:
+                amount = getattr(planet, res, 0) or 0
+                if amount > 0:
+                    top_producers.append({
+                        "colonyId": str(planet.id),
+                        "colonyName": planet.name,
+                        "resource": res,
+                        "amount": amount,
+                    })
 
-        # Identify bottlenecks
-        bottlenecks = []
-        for planet in planets[:5]:
-            # Check minimum infrastructure levels
-            min_level = min(planet.factory_level, planet.farm_level, planet.mine_level, planet.research_level)
-            if min_level < 3:
+        bottlenecks: List[Dict[str, Any]] = []
+        for planet in planets:
+            events = _planet_events(planet)
+            if events.get("overflow_warning"):
                 bottlenecks.append({
-                    'colonyId': str(planet.id),
-                    'colonyName': planet.name,
-                    'issue': 'Insufficient infrastructure',
-                    'impact': (3 - min_level) * 10
+                    "colonyId": str(planet.id),
+                    "colonyName": planet.name,
+                    "issue": "Storage overflow — production wasted",
+                    "impact": 100,
+                })
+            elif events.get(STARVATION_WARNING_KEY):
+                lost = (events.get(STARVATION_WARNING_KEY) or {}).get("colonists_lost", 0)
+                bottlenecks.append({
+                    "colonyId": str(planet.id),
+                    "colonyName": planet.name,
+                    "issue": "Food deficit — colonist starvation",
+                    "impact": min(100, int(lost) if lost else 50),
                 })
 
         stats = ProductionStats(
             totalProduction=total_production,
             topProducers=top_producers[:5],
-            bottlenecks=bottlenecks
+            bottlenecks=bottlenecks[:5],
         )
 
         return {
             "history": [h.dict() for h in history],
             "trends": [t.dict() for t in trends],
             "alerts": [a.dict() for a in alerts],
-            "stats": stats.dict()
+            "stats": stats.dict(),
+            "timeRange": timeRange,
         }
 
     except Exception as e:

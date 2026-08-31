@@ -13,7 +13,25 @@ vi.mock('../../../services/api', () => ({
   },
 }));
 
-import AnomalyInvestigateCta from '../AnomalyInvestigateCta';
+import AnomalyInvestigateCta, {
+  formatAnomalyInvestigateError,
+} from '../AnomalyInvestigateCta';
+
+describe('formatAnomalyInvestigateError TypeError densify (LEG-3095)', () => {
+  it('falls back on TypeError network collapse', () => {
+    const text = formatAnomalyInvestigateError(new TypeError('Failed to fetch'));
+    expect(text).toBe('Investigation failed. Please try again.');
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('preserves server detail for non-TypeError errors', () => {
+    const err = Object.assign(new Error('sector_locked'), {
+      response: { data: { detail: 'Sector is locked by another captain.' } },
+    });
+    expect(formatAnomalyInvestigateError(err)).toBe('Sector is locked by another captain.');
+  });
+});
 
 describe('AnomalyInvestigateCta', () => {
   let container: HTMLElement;
@@ -81,5 +99,24 @@ describe('AnomalyInvestigateCta', () => {
     expect(mockInvestigateFormation).not.toHaveBeenCalled();
     expect(btn.disabled).toBe(true);
     expect(container.textContent).toMatch(/already been investigated/i);
+  });
+
+  it('investigate TypeError surfaces fallback without Failed to fetch / TypeError (LEG-3095)', async () => {
+    mockInvestigateAnomaly.mockRejectedValue(new TypeError('Failed to fetch'));
+    await act(async () => {
+      root.render(<AnomalyInvestigateCta sectorId={42} sectorType="ANOMALY" />);
+    });
+    const btn = container.querySelector(
+      '[data-testid="anomaly-investigate-btn"]',
+    ) as HTMLButtonElement;
+    await act(async () => {
+      btn.click();
+    });
+    const status = container.querySelector('[data-testid="anomaly-investigate-status"]');
+    expect(status).toBeTruthy();
+    expect(status?.textContent).toBe('Investigation failed. Please try again.');
+    expect(status?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(status?.textContent).not.toMatch(/TypeError/i);
+    expect(btn.disabled).toBe(false);
   });
 });

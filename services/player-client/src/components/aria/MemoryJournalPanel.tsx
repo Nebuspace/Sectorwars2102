@@ -1,13 +1,13 @@
 /**
  * LEG-397 — ARIA Tier-1 memory journal (owner JWT read path).
- * Consumes tip GET /api/v1/ai/memories (+ optional /ai/data-index for labels).
- * No reset/export invent — tip lacks those routes.
+ * LEG-3121 — export + reset wired to tip GET/POST /ai/memories/{dump,reset}.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ariaMemoryAPI,
   type AriaDataStream,
   type AriaMemory,
+  type AriaPersonalStoreExport,
 } from '../../services/api';
 import './memory-journal.css';
 
@@ -21,8 +21,14 @@ function httpStatus(err: unknown): number | undefined {
   return undefined;
 }
 
-/** Surface gameserver detail when ARIA memory recall fails. */
+/**
+ * Surface gameserver detail when ARIA memory recall fails; network collapse
+ * (fetch TypeError) is not GS copy — use the stable fallback (LEG-3072 Soft-ORDER).
+ */
 export function formatAriaMemoryLoadError(err: unknown): string {
+  const fallback = 'Failed to load memories';
+  if (err instanceof TypeError) return fallback;
+
   const status = httpStatus(err);
   const message = err instanceof Error ? err.message : undefined;
   const hasServerDetail =
@@ -32,11 +38,38 @@ export function formatAriaMemoryLoadError(err: unknown): string {
 
   if (status === 503 || status === 500) {
     if (hasServerDetail) return message!;
-    return 'Failed to load memories';
+    return fallback;
   }
 
   if (hasServerDetail) return message!;
-  return 'Failed to load memories';
+  return fallback;
+}
+
+export function formatAriaMemoryActionError(err: unknown, fallback: string): string {
+  if (err instanceof TypeError) return fallback;
+  const message = err instanceof Error ? err.message : undefined;
+  if (typeof message === 'string' && message.trim().length > 0) return message;
+  return fallback;
+}
+
+export function ariaMemoryExportFilename(exportedAt = new Date()): string {
+  const stamp = exportedAt.toISOString().replace(/[:.]/g, '-');
+  return `aria-memory-export-${stamp}.json`;
+}
+
+export function triggerAriaMemoryExportDownload(
+  payload: AriaPersonalStoreExport,
+  exportedAt = new Date(),
+): void {
+  const blob = new Blob([JSON.stringify(payload, null, 2)], {
+    type: 'application/json',
+  });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = ariaMemoryExportFilename(exportedAt);
+  anchor.click();
+  URL.revokeObjectURL(url);
 }
 
 const contentPreview = (content: Record<string, unknown>): string => {
@@ -53,6 +86,10 @@ const MemoryJournalPanel: React.FC = () => {
   const [filterType, setFilterType] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [exportBusy, setExportBusy] = useState(false);
+  const [resetBusy, setResetBusy] = useState(false);
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const labelFor = useCallback(
     (memoryType: string): string => {
@@ -107,6 +144,43 @@ const MemoryJournalPanel: React.FC = () => {
     return keys.map((key) => ({ key, label: key }));
   }, [streams, memories]);
 
+  const onExport = async () => {
+    if (exportBusy || resetBusy) return;
+    setExportBusy(true);
+    setActionNotice(null);
+    setActionError(null);
+    try {
+      const payload = await ariaMemoryAPI.exportPersonalStore();
+      triggerAriaMemoryExportDownload(payload);
+      setActionNotice('ARIA memory export downloaded.');
+    } catch (err) {
+      setActionError(formatAriaMemoryActionError(err, 'ARIA memory export failed.'));
+    } finally {
+      setExportBusy(false);
+    }
+  };
+
+  const onReset = async () => {
+    if (exportBusy || resetBusy) return;
+    const confirmed = window.confirm(
+      'Reset all ARIA personal memory data? This permanently deletes your memories and cannot be undone.',
+    );
+    if (!confirmed) return;
+
+    setResetBusy(true);
+    setActionNotice(null);
+    setActionError(null);
+    try {
+      await ariaMemoryAPI.resetPersonalStore();
+      setActionNotice('ARIA personal memory data reset.');
+      await loadMemories(filterType || undefined);
+    } catch (err) {
+      setActionError(formatAriaMemoryActionError(err, 'ARIA memory reset failed.'));
+    } finally {
+      setResetBusy(false);
+    }
+  };
+
   return (
     <section className="aria-memory-journal" aria-label="ARIA memory journal">
       <div className="aria-memory-journal-toolbar">
@@ -127,7 +201,36 @@ const MemoryJournalPanel: React.FC = () => {
             </option>
           ))}
         </select>
+        <div className="aria-memory-journal-actions" role="group" aria-label="ARIA memory data controls">
+          <button
+            type="button"
+            className="aria-memory-journal-action-btn"
+            onClick={() => void onExport()}
+            disabled={exportBusy || resetBusy || loading}
+          >
+            {exportBusy ? 'Exporting…' : 'Export'}
+          </button>
+          <button
+            type="button"
+            className="aria-memory-journal-action-btn aria-memory-journal-action-btn-danger"
+            onClick={() => void onReset()}
+            disabled={exportBusy || resetBusy || loading}
+          >
+            {resetBusy ? 'Resetting…' : 'Reset'}
+          </button>
+        </div>
       </div>
+
+      {(actionNotice || actionError) && (
+        <div className="aria-memory-journal-action-status" aria-live="polite">
+          {actionNotice ? <p className="aria-memory-journal-notice">{actionNotice}</p> : null}
+          {actionError ? (
+            <p className="aria-memory-journal-error" role="alert">
+              {actionError}
+            </p>
+          ) : null}
+        </div>
+      )}
 
       <div className="aria-memory-journal-status" aria-live="polite">
         {loading && <p className="aria-memory-journal-loading">Loading memories…</p>}

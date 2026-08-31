@@ -1129,6 +1129,21 @@ class MovementService:
                 "turn_cost": 0,
             }
 
+        # Interdictor Field (police-forces.md): movement lock while active.
+        try:
+            from src.services.interdictor_abilities_service import (
+                interdictor_field_blocks_movement,
+                movement_block_message,
+            )
+            if interdictor_field_blocks_movement(player.current_ship):
+                return {
+                    "success": False,
+                    "message": movement_block_message(),
+                    "turn_cost": 0,
+                }
+        except Exception as e:
+            logger.error("Interdictor Field move-guard failed: %s", e)
+
         # Carrier ship-hangar (WO-AE; ships.md:338-340): a ship docked inside a
         # Carrier is an inert passenger — it cannot move independently. The
         # pilot rides along when the Carrier moves, or pays 1 turn to undock and
@@ -2521,6 +2536,11 @@ class MovementService:
                     "turn_cost tech-modifier skipped (non-fatal)", exc_info=True
                 )
 
+        from src.services.interdictor_abilities_service import (
+            warp_turn_cost_with_interdictor_field,
+        )
+        base_cost = warp_turn_cost_with_interdictor_field(base_cost, ship)
+
         # No turn cost can be less than 1
         return max(1, base_cost)
 
@@ -3223,6 +3243,7 @@ class MovementService:
         # hasn't actually arrived in this sector yet.
         patrols = (sector.defenses or {}).get("police_patrol_ships")
         any_patrol_matched = False
+        has_patrol_presence = False
         if isinstance(patrols, list):
             for patrol in patrols:
                 if not isinstance(patrol, dict):
@@ -3230,6 +3251,7 @@ class MovementService:
                 threshold = patrol.get("wanted_threshold")
                 if threshold is None:
                     continue
+                has_patrol_presence = True
                 faction_code = patrol.get("faction_code")
                 try:
                     matched = player.is_wanted_at(faction_code, threshold)
@@ -3257,6 +3279,12 @@ class MovementService:
                 # absorb that as a no-op second call anyway, but doing it
                 # once here is the correct shape, not just a safe one.
                 self._maybe_dispatch_police_engagement(player, sector)
+            if has_patrol_presence:
+                from src.services.interdictor_abilities_service import (
+                    sector_has_contraband_scanner_patrol,
+                )
+                if sector_has_contraband_scanner_patrol(self.db, sector):
+                    self._maybe_roll_patrol_contraband_scan(player, sector)
 
         # WO-CMB-NPC-INITIATED-1 lane C (human ruling, 2026-07-10) — pirate
         # trigger. VERIFY-FIRST found this leg's police_patrol_ships block
@@ -3322,6 +3350,34 @@ class MovementService:
                 break
 
         return encounters
+
+    def _maybe_roll_patrol_contraband_scan(
+        self, player: Player, sector: Sector,
+    ) -> None:
+        """LEG-3148: patrol contraband scan on sector entry (police-forces.md).
+
+        Read-only roll via ContrabandService; a hit dispatches
+        ``contraband_scan_hit`` through the same ADR-0042 path as wanted
+        status. Never raises — a failed roll must not break the move."""
+        try:
+            ship = getattr(player, "current_ship", None)
+            if ship is None:
+                return
+            from src.services.contraband_service import ContrabandService
+
+            outcome = ContrabandService(self.db).roll_patrol_contraband_scan(
+                player, ship
+            )
+            if outcome.get("detected"):
+                self._maybe_dispatch_police_engagement(
+                    player, sector, offense_type="contraband_scan_hit"
+                )
+        except Exception:
+            logger.exception(
+                "Patrol contraband scan failed for player %s in sector %s "
+                "(non-fatal — the move itself already committed)",
+                player.id, sector.sector_id,
+            )
 
     def _maybe_dispatch_police_engagement(
         self, player: Player, sector: Sector, offense_type: str = "wanted_status",

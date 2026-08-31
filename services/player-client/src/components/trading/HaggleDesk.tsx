@@ -81,6 +81,22 @@ interface TradeQuoteResult {
   total: number;
 }
 
+export function formatHaggleError(e: unknown): string {
+  if (e instanceof TypeError) return 'The trader turned away.';
+  if (e && typeof e === 'object') {
+    const resp = (e as { response?: { data?: unknown } }).response;
+    const data = resp?.data;
+    if (data && typeof data === 'object') {
+      const rec = data as Record<string, unknown>;
+      if (typeof rec.detail === 'string' && rec.detail) return rec.detail;
+      if (typeof rec.message === 'string' && rec.message) return rec.message;
+    }
+    const msg = (e as { message?: string }).message;
+    if (typeof msg === 'string' && msg) return msg;
+  }
+  return 'The trader turned away.';
+}
+
 interface HaggleDeskProps {
   stationId: string;
   /** resource_type KEY — must match the buy/sell resource_type. */
@@ -233,9 +249,8 @@ const HaggleDesk: React.FC<HaggleDeskProps> = ({
     };
   }, [cooldown]);
 
-  const errMsg = (e: any): string =>
-    e?.message || e?.response?.data?.detail || e?.response?.data?.message ||
-    'The trader turned away.';
+  /** Exported for TypeError densify tests — status/open/offer catch paths use this. */
+  const errMsg = formatHaggleError;
 
   // On mount: ask the desk whether this commodity is locked / on cooldown
   // (a prior reject hard-locks for the docking session; accept/timeout sets a

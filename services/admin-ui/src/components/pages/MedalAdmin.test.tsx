@@ -234,6 +234,44 @@ describe('MedalAdmin', () => {
     expect(mockToastError.mock.calls[0][0]).not.toMatch(/^Revoke failed$/);
   });
 
+  it('surfaces honest fallback on revoke POST TypeError/network collapse (LEG-2991)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/medals/admin/catalog')) {
+        return {
+          data: {
+            total: 1,
+            items: [{ id: 'bronze_cluster', name: 'Bronze Cluster', category: 'combat' }],
+          },
+        };
+      }
+      return { data: { players: [{ id: 'p1', username: 'Ace' }] } };
+    });
+    vi.mocked(api.post).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<MedalAdmin />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Revoke' }));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Select player')).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByLabelText('Select player'), { target: { value: 'p1' } });
+    fireEvent.change(screen.getByLabelText('Medal'), { target: { value: 'bronze_cluster' } });
+    fireEvent.change(screen.getByLabelText(/Reason/), {
+      target: { value: 'Admin correction' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Revoke medal' }));
+
+    await waitFor(() => {
+      expect(mockToastError).toHaveBeenCalled();
+    });
+    expect(mockToastError.mock.calls[0][0]).toMatch(/Revoke failed/i);
+    const msg = String(mockToastError.mock.calls.map((call) => call[0]).join('\n'));
+    expect(msg).not.toMatch(/Failed to fetch/i);
+    expect(msg).not.toMatch(/TypeError/i);
+  });
+
   it('bulk dry-run then commit happy path', async () => {
     vi.mocked(api.get).mockImplementation(async (url: string) => {
       if (url.includes('/medals/admin/catalog')) {
@@ -285,6 +323,10 @@ describe('MedalAdmin', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('medal-bulk-panel')).toBeTruthy();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Bulk medal')).toBeTruthy();
     });
 
     fireEvent.change(screen.getByLabelText('Bulk medal'), {

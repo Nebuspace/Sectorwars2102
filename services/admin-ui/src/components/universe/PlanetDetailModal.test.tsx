@@ -68,6 +68,28 @@ describe('PlanetDetailModal scope errors (LEG-1214)', () => {
       expect(screen.getByText(/rate limit/i)).toBeTruthy();
     });
   });
+
+  it('surfaces honest fallback on save TypeError/network collapse (LEG-3062)', async () => {
+    vi.mocked(api.patch).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(
+      <PlanetDetailModal
+        isOpen
+        planet={planet as any}
+        onClose={() => {}}
+        mode="edit"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to save planet changes/i)).toBeTruthy();
+    });
+    const text = screen.getByText(/Failed to save planet changes/i).textContent ?? '';
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
 });
 
 describe('PlanetDetailModal Soft-ORDER defense_level (LEG-1462)', () => {

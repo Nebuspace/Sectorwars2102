@@ -13,6 +13,9 @@ import './grid-manager.css';
  *   GET  /api/v1/planets/{id}/grid               → the grid view
  *   POST /api/v1/planets/{id}/grid/place         → { kind, x, y, level }
  *   POST /api/v1/planets/{id}/grid/decommission  → { building_id }
+ *   POST /api/v1/planets/{id}/grid/survey         → { x, y }
+ *   POST /api/v1/planets/{id}/grid/clear-plot     → { x, y }
+ *   POST /api/v1/planets/{id}/grid/clear-hazard   → { x, y }
  *
  * The payload shape is the gameserver's to define; we read every field
  * defensively (snake_case primary with camelCase fallbacks) so a slightly
@@ -29,6 +32,7 @@ interface GridPlot {
   y: number;
   cleared?: boolean;
   surveyed?: boolean;
+  fog?: boolean;
   hazard?: { kind?: string; sev?: number } | null;
   building_id?: string | null;
   buildingId?: string | null;
@@ -146,11 +150,40 @@ const level1Materials = (entry: CatalogEntry): Array<[string, number]> => {
 const matLabel = (k: string): string =>
   `${resourceIcon(k)} ${k.replace(/_/g, ' ')}`.trim();
 
+/** Tech-tree nodes that unlock terraform grid tools (matches gameserver has_tool). */
+const TOOL_RESEARCH_NODES = {
+  grid_survey: 't.exploration.survey.1',
+  plot_clear: 't.terraforming.plot_clear.1',
+  hazard_clear: 't.terraforming.hazard_clear.1',
+} as const;
+
+const TOOL_LABELS: Record<keyof typeof TOOL_RESEARCH_NODES, string> = {
+  grid_survey: 'Orbital Survey Suite (grid_survey)',
+  plot_clear: 'Land Clearance (plot_clear)',
+  hazard_clear: 'Hazard Remediation (hazard_clear)',
+};
+
 const techGateOf = (entry: CatalogEntry): string | null =>
   entry.tech_gate ?? entry.techGate ?? null;
 
 const buildingComplete = (b: GridBuilding): string | null | undefined =>
   b.complete_at ?? b.completeAt;
+
+const GRID_LOAD_FAILED_FALLBACK = 'Failed to load planet grid';
+
+/** Exported for TypeError/network honesty Vitest (LEG-3263). */
+export function formatGridLoadError(err: unknown): string {
+  if (err instanceof TypeError) return GRID_LOAD_FAILED_FALLBACK;
+  if (err instanceof Error && err.message) return err.message;
+  return GRID_LOAD_FAILED_FALLBACK;
+}
+
+/** Exported for TypeError/network honesty Vitest (LEG-3263). */
+export function formatGridActionError(err: unknown, fallback: string): string {
+  if (err instanceof TypeError) return fallback;
+  if (err instanceof Error && err.message) return err.message;
+  return fallback;
+}
 
 const GridManager: React.FC<GridManagerProps> = ({ planetId, playerCredits, onUpdate }) => {
   const [view, setView] = useState<GridView | null>(null);
@@ -164,6 +197,8 @@ const GridManager: React.FC<GridManagerProps> = ({ planetId, playerCredits, onUp
   const [popupPlot, setPopupPlot] = useState<{ x: number; y: number } | null>(null);
   // DECOMMISSION flow: a selected placed building (id).
   const [selectedBuildingId, setSelectedBuildingId] = useState<string | null>(null);
+  // TERRAFORM flow: a blocked empty plot needing survey / clear / hazard remediation.
+  const [selectedPlot, setSelectedPlot] = useState<{ x: number; y: number } | null>(null);
 
   const fetchGrid = useCallback(async () => {
     try {
@@ -171,8 +206,8 @@ const GridManager: React.FC<GridManagerProps> = ({ planetId, playerCredits, onUp
       const data = await gridAPI.getGrid(planetId);
       setView(data);
       setError(null);
-    } catch (err: any) {
-      setError(err?.message || 'Failed to load planet grid');
+    } catch (err: unknown) {
+      setError(formatGridLoadError(err));
     } finally {
       setLoading(false);
     }
@@ -256,10 +291,10 @@ const GridManager: React.FC<GridManagerProps> = ({ planetId, playerCredits, onUp
         setPopupPlot(null);
         await fetchGrid();
         onUpdate?.();
-      } catch (err: any) {
+      } catch (err: unknown) {
         // apiRequest surfaces the server's human message for 402 (insufficient
         // credits) / 403 (research gate) / 400 (invalid placement) alike.
-        setActionMessage({ kind: 'err', text: err?.message || 'Placement failed' });
+        setActionMessage({ kind: 'err', text: formatGridActionError(err, 'Placement failed') });
       } finally {
         setActionLoading(false);
       }
@@ -282,13 +317,62 @@ const GridManager: React.FC<GridManagerProps> = ({ planetId, playerCredits, onUp
         setSelectedBuildingId(null);
         await fetchGrid();
         onUpdate?.();
-      } catch (err: any) {
-        setActionMessage({ kind: 'err', text: err?.message || 'Decommission failed' });
+      } catch (err: unknown) {
+        setActionMessage({ kind: 'err', text: formatGridActionError(err, 'Decommission failed') });
       } finally {
         setActionLoading(false);
       }
     },
     [actionLoading, planetId, fetchGrid, onUpdate],
+  );
+
+  const runPlotAction = useCallback(
+    async (
+      action: 'survey' | 'clearPlot' | 'clearHazard',
+      x: number,
+      y: number,
+      successText: string,
+    ) => {
+      if (actionLoading) return;
+      try {
+        setActionLoading(true);
+        setActionMessage(null);
+        if (action === 'survey') {
+          await gridAPI.survey(planetId, x, y);
+        } else if (action === 'clearPlot') {
+          await gridAPI.clearPlot(planetId, x, y);
+        } else {
+          await gridAPI.clearHazard(planetId, x, y);
+        }
+        setActionMessage({ kind: 'ok', text: successText });
+        setSelectedPlot(null);
+        await fetchGrid();
+        onUpdate?.();
+      } catch (err: unknown) {
+        setActionMessage({ kind: 'err', text: formatGridActionError(err, 'Plot action failed') });
+      } finally {
+        setActionLoading(false);
+      }
+    },
+    [actionLoading, planetId, fetchGrid, onUpdate],
+  );
+
+  const handleSurvey = useCallback(
+    (x: number, y: number) =>
+      runPlotAction('survey', x, y, `Plot (${x},${y}) surveyed — terrain intel revealed.`),
+    [runPlotAction],
+  );
+
+  const handleClearPlot = useCallback(
+    (x: number, y: number) =>
+      runPlotAction('clearPlot', x, y, `Plot (${x},${y}) cleared — ready for construction.`),
+    [runPlotAction],
+  );
+
+  const handleClearHazard = useCallback(
+    (x: number, y: number) =>
+      runPlotAction('clearHazard', x, y, `Hazard at (${x},${y}) remediated — plot cleared.`),
+    [runPlotAction],
   );
 
   const handleCellClick = useCallback(
@@ -297,19 +381,25 @@ const GridManager: React.FC<GridManagerProps> = ({ planetId, playerCredits, onUp
       if (occupant) {
         // Occupied cell: toggle decommission selection (unchanged behavior).
         setSelectedBuildingId((cur) => (cur === occupant ? null : occupant));
+        setSelectedPlot(null);
         setPopupPlot(null);
         return;
       }
-      // Non-placeable empty cell (hazard / uncleared): nothing to build here —
-      // the cell is already styled not-allowed, so don't open the build popup.
       const plot = plotAt.get(`${x},${y}`);
-      const cleared = plot?.cleared !== false; // default cleared unless explicitly false
+      const cleared = plot?.cleared !== false;
       const hazard = plot?.hazard ?? null;
-      if (!cleared || hazard) {
+      const fogged = plot?.fog === true || plot?.surveyed === false;
+      if (fogged || !cleared || hazard) {
+        // Blocked empty plot: open terraform/remediation panel for this cell.
+        setSelectedBuildingId(null);
+        setPopupPlot(null);
+        setActionMessage(null);
+        setSelectedPlot((cur) => (cur?.x === x && cur?.y === y ? null : { x, y }));
         return;
       }
       // Empty/placeable cell: open the catalog popup targeting THIS plot.
       setSelectedBuildingId(null);
+      setSelectedPlot(null);
       setActionMessage(null);
       setPopupPlot({ x, y });
     },
@@ -349,7 +439,18 @@ const GridManager: React.FC<GridManagerProps> = ({ planetId, playerCredits, onUp
   }
 
   const selectedBuilding = selectedBuildingId ? buildingById.get(selectedBuildingId) : null;
+  const selectedPlotData = selectedPlot ? plotAt.get(`${selectedPlot.x},${selectedPlot.y}`) : null;
   const atSizeCap = citadelLevel >= maxCitadelLevel;
+
+  const hasTool = (tool: keyof typeof TOOL_RESEARCH_NODES) =>
+    researched.has(TOOL_RESEARCH_NODES[tool]);
+
+  const plotNeedsSurvey = selectedPlotData
+    ? selectedPlotData.fog === true || selectedPlotData.surveyed === false
+    : false;
+  const plotHasHazard = !!selectedPlotData?.hazard;
+  const plotNeedsClear =
+    !!selectedPlotData && selectedPlotData.cleared === false && !plotHasHazard;
 
   return (
     <div className="grid-manager">
@@ -378,7 +479,9 @@ const GridManager: React.FC<GridManagerProps> = ({ planetId, playerCredits, onUp
       <div className="grid-hint">
         {selectedBuildingId
           ? 'Building selected — decommission it below, or click another plot.'
-          : 'Click an empty plot to choose a building to place. Click a placed building to decommission it.'}
+          : selectedPlot
+            ? 'Plot selected — use survey or terraforming actions below, or click again to deselect.'
+            : 'Click an empty plot to build, a blocked plot to survey/clear, or a building to decommission.'}
       </div>
 
       {/* PRIMARY ACTION — the plot grid (scroll-law: rendered first, full width). */}
@@ -400,18 +503,24 @@ const GridManager: React.FC<GridManagerProps> = ({ planetId, playerCredits, onUp
             const isAnchor = occupant && occupant.x === x && occupant.y === y;
             const hazard = plot?.hazard ?? null;
             const cleared = plot?.cleared !== false; // default cleared unless explicitly false
+            const fogged = plot?.fog === true || plot?.surveyed === false;
             const isSelectedBuilding = occupantId && occupantId === selectedBuildingId;
+            const isSelectedPlot = !!selectedPlot && selectedPlot.x === x && selectedPlot.y === y;
             const operational = occupant ? buildingComplete(occupant) == null : false;
             const isPopupTarget = !!popupPlot && popupPlot.x === x && popupPlot.y === y;
-            const isPlaceable = !occupantId && cleared && !hazard && !offGrid;
+            const isPlaceable = !occupantId && cleared && !hazard && !fogged && !offGrid;
+            const isBlocked = !occupantId && !offGrid && (fogged || !cleared || !!hazard);
             const cls = [
               'grid-cell',
               offGrid ? 'off-grid' : '',
               occupantId ? 'occupied' : 'empty',
               hazard ? 'hazard' : '',
+              fogged ? 'fog' : '',
               !cleared ? 'uncleared' : '',
               isSelectedBuilding ? 'selected' : '',
+              isSelectedPlot ? 'selected-plot' : '',
               isPlaceable ? 'placeable' : '',
+              isBlocked ? 'blocked' : '',
               isPopupTarget ? 'popup-target' : '',
               occupant && !operational ? 'building-pending' : '',
             ]
@@ -429,11 +538,13 @@ const GridManager: React.FC<GridManagerProps> = ({ planetId, playerCredits, onUp
                     ? 'No plot here'
                     : occupant
                       ? `${occupant.name || occupant.kind} L${occupant.level}${operational ? '' : ' — under construction'} · click to select for decommission`
-                      : hazard
-                        ? `Hazard (${hazard.kind || 'blocked'}) — must be cleared before building`
-                        : !cleared
-                          ? 'Uncleared plot'
-                          : `Empty plot (${x},${y}) — click to choose a building`
+                      : fogged
+                        ? 'Unsurveyed plot — click to survey'
+                        : hazard
+                          ? `Hazard (${hazard.kind || 'blocked'}) — click to remediate`
+                          : !cleared
+                            ? 'Uncleared plot — click to clear land'
+                            : `Empty plot (${x},${y}) — click to choose a building`
                 }
               >
                 {isAnchor && occupant ? (
@@ -446,6 +557,10 @@ const GridManager: React.FC<GridManagerProps> = ({ planetId, playerCredits, onUp
                   </span>
                 ) : occupantId && !isAnchor ? (
                   <span className="cell-span" aria-hidden="true" />
+                ) : fogged ? (
+                  <span className="cell-fog" aria-hidden="true" title="Unsurveyed">
+                    ?
+                  </span>
                 ) : hazard ? (
                   <span className="cell-hazard" aria-hidden="true" title={hazard.kind || 'hazard'}>
                     ☢
@@ -458,6 +573,101 @@ const GridManager: React.FC<GridManagerProps> = ({ planetId, playerCredits, onUp
           }),
         )}
       </div>
+
+      {/* TERRAFORM / SURVEY panel — appears when a blocked empty plot is selected. */}
+      {selectedPlot && selectedPlotData && (
+        <div className="grid-terraform">
+          <div className="terraform-info">
+            <span className="terraform-name">
+              Plot ({selectedPlot.x},{selectedPlot.y})
+              {plotHasHazard
+                ? ` — hazard (${selectedPlotData.hazard?.kind || 'blocked'})`
+                : plotNeedsSurvey
+                  ? ' — unsurveyed'
+                  : plotNeedsClear
+                    ? ' — uncleared'
+                    : ''}
+            </span>
+            <span className="terraform-sub">
+              {plotNeedsSurvey
+                ? 'Survey reveals terrain and hazard intel for this plot.'
+                : plotHasHazard
+                  ? 'Hazard remediation clears the plot for construction.'
+                  : 'Land clearance prepares uncleared terrain for building.'}
+            </span>
+          </div>
+          <div className="terraform-actions">
+            {plotNeedsSurvey && (
+              <button
+                type="button"
+                className="grid-btn terraform-btn"
+                disabled={actionLoading || !hasTool('grid_survey')}
+                title={
+                  hasTool('grid_survey')
+                    ? `Survey plot (${selectedPlot.x},${selectedPlot.y})`
+                    : `Requires research: ${TOOL_LABELS.grid_survey}`
+                }
+                onClick={() => handleSurvey(selectedPlot.x, selectedPlot.y)}
+              >
+                Survey
+              </button>
+            )}
+            {plotNeedsClear && (
+              <button
+                type="button"
+                className="grid-btn terraform-btn"
+                disabled={actionLoading || !hasTool('plot_clear')}
+                title={
+                  hasTool('plot_clear')
+                    ? `Clear land at (${selectedPlot.x},${selectedPlot.y})`
+                    : `Requires research: ${TOOL_LABELS.plot_clear}`
+                }
+                onClick={() => handleClearPlot(selectedPlot.x, selectedPlot.y)}
+              >
+                Clear land
+              </button>
+            )}
+            {plotHasHazard && (
+              <button
+                type="button"
+                className="grid-btn terraform-btn"
+                disabled={actionLoading || !hasTool('hazard_clear')}
+                title={
+                  hasTool('hazard_clear')
+                    ? `Clear hazard at (${selectedPlot.x},${selectedPlot.y})`
+                    : `Requires research: ${TOOL_LABELS.hazard_clear}`
+                }
+                onClick={() => handleClearHazard(selectedPlot.x, selectedPlot.y)}
+              >
+                Clear hazard
+              </button>
+            )}
+            <button
+              type="button"
+              className="grid-btn cancel-btn"
+              disabled={actionLoading}
+              onClick={() => setSelectedPlot(null)}
+            >
+              Cancel
+            </button>
+          </div>
+          {!hasTool('grid_survey') && plotNeedsSurvey && (
+            <span className="terraform-gate-note">
+              🔒 Requires research: {TOOL_RESEARCH_NODES.grid_survey}
+            </span>
+          )}
+          {!hasTool('plot_clear') && plotNeedsClear && (
+            <span className="terraform-gate-note">
+              🔒 Requires research: {TOOL_RESEARCH_NODES.plot_clear}
+            </span>
+          )}
+          {!hasTool('hazard_clear') && plotHasHazard && (
+            <span className="terraform-gate-note">
+              🔒 Requires research: {TOOL_RESEARCH_NODES.hazard_clear}
+            </span>
+          )}
+        </div>
+      )}
 
       {/* DECOMMISSION panel — appears when a placed building is selected. */}
       {selectedBuilding && (

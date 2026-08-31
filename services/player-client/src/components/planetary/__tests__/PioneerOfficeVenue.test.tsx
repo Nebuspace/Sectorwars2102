@@ -5,8 +5,8 @@
  * the broker-cohort panel (presets, slider, total), the active-contracts
  * list (progress %, source-name fallback, LOAD/VOID gating), the
  * per-contract load form (max-batch clamp, LOAD PODS/CANCEL), and every
- * axiosErrorMessage fallback branch (server detail/message, network
- * message-only, generic fallback).
+ * axiosErrorMessage fallback branch (server detail/message, TypeError /
+ * network densify, generic fallback).
  */
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -28,7 +28,7 @@ vi.mock('../../../contexts/GameContext', () => ({
   useGame: useGameMock,
 }));
 
-import PioneerOfficeVenue from '../PioneerOfficeVenue';
+import PioneerOfficeVenue, { axiosErrorMessage } from '../PioneerOfficeVenue';
 
 let container: HTMLElement;
 let root: ReturnType<typeof createRoot>;
@@ -141,10 +141,14 @@ describe('PioneerOfficeVenue — loading + error states', () => {
     expect(container.querySelector('.po-error')?.textContent).toBe('Hub not staffed');
   });
 
-  it('falls back to the raw error message for a network-level failure', async () => {
+  it('densifies Network Error on load to the stable fallback (LEG-3266)', async () => {
     getPioneerOfficeMock.mockRejectedValue({ message: 'Network Error' });
     await render();
-    expect(container.querySelector('.po-error')?.textContent).toBe('Network Error');
+    const err = container.querySelector('.po-error');
+    expect(err?.textContent).toBe('Could not reach the Pioneer Office.');
+    expect(err?.textContent).not.toMatch(/Network Error/i);
+    expect(err?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(err?.textContent).not.toMatch(/TypeError/i);
   });
 
   it('falls back to the generic copy when the error carries neither', async () => {
@@ -416,5 +420,83 @@ describe('PioneerOfficeVenue — per-contract load form', () => {
     await flush();
     expect(container.querySelector('.po-error')?.textContent).toBe('Cargo hold full');
     expect(container.querySelector('.po-load')).not.toBeNull(); // stays open on failure
+  });
+});
+
+describe('PioneerOfficeVenue TypeError densify (LEG-3266)', () => {
+  const loadFallback = 'Could not reach the Pioneer Office.';
+  const brokerFallback = 'Could not broker the contract.';
+  const batchFallback = 'Could not load the batch.';
+
+  it('axiosErrorMessage densifies TypeError / Failed to fetch / Network Error to fallback', () => {
+    expect(axiosErrorMessage(new TypeError('Failed to fetch'), loadFallback)).toBe(loadFallback);
+    expect(axiosErrorMessage({ message: 'Failed to fetch' }, loadFallback)).toBe(loadFallback);
+    expect(axiosErrorMessage({ message: 'Network Error' }, loadFallback)).toBe(loadFallback);
+    expect(axiosErrorMessage({ message: '   ' }, loadFallback)).toBe(loadFallback);
+    expect(axiosErrorMessage(new TypeError('Failed to fetch'), loadFallback)).not.toMatch(/Failed to fetch/i);
+    expect(axiosErrorMessage(new TypeError('Failed to fetch'), loadFallback)).not.toMatch(/TypeError/i);
+  });
+
+  it('axiosErrorMessage keeps structured API detail honesty', () => {
+    expect(
+      axiosErrorMessage({ response: { data: { detail: 'Hub not staffed' } } }, loadFallback)
+    ).toBe('Hub not staffed');
+    expect(
+      axiosErrorMessage({ response: { data: { message: 'Insufficient funds' } } }, brokerFallback)
+    ).toBe('Insufficient funds');
+  });
+
+  it('load TypeError surfaces fallback without Failed to fetch / TypeError / Network Error in DOM', async () => {
+    getPioneerOfficeMock.mockRejectedValue(new TypeError('Failed to fetch'));
+    await render();
+    const err = container.querySelector('.po-error');
+    expect(err?.textContent).toBe(loadFallback);
+    expect(err?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(err?.textContent).not.toMatch(/TypeError/i);
+    expect(err?.textContent).not.toMatch(/Network Error/i);
+    expect(container.textContent).not.toMatch(/Failed to fetch/i);
+    expect(container.textContent).not.toMatch(/TypeError/i);
+  });
+
+  it('broker TypeError surfaces fallback without Failed to fetch / TypeError in DOM', async () => {
+    brokerMigrationContractMock.mockRejectedValue(new TypeError('Failed to fetch'));
+    await render();
+    await act(async () => {
+      (container.querySelector('.po-action') as HTMLButtonElement).dispatchEvent(
+        new MouseEvent('click', { bubbles: true })
+      );
+    });
+    await flush();
+    const err = container.querySelector('.po-error');
+    expect(err?.textContent).toBe(brokerFallback);
+    expect(err?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(err?.textContent).not.toMatch(/TypeError/i);
+    expect(container.textContent).not.toMatch(/Failed to fetch/i);
+    expect(container.textContent).not.toMatch(/TypeError/i);
+  });
+
+  it('load-batch TypeError surfaces fallback without Failed to fetch / TypeError in DOM', async () => {
+    getPioneerOfficeMock.mockResolvedValue(
+      office({ cargo_free: 500, contracts: [contract({ id: 'c1', remaining_to_load: 500 })] })
+    );
+    loadPioneerBatchMock.mockRejectedValue(new TypeError('Failed to fetch'));
+    await render();
+    act(() => {
+      (container.querySelector('.po-contract-actions .po-action') as HTMLButtonElement).dispatchEvent(
+        new MouseEvent('click', { bubbles: true })
+      );
+    });
+    await act(async () => {
+      (container.querySelector('.po-load-actions .po-action') as HTMLButtonElement).dispatchEvent(
+        new MouseEvent('click', { bubbles: true })
+      );
+    });
+    await flush();
+    const err = container.querySelector('.po-error');
+    expect(err?.textContent).toBe(batchFallback);
+    expect(err?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(err?.textContent).not.toMatch(/TypeError/i);
+    expect(container.textContent).not.toMatch(/Failed to fetch/i);
+    expect(container.textContent).not.toMatch(/TypeError/i);
   });
 });

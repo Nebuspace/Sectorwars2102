@@ -124,3 +124,50 @@ describe('SystemHealthStatus (LEG-212 shared api)', () => {
     });
   });
 });
+
+describe('SystemHealthStatus TypeError densify (LEG-3175)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('shows Offline on server status TypeError Failed to fetch without leaking raw exception text', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<SystemHealthStatus />);
+
+    await waitFor(() => expect(screen.getByText(/Offline/)).toBeInTheDocument());
+
+    const text = document.body.textContent ?? '';
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('shows honest AI provider collapse on providers poll TypeError without raw transport text', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/status/ai/providers')) {
+        throw new TypeError('Failed to fetch');
+      }
+      if (String(url).includes('/status/database')) {
+        return {
+          data: {
+            status: 'healthy',
+            connected: true,
+            response_time: 5,
+            last_check: '2026-01-01T00:00:00Z',
+          },
+        };
+      }
+      return { data: { active_connections: 2, admin_connections: 1 } };
+    });
+
+    render(<SystemHealthStatus />);
+
+    await waitFor(() => expect(screen.getByText(/Online/)).toBeInTheDocument());
+    expect(screen.getByText(/🤖 0\/0/)).toBeInTheDocument();
+
+    const text = document.body.textContent ?? '';
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+});

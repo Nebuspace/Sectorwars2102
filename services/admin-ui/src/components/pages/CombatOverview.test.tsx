@@ -325,6 +325,19 @@ describe('CombatOverview intervention mutation formatAdminApiError (LEG-2599)', 
     expect(screen.queryByText('Failed to intervene in combat')).not.toBeInTheDocument();
   });
 
+  it('surfaces honest fallback on restore_shields POST TypeError/network collapse (LEG-2978)', async () => {
+    vi.mocked(api.post).mockRejectedValue(new TypeError('Failed to fetch'));
+    const user = userEvent.setup();
+    await postRestoreShields(user);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to intervene in combat/i)).toBeInTheDocument();
+    });
+    const alertText = screen.getByText(/Failed to intervene in combat/i).textContent ?? '';
+    expect(alertText).not.toMatch(/Failed to fetch/i);
+    expect(alertText).not.toMatch(/TypeError/i);
+  });
+
   it('surfaces 403 detail on adjust_damage intervention post', async () => {
     vi.mocked(api.post).mockRejectedValue(
       Object.assign(new Error('HTTP 403'), {

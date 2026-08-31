@@ -30,6 +30,9 @@ vi.mock('../../../services/api', () => ({
     engage: vi.fn(),
     getStatus: vi.fn(),
   },
+  navAPI: {
+    getThreat: () => Promise.resolve([]),
+  },
 }));
 
 vi.mock('../../../contexts/WebSocketContext', () => ({

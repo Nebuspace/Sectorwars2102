@@ -136,6 +136,20 @@ describe('TranslationManagement scope errors (LEG-925)', () => {
       expect(screen.getByText(/rate limit/i)).toBeTruthy();
     });
   });
+
+  it('surfaces honest fallback on languages load TypeError/network collapse (LEG-3024)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<TranslationManagement />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to load languages/i)).toBeTruthy();
+    });
+
+    const text = screen.getByText(/Failed to load languages/i).textContent ?? '';
+    expect(text).not.toMatch(/TypeError/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+  });
 });
 
 describe('TranslationManagement save-key mutation errors (LEG-2626)', () => {

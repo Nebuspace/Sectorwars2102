@@ -120,11 +120,13 @@ describe('SurveyExpeditionPanel', () => {
       expect(statusLabel()).toBe('Expedition failed — no site found');
     });
 
-    it('starts from a clean dispatch state (no crash) when list() rejects', async () => {
+    it('shows honest list-restore error and still allows launch when list() rejects', async () => {
       mockList.mockRejectedValue(new Error('network down'));
       await mount();
       expect(launchBtn()?.textContent).toBe('Launch Expedition');
-      expect(errorAlert()).toBeUndefined();
+      expect(container.querySelector('[data-testid="survey-list-error"]')?.textContent).toBe(
+        'network down',
+      );
     });
   });
 
