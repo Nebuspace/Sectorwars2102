@@ -167,8 +167,11 @@ const TacticalThreatPage: React.FC = () => {
       if (mineItem === 'limpet_mine') {
         setLimpetCarried((n) => Math.max(0, n - qty));
       }
-    } catch (e: any) {
-      setMineMsg({ ok: false, text: e?.response?.data?.detail || 'Mine deployment failed' });
+    } catch (e: unknown) {
+      setMineMsg({
+        ok: false,
+        text: formatTacticalThreatError(e, 'Mine deployment failed — check your connection.'),
+      });
     } finally {
       setMineBusy(false);
     }
