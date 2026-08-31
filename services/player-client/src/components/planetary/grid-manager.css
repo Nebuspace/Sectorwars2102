@@ -176,7 +176,8 @@
 }
 
 .grid-cell.hazard,
-.grid-cell.uncleared {
+.grid-cell.uncleared,
+.grid-cell.fog {
   border-color: rgba(255, 80, 80, 0.4);
   background:
     repeating-linear-gradient(
@@ -186,7 +187,40 @@
       transparent 4px,
       transparent 8px
     );
-  cursor: not-allowed;
+}
+
+.grid-cell.fog {
+  border-color: rgba(148, 163, 184, 0.45);
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      rgba(148, 163, 184, 0.12) 0,
+      rgba(148, 163, 184, 0.12) 4px,
+      transparent 4px,
+      transparent 8px
+    );
+  cursor: pointer;
+}
+
+.grid-cell.blocked:not(.fog) {
+  cursor: pointer;
+}
+
+.grid-cell.blocked:hover:not(:disabled) {
+  border-color: rgba(255, 170, 68, 0.55);
+  box-shadow: 0 0 8px rgba(255, 170, 68, 0.25);
+}
+
+.grid-cell.selected-plot {
+  border-color: #ffaa44;
+  background: rgba(255, 170, 68, 0.12);
+  box-shadow: 0 0 10px rgba(255, 170, 68, 0.35);
+}
+
+.cell-fog {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #99aabb;
 }
 
 .grid-cell.off-grid {
@@ -325,6 +359,58 @@
 .cancel-btn:hover:not(:disabled) {
   border-color: #889;
   color: #ccd;
+}
+
+/* Terraform / survey panel */
+.grid-terraform {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  margin-bottom: 12px;
+  border: 1px solid rgba(0, 255, 204, 0.35);
+  border-radius: 6px;
+  background: rgba(0, 255, 204, 0.05);
+}
+
+.terraform-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.terraform-name {
+  font-size: 0.85rem;
+  color: #ddd;
+  font-weight: 600;
+}
+
+.terraform-sub {
+  font-size: 0.7rem;
+  color: #99a;
+}
+
+.terraform-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.terraform-btn {
+  border-color: #00ffcc;
+  color: #00ffcc;
+  font-weight: 600;
+}
+
+.terraform-btn:hover:not(:disabled) {
+  background: rgba(0, 255, 204, 0.12);
+  border-color: #00ffcc;
+  color: #aaffee;
+}
+
+.terraform-gate-note {
+  font-size: 0.7rem;
+  color: #ffaa44;
 }
 
 /* Highlight the plot whose build popup is currently open. */
