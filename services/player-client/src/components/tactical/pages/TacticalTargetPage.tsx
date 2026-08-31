@@ -162,6 +162,23 @@ interface TacticalTargetPageProps {
   onSelectContact?: (contact: TacticalContact | null) => void;
 }
 
+const HAIL_FAILED_FALLBACK = 'TRANSMISSION FAILED';
+const ENGAGE_FAILED_FALLBACK = 'Combat system error — try again.';
+
+/** Exported for TypeError/network honesty Vitest (LEG-3261). */
+export function formatTacticalTargetHailError(err: unknown): string {
+  if (err instanceof TypeError) return HAIL_FAILED_FALLBACK;
+  if (err instanceof Error && err.message) return err.message;
+  return HAIL_FAILED_FALLBACK;
+}
+
+/** Exported for TypeError/network honesty Vitest (LEG-3261). */
+export function formatTacticalTargetEngageError(err: unknown): string {
+  if (err instanceof TypeError) return ENGAGE_FAILED_FALLBACK;
+  if (err instanceof Error && err.message) return err.message;
+  return ENGAGE_FAILED_FALLBACK;
+}
+
 const BUCKET_COLOR: Record<RepBucket, string> = {
   red: '#FF5A6A',
   gray: '#9AA6B5',
@@ -247,8 +264,8 @@ const TacticalTargetPage: React.FC<TacticalTargetPageProps> = ({ contacts, selec
       setHailResult({ key, ok: true, text: 'TRANSMITTED' });
       setHailKey(null);
       setHailText('');
-    } catch (e: any) {
-      setHailResult({ key, ok: false, text: e?.message || 'TRANSMISSION FAILED' });
+    } catch (e: unknown) {
+      setHailResult({ key, ok: false, text: formatTacticalTargetHailError(e) });
     } finally {
       setHailBusy(false);
     }
@@ -293,8 +310,8 @@ const TacticalTargetPage: React.FC<TacticalTargetPageProps> = ({ contacts, selec
       } else {
         setEngageResult({ key, ok: false, text: response?.message || 'Failed to initiate combat' });
       }
-    } catch (e: any) {
-      setEngageResult({ key, ok: false, text: e?.message || 'Combat system error — try again.' });
+    } catch (e: unknown) {
+      setEngageResult({ key, ok: false, text: formatTacticalTargetEngageError(e) });
     } finally {
       setEngagingKey(null);
     }
