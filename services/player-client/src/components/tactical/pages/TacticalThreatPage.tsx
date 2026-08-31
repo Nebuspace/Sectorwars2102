@@ -3,6 +3,7 @@ import { useGame } from '../../../contexts/GameContext';
 import { greyStatusAPI, armoryAPI, type ArmoryMineItem, type GreyStatus } from '../../../services/api';
 import { formatCredits } from '../../../utils/formatters';
 import LimpetTrackerReadout from '../LimpetTrackerReadout';
+import SectorRetreatControl from '../SectorRetreatControl';
 
 /**
  * TacticalThreatPage — TACTICAL monitor's THREAT page (WO-UI2-DECK-
@@ -242,6 +243,8 @@ const TacticalThreatPage: React.FC = () => {
       </div>
 
       <LimpetTrackerReadout />
+
+      <SectorRetreatControl />
 
       <div className="threat-section">
         <div className="threat-section-title" role="heading" aria-level={3}>HAZARD READOUT</div>
