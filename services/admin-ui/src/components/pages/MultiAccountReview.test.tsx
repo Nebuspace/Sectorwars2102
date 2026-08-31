@@ -252,3 +252,24 @@ describe('MultiAccountReview decide POST (LEG-2765)', () => {
     expect(decideError.textContent).not.toMatch(/^Failed to record decision$/);
   });
 });
+
+describe('MultiAccountReview TypeError densify (LEG-3068)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+  });
+
+  it('surfaces honest fallback on clusters load network collapse', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<MultiAccountReview />);
+
+    await waitFor(() => {
+      expect(document.body.textContent).toMatch(/Failed to load clusters/i);
+    });
+
+    const text = document.body.textContent ?? '';
+    expect(text).toMatch(/Failed to load clusters/i);
+    expect(text).not.toMatch(/TypeError/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+  });
+});
