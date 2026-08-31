@@ -651,3 +651,162 @@ describe('MedalAdmin', () => {
     expect(screen.getByTestId('medal-collection-error').textContent).toMatch(/rate limit/i);
   });
 });
+
+describe('MedalAdmin Network Error densify (LEG-3355)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    mockToastError.mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('collapses axios-shaped Network Error on catalog load', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/medals/admin/catalog')) {
+        throw new Error('Network Error');
+      }
+      return { data: { players: [] } };
+    });
+
+    render(<MedalAdmin />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Catalog' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Failed to load medal catalog/i);
+    expect(alert).not.toBe('Network Error');
+    expect(alert).not.toContain('Network Error');
+    expect(alert).not.toMatch(/TypeError/i);
+  });
+
+  it('collapses axios-shaped Network Error on player collection load', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/medals/admin/catalog')) {
+        return { data: { total: 0, items: [] } };
+      }
+      if (url.includes('/collection')) {
+        throw new Error('Network Error');
+      }
+      return { data: { players: [{ id: 'p1', username: 'Ace' }] } };
+    });
+
+    render(<MedalAdmin />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Player collection' }));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Select collection player')).toBeTruthy();
+    });
+    fireEvent.change(screen.getByLabelText('Select collection player'), {
+      target: { value: 'p1' },
+    });
+    fireEvent.click(screen.getByTestId('medal-collection-load'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('medal-collection-error')).toBeTruthy();
+    });
+    const msg = screen.getByTestId('medal-collection-error').textContent ?? '';
+    expect(msg).toMatch(/Failed to load player medal collection/i);
+    expect(msg).not.toBe('Network Error');
+    expect(msg).not.toContain('Network Error');
+    expect(msg).not.toMatch(/TypeError/i);
+  });
+
+  it('collapses axios-shaped Network Error on revoke mutation', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/medals/admin/catalog')) {
+        return {
+          data: {
+            total: 1,
+            items: [{ id: 'bronze_cluster', name: 'Bronze Cluster', category: 'combat' }],
+          },
+        };
+      }
+      return { data: { players: [{ id: 'p1', username: 'Ace' }] } };
+    });
+    vi.mocked(api.post).mockRejectedValue(new Error('Network Error'));
+
+    render(<MedalAdmin />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Revoke' }));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Select player')).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByLabelText('Select player'), { target: { value: 'p1' } });
+    fireEvent.change(screen.getByLabelText('Medal'), { target: { value: 'bronze_cluster' } });
+    fireEvent.change(screen.getByLabelText(/Reason/), {
+      target: { value: 'Admin correction' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Revoke medal' }));
+
+    await waitFor(() => {
+      expect(mockToastError).toHaveBeenCalled();
+    });
+    const msg = String(mockToastError.mock.calls.map((call) => call[0]).join('\n'));
+    expect(msg).toMatch(/Revoke failed/i);
+    expect(msg).not.toBe('Network Error');
+    expect(msg).not.toContain('Network Error');
+    expect(msg).not.toMatch(/TypeError/i);
+  });
+
+  it('collapses axios-shaped Network Error on bulk commit', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/medals/admin/catalog')) {
+        return {
+          data: {
+            total: 1,
+            items: [{ id: 'bronze_cluster', name: 'Bronze Cluster', category: 'combat' }],
+          },
+        };
+      }
+      return { data: { players: [{ id: 'p1', username: 'Ace' }] } };
+    });
+    vi.mocked(api.post).mockImplementation(async (_url: string, body: { dry_run?: boolean }) => {
+      if (body?.dry_run) {
+        return {
+          data: {
+            success: true,
+            dry_run: true,
+            grantable_count: 2,
+            invalid_count: 0,
+            granted_count: 0,
+            invalid_samples: [],
+          },
+        };
+      }
+      throw new Error('Network Error');
+    });
+
+    render(<MedalAdmin />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Bulk grant' }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('medal-bulk-panel')).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByLabelText('Bulk medal'), {
+      target: { value: 'bronze_cluster' },
+    });
+    fireEvent.change(screen.getByLabelText('Bulk recipients'), {
+      target: { value: 'Ace\nBob' },
+    });
+    fireEvent.click(screen.getByTestId('medal-bulk-dry-run'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('medal-bulk-commit')).not.toBeDisabled();
+    });
+
+    fireEvent.click(screen.getByTestId('medal-bulk-commit'));
+
+    await waitFor(() => {
+      expect(mockToastError).toHaveBeenCalled();
+    });
+    const msg = String(mockToastError.mock.calls.map((call) => call[0]).join('\n'));
+    expect(msg).toMatch(/Bulk commit failed/i);
+    expect(msg).not.toBe('Network Error');
+    expect(msg).not.toContain('Network Error');
+    expect(msg).not.toMatch(/TypeError/i);
+  });
+});

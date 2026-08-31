@@ -62,4 +62,19 @@ describe('TeamManagement scope errors (LEG-968)', () => {
     expect(text).not.toMatch(/Failed to fetch/i);
     expect(text).not.toMatch(/TypeError/i);
   });
+
+  it('collapses axios-shaped Network Error to team load fallback (LEG-3359)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
+
+    render(<TeamManagement />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to load team data/i)).toBeTruthy();
+    });
+    const text = screen.getByText(/Failed to load team data/i).textContent ?? '';
+    expect(text).toMatch(/Failed to load team data/i);
+    expect(text).not.toBe('Network Error');
+    expect(text).not.toContain('Network Error');
+    expect(text).not.toMatch(/TypeError/i);
+  });
 });
