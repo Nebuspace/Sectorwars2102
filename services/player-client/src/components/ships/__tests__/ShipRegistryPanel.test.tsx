@@ -69,6 +69,13 @@ describe('formatShipRegistryActionError', () => {
     expect(text).not.toMatch(/Failed to fetch/i);
     expect(text).not.toMatch(/TypeError/i);
   });
+
+  it('formatShipRegistryActionError falls back on axios Network Error / Failed to fetch (LEG-3341)', () => {
+    expect(formatShipRegistryActionError(new Error('Network Error'))).toBe('Registry action failed');
+    expect(formatShipRegistryActionError(new Error('Failed to fetch'))).toBe('Registry action failed');
+    expect(formatShipRegistryActionError(new Error('Network Error'))).not.toBe('Network Error');
+    expect(formatShipRegistryActionError(new Error('ship not registered'))).toBe('ship not registered');
+  });
 });
 
 describe('ShipRegistryPanel', () => {

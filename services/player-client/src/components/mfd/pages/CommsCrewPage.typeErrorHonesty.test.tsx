@@ -40,6 +40,22 @@ describe('CommsCrewPage TypeError densify (LEG-3073)', () => {
     expect(text).not.toMatch(/TypeError/i);
   });
 
+  it('formatCommsThreadsLoad/Send/Flag/Purge fall back on axios Network Error / Failed to fetch (LEG-3353)', () => {
+    expect(formatCommsThreadsLoadError(new Error('Network Error'))).toBe('Failed to load threads');
+    expect(formatCommsThreadsLoadError(new Error('Failed to fetch'))).toBe('Failed to load threads');
+    expect(formatCommsThreadsLoadError(new Error('Network Error'))).not.toBe('Network Error');
+
+    expect(formatCommsSendError(new Error('Network Error'))).toBe('TRANSMISSION FAILED');
+    expect(formatCommsSendError(new Error('Failed to fetch'))).toBe('TRANSMISSION FAILED');
+    expect(formatCommsSendError(new Error('Network Error'))).not.toBe('Network Error');
+
+    expect(formatCommsFlagError(new Error('Network Error'))).toBe('Failed to flag transmission');
+    expect(formatCommsFlagError(new Error('Failed to fetch'))).toBe('Failed to flag transmission');
+
+    expect(formatCommsPurgeError(new Error('Network Error'))).toBe('Failed to purge transmission');
+    expect(formatCommsPurgeError(new Error('Failed to fetch'))).toBe('Failed to purge transmission');
+  });
+
   it('preserves 500/403 detail paths when HTTP status is present', () => {
     const err500 = Object.assign(new Error('API Error: 500'), { status: 500 });
     expect(formatCommsThreadsLoadError(err500)).toBe('Failed to load threads');

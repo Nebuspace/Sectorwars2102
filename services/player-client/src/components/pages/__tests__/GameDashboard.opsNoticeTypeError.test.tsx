@@ -44,6 +44,35 @@ describe('formatGameDashboardOpsError vault cluster (LEG-3331)', () => {
   });
 });
 
+describe('formatGameDashboardOpsError shield/vault axios transport collapse (LEG-3354)', () => {
+  it('falls back on axios Network Error for shield upgrade', () => {
+    expect(
+      formatGameDashboardOpsError(new Error('Network Error'), 'Shield generator upgrade failed'),
+    ).toBe('Shield generator upgrade failed');
+    expect(
+      formatGameDashboardOpsError(new Error('Network Error'), 'Shield generator upgrade failed'),
+    ).not.toBe('Network Error');
+  });
+
+  it('falls back on axios Failed to fetch for citadel upgrade', () => {
+    expect(formatGameDashboardOpsError(new Error('Failed to fetch'), 'Citadel upgrade failed')).toBe(
+      'Citadel upgrade failed',
+    );
+    expect(formatGameDashboardOpsError(new Error('Failed to fetch'), 'Citadel upgrade failed')).not.toMatch(
+      /Failed to fetch/i,
+    );
+  });
+
+  it('falls back on whitespace-only message for vault transaction', () => {
+    expect(formatGameDashboardOpsError(new Error('   '), 'Vault transaction failed')).toBe(
+      'Vault transaction failed',
+    );
+    expect(formatGameDashboardOpsError({ message: '  \t  ' }, 'Vault transaction failed')).toBe(
+      'Vault transaction failed',
+    );
+  });
+});
+
 describe('formatGameDashboardOpsError colonist/rename cluster (LEG-3331)', () => {
   it('maps TypeError to colonist transfer fallback', () => {
     const text = formatGameDashboardOpsError(
@@ -61,5 +90,20 @@ describe('formatGameDashboardOpsError colonist/rename cluster (LEG-3331)', () =>
     );
     expect(text).toBe('Failed to rename planet. Please try again.');
     expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('falls back on axios Network Error for colonist transfer and planet rename (LEG-3354)', () => {
+    expect(formatGameDashboardOpsError(new Error('Network Error'), 'Colonist transfer failed')).toBe(
+      'Colonist transfer failed',
+    );
+    expect(formatGameDashboardOpsError(new Error('Network Error'), 'Colonist transfer failed')).not.toBe(
+      'Network Error',
+    );
+    expect(
+      formatGameDashboardOpsError(new Error('Failed to fetch'), 'Failed to rename planet. Please try again.'),
+    ).toBe('Failed to rename planet. Please try again.');
+    expect(
+      formatGameDashboardOpsError(new Error('Network Error'), 'Failed to rename planet. Please try again.'),
+    ).not.toMatch(/Network Error/i);
   });
 });

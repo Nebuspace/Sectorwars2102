@@ -35,10 +35,21 @@ function httpStatus(err: unknown): number | undefined {
   return undefined;
 }
 
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
 /** True when err looks like gameserver detail (not bare API Error: N / TypeError noise). */
 function hasRankDisplayServerDetail(err: unknown, message: string | undefined): boolean {
-  // Network collapse (fetch TypeError) is not gameserver copy — use the caller fallback.
+  // Network collapse (fetch TypeError / axios transport) is not gameserver copy.
   if (err instanceof TypeError) return false;
+  if (typeof message === 'string' && isNetworkCollapseMessage(message)) return false;
   return (
     typeof message === 'string' &&
     message.trim().length > 0 &&

@@ -81,9 +81,20 @@ function httpStatus(err: unknown): number | undefined {
   return undefined;
 }
 
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isCommsNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
+};
+
 /**
  * Prefer response.data.detail, else a non-generic Error.message.
- * Network collapse (fetch TypeError) is not gameserver copy — return
+ * Network collapse (fetch TypeError / axios transport) is not gameserver copy — return
  * undefined so formatters use their stable fallbacks (LEG-3073 Soft-ORDER).
  */
 function serverDetail(err: unknown): string | undefined {
@@ -96,6 +107,7 @@ function serverDetail(err: unknown): string | undefined {
     if (typeof rawDetail === 'string' && rawDetail.trim()) return rawDetail.trim();
   }
   const message = err instanceof Error ? err.message : undefined;
+  if (typeof message === 'string' && isCommsNetworkCollapseMessage(message)) return undefined;
   if (
     typeof message === 'string' &&
     message.trim().length > 0 &&

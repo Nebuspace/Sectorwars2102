@@ -182,6 +182,13 @@ describe('ModuleGridInterface', () => {
     expect(text).not.toMatch(/TypeError/i);
   });
 
+  it('formatModuleGridLoad/Action fall back on axios Network Error / Failed to fetch (LEG-3346)', () => {
+    expect(formatModuleGridLoadError(new Error('Network Error'))).toBe('Failed to load module data');
+    expect(formatModuleGridLoadError(new Error('Failed to fetch'))).toBe('Failed to load module data');
+    expect(formatModuleGridActionError(new Error('Network Error'), 'Install failed')).toBe('Install failed');
+    expect(formatModuleGridActionError(new Error('plot occupied'), 'Install failed')).toBe('plot occupied');
+  });
+
   it('surfaces Failed to load module data on getModules TypeError (LEG-3002)', async () => {
     getModules.mockRejectedValue(new TypeError('Failed to fetch'));
     await act(async () => {

@@ -270,6 +270,30 @@ describe('MyBeaconsTab', () => {
     expect(text).not.toMatch(/TypeError/i);
   });
 
+  it('formatBeaconLoad/Deploy/RowAction fall back on axios Network Error / Failed to fetch (LEG-3360)', () => {
+    expect(formatBeaconLoadError(new Error('Network Error'))).toBe('Failed to load your beacons');
+    expect(formatBeaconLoadError(new Error('Failed to fetch'))).toBe('Failed to load your beacons');
+    expect(formatBeaconLoadError(new Error('Network Error'))).not.toBe('Network Error');
+
+    expect(formatBeaconDeployError(new Error('Network Error'))).toBe('Deploy failed');
+    expect(formatBeaconDeployError(new Error('Failed to fetch'))).toBe('Deploy failed');
+    expect(formatBeaconDeployError(new Error('Network Error'))).not.toBe('Network Error');
+
+    expect(formatBeaconRowActionError(new Error('Network Error'))).toBe('Action failed');
+    expect(formatBeaconRowActionError(new Error('Failed to fetch'))).toBe('Action failed');
+    expect(formatBeaconRowActionError(new Error('Network Error'))).not.toBe('Network Error');
+  });
+
+  it('load axios Network Error surfaces fallback without literal Network Error in DOM (LEG-3360)', async () => {
+    mockMine.mockRejectedValue(new Error('Network Error'));
+    await mount();
+
+    const err = container.querySelector('.sb-beacons-error');
+    expect(err?.textContent).toBe('Failed to load your beacons');
+    expect(err?.textContent).not.toMatch(/Network Error/i);
+    expect(container.textContent).not.toMatch(/Network Error/i);
+  });
+
   it('load TypeError surfaces fallback without Failed to fetch / TypeError in DOM (LEG-3317)', async () => {
     mockMine.mockRejectedValue(new TypeError('Failed to fetch'));
     await mount();
