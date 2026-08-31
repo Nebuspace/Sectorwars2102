@@ -1,0 +1,41 @@
+.salvage-break-cta {
+  margin-top: 0.35rem;
+}
+
+.salvage-break-btn {
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  padding: 0.2rem 0.45rem;
+  border: 1px solid rgba(255, 136, 0, 0.55);
+  background: rgba(255, 136, 0, 0.12);
+  color: #ffb347;
+  cursor: pointer;
+}
+
+.salvage-break-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.salvage-break-cta.in-progress {
+  font-size: 0.72rem;
+  color: #ffb347;
+}
+
+.salvage-break-label {
+  font-weight: 600;
+  margin-right: 0.35rem;
+}
+
+.salvage-break-msg {
+  font-size: 0.68rem;
+  margin-top: 0.2rem;
+}
+
+.salvage-break-msg.ok {
+  color: #7dffb3;
+}
+
+.salvage-break-msg.err {
+  color: #ff7b7b;
+}

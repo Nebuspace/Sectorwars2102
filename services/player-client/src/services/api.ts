@@ -1126,6 +1126,15 @@ export const shipRegistryAPI = {
       method: 'POST',
       body: JSON.stringify({ port_id: portId, pin }),
     }),
+
+  /** Force-entry on a drifting pin-locked hull (ship-registry.md Salvage break). */
+  salvageBreak: (shipId: string): Promise<{
+    ship_id: string;
+    started_at: string;
+    duration_seconds: number;
+    completes_at: string;
+  }> =>
+    apiRequest(`/api/v1/ships/${shipId}/salvage-break`, { method: 'POST' }),
 };
 
 // Ranking & Reputation APIs
