@@ -170,8 +170,13 @@ type Busy =
   | 'simulate'
   | null;
 
-const errMsg = (e: unknown): string =>
-  e instanceof Error ? e.message : 'Fleet request failed';
+export function formatFleetManagerError(
+  e: unknown,
+  fallback = 'Fleet request failed',
+): string {
+  if (e instanceof TypeError) return fallback;
+  return e instanceof Error ? e.message : fallback;
+}
 
 const isUuid = (value: string): boolean =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
@@ -287,7 +292,7 @@ export const FleetManagerPanel: React.FC = () => {
       setFleets(next);
       setSelectedId((prev) => (prev && next.some((f) => f.id === prev) ? prev : null));
     } catch (e) {
-      setError(errMsg(e));
+      setError(formatFleetManagerError(e));
     } finally {
       setBusy(null);
     }
@@ -299,7 +304,7 @@ export const FleetManagerPanel: React.FC = () => {
       const rows = (await fleetAPI.getFleetMembers(fleetId)) as FleetMemberRow[];
       setMembers(Array.isArray(rows) ? rows : []);
     } catch (e) {
-      setError(errMsg(e));
+      setError(formatFleetManagerError(e));
       setMembers([]);
     }
   }, []);
@@ -386,7 +391,7 @@ export const FleetManagerPanel: React.FC = () => {
     try {
       await fn();
     } catch (e) {
-      setError(errMsg(e));
+      setError(formatFleetManagerError(e));
     } finally {
       setBusy(null);
     }

@@ -105,7 +105,7 @@ vi.mock('../../cockpit/EmbeddedContext', () => ({
   useEmbedded: () => true,
 }));
 
-import FleetManagerPanel from '../FleetManagerPanel';
+import FleetManagerPanel, { formatFleetManagerError } from '../FleetManagerPanel';
 
 const sampleFleet = {
   id: 'fleet-1',
@@ -149,6 +149,19 @@ const setSelectValue = async (select: HTMLSelectElement, value: string) => {
     select.dispatchEvent(new Event('change', { bubbles: true }));
   });
 };
+
+describe('formatFleetManagerError TypeError densify (LEG-3092)', () => {
+  it('falls back on TypeError network collapse', () => {
+    const text = formatFleetManagerError(new TypeError('Failed to fetch'));
+    expect(text).toMatch(/Fleet request failed/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('preserves non-generic Error.message detail when not TypeError', () => {
+    expect(formatFleetManagerError(new Error('dock_request_denied'))).toBe('dock_request_denied');
+  });
+});
 
 describe('FleetManagerPanel', () => {
   let container: HTMLDivElement;
@@ -658,6 +671,112 @@ describe('FleetManagerPanel', () => {
     const alert = container.querySelector('[data-testid="fleet-manager-error"]');
     expect(alert?.getAttribute('role')).toBe('alert');
     expect(alert?.textContent).toContain('Team membership required to view fleet roster.');
+  });
+
+  it('surfaces honest fallback when getFleets rejects with TypeError', async () => {
+    getFleets.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await act(async () => {
+      root.render(<FleetManagerPanel />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const alert = container.querySelector('[data-testid="fleet-manager-error"]');
+    expect(alert?.textContent).toMatch(/Fleet request failed/i);
+    expect(alert?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(alert?.textContent).not.toMatch(/TypeError/i);
+  });
+
+  it('does not crash when getFleets returns a malformed (empty object) payload', async () => {
+    getFleets.mockResolvedValue({});
+
+    await act(async () => {
+      root.render(<FleetManagerPanel />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[data-testid="fleet-manager"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="fleet-manager-error"]')).toBeNull();
+  });
+
+  it('surfaces honest fallback when getFleetMembers rejects with TypeError', async () => {
+    getFleets.mockResolvedValue([sampleFleet]);
+    getFleetMembers.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await act(async () => {
+      root.render(<FleetManagerPanel />);
+    });
+    await selectFleet(container);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const alert = container.querySelector('[data-testid="fleet-manager-error"]');
+    expect(alert?.textContent).toMatch(/Fleet request failed/i);
+    expect(alert?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(alert?.textContent).not.toMatch(/TypeError/i);
+  });
+
+  it('does not crash when getFleetMembers returns a malformed (empty object) payload', async () => {
+    getFleets.mockResolvedValue([sampleFleet]);
+    getFleetMembers.mockResolvedValue({});
+
+    await act(async () => {
+      root.render(<FleetManagerPanel />);
+    });
+    await selectFleet(container);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[data-testid="fleet-members-empty"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="fleet-manager-error"]')).toBeNull();
+  });
+
+  it('surfaces honest fallback when initiateBattle rejects with TypeError', async () => {
+    getFleets.mockResolvedValue([sampleFleet]);
+    getFleetMembers.mockResolvedValue([]);
+    initiateBattle.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await act(async () => {
+      root.render(<FleetManagerPanel />);
+    });
+    await selectFleet(container);
+
+    const input = container.querySelector(
+      '[data-testid="fleet-battle-defender"]',
+    ) as HTMLInputElement;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        'value',
+      )?.set;
+      setter?.call(input, DEFENDER_FLEET_UUID);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    await act(async () => {
+      (container.querySelector(
+        '[data-testid="fleet-battle-initiate-submit"]',
+      ) as HTMLButtonElement).click();
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const alert = container.querySelector('[data-testid="fleet-manager-error"]');
+    expect(alert?.textContent).toMatch(/Fleet request failed/i);
+    expect(alert?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(alert?.textContent).not.toMatch(/TypeError/i);
   });
 
   it('surfaces initiateBattle API errors in the panel alert', async () => {
