@@ -33,6 +33,7 @@ import DeckPageTabs from '../cockpit/DeckPageTabs';
 import type { ProductionLine } from '../cockpit/ProductionPanel';
 import type { PerColonistRates, ProdRole } from '../cockpit/CoupledColonistSliders';
 import SafeVaultPanel from '../cockpit/SafeVaultPanel';
+import StationSecurityBanner from '../station/StationSecurityBanner';
 import BankPanel, { isStarportPrimeStation, shipCargoFree } from '../cockpit/BankPanel';
 import { miningAPI, navAPI, playerAPI, type NavChartResponse, sectorAPI, type SectorWreck } from '../../services/api';
 import NearestAmRefineryOverlay from '../mining/NearestAmRefineryOverlay';
@@ -2877,6 +2878,7 @@ const GameDashboardInner: React.FC = () => {
               <span className="station-face-bay-band-name" role="heading" aria-level={2}>
                 {isDockedAtSpaceDock ? '🚀' : '🏪'} DOCKED — {(dockedStation?.name || (isDockedAtSpaceDock ? 'SpaceDock' : 'Trading Station')).toUpperCase()}
               </span>
+              <StationSecurityBanner stationId={dockedStation?.id ?? playerState?.current_port_id} />
               <HudChip id="baystatus" className="top-right" pill={<>⚓ CLAMPED</>}>
                 <div className="hud-label">BAY STATUS</div>
                 <div className="hud-value hud-chip-name hud-chip-ok">CLAMPS ENGAGED</div>

@@ -2,6 +2,7 @@ import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { useGame } from '../../contexts/GameContext';
 import { formatCredits } from '../../utils/formatters';
 import DeckPageTabs from '../cockpit/DeckPageTabs';
+import StationSecurityMonitoringPane from '../station/StationSecurityMonitoringPane';
 import './port-office-venue.css';
 
 // =====================================================================
@@ -1567,6 +1568,8 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
             {busyAction === 'defense' ? 'Posting...' : 'Post Defense Policy'}
           </button>
         </div>
+
+        <StationSecurityMonitoringPane stationId={stationId} isOwner={isMine} />
 
         {/* Economic takeover defense — owner only (LEG-INI-35) */}
         <div className="po-section" data-testid="po-econ-defense">

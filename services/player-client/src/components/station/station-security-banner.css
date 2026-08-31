@@ -1,0 +1,15 @@
+/* StationSecurityBanner — on-dock security tier readout (LEG-3105). */
+
+.station-security-banner {
+  color: rgba(200, 220, 235, 0.92);
+  font-family: var(--font-secondary, 'Courier New', monospace);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.station-security-banner--pending {
+  color: rgba(255, 196, 120, 0.95);
+}
