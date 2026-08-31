@@ -82,6 +82,7 @@ from src.api.routes.black_market import router as black_market_router
 from src.api.routes.syndicate_fence import router as syndicate_fence_router
 from src.api.routes.resources import router as resources_router  # WO-ARCH-RES-1-KERNEL (router carries /resources prefix)
 from src.api.routes.pirate_ecosystem import router as pirate_ecosystem_router  # WO-PIRATE-ECO-1
+from src.api.routes.pirate_holdings import router as pirate_holdings_router  # LEG-1105
 from src.api.routes.contracts import router as contracts_router  # WO-ECON-CONTRACT-1-KERNEL
 from src.api.routes.admin_contract_disputes import router as admin_contract_disputes_router  # WO-CONTRACT-6
 from src.api.routes.admin_multi_account import router as admin_multi_account_router  # WO-PADMIN-multiacct-review
@@ -231,6 +232,7 @@ api_router.include_router(resources_router, tags=["resources"])
 # target/cleansed-state snapshot (router carries its own /regions prefix →
 # GET /regions/{region_id}/pirate-ecosystem).
 api_router.include_router(pirate_ecosystem_router, tags=["pirate-ecosystem"])
+api_router.include_router(pirate_holdings_router, tags=["pirate-holdings"])
 # Trade contracts (WO-ECON-CONTRACT-1-KERNEL): board/mine/{id} reads +
 # accept/complete/abandon on NPC-issued cargo_delivery contracts (router
 # carries its own /contracts prefix). Player-issued posting, insurance,
