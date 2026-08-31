@@ -21,8 +21,15 @@ function httpStatus(err: unknown): number | undefined {
   return undefined;
 }
 
-/** Surface gameserver detail when ARIA memory recall fails. */
+/**
+ * Surface gameserver detail when ARIA memory recall fails; network collapse
+ * (fetch TypeError) is not GS copy — use the stable fallback (LEG-3072 Soft-ORDER).
+ */
 export function formatAriaMemoryLoadError(err: unknown): string {
+  const fallback = 'Failed to load memories';
+  // Network collapse (fetch TypeError) is not gameserver copy — use the fallback.
+  if (err instanceof TypeError) return fallback;
+
   const status = httpStatus(err);
   const message = err instanceof Error ? err.message : undefined;
   const hasServerDetail =
@@ -32,11 +39,11 @@ export function formatAriaMemoryLoadError(err: unknown): string {
 
   if (status === 503 || status === 500) {
     if (hasServerDetail) return message!;
-    return 'Failed to load memories';
+    return fallback;
   }
 
   if (hasServerDetail) return message!;
-  return 'Failed to load memories';
+  return fallback;
 }
 
 const contentPreview = (content: Record<string, unknown>): string => {
