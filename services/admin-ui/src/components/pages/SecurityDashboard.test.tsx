@@ -321,3 +321,77 @@ describe('SecurityDashboard overview load errors (LEG-2682)', () => {
     expect(screen.getByRole('alert').textContent).toMatch(/security alerts/i);
   });
 });
+
+describe('SecurityDashboard axios Network Error densify (LEG-3393)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    toastSuccess.mockReset();
+    toastError.mockReset();
+    confirmMock.mockReset();
+    confirmMock.mockResolvedValue(true);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('collapses axios-shaped Network Error on security report load', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/security/report')) {
+        throw new Error('Network Error');
+      }
+      if (String(url).includes('/security/alerts')) {
+        return { data: { alerts: [], alert_count: 0, high_priority_count: 0 } };
+      }
+      return { data: {} };
+    });
+
+    renderDash();
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/security report:\s*unavailable/i);
+    expect(alert).not.toBe('Network Error');
+    expect(alert).not.toContain('Network Error');
+  });
+
+  it('collapses axios-shaped Network Error on security alerts load', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/security/report')) {
+        return { data: sampleReport };
+      }
+      if (String(url).includes('/security/alerts')) {
+        throw new Error('Network Error');
+      }
+      return { data: {} };
+    });
+
+    renderDash();
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/security alerts:\s*unavailable/i);
+    expect(alert).not.toBe('Network Error');
+    expect(alert).not.toContain('Network Error');
+  });
+
+  it('collapses axios-shaped Network Error on cleanup POST', async () => {
+    mockSecurityGets();
+    vi.mocked(api.post).mockRejectedValue(new Error('Network Error'));
+    renderDash();
+
+    fireEvent.click(await screen.findByLabelText('Clean up old security data'));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith(
+        expect.stringMatching(/Failed to clean up security data/i),
+      );
+    });
+    const msg = String(toastError.mock.calls.map((call) => call[0]).join('\n'));
+    expect(msg).not.toBe('Network Error');
+    expect(msg).not.toContain('Network Error');
+  });
+});
+
