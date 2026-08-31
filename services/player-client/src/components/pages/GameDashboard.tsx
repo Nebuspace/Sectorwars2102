@@ -327,6 +327,37 @@ export function formatTerraformingStartError(err: unknown): string {
   return TERRAFORMING_START_FAILED_FALLBACK;
 }
 
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isGameDashboardNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
+};
+
+/**
+ * Planetary-ops catch paths (opsNotice, transferNotice, allocError) — prefer
+ * structured axios detail; densify TypeError / Failed to fetch to fallback.
+ * Exported for TypeError densify Vitest (LEG-3331).
+ */
+export function formatGameDashboardOpsError(err: unknown, fallback: string): string {
+  const e = err as {
+    response?: { data?: { detail?: unknown; message?: unknown } };
+    message?: string;
+  };
+  const raw = e?.response?.data?.detail ?? e?.response?.data?.message;
+  if (typeof raw === 'string' && raw.trim()) return raw;
+  if (err instanceof TypeError) return fallback;
+  if (!e?.response && typeof e?.message === 'string') {
+    if (isGameDashboardNetworkCollapseMessage(e.message)) return fallback;
+    if (e.message.trim()) return e.message;
+  }
+  return fallback;
+}
+
 // Render an absolute estimatedCompletion (ISO) as a compact, human countdown
 // ("~3h 20m left" / "~12m left"). Falls back to null when the field is absent
 // (legacy projects) so the caller can degrade to the tick readout.
@@ -1614,11 +1645,10 @@ const GameDashboardInner: React.FC = () => {
         message: `Shield generator upgrade to L${gen?.toLevel ?? '?'}${gen?.name ? ` (${gen.name})` : ''} started — ${Number(result?.creditsCost || 0).toLocaleString()} credits spent, ready in ${hrs}h.`
       });
       setOpsRefresh(n => n + 1);
-    } catch (error: any) {
-      // Surface the server's 400 detail verbatim (e.g. exact credit shortfall)
+    } catch (error: unknown) {
       setOpsNotice({
         type: 'error',
-        message: error?.response?.data?.detail || 'Shield generator upgrade failed'
+        message: formatGameDashboardOpsError(error, 'Shield generator upgrade failed'),
       });
     } finally {
       setConfirmUpgrade(null);
@@ -1633,12 +1663,10 @@ const GameDashboardInner: React.FC = () => {
       const result = await upgradeCitadel(landedPlanet.id);
       setOpsNotice({ type: 'success', message: result?.message || 'Citadel upgrade started.' });
       setOpsRefresh(n => n + 1);
-    } catch (error: any) {
-      // 400 detail carries the real rule (defense prerequisites, credit or
-      // resource shortfalls, upgrade already running) — show it verbatim
+    } catch (error: unknown) {
       setOpsNotice({
         type: 'error',
-        message: error?.response?.data?.detail || 'Citadel upgrade failed'
+        message: formatGameDashboardOpsError(error, 'Citadel upgrade failed'),
       });
     } finally {
       setConfirmUpgrade(null);
@@ -1653,8 +1681,8 @@ const GameDashboardInner: React.FC = () => {
       const result = await cancelCitadelUpgrade(landedPlanet.id);
       setOpsNotice({ type: 'success', message: result?.message || 'Citadel upgrade cancelled.' });
       setOpsRefresh(n => n + 1);
-    } catch (error: any) {
-      setOpsNotice({ type: 'error', message: error?.response?.data?.detail || 'Cancel failed' });
+    } catch (error: unknown) {
+      setOpsNotice({ type: 'error', message: formatGameDashboardOpsError(error, 'Cancel failed') });
     } finally {
       setCancelArmed(false);
       setCancelBusy(false);
@@ -1668,8 +1696,8 @@ const GameDashboardInner: React.FC = () => {
       const result = await buildDefenseBuilding(landedPlanet.id, buildingType);
       setOpsNotice({ type: 'success', message: result?.message || 'Defense building constructed.' });
       setOpsRefresh(n => n + 1);
-    } catch (error: any) {
-      setOpsNotice({ type: 'error', message: error?.response?.data?.detail || 'Construction failed' });
+    } catch (error: unknown) {
+      setOpsNotice({ type: 'error', message: formatGameDashboardOpsError(error, 'Construction failed') });
     } finally {
       setBuildingBusy(null);
     }
@@ -1713,11 +1741,10 @@ const GameDashboardInner: React.FC = () => {
       setOpsNotice({ type: 'success', message: result?.message || 'Vault transaction complete.' });
       // depositToSafe/withdrawFromSafe already refreshPlayerState() internally
       // (the wallet-bounded credit max recomputes off that) — no extra fetch here.
-    } catch (error: any) {
-      // Show the server's gating message verbatim (capacity, balance, level)
+    } catch (error: unknown) {
       setOpsNotice({
         type: 'error',
-        message: error?.response?.data?.detail || 'Vault transaction failed'
+        message: formatGameDashboardOpsError(error, 'Vault transaction failed'),
       });
     } finally {
       setSafeBusy(false);
@@ -1748,8 +1775,11 @@ const GameDashboardInner: React.FC = () => {
           ? 'Auto-deposit enabled — production will be swept into the safe.'
           : 'Auto-deposit disabled.',
       });
-    } catch (error: any) {
-      setOpsNotice({ type: 'error', message: error?.response?.data?.detail || 'Could not change auto-deposit' });
+    } catch (error: unknown) {
+      setOpsNotice({
+        type: 'error',
+        message: formatGameDashboardOpsError(error, 'Could not change auto-deposit'),
+      });
     } finally {
       setAutoDepositBusy(false);
     }
@@ -1781,8 +1811,11 @@ const GameDashboardInner: React.FC = () => {
       const detail = await getPlanetDetails(landedPlanet.id).catch(() => null);
       if (detail) setLandedPlanetDetail(detail);
       setOpsNotice({ type: 'success', message: result?.message || 'Vault transaction complete.' });
-    } catch (error: any) {
-      setOpsNotice({ type: 'error', message: error?.response?.data?.detail || 'Vault transaction failed' });
+    } catch (error: unknown) {
+      setOpsNotice({
+        type: 'error',
+        message: formatGameDashboardOpsError(error, 'Vault transaction failed'),
+      });
     } finally {
       setCommodityBusy(null);
     }
@@ -1800,10 +1833,6 @@ const GameDashboardInner: React.FC = () => {
 
   // Stockpile → ship cargo (LEG-546). Distinct from Store→Safe. GS enforces
   // landed-on-planet, owner/team ACL, cargo space, and teammate tax skim.
-  const apiErrorDetail = (error: any, fallback: string): string => {
-    const detail = error?.response?.data?.detail ?? error?.message;
-    return typeof detail === 'string' && detail.trim() ? detail : fallback;
-  };
   const withdrawStockpileByGsKey = async (
     commodity: 'fuel_ore' | 'organics' | 'equipment',
     amount: number,
@@ -1817,8 +1846,11 @@ const GameDashboardInner: React.FC = () => {
       void refreshPlayerState();
       setOpsNotice({ type: 'success', message: result?.message || 'Stockpile loaded to cargo.' });
       setOpsRefresh((n) => n + 1);
-    } catch (error: any) {
-      setOpsNotice({ type: 'error', message: apiErrorDetail(error, 'Stockpile withdraw failed') });
+    } catch (error: unknown) {
+      setOpsNotice({
+        type: 'error',
+        message: formatGameDashboardOpsError(error, 'Stockpile withdraw failed'),
+      });
     } finally {
       setStockpileWithdrawBusy(null);
     }
@@ -1917,10 +1949,10 @@ const GameDashboardInner: React.FC = () => {
       // above doesn't cover). (WO-COCKPIT-UX A — refresh on own mutation.)
       setOpsRefresh((n) => n + 1);
       setTransferModal(null);
-    } catch (error: any) {
+    } catch (error: unknown) {
       setTransferNotice({
         type: 'error',
-        message: error?.response?.data?.detail || error?.response?.data?.message || 'Colonist transfer failed'
+        message: formatGameDashboardOpsError(error, 'Colonist transfer failed'),
       });
       setTransferModal(null);
     } finally {
@@ -2071,9 +2103,9 @@ const GameDashboardInner: React.FC = () => {
         // +N/day readouts come from the server's confirmed rates
         if (result?.productionRates) setAllocRates(result.productionRates);
         setAllocError(null);
-      } catch (error: any) {
+      } catch (error: unknown) {
         setAllocations(confirmedAllocations.current);
-        setAllocError(error?.response?.data?.detail || 'Allocation update failed');
+        setAllocError(formatGameDashboardOpsError(error, 'Allocation update failed'));
       } finally {
         setAllocSyncing(false);
       }
@@ -2332,12 +2364,11 @@ const GameDashboardInner: React.FC = () => {
       // Refresh the sector data to show the new name
       await exploreCurrentLocation();
       setOpsNotice({ type: 'success', message: `Planet registry updated — now designated "${newName}".` });
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Error renaming planet:', error);
-      // Inline notice, never a native alert (native dialogs freeze automation)
       setOpsNotice({
         type: 'error',
-        message: error?.response?.data?.detail || 'Failed to rename planet. Please try again.'
+        message: formatGameDashboardOpsError(error, 'Failed to rename planet. Please try again.'),
       });
     }
   };
