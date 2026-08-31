@@ -99,7 +99,7 @@ describe('ConversationDetailModal export/guard (LEG-3131)', () => {
       vi.spyOn(document, 'createElement').mockImplementation((tagName: string) => {
         const el = originalCreateElement(tagName);
         if (tagName === 'a') {
-          el.click = clickSpy;
+          (el as HTMLAnchorElement).click = clickSpy as HTMLAnchorElement['click'];
         }
         return el;
       });
