@@ -27,7 +27,10 @@ vi.mock('../../contexts/WebSocketContext', () => ({
   useWebSocket: () => ({ medalAwardedSignal: 0 }),
 }));
 
-import MedalShowcase, { formatMedalShowcaseLoadError } from './MedalShowcase';
+import MedalShowcase, {
+  formatMedalShowcaseLoadError,
+  formatMedalShowcasePinError,
+} from './MedalShowcase';
 
 const apiRequestError = (status: number, message?: string) => {
   const err = new Error(message ?? `API Error: ${status}`);
@@ -183,6 +186,36 @@ describe('MedalShowcase', () => {
     expect(text).toMatch(/Failed to load medals/i);
     expect(text).not.toMatch(/Failed to fetch/i);
     expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('formatMedalShowcasePinError falls back on TypeError network collapse (LEG-3275)', () => {
+    const text = formatMedalShowcasePinError(new TypeError('Failed to fetch'));
+    expect(text).toBe('Failed to update pinned medal');
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('pin toggle TypeError surfaces fallback without Failed to fetch / TypeError (LEG-3275)', async () => {
+    mockGetMedals.mockResolvedValue({
+      earned: [makeMedal({ key: 'star_bronze' })],
+      available: [],
+      pinned_medal_id: null,
+    });
+    mockPinMe.mockRejectedValue(new TypeError('Failed to fetch'));
+    await mount();
+
+    const pinBtn = container.querySelector('.medal-pin-btn') as HTMLButtonElement;
+    await act(async () => {
+      pinBtn.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const pinErr = container.querySelector('.medal-pin-error');
+    expect(pinErr?.textContent).toBe('Failed to update pinned medal');
+    expect(pinErr?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(pinErr?.textContent).not.toMatch(/TypeError/i);
+    expect(container.querySelector('.medal-card.earned')).toBeTruthy();
   });
 
 });

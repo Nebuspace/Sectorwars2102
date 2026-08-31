@@ -83,6 +83,29 @@ export function formatMedalShowcaseLoadError(err: unknown): string {
   return 'Failed to load medals';
 }
 
+const PIN_FALLBACK = 'Failed to update pinned medal';
+
+/** True when message is bare transport collapse, not gameserver pin detail. */
+const isMedalPinNetworkCollapse = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+/** Exported for TypeError/network honesty Vitest (LEG-3275). */
+export function formatMedalShowcasePinError(err: unknown): string {
+  if (err instanceof TypeError) return PIN_FALLBACK;
+  const message = err instanceof Error ? err.message : undefined;
+  if (typeof message === 'string' && message.trim().length > 0) {
+    if (isMedalPinNetworkCollapse(message)) return PIN_FALLBACK;
+    return message;
+  }
+  return PIN_FALLBACK;
+}
+
 const MedalShowcase: React.FC = () => {
   const [medalData, setMedalData] = useState<MedalData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -155,8 +178,8 @@ const MedalShowcase: React.FC = () => {
       setMedalData((prev) =>
         prev ? { ...prev, pinned_medal_id: result.pinned_medal_id } : prev,
       );
-    } catch (err: any) {
-      setPinError(err.message || 'Failed to update pinned medal');
+    } catch (err: unknown) {
+      setPinError(formatMedalShowcasePinError(err));
     } finally {
       setPinningKey(null);
     }
