@@ -8,6 +8,14 @@ from src.models.ship import ShipType
 from src.models.warp_gate import WarpGateBeaconStatus
 from src.services import interdictor_abilities_service as svc
 
+pytestmark = pytest.mark.usefixtures("_noop_flag_modified")
+
+
+@pytest.fixture
+def _noop_flag_modified(monkeypatch):
+    """SimpleNamespace ships are not mapped ORM instances."""
+    monkeypatch.setattr(svc, "flag_modified", lambda *a, **k: None)
+
 
 def _ship(ship_type=ShipType.NPC_MARSHAL_INTERDICTOR, **kwargs):
     defaults = {
