@@ -1338,6 +1338,27 @@ export const gridAPI = {
       method: 'POST',
       body: JSON.stringify({ building_id: buildingId }),
     }),
+
+  /** Reveal one fogged/unsurveyed plot. Requires Orbital Survey Suite (grid_survey). */
+  survey: (planetId: string, x: number, y: number) =>
+    apiRequest(`/api/v1/planets/${planetId}/grid/survey`, {
+      method: 'POST',
+      body: JSON.stringify({ x, y }),
+    }),
+
+  /** Clear uncleared non-hazard land. Requires Land Clearance (plot_clear). */
+  clearPlot: (planetId: string, x: number, y: number) =>
+    apiRequest(`/api/v1/planets/${planetId}/grid/clear-plot`, {
+      method: 'POST',
+      body: JSON.stringify({ x, y }),
+    }),
+
+  /** Remediate a hazard plot. Requires Hazard Remediation (hazard_clear). */
+  clearHazard: (planetId: string, x: number, y: number) =>
+    apiRequest(`/api/v1/planets/${planetId}/grid/clear-hazard`, {
+      method: 'POST',
+      body: JSON.stringify({ x, y }),
+    }),
 };
 
 // Ground-expedition APIs (ADR-0091 "Planetary Survey & Site Discovery",
