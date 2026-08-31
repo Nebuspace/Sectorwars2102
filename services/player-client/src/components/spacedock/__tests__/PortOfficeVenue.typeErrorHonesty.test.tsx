@@ -70,6 +70,18 @@ describe('formatPortOfficeVenueError TypeError densify (LEG-3133)', () => {
     expect(text).not.toMatch(/TypeError/i);
   });
 
+  it('falls back on axios Network Error / Failed to fetch non-TypeError (LEG-3274)', () => {
+    expect(formatPortOfficeVenueError(new Error('Failed to fetch'), 'Vault withdrawal failed.')).toBe(
+      'Vault withdrawal failed.',
+    );
+    expect(formatPortOfficeVenueError(new Error('Network Error'), 'Vault withdrawal failed.')).toBe(
+      'Vault withdrawal failed.',
+    );
+    expect(formatPortOfficeVenueError(new Error('   '), 'Vault withdrawal failed.')).toBe(
+      'Vault withdrawal failed.',
+    );
+  });
+
   it('preserves server detail for non-TypeError errors', () => {
     const err = Object.assign(new Error('insufficient treasury'), {
       response: { data: { detail: 'Treasury balance too low.' } },
