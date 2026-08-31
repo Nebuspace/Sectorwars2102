@@ -134,24 +134,20 @@ def dispatch_terminated_cleanup(db: Session, now: Optional[datetime] = None) -> 
     commit bae0abcf) against each eligible region's planets and stations:
     ``process_planet_termination`` per planet (planet-safe transport +
     Genesis compensation), ``dispatch_station_termination`` for the region
-    as a whole (still a discovery-only stub there pending the
-    acquisition_cost/upgrade-capital blocker documented in that module --
-    this dispatch does not change that module's own scope), and
+    as a whole (live since PR #563 — Path A/B relocate/charge/lose), and
     ``cascade_region_gate_teardown`` (ADR-0052 SK38) to tear down every
     player-built warp gate with an endpoint in the region. ADR-0052 SK38
     states no ordering dependency between the gate cascade and the
     planet/station cascade -- each processes a disjoint entity type -- so
     the gate teardown runs alongside them in the same per-region pass.
 
-    Does NOT stamp ``Region.cleanup_completed_at`` while
-    ``dispatch_station_termination`` remains discovery-only
-    (WO-ESCALATE-CYCLE26-DESIGN-FLAGS / DECISIONS.md cycle26-design-flags-fix):
-    asserting "cleanup complete" while stations are never terminated is a
-    data-integrity bug. Planet re-entry is gated by
-    ``Planet.termination_compensated_at`` instead; gate teardown is already
-    status-flip idempotent. Eligibility still filters
-    ``cleanup_completed_at IS NULL`` so a future station-termination
-    implementation can stamp the region marker once and stop re-dispatch.
+    Stamps ``Region.cleanup_completed_at`` once all three cascades finish
+    for a region in this pass (WO-FIX-REGION-CLEANUP-COMPLETED-AT-STAMP /
+    DECISIONS.md cycle26-design-flags-fix update 2026-08-16: station
+    termination is no longer a stub). Planet re-entry remains gated by
+    ``Planet.termination_compensated_at``; gate teardown is status-flip
+    idempotent. Eligibility filters ``cleanup_completed_at IS NULL`` so a
+    stamped region is not re-dispatched on subsequent ticks.
 
     Flush-only -- caller owns the commit, per this codebase's
     route-owns-commit convention (mirrors both cascade functions below it).
@@ -182,12 +178,10 @@ def dispatch_terminated_cleanup(db: Session, now: Optional[datetime] = None) -> 
             process_planet_termination(db, planet, now=now, outbox=outbox)
         dispatch_station_termination(db, region.id)
         cascade_region_gate_teardown(db, region.id)
-        # Intentionally leave cleanup_completed_at NULL until station
-        # termination is real (cycle26-design-flags-fix).
+        region.cleanup_completed_at = now
         logger.info(
             "region_lifecycle: dispatched cleanup cascade for region %s "
-            "(%d planet(s) processed; cleanup_completed_at deferred — "
-            "station termination still discovery-only)",
+            "(%d planet(s) processed; cleanup_completed_at stamped)",
             region.id, len(planets),
         )
     return {"cleanup_eligible": len(eligible), "_outbox": outbox}
