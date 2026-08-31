@@ -26,6 +26,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from src.models.player import Player
 
@@ -33,6 +34,9 @@ logger = logging.getLogger(__name__)
 
 # Ratified 2026-08-06 (DECISIONS.md wanted-black-market-bust-duration).
 WANTED_DURATION = timedelta(hours=24)
+
+# LEG-3378 — dedup ledger for emergent SS +10 on surviving a full bust timer.
+SURVIVE_WANTED_CYCLE_SS_SETTINGS_KEY = "survive_wanted_cycle_ss_awarded"
 
 
 def _now(now: Optional[datetime]) -> datetime:
@@ -134,6 +138,56 @@ def recompute_is_wanted(db: Session, player: Player, *, now: Optional[datetime] 
     return False
 
 
+def _maybe_award_survive_wanted_cycle_ss(db: Session, player: Player) -> None:
+    """Emergent SS +10 when a bust-timer Wanted cycle clears after a full
+    ``WANTED_DURATION`` window (LEG-3378).
+
+    Evaluated BEFORE ``clear_expired_wanted`` wipes ``wanted_declared_at`` /
+    ``wanted_until``. Only the timer-based sweep path calls this — an early
+    ``recompute_is_wanted`` clear (reputation recovery, stolen-ship impound,
+    report retraction) drops ``is_wanted`` before expiry so the player never
+    reaches this sweep. Dedup via ``player.settings[
+    SURVIVE_WANTED_CYCLE_SS_SETTINGS_KEY]`` — a list of ISO
+    ``wanted_declared_at`` anchors already rewarded. Rep failure is non-fatal.
+    """
+    declared = player.wanted_declared_at
+    until = player.wanted_until
+    if declared is None or until is None:
+        return
+    if until - declared < WANTED_DURATION:
+        return
+
+    cycle_key = declared.isoformat()
+    settings = dict(player.settings) if isinstance(player.settings, dict) else {}
+    prior_awarded = settings.get(SURVIVE_WANTED_CYCLE_SS_SETTINGS_KEY)
+    awarded = list(prior_awarded) if isinstance(prior_awarded, list) else []
+    if cycle_key in awarded:
+        return
+
+    try:
+        from src.services.emergent_reputation_service import apply_emergent_action
+
+        result = apply_emergent_action(
+            db,
+            player,
+            "SURVIVE_WANTED_CYCLE_SS",
+            {
+                "reason": "survive_wanted_cycle",
+                "wanted_declared_at": cycle_key,
+            },
+        )
+        if result.get("success"):
+            awarded.append(cycle_key)
+            settings[SURVIVE_WANTED_CYCLE_SS_SETTINGS_KEY] = awarded
+            player.settings = settings
+            flag_modified(player, "settings")
+    except Exception:
+        logger.warning(
+            "survive wanted cycle SS emergent rep failed (non-fatal)",
+            exc_info=True,
+        )
+
+
 def clear_expired_wanted(db: Session, *, now: Optional[datetime] = None) -> int:
     """Auto-clear sweep, mirrors ``suspect_service.clear_expired_suspects``.
     Clears ``is_wanted``, ``wanted_until``, and ``wanted_declared_at`` for
@@ -154,6 +208,7 @@ def clear_expired_wanted(db: Session, *, now: Optional[datetime] = None) -> int:
         .all()
     )
     for player in expired:
+        _maybe_award_survive_wanted_cycle_ss(db, player)
         player.is_wanted = False
         player.wanted_until = None
         player.wanted_declared_at = None
