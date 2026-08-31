@@ -22,6 +22,11 @@ export function harvestGateMessage(
   reason: unknown,
   fallback = 'Yield preview failed. Please try again.',
 ): string {
+  if (reason instanceof TypeError) return fallback;
+  if (reason instanceof Error && reason.message.length > 0) {
+    const key = reason.message;
+    return HARVEST_GATE_COPY[key] || key;
+  }
   if (typeof reason === 'string' && reason.length > 0) {
     return HARVEST_GATE_COPY[reason] || reason;
   }
@@ -101,14 +106,16 @@ export const HarvestYieldPreview: React.FC<Props> = ({ shipId, onGateChange }) =
         setPayload(preview);
         onGateChange?.({ blocked: false, message: null, reasonKey: null });
       })
-      .catch((err: { message?: string }) => {
+      .catch((err: unknown) => {
         if (cancelled) return;
         setPayload(null);
         const reasonKey =
-          typeof err?.message === 'string' && err.message.length > 0
-            ? err.message
-            : null;
-        const gateMessage = harvestGateMessage(reasonKey);
+          err instanceof TypeError
+            ? null
+            : err instanceof Error && err.message.length > 0
+              ? err.message
+              : null;
+        const gateMessage = harvestGateMessage(err);
         setError(gateMessage);
         onGateChange?.({
           blocked: true,

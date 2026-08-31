@@ -71,7 +71,8 @@ const STATUS_COPY: Record<string, string> = {
   OPEN: 'Open',
 };
 
-function formatTradeError(raw: unknown, fallback: string): string {
+export function formatTradeError(raw: unknown, fallback: string): string {
+  if (raw instanceof TypeError) return TRADE_REASON_COPY[fallback] || fallback;
   const msg = typeof raw === 'string' ? raw : (raw as any)?.message;
   if (!msg || typeof msg !== 'string') return TRADE_REASON_COPY[fallback] || fallback;
   const key = msg.trim();
