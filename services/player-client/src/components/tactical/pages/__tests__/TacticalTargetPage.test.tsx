@@ -570,6 +570,15 @@ describe('TacticalTargetPage TypeError densify (LEG-3261)', () => {
     expect(text).not.toMatch(/TypeError/i);
   });
 
+  it('formatTacticalTargetHail/Engage fall back on axios Network Error (LEG-3304)', () => {
+    expect(formatTacticalTargetHailError(new Error('Network Error'))).toBe('TRANSMISSION FAILED');
+    expect(formatTacticalTargetHailError(new Error('Failed to fetch'))).toBe('TRANSMISSION FAILED');
+    expect(formatTacticalTargetHailError(new Error('   '))).toBe('TRANSMISSION FAILED');
+    expect(formatTacticalTargetEngageError(new Error('Network Error'))).toBe('Combat system error — try again.');
+    expect(formatTacticalTargetEngageError(new Error('Failed to fetch'))).toBe('Combat system error — try again.');
+    expect(formatTacticalTargetEngageError(new Error('hostile lock'))).toBe('hostile lock');
+  });
+
   it('formatTacticalTargetEngageError falls back on TypeError network collapse', () => {
     const text = formatTacticalTargetEngageError(new TypeError('Failed to fetch'));
     expect(text).toBe('Combat system error — try again.');

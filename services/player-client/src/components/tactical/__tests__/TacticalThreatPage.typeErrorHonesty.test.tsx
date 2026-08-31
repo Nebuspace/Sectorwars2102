@@ -17,6 +17,24 @@ describe('TacticalThreatPage TypeError densify (LEG-3146)', () => {
     expect(text).not.toMatch(/TypeError/i);
   });
 
+  it('formatTacticalThreat/NavThreat fall back on axios Network Error (LEG-3302)', () => {
+    expect(
+      formatTacticalThreatError(new Error('Network Error'), 'Law status unavailable — check your connection.'),
+    ).toBe('Law status unavailable — check your connection.');
+    expect(
+      formatTacticalThreatError(new Error('Failed to fetch'), 'Law status unavailable — check your connection.'),
+    ).toBe('Law status unavailable — check your connection.');
+    expect(
+      formatTacticalThreatError(new Error('   '), 'Law status unavailable — check your connection.'),
+    ).toBe('Law status unavailable — check your connection.');
+    expect(formatNavThreatError(new Error('Network Error'))).toBe(
+      'Threat data unavailable — check your connection.',
+    );
+    expect(formatNavThreatError(new Error('Failed to fetch'))).toBe(
+      'Threat data unavailable — check your connection.',
+    );
+  });
+
   it('preserves non-generic Error.message when not TypeError', () => {
     expect(formatTacticalThreatError(new Error('Fine payment declined'), 'fallback')).toBe(
       'Fine payment declined',
