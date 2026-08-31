@@ -42,10 +42,23 @@ const asRecord = (value: unknown): Record<string, unknown> | null =>
 
 // api.ts's apiRequest() already normalizes FastAPI detail/message into
 // Error.message (see api.ts's apiRequest docstring) — surface it unless the
-// failure is a fetch TypeError (network collapse).
+// failure is a fetch TypeError / axios network collapse.
+/** Transport collapse copy is not gameserver detail (LEG-3284 densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
 export function formatContractBoardVenueError(error: unknown, fallback: string): string {
   if (error instanceof TypeError) return fallback;
-  if (error instanceof Error && error.message) return error.message;
+  if (error instanceof Error && error.message) {
+    if (isNetworkCollapseMessage(error.message)) return fallback;
+    return error.message;
+  }
   return fallback;
 }
 
