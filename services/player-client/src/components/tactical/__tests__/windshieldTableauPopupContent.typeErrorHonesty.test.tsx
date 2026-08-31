@@ -16,4 +16,10 @@ describe('windshieldTableauPopupContent TypeError densify (LEG-3081)', () => {
   it('preserves non-generic Error.message detail when not TypeError', () => {
     expect(formatBeaconPopupError(new Error('beacon_denied'))).toBe('beacon_denied');
   });
+
+  it('formatBeaconPopupError falls back on axios Network Error / Failed to fetch (LEG-3363)', () => {
+    expect(formatBeaconPopupError(new Error('Network Error'))).toBe('Action failed');
+    expect(formatBeaconPopupError(new Error('Failed to fetch'))).toBe('Action failed');
+    expect(formatBeaconPopupError(new Error('Network Error'))).not.toMatch(/Network Error/i);
+  });
 });
