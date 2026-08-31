@@ -89,6 +89,13 @@ describe('formatContractBoardVenueError TypeError densify (LEG-3139)', () => {
       ),
     ).toBe('Board is closed for maintenance.');
   });
+
+  it('falls back on axios Network Error / Failed to fetch non-TypeError (LEG-3284)', () => {
+    const fallback = 'The contract board terminal is not responding. Please try again.';
+    expect(formatContractBoardVenueError(new Error('Network Error'), fallback)).toBe(fallback);
+    expect(formatContractBoardVenueError(new Error('Failed to fetch'), fallback)).toBe(fallback);
+    expect(formatContractBoardVenueError(new Error('   '), fallback)).toBe(fallback);
+  });
 });
 
 describe('ContractBoardVenue accept TypeError densify (LEG-3139)', () => {
