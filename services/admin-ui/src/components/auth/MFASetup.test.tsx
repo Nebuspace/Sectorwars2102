@@ -154,3 +154,54 @@ describe('MFASetup API errors (LEG-3172)', () => {
     expect(error).not.toMatch(/TypeError/i);
   });
 });
+
+describe('MFASetup axios Network Error densify (LEG-3511)', () => {
+  beforeEach(() => {
+    mockedApi.post.mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('collapses axios-shaped Network Error on mfa/generate to honest fallback', async () => {
+    mockedApi.post.mockRejectedValue(new Error('Network Error'));
+
+    render(<MFASetup />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Failed to generate MFA secret')).toBeTruthy();
+    });
+
+    const errorEl = screen.getByText('Failed to generate MFA secret');
+    expect(errorEl.textContent).not.toMatch(/Network Error/i);
+  });
+
+  it('collapses axios-shaped Network Error on mfa/verify to honest fallback', async () => {
+    mockedApi.post.mockImplementation((url: string) => {
+      if (url === '/api/v1/auth/mfa/generate') {
+        return Promise.resolve({ data: generateOk });
+      }
+      if (url === '/api/v1/auth/mfa/verify') {
+        return Promise.reject(new Error('Network Error'));
+      }
+      return Promise.reject(new Error('unexpected'));
+    });
+
+    render(<MFASetup />);
+
+    await waitFor(() => {
+      expect(screen.getByText('SECRET123')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    fireEvent.change(screen.getByPlaceholderText('000000'), {
+      target: { value: '654321' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Verification failed')).toBeTruthy();
+    });
+
+    const error = screen.getByText('Verification failed').textContent ?? '';
+    expect(error).not.toMatch(/Network Error/i);
+  });
+});
