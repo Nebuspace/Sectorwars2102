@@ -271,6 +271,42 @@ class ContrabandService:
         """True iff the station is a BLACK_MARKET-type venue (brief §1.1)."""
         return station is not None and station.type == StationType.BLACK_MARKET
 
+    @staticmethod
+    def _is_fringe_controlled_port(station: Optional[Station]) -> bool:
+        """True iff ``Station.faction_affiliation`` is Fringe Alliance.
+
+        Same display-name resolver surface as TRADE_VOLUME_FA / docking gates
+        (invent=0 — do not invent alternate control signals).
+        """
+        if station is None:
+            return False
+        name = (getattr(station, "faction_affiliation", None) or "").strip()
+        return name == "Fringe Alliance"
+
+    def _maybe_award_black_market_tx_fa(
+        self, player: Player, station: Station
+    ) -> None:
+        """LEG-3395 — emergent FA +25 on BM txn at a Fringe-controlled port.
+
+        Non-fatal: never voids an otherwise-successful buy/sell.
+        """
+        if not self._is_fringe_controlled_port(station):
+            return
+        try:
+            from src.services.emergent_reputation_service import apply_emergent_action
+
+            apply_emergent_action(
+                self.db,
+                player,
+                "BLACK_MARKET_TX_FA",
+                {"sector_id": getattr(player, "current_sector_id", None)},
+            )
+        except Exception:
+            logger.warning(
+                "emergent BLACK_MARKET_TX_FA failed (non-fatal)",
+                exc_info=True,
+            )
+
     def _passes_rep_gate(self, player_id: uuid.UUID) -> bool:
         """True iff effective Fringe-Alliance (OUTLAWS) standing is at least
         RECOGNIZED (brief §1.1 / [OPEN-1]).
@@ -600,6 +636,9 @@ class ContrabandService:
         # update_reputation commits mid-txn, so it must NOT be used here).
         rep_deltas = self._apply_rep_deltas(player.id, meta, "black_market_buy")
 
+        # LEG-3395 — emergent FA +25 when the BM venue is Fringe-controlled.
+        self._maybe_award_black_market_tx_fa(player, station)
+
         self.db.flush()
 
         return {
@@ -732,6 +771,9 @@ class ContrabandService:
         # Faction rep deltas (sync, in-txn) — selling contraband still angers the
         # law even when undetected (the law watches the venue).
         rep_deltas = self._apply_rep_deltas(player.id, meta, "black_market_sell")
+
+        # LEG-3395 — emergent FA +25 when the BM venue is Fringe-controlled.
+        self._maybe_award_black_market_tx_fa(player, station)
 
         # Record the (flagged) sale on the ledger — is_illegal / illegal_commodity
         # are the additive MarketTransaction columns this WO added (mirrors buy()).

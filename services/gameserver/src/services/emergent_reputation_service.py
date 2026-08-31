@@ -578,6 +578,19 @@ EMERGENT_ACTIONS: Dict[str, EmergentAction] = {
             "(origin = early-grace salvage) (+10 / transaction)"
         ),
     ),
+    # LEG-3395 — Fringe Alliance: "Black-market transaction at a
+    # Fringe-controlled port | +25 / transaction" (factions-and-teams.md FA
+    # table, line 152; black-market.md:153). Wired at contraband_service
+    # buy() and clean sell() when Station.faction_affiliation is Fringe
+    # Alliance — not on busts, not on non-Fringe BLACK_MARKET venues.
+    "BLACK_MARKET_TX_FA": EmergentAction(
+        name="BLACK_MARKET_TX_FA",
+        deltas=[FactionDelta(FactionType.OUTLAWS, 25)],
+        doc_source=(
+            "factions-and-teams.md FA: Black-market transaction at a "
+            "Fringe-controlled port (+25 / transaction)"
+        ),
+    ),
 }
 
 
