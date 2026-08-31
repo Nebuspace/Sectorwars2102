@@ -126,7 +126,13 @@ export const ProductionMonitoring: React.FC = () => {
       return date.toLocaleDateString();
     });
 
-    const datasets = [];
+    const datasets: Array<{
+      label: string;
+      data: number[];
+      borderColor: string;
+      backgroundColor: string;
+      tension: number;
+    }> = [];
     const commodities: CommodityKey[] =
       selectedResource === 'all'
         ? ['fuel_ore', 'organics', 'equipment']
