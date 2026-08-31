@@ -10,6 +10,17 @@ import './recovery-console-panel.css';
  * POSTs. Collapsed rail by default; expands to the stranding recovery desk.
  */
 
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
+};
+
 /**
  * Surface GS recovery refusal detail.
  * - Plain string detail (slipdrive / escape-pod `detail=str(e)`).
@@ -34,11 +45,12 @@ export function formatRecoveryActionError(err: unknown): string {
     }
   }
 
-  // Network collapse (fetch TypeError) is not gameserver copy — use the fallback.
+  // Network collapse (fetch TypeError / axios Network Error) is not gameserver copy.
   const hasServerDetail =
     !(err instanceof TypeError) &&
     typeof message === 'string' &&
     message.trim().length > 0 &&
+    !isNetworkCollapseMessage(message) &&
     !/^API Error: \d+$/.test(message.trim());
 
   if (hasServerDetail) return message!;
