@@ -17,10 +17,23 @@ const DEFAULT_LIMIT = 20;
 
 const COMBAT_HISTORY_LOAD_FALLBACK = 'Failed to load combat history';
 
-/** Exported for TypeError/network honesty Vitest (LEG-3163). */
+/** Transport collapse copy is not gameserver detail (LEG-3280 densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+/** Exported for TypeError/network honesty Vitest (LEG-3163 / LEG-3280). */
 export function formatCombatHistoryError(err: unknown, fallback: string): string {
   if (err instanceof TypeError) return fallback;
-  if (err instanceof Error && err.message) return err.message;
+  if (err instanceof Error && err.message) {
+    if (isNetworkCollapseMessage(err.message)) return fallback;
+    return err.message;
+  }
   return fallback;
 }
 

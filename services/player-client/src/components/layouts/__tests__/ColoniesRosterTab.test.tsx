@@ -76,6 +76,14 @@ describe('ColoniesRosterTab', () => {
     expect(text).not.toMatch(/TypeError/i);
   });
 
+  it('formatColoniesRosterLoadError densifies Network Error / Failed to fetch non-TypeError (LEG-3282)', () => {
+    const fallback = 'Failed to load colonies';
+    expect(formatColoniesRosterLoadError(new Error('Network Error'), fallback)).toBe(fallback);
+    expect(formatColoniesRosterLoadError(new Error('Failed to fetch'), fallback)).toBe(fallback);
+    expect(formatColoniesRosterLoadError(new Error('   '), fallback)).toBe(fallback);
+    expect(formatColoniesRosterLoadError(new Error('boom'), fallback)).toBe('boom');
+  });
+
   it('load TypeError surfaces honest fallback without Failed to fetch / TypeError (LEG-3103)', async () => {
     getOwnedPlanets.mockRejectedValue(new TypeError('Failed to fetch'));
 
