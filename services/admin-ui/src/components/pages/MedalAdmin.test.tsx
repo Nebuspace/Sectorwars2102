@@ -325,6 +325,10 @@ describe('MedalAdmin', () => {
       expect(screen.getByTestId('medal-bulk-panel')).toBeTruthy();
     });
 
+    await waitFor(() => {
+      expect(screen.getByLabelText('Bulk medal')).toBeTruthy();
+    });
+
     fireEvent.change(screen.getByLabelText('Bulk medal'), {
       target: { value: 'bronze_cluster' },
     });
