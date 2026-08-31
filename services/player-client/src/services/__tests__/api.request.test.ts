@@ -268,6 +268,24 @@ describe('apiRequest via trade/combat/grey wrappers', () => {
     );
   });
 
+  it('shipRegistryAPI.salvageBreak POSTs with no body (LEG-3144)', async () => {
+    post.mockResolvedValue({
+      data: {
+        ship_id: 'ship-9',
+        started_at: '2026-08-31T00:00:00Z',
+        duration_seconds: 3600,
+        completes_at: '2026-08-31T01:00:00Z',
+      },
+    });
+    const out = await shipRegistryAPI.salvageBreak('ship-9');
+    expect(out.ship_id).toBe('ship-9');
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/ships/ship-9/salvage-break',
+      undefined,
+      jsonHeaders,
+    );
+  });
+
   it('navAPI.plot POSTs target_sector_id with default min_time objective', async () => {
     const plot = {
       success: true as const,
