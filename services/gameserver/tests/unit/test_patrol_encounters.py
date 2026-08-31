@@ -75,8 +75,13 @@ def make_sector(sector_uuid=None, sector_num=1301, defenses=None):
 def build_service(sector, drones=()):
     """MovementService over a mock session: Sector query returns the
     fixed destination; Drone query returns an empty live-count (no
-    hostile drones in these fixtures, so the drones leg stays quiet)."""
+    hostile drones in these fixtures, so the drones leg stays quiet).
+
+    NPCCharacter/Ship queries return empty — LEG-295's contraband-scanner
+    patrol probe may run whenever any patrol dict carries a threshold."""
     from src.models.drone import Drone
+    from src.models.npc_character import NPCCharacter
+    from src.models.ship import Ship
 
     mock_db = MagicMock()
 
@@ -88,6 +93,11 @@ def build_service(sector, drones=()):
         if model is Drone:
             q = MagicMock()
             q.filter.return_value.count.return_value = len(drones)
+            return q
+        if model in (NPCCharacter, Ship):
+            q = MagicMock()
+            q.filter.return_value.first.return_value = None
+            q.filter.return_value.all.return_value = []
             return q
         raise AssertionError(f"unexpected query target: {model!r}")
 
