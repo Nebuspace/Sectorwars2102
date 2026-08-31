@@ -14,6 +14,15 @@ type NearestPayload = {
   reason?: string | null;
 };
 
+const NEAREST_AM_REFINERY_FALLBACK = 'Nearest AM refinery lookup failed';
+
+/** Exported for TypeError/network honesty Vitest (LEG-3245). */
+export function formatNearestAmRefineryError(err: unknown, fallback = NEAREST_AM_REFINERY_FALLBACK): string {
+  if (err instanceof TypeError) return fallback;
+  if (err instanceof Error && err.message) return err.message;
+  return fallback;
+}
+
 const asRecord = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -34,10 +43,10 @@ export const NearestAmRefineryOverlay: React.FC = () => {
         setError(null);
         setPayload(asRecord(raw) as NearestPayload);
       })
-      .catch((err: { message?: string }) => {
+      .catch((err: unknown) => {
         if (cancelled) return;
         setPayload(null);
-        setError(err?.message || 'Nearest AM refinery lookup failed');
+        setError(formatNearestAmRefineryError(err));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
