@@ -12,10 +12,24 @@ const formatDialogue = (text: string): ReactNode[] => {
   );
 };
 
-/** Network collapse (fetch TypeError) is not gameserver copy — use the fallback. */
+/** Transport collapse copy is not gameserver detail (LEG-3404 densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+/** Network collapse (fetch TypeError / axios Network Error) is not gameserver copy — use the fallback. */
 export function formatDialogueSubmitError(err: unknown, fallback: string): string {
   if (err instanceof TypeError) return fallback;
-  return err instanceof Error ? err.message : String(err ?? '');
+  if (err instanceof Error) {
+    if (isNetworkCollapseMessage(err.message)) return fallback;
+    return err.message;
+  }
+  return String(err ?? '');
 }
 
 /**
