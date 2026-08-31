@@ -4,7 +4,7 @@
  * Memory load must not surface raw Failed to fetch / TypeError.
  */
 import { describe, it, expect } from 'vitest';
-import { formatAriaMemoryLoadError } from '../MemoryJournalPanel';
+import { formatAriaMemoryLoadError, formatAriaMemoryActionError } from '../MemoryJournalPanel';
 
 describe('formatAriaMemoryLoadError (LEG-3072)', () => {
   it('falls back on TypeError network collapse', () => {
@@ -20,6 +20,23 @@ describe('formatAriaMemoryLoadError (LEG-3072)', () => {
     });
     expect(formatAriaMemoryLoadError(err)).toBe(
       'ARIA memory recall temporarily unavailable',
+    );
+  });
+});
+
+describe('formatAriaMemoryActionError network-collapse densify (LEG-3306)', () => {
+  it('falls back on axios Network Error / Failed to fetch / empty', () => {
+    expect(formatAriaMemoryActionError(new Error('Network Error'), 'ARIA memory export failed.')).toBe(
+      'ARIA memory export failed.',
+    );
+    expect(formatAriaMemoryActionError(new Error('Failed to fetch'), 'ARIA memory reset failed.')).toBe(
+      'ARIA memory reset failed.',
+    );
+    expect(formatAriaMemoryActionError(new Error('   '), 'ARIA memory export failed.')).toBe(
+      'ARIA memory export failed.',
+    );
+    expect(formatAriaMemoryActionError(new Error('export quota exceeded'), 'ARIA memory export failed.')).toBe(
+      'export quota exceeded',
     );
   });
 });

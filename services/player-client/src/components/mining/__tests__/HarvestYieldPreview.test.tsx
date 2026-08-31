@@ -22,6 +22,13 @@ describe('harvestGateMessage TypeError densify (LEG-3094)', () => {
     expect(text).not.toMatch(/TypeError/i);
   });
 
+  it('falls back on axios Network Error / Failed to fetch non-TypeError (LEG-3306)', () => {
+    expect(harvestGateMessage(new Error('Network Error'))).toMatch(/Yield preview failed/i);
+    expect(harvestGateMessage(new Error('Failed to fetch'))).toMatch(/Yield preview failed/i);
+    expect(harvestGateMessage(new Error('   '))).toMatch(/Yield preview failed/i);
+    expect(harvestGateMessage(new Error('Network Error'))).not.toMatch(/Network Error/i);
+  });
+
   it('preserves known gate reason codes', () => {
     expect(harvestGateMessage('no_mining_laser')).toContain('No mining laser equipped');
   });
