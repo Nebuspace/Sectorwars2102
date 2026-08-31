@@ -50,6 +50,20 @@ describe('MFASetup API errors (LEG-3172)', () => {
     });
   });
 
+  it('surfaces formatAdminApiError fallback on mfa/generate TypeError (LEG-3322)', async () => {
+    mockedApi.post.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<MFASetup />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Failed to generate MFA secret')).toBeTruthy();
+    });
+
+    const errorEl = screen.getByText('Failed to generate MFA secret');
+    expect(errorEl.textContent).not.toMatch(/Failed to fetch/i);
+    expect(errorEl.textContent).not.toMatch(/TypeError/i);
+  });
+
   it('shows API detail when mfa/verify fails', async () => {
     mockedApi.post.mockImplementation((url: string) => {
       if (url === '/api/v1/auth/mfa/generate') {
@@ -106,5 +120,37 @@ describe('MFASetup API errors (LEG-3172)', () => {
     await waitFor(() => {
       expect(screen.getByText('Verification failed')).toBeTruthy();
     });
+  });
+
+  it('surfaces formatAdminApiError fallback on mfa/verify TypeError (LEG-3322)', async () => {
+    mockedApi.post.mockImplementation((url: string) => {
+      if (url === '/api/v1/auth/mfa/generate') {
+        return Promise.resolve({ data: generateOk });
+      }
+      if (url === '/api/v1/auth/mfa/verify') {
+        return Promise.reject(new TypeError('Failed to fetch'));
+      }
+      return Promise.reject(new Error('unexpected'));
+    });
+
+    render(<MFASetup />);
+
+    await waitFor(() => {
+      expect(screen.getByText('SECRET123')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    fireEvent.change(screen.getByPlaceholderText('000000'), {
+      target: { value: '654321' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Verification failed')).toBeTruthy();
+    });
+
+    const error = screen.getByText('Verification failed').textContent ?? '';
+    expect(error).not.toMatch(/Failed to fetch/i);
+    expect(error).not.toMatch(/TypeError/i);
   });
 });

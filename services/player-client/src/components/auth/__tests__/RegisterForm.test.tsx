@@ -16,7 +16,7 @@ vi.mock('../../../contexts/AuthContext', () => ({
   useAuth: () => ({ register, registerWithOAuth }),
 }));
 
-import RegisterForm from '../RegisterForm';
+import RegisterForm, { formatRegisterError } from '../RegisterForm';
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -218,6 +218,31 @@ describe('RegisterForm', () => {
       'Username already taken',
     );
     expect(onRegisterSuccess).not.toHaveBeenCalled();
+  });
+
+  it('surfaces stable copy on register TypeError (LEG-3321)', async () => {
+    register.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    await fillValidForm(container);
+
+    await act(async () => {
+      container.querySelector('form')!.dispatchEvent(
+        new Event('submit', { bubbles: true, cancelable: true }),
+      );
+      await flush();
+    });
+
+    const text = container.querySelector('.error-message')?.textContent ?? '';
+    expect(text).toMatch(/check your connection/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+    expect(onRegisterSuccess).not.toHaveBeenCalled();
+  });
+
+  it('formatRegisterError collapses TypeError and Network Error (LEG-3321)', () => {
+    expect(formatRegisterError(new TypeError('Failed to fetch'))).toMatch(/check your connection/i);
+    expect(formatRegisterError(new Error('Network Error'))).toMatch(/check your connection/i);
+    expect(formatRegisterError(new Error('Failed to fetch'))).toMatch(/check your connection/i);
+    expect(formatRegisterError(new Error('Network Error'))).not.toMatch(/Network Error/i);
   });
 
   it('Sign In invokes switchToLogin', async () => {

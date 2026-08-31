@@ -1,6 +1,25 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
+import { axiosResponseStatus, detailFromResponse, formatAdminApiError } from '../../utils/adminApiError';
 import { MFAVerification } from './MFAVerification';
+
+const loginApiError = (err: unknown): string => {
+  const status = axiosResponseStatus(err);
+  if (status === 401) {
+    return 'Invalid username or password';
+  }
+  if (status === 400) {
+    return 'Invalid login request. Please check your input.';
+  }
+  const detail = detailFromResponse(err);
+  if (detail) {
+    return detail;
+  }
+  return formatAdminApiError(err, {
+    fallback:
+      'Login failed — unable to reach the gameserver. Check your connection and try again.',
+  });
+};
 
 interface LoginFormProps {
   onLoginSuccess?: () => void;
@@ -79,9 +98,14 @@ Redirecting to dashboard...`);
       } catch (jsonError) {
         setError(`Failed to parse JSON response: ${jsonError instanceof Error ? jsonError.message : 'Unknown error'}`);
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('API test failed:', err);
-      setError(`API test failed: ${err.message}`);
+      setError(
+        formatAdminApiError(err, {
+          fallback:
+            'API test failed — unable to reach the gameserver. Check your connection and try again.',
+        })
+      );
     } finally {
       setIsSubmitting(false);
     }
@@ -111,21 +135,9 @@ Redirecting to dashboard...`);
           onLoginSuccess();
         }
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Login failed:', err);
-      
-      // Display appropriate error message
-      if (err.response?.status === 401) {
-        setError('Invalid username or password');
-      } else if (err.response?.status === 400) {
-        setError('Invalid login request. Please check your input.');
-      } else if (err.response?.data?.detail) {
-        setError(err.response.data.detail);
-      } else if (err.message) {
-        setError(`Login error: ${err.message}`);
-      } else {
-        setError('An unknown error occurred. Please try again.');
-      }
+      setError(loginApiError(err));
     } finally {
       setIsSubmitting(false);
     }
