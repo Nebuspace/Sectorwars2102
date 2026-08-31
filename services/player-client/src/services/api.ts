@@ -109,7 +109,10 @@ async function apiRequest(
 /** LEG-372 / LEG-304 — player-scoped combat history list item (GS shape). */
 export interface CombatHistoryOpponent {
   id: string | null;
-  name: string;
+  name?: string;
+  displayName?: string;
+  pinned_medal_id?: string | null;
+  medal_count?: number | null;
 }
 
 export interface CombatHistoryTarget {

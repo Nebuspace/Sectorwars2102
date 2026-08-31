@@ -81,6 +81,12 @@ class CombatHistoryOpponent(BaseModel):
     """Opponent summary for a combat history row."""
     id: Optional[str] = Field(None, description="Player UUID when the opponent is a player")
     displayName: str
+    pinned_medal_id: Optional[str] = Field(
+        None, description="Public pinned medal id when opponent is a player (medals.md)"
+    )
+    medal_count: Optional[int] = Field(
+        None, description="Earned medal count when opponent is a player; null when privacy hidden"
+    )
 
 
 class CombatHistoryItem(BaseModel):
@@ -192,6 +198,8 @@ def _sector_label_for_combat(db: Session, combat: CombatLog) -> str:
 
 def _opponent_for_combat(db: Session, combat: CombatLog, player_id: UUID) -> CombatHistoryOpponent:
     """Resolve opponent display name/id from the caller's perspective."""
+    from src.services.medal_service import count_earned_medals, public_medal_identity
+
     is_attacker = combat.attacker_id == player_id
     opponent_id = combat.defender_id if is_attacker else combat.attacker_id
     if opponent_id:
@@ -204,7 +212,17 @@ def _opponent_for_combat(db: Session, combat: CombatLog, player_id: UUID) -> Com
             )
             or "Unknown"
         )
-        return CombatHistoryOpponent(id=str(opponent_id), displayName=display)
+        medal_fields = {"pinned_medal_id": None, "medal_count": None}
+        if opponent:
+            medal_fields = public_medal_identity(
+                opponent, medal_count=count_earned_medals(db, opponent.id)
+            )
+        return CombatHistoryOpponent(
+            id=str(opponent_id),
+            displayName=display,
+            pinned_medal_id=medal_fields["pinned_medal_id"],
+            medal_count=medal_fields["medal_count"],
+        )
 
     ship_name = combat.defender_ship_name if is_attacker else combat.attacker_ship_name
     return CombatHistoryOpponent(id=None, displayName=ship_name or "Unknown")
