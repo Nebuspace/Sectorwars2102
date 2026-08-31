@@ -42,13 +42,29 @@ const totalUnits = (cargo: Record<string, number>): number =>
 
 const SALVAGE_FAILED_FALLBACK = 'Salvage failed';
 
-/** Exported for TypeError/network honesty Vitest (LEG-3260). */
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+/** Exported for TypeError/network honesty Vitest (LEG-3260 / LEG-3303). */
 export function formatSalvageError(err: unknown): string {
   if (err instanceof TypeError) return SALVAGE_FAILED_FALLBACK;
-  if (err instanceof Error && err.message) return err.message;
+  if (err instanceof Error && err.message) {
+    if (isNetworkCollapseMessage(err.message)) return SALVAGE_FAILED_FALLBACK;
+    return err.message;
+  }
   if (err && typeof err === 'object') {
     const msg = (err as { message?: unknown }).message;
-    if (typeof msg === 'string' && msg) return msg;
+    if (typeof msg === 'string' && msg) {
+      if (isNetworkCollapseMessage(msg)) return SALVAGE_FAILED_FALLBACK;
+      return msg;
+    }
   }
   return SALVAGE_FAILED_FALLBACK;
 }

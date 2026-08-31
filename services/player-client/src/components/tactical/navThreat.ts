@@ -1,10 +1,21 @@
 import type { NavThreatBand, NavThreatEntry } from '../../services/api';
 
-/** Hide fetch TypeError noise — stable fallback for GET /nav/threat consumers. */
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+/** Hide fetch TypeError / network-collapse noise — stable fallback for GET /nav/threat consumers. */
 export function formatNavThreatError(err: unknown, fallback = 'Threat data unavailable — check your connection.'): string {
   if (err instanceof TypeError) return fallback;
   const message = err instanceof Error ? err.message : undefined;
   if (typeof message === 'string' && message.trim() && !/^API Error: \d+$/.test(message.trim())) {
+    if (isNetworkCollapseMessage(message)) return fallback;
     return message.trim();
   }
   return fallback;

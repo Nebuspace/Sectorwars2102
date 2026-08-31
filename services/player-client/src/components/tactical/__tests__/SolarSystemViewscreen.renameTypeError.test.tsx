@@ -13,6 +13,12 @@ describe('formatPlanetRenameError TypeError densify (LEG-3273)', () => {
     expect(text).not.toMatch(/TypeError/i);
   });
 
+  it('falls back on axios Network Error / Failed to fetch non-TypeError (LEG-3305)', () => {
+    expect(formatPlanetRenameError(new Error('Network Error'))).toBe('Rename failed');
+    expect(formatPlanetRenameError(new Error('Failed to fetch'))).toBe('Rename failed');
+    expect(formatPlanetRenameError(new Error('   '))).toBe('Rename failed');
+  });
+
   it('keeps axios response detail honesty', () => {
     expect(
       formatPlanetRenameError({ response: { data: { detail: 'Name already taken' } } }),
