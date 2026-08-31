@@ -68,6 +68,13 @@ describe('formatDroneFleetError TypeError densify (LEG-3150)', () => {
       'yard_capacity_exceeded',
     );
   });
+
+  it('falls back on axios Network Error / Failed to fetch non-TypeError (LEG-3281)', () => {
+    expect(formatDroneFleetError(new Error('Network Error'), fallback)).toBe(fallback);
+    expect(formatDroneFleetError(new Error('Failed to fetch'), fallback)).toBe(fallback);
+    expect(formatDroneFleetError(new Error(''), fallback)).toBe(fallback);
+    expect(formatDroneFleetError({ message: 'Network Error' }, fallback)).toBe(fallback);
+  });
 });
 
 describe('DroneFleetPanel load + create TypeError densify (LEG-3150)', () => {
