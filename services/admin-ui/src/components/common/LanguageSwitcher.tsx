@@ -38,6 +38,7 @@ const LanguageSwitcher: React.FC = () => {
   const [languages, setLanguages] = useState<Language[]>([]);
   const [loading, setLoading] = useState(false);
   const [progressError, setProgressError] = useState<string | null>(null);
+  const [changeLanguageError, setChangeLanguageError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -98,11 +99,19 @@ const LanguageSwitcher: React.FC = () => {
     if (languageCode === i18n.language) return;
 
     setLoading(true);
+    setChangeLanguageError(null);
     try {
       await i18n.changeLanguage(languageCode);
       setIsOpen(false);
     } catch (error) {
       console.error('Failed to change language:', error);
+      if (error instanceof TypeError) {
+        setChangeLanguageError(
+          'Could not switch language — check your connection and try again.',
+        );
+      } else {
+        setChangeLanguageError('Could not switch language. Try again.');
+      }
     } finally {
       setLoading(false);
     }
@@ -117,6 +126,11 @@ const LanguageSwitcher: React.FC = () => {
       {progressError && (
         <div className="language-progress-error" role="alert">
           {progressError}
+        </div>
+      )}
+      {changeLanguageError && (
+        <div className="language-change-error" role="alert">
+          {changeLanguageError}
         </div>
       )}
       <button
