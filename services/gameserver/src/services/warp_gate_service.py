@@ -2240,6 +2240,42 @@ def collect_toll(
         tunnel.artificial_data = data
         flag_modified(tunnel, "artificial_data")
 
+    # LEG-3376 — MG emergent rep for using someone else's public toll gate with
+    # cargo (factions-and-teams.md MG table: "+1 / 5,000 cr cargo value").
+    # Reuses TRADE_VOLUME_MG + apply_trade_volume_rep: the MG faction's
+    # emergent_trade_volume carry-over bucket is shared with Guild station
+    # trades (same faction, same per-5,000-cr block rate).
+    if (
+        charged > 0
+        and not is_owner
+        and bool(getattr(tunnel, "is_public", False))
+        and actor_ship is not None
+    ):
+        try:
+            from src.services.emergent_reputation_service import apply_trade_volume_rep
+            from src.services.station_security_service import _cargo_credit_value
+
+            cargo_value = _cargo_credit_value(actor_ship)
+            if cargo_value > 0:
+                apply_trade_volume_rep(
+                    db,
+                    traverser,
+                    "TRADE_VOLUME_MG",
+                    cargo_value,
+                    {
+                        "tunnel_id": str(tunnel.id),
+                        "reason": "public_toll_gate_traversal",
+                    },
+                )
+        except Exception:
+            logger.warning(
+                "emergent MG toll-gate traversal rep failed for tunnel %s / "
+                "player %s",
+                tunnel.id,
+                getattr(traverser, "id", None),
+                exc_info=True,
+            )
+
     db.flush()
     return {
         "charged": charged,

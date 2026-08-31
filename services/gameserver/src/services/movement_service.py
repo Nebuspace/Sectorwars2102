@@ -1248,7 +1248,12 @@ class MovementService:
             # sector's use elsewhere in this file) -- no fresh import needed.
             try:
                 warp_gate_service.check_traversal_access(self.db, player, player_gate_tunnel)
-                warp_gate_service.collect_toll(self.db, player, player_gate_tunnel)
+                warp_gate_service.collect_toll(
+                    self.db,
+                    player,
+                    player_gate_tunnel,
+                    actor_ship=player.current_ship,
+                )
             except warp_gate_service.WarpGateError as e:
                 return {"success": False, "message": e.detail, "turn_cost": 0}
 
