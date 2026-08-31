@@ -12,7 +12,23 @@ vi.mock('../../../services/api', () => ({
   },
 }));
 
-import NearestAmRefineryOverlay from '../NearestAmRefineryOverlay';
+import NearestAmRefineryOverlay, {
+  formatNearestAmRefineryError,
+} from '../NearestAmRefineryOverlay';
+
+
+describe('formatNearestAmRefineryError (LEG-3245)', () => {
+  it('falls back on TypeError network collapse', () => {
+    const text = formatNearestAmRefineryError(new TypeError('Failed to fetch'));
+    expect(text).toBe('Nearest AM refinery lookup failed');
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('preserves non-TypeError Error messages', () => {
+    expect(formatNearestAmRefineryError(new Error('network down'))).toBe('network down');
+  });
+});
 
 describe('NearestAmRefineryOverlay', () => {
   let container: HTMLElement;
@@ -83,5 +99,17 @@ describe('NearestAmRefineryOverlay', () => {
     });
     await flush();
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('network down');
+  });
+
+  it('load TypeError surfaces fallback without Failed to fetch / TypeError (LEG-3245)', async () => {
+    mockNearest.mockRejectedValue(new TypeError('Failed to fetch'));
+    await act(async () => {
+      root.render(<NearestAmRefineryOverlay />);
+    });
+    await flush();
+    const err = container.querySelector('[role="alert"]');
+    expect(err?.textContent).toBe('Nearest AM refinery lookup failed');
+    expect(err?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(err?.textContent).not.toMatch(/TypeError/i);
   });
 });
