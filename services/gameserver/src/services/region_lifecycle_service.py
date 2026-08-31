@@ -20,7 +20,7 @@ Phase 7 of the daily governance sweep) owns the commit.
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from sqlalchemy import exists, or_, update
 from sqlalchemy.orm import Session
@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session
 from src.models.pirate_holding import PirateHolding
 from src.models.planet import Planet
 from src.models.player import Player
-from src.models.region import Region, RegionStatus
+from src.models.region import Region, RegionStatus, RegionType
 from src.models.sector import Sector
 from src.models.ship import Ship
 from src.models.station import Station
@@ -272,3 +272,114 @@ def is_region_stakeholder(db: Session, player_id: uuid.UUID, region_id: uuid.UUI
         return True
 
     return False
+
+
+class AdminRegionTerminationError(Exception):
+    """Business-rule rejection for admin manual region termination."""
+
+    def __init__(self, code: str, detail: str) -> None:
+        self.code = code
+        self.detail = detail
+        super().__init__(detail)
+
+
+def admin_region_terminate_preview(db: Session, region_id: uuid.UUID) -> Dict[str, Any]:
+    """Dependent-entity counts for LEG-DEC-103 multi-step confirmation."""
+    region = db.query(Region).filter(Region.id == region_id).first()
+    if region is None:
+        raise AdminRegionTerminationError("not_found", "Region not found")
+
+    planet_count = db.query(Planet).filter(Planet.region_id == region.id).count()
+    station_count = (
+        db.query(Station)
+        .join(Sector, Sector.id == Station.sector_uuid)
+        .filter(Sector.region_id == region.id)
+        .filter(Station.is_destroyed.is_(False))
+        .count()
+    )
+    sector_count = db.query(Sector).filter(Sector.region_id == region.id).count()
+    planet_owners = (
+        db.query(Planet.owner_id)
+        .filter(Planet.region_id == region.id, Planet.owner_id.isnot(None))
+        .distinct()
+        .count()
+    )
+    station_owners = (
+        db.query(Station.owner_id)
+        .join(Sector, Sector.id == Station.sector_uuid)
+        .filter(Sector.region_id == region.id, Station.owner_id.isnot(None))
+        .filter(Station.is_destroyed.is_(False))
+        .distinct()
+        .count()
+    )
+
+    return {
+        "regionId": str(region.id),
+        "regionName": region.name,
+        "displayName": region.display_name,
+        "status": region.status,
+        "regionType": region.region_type,
+        "planetCount": planet_count,
+        "stationCount": station_count,
+        "sectorCount": sector_count,
+        "playerStakeholderCount": planet_owners + station_owners,
+        "terminable": region.region_type == RegionType.PLAYER_OWNED.value
+        and region.cleanup_completed_at is None,
+    }
+
+
+def admin_execute_region_termination(
+    db: Session,
+    region_id: uuid.UUID,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Admin manual region termination (LEG-DEC-103 / LEG-3205).
+
+    Marks the region TERMINATED and runs the full cleanup cascade atomically
+    within the caller's session. The route wraps this with
+    ``admin_action_attempt`` for commit + AdminActionLog.
+    """
+    now = now or datetime.now(UTC)
+    region = (
+        db.query(Region)
+        .filter(Region.id == region_id)
+        .with_for_update()
+        .first()
+    )
+    if region is None:
+        raise AdminRegionTerminationError("not_found", "Region not found")
+
+    if region.region_type in (
+        RegionType.CENTRAL_NEXUS.value,
+        RegionType.TERRAN_SPACE.value,
+    ):
+        raise AdminRegionTerminationError(
+            "system_region",
+            "System regions (Central Nexus, Terran Space) cannot be terminated",
+        )
+
+    if region.cleanup_completed_at is not None:
+        raise AdminRegionTerminationError(
+            "already_terminated",
+            "Region cleanup already completed",
+        )
+
+    planets = db.query(Planet).filter(Planet.region_id == region.id).all()
+    region.status = RegionStatus.TERMINATED
+    region.terminated_at = now
+    region.scheduled_hard_delete_at = now
+
+    outbox = RealtimeOutbox()
+    for planet in planets:
+        process_planet_termination(db, planet, now=now, outbox=outbox)
+    station_result = dispatch_station_termination(db, region.id)
+    cascade_region_gate_teardown(db, region.id)
+    region.cleanup_completed_at = now
+
+    return {
+        "regionId": str(region.id),
+        "regionName": region.name,
+        "planetsProcessed": len(planets),
+        "stationCascade": station_result,
+        "_outbox": outbox,
+    }
