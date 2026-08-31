@@ -29,10 +29,9 @@ logger = logging.getLogger(__name__)
 
 class ProductionData(BaseModel):
     timestamp: str
-    energy: int
-    minerals: int
-    food: int
-    water: int
+    fuel_ore: int
+    organics: int
+    equipment: int
 
 class ProductionTrend(BaseModel):
     resource: str
