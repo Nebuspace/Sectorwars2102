@@ -20,6 +20,9 @@ import PlanetPortPair from '../tactical/PlanetPortPair';
 import PlanetaryLanderInstallCta from '../planetary/PlanetaryLanderInstallCta';
 import NavigationMap from '../tactical/NavigationMap';
 import { chartToNavSectors } from '../tactical/navChartTransform';
+import { useNavThreatRollup } from '../tactical/useNavThreatRollup';
+import { NAV_THREAT_BAND_CLASS } from '../tactical/navThreat';
+import { formatColonyGrowthPerDay, formatColonyPhase } from '../planetary/colonyVitals';
 import Galaxy3DRenderer from '../galaxy/Galaxy3DRenderer';
 import AutopilotHud from '../hud/AutopilotHud';
 import QuantumDriveConsole from '../quantum/QuantumDriveConsole';
@@ -948,6 +951,14 @@ const GameDashboardInner: React.FC = () => {
   // (Galaxy3DRenderer). Independent of navMode: only meaningful while
   // navMode==='chart' -- WO-UI2-CHART-MONITOR.
   const [navChartMode, setNavChartMode] = useState<'2d' | '3d'>('2d');
+  const navThreatRollup = useNavThreatRollup();
+  const navThreatBandBySector = useMemo(() => {
+    const out: Record<number, string> = {};
+    for (const [id, row] of Object.entries(navThreatRollup.map)) {
+      out[Number(id)] = row.band;
+    }
+    return out;
+  }, [navThreatRollup.map]);
 
   // SOLAR SYSTEM monitor mode (WO-UI2-DECK-RECONCILE, §05: [SYSTEM ·
   // SALVAGE · SIGNALS]; 4th page HAZARD added WO-UI-MAX-BATCH-1 human #21):
@@ -3281,6 +3292,12 @@ const GameDashboardInner: React.FC = () => {
                           <span className="pvs-stat" title="Planet habitability"><span className="pvs-label">Habitability</span><span className="pvs-val">{habitability}%</span></span>
                           <span className="pvs-stat" title="Total residents living on this planet"><span className="pvs-label">Population</span><span className="pvs-val green">{population.toLocaleString()}</span></span>
                           {isLandedPlanetMine && citadelInfo && (
+                            <span className="pvs-stat" title="Colony lifecycle phase (citadel level)"><span className="pvs-label">Phase</span><span className="pvs-val">{formatColonyPhase(citadelInfo.citadel_level)}</span></span>
+                          )}
+                          {isLandedPlanetMine && landedPlanetDetail?.productionRates && (
+                            <span className="pvs-stat" title="Daily colonist growth from production rates"><span className="pvs-label">Growth</span><span className="pvs-val green">{formatColonyGrowthPerDay(landedPlanetDetail.productionRates.colonists)}</span></span>
+                          )}
+                          {isLandedPlanetMine && citadelInfo && (
                             <span className="pvs-stat" title="Protected credits in this colony's citadel safe"><span className="pvs-label">Safe</span><span className="pvs-val">{safeCredits.toLocaleString()} cr{safeCapacity > 0 ? ` / ${safeCapacity.toLocaleString()}` : ''}</span></span>
                           )}
                           <span className="pvs-stat" title="Planetary defense damage reduction"><span className="pvs-label">Defense</span><span className="pvs-val">{defenseInfo?.damageReduction ?? '—'}</span></span>
@@ -3699,12 +3716,32 @@ const GameDashboardInner: React.FC = () => {
                       {/* Adjacent exits — 1 click = 1 hop (§05 COURSE). */}
                       <div className="nav-course-section">
                         <div className="nav-course-section-title">ADJACENT EXITS</div>
+                        {navThreatRollup.loading ? (
+                          <div className="empty-state" role="status">Loading threat bands…</div>
+                        ) : navThreatRollup.error ? (
+                          <div className="nav-threat-error" role="alert">{navThreatRollup.error}</div>
+                        ) : null}
+                        {currentSector?.sector_id != null && navThreatBandBySector[currentSector.sector_id] && (
+                          <div className="nav-course-threat-current" role="status">
+                            HERE —{' '}
+                            <span className={NAV_THREAT_BAND_CLASS[navThreatBandBySector[currentSector.sector_id] as keyof typeof NAV_THREAT_BAND_CLASS]}>
+                              {navThreatBandBySector[currentSector.sector_id]}
+                            </span>
+                          </div>
+                        )}
                         {adjacentExits.length === 0 ? (
                           <div className="empty-state">No charted exits</div>
                         ) : (
                           adjacentExits.map((exit) => (
                             <div key={exit.sector_id} className="nav-exit-row">
                               <span className="nav-exit-name">→ {exit.name}</span>
+                              {navThreatBandBySector[exit.sector_id] && (
+                                <span
+                                  className={`nav-exit-threat ${NAV_THREAT_BAND_CLASS[navThreatBandBySector[exit.sector_id] as keyof typeof NAV_THREAT_BAND_CLASS]}`}
+                                >
+                                  {navThreatBandBySector[exit.sector_id]}
+                                </span>
+                              )}
                               <span className="nav-exit-cost"><TurnsIcon /> {exit.turn_cost}</span>
                               <button
                                 type="button"
@@ -3868,6 +3905,7 @@ const GameDashboardInner: React.FC = () => {
                           course={autopilot.course?.hops ?? null}
                           currentHopIndex={autopilot.currentHopIndex}
                           oneWayEdges={oneWayEdges}
+                          threatBands={navThreatBandBySector}
                         />
                       )}
                     </>
