@@ -13,10 +13,23 @@ interface TeamChatProps {
 
 const SEND_FAILED_FALLBACK = 'Failed to send message.';
 
-/** Exported for TypeError/network honesty Vitest (LEG-3256). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
+};
+
+/** Exported for TypeError/network honesty Vitest (LEG-3256 / LEG-3268). */
 export function formatTeamChatSendError(err: unknown): string {
   if (err instanceof TypeError) return SEND_FAILED_FALLBACK;
-  if (err instanceof Error && err.message) return err.message;
+  if (err instanceof Error && err.message) {
+    if (isNetworkCollapseMessage(err.message)) return SEND_FAILED_FALLBACK;
+    return err.message;
+  }
   return SEND_FAILED_FALLBACK;
 }
 
