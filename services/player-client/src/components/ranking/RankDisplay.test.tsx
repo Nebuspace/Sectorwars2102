@@ -136,4 +136,10 @@ describe('RankDisplay', () => {
     expect(text).not.toMatch(/Failed to fetch/i);
     expect(text).not.toMatch(/TypeError/i);
   });
+
+  it('formatRankDisplayLoadError falls back on axios Network Error / Failed to fetch (LEG-3342)', () => {
+    expect(formatRankDisplayLoadError(new Error('Network Error'))).toBe('Failed to load rank info');
+    expect(formatRankDisplayLoadError(new Error('Failed to fetch'))).toBe('Failed to load rank info');
+    expect(formatRankDisplayLoadError(new Error('Network Error'))).not.toBe('Network Error');
+  });
 });

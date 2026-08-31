@@ -23,6 +23,17 @@ describe('TeamManager TypeError densify (LEG-3087)', () => {
     expect(text).not.toMatch(/TypeError/i);
   });
 
+  it('formatTeamManagerLoad/Mutation fall back on axios Network Error / Failed to fetch (LEG-3345)', () => {
+    expect(formatTeamManagerLoadError(new Error('Network Error'))).toMatch(/Failed to load team data/i);
+    expect(formatTeamManagerLoadError(new Error('Failed to fetch'))).toMatch(/Failed to load team data/i);
+    expect(formatTeamManagerMutationError(new Error('Network Error'), 'Failed to create team')).toBe(
+      'Failed to create team',
+    );
+    expect(formatTeamManagerMutationError(new Error('insufficient credits'), 'Failed to create team')).toBe(
+      'insufficient credits',
+    );
+  });
+
   it('preserves non-generic Error.message detail when not TypeError', () => {
     expect(formatTeamManagerMutationError(new Error('insufficient credits'), 'Failed to create team')).toBe(
       'insufficient credits',

@@ -147,6 +147,12 @@ describe('BountyBoard', () => {
     expect(text).not.toMatch(/TypeError/i);
   });
 
+  it('formatBountyBoardLoadError falls back on axios Network Error / Failed to fetch (LEG-3344)', () => {
+    expect(formatBountyBoardLoadError(new Error('Network Error'))).toMatch(/Failed to load bounty board/i);
+    expect(formatBountyBoardLoadError(new Error('Failed to fetch'))).toMatch(/Failed to load bounty board/i);
+    expect(formatBountyBoardLoadError(new Error('Network Error'))).not.toBe('Network Error');
+  });
+
   it('surfaces honest load fallback when getAvailable rejects with TypeError', async () => {
     getAvailable.mockRejectedValue(new TypeError('Failed to fetch'));
     await act(async () => {

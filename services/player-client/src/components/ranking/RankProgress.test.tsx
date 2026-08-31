@@ -131,6 +131,12 @@ describe('RankProgress', () => {
     expect(text).not.toMatch(/TypeError/i);
   });
 
+  it('formatRankProgressLoadError falls back on axios Network Error / Failed to fetch (LEG-3343)', () => {
+    expect(formatRankProgressLoadError(new Error('Network Error'))).toBe('Failed to load rank progress');
+    expect(formatRankProgressLoadError(new Error('Failed to fetch'))).toBe('Failed to load rank progress');
+    expect(formatRankProgressLoadError(new Error('Network Error'))).not.toBe('Network Error');
+  });
+
   it('surfaces honest load fallback when getProgress rejects with TypeError', async () => {
     mockGetProgress.mockRejectedValue(new TypeError('Failed to fetch'));
     await mount();

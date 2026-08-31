@@ -188,6 +188,12 @@ describe('MedalShowcase', () => {
     expect(text).not.toMatch(/TypeError/i);
   });
 
+  it('formatMedalShowcaseLoadError falls back on axios Network Error / Failed to fetch (LEG-3339)', () => {
+    expect(formatMedalShowcaseLoadError(new Error('Network Error'))).toBe('Failed to load medals');
+    expect(formatMedalShowcaseLoadError(new Error('Failed to fetch'))).toBe('Failed to load medals');
+    expect(formatMedalShowcaseLoadError(new Error('Network Error'))).not.toBe('Network Error');
+  });
+
   it('formatMedalShowcasePinError falls back on TypeError network collapse (LEG-3275)', () => {
     const text = formatMedalShowcasePinError(new TypeError('Failed to fetch'));
     expect(text).toBe('Failed to update pinned medal');

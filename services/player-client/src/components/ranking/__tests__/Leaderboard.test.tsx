@@ -255,4 +255,10 @@ describe('Leaderboard', () => {
     expect(text).not.toMatch(/TypeError/i);
   });
 
+  it('formatLeaderboardLoadError falls back on axios Network Error / Failed to fetch (LEG-3340)', () => {
+    expect(formatLeaderboardLoadError(new Error('Network Error'))).toBe('Failed to load leaderboard');
+    expect(formatLeaderboardLoadError(new Error('Failed to fetch'))).toBe('Failed to load leaderboard');
+    expect(formatLeaderboardLoadError(new Error('Network Error'))).not.toBe('Network Error');
+  });
+
 });
