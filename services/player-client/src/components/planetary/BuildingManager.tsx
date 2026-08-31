@@ -34,15 +34,26 @@ interface BuildingInfo {
   };
 }
 
+/** True when message is bare transport collapse, not gameserver upgrade detail. */
+const isBuildingUpgradeNetworkCollapse = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
 /** Surface gameserver 400 detail on building upgrade refusal (ownership / unknown type / in-progress). */
 export function formatBuildingUpgradeError(err: unknown): string {
   const message = err instanceof Error ? err.message : undefined;
-  // Network collapse (fetch TypeError) is not gameserver copy — use the caller fallback.
+  // Network collapse (fetch TypeError / axios Network Error) is not gameserver copy.
   const hasServerDetail =
     !(err instanceof TypeError) &&
     typeof message === 'string' &&
     message.trim().length > 0 &&
-    !/^API Error: \d+$/.test(message.trim());
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isBuildingUpgradeNetworkCollapse(message);
 
   if (hasServerDetail) return message!;
   return 'Failed to upgrade building';

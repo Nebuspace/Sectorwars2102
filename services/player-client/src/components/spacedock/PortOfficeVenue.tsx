@@ -43,6 +43,16 @@ const pickBool = (...candidates: unknown[]): boolean | null => {
   return null;
 };
 
+/** Transport collapse copy is not gameserver detail (LEG-3274 densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
 // Pull a readable message out of an axios error. FastAPI 422 validation
 // errors arrive as detail: [{loc, msg, type}, ...] — flatten the msg fields.
 export function formatPortOfficeVenueError(error: unknown, fallback: string): string {
@@ -62,8 +72,12 @@ export function formatPortOfficeVenueError(error: unknown, fallback: string): st
       .filter((m): m is string => m !== null);
     if (msgs.length > 0) return msgs.join('; ');
   }
-  // Non-HTTP failures (e.g. 'Not authenticated' thrown by the context helpers)
-  if (!response && typeof e?.message === 'string' && e.message) return e.message;
+  // Non-HTTP failures (e.g. 'Not authenticated' thrown by the context helpers).
+  // Axios "Network Error" / empty transport is not operator copy (LEG-3274).
+  if (!response && typeof e?.message === 'string' && e.message) {
+    if (isNetworkCollapseMessage(e.message)) return fallback;
+    return e.message;
+  }
   return fallback;
 }
 
