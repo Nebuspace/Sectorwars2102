@@ -21,6 +21,12 @@ describe('formatUniverseAdminError (LEG-1213 invent=0 colonization)', () => {
     expect(formatUniverseAdminError(axiosError(500, 'boom'), 'Failed to update')).toBe('boom');
   });
 
+  it('uses fallback on TypeError/network collapse (LEG-3062)', () => {
+    expect(
+      formatUniverseAdminError(new TypeError('Failed to fetch'), 'Failed to save planet changes'),
+    ).toBe('Failed to save planet changes');
+  });
+
   it('uses fallback on TypeError/network collapse (LEG-3066)', () => {
     expect(
       formatUniverseAdminError(new TypeError('Failed to fetch'), 'Failed to update sector'),
