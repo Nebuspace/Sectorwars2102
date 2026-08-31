@@ -17,4 +17,10 @@ describe('CarrierHangarPanel TypeError densify (LEG-3076)', () => {
   it('preserves non-generic Error.message detail when not TypeError', () => {
     expect(formatHangarActionError(new Error('dock_request_denied'))).toBe('dock_request_denied');
   });
+
+  it('formatHangarActionError falls back on axios Network Error / Failed to fetch (LEG-3365)', () => {
+    expect(formatHangarActionError(new Error('Network Error'))).toBe('Hangar action failed');
+    expect(formatHangarActionError(new Error('Failed to fetch'))).toBe('Hangar action failed');
+    expect(formatHangarActionError(new Error('Network Error'))).not.toMatch(/Network Error/i);
+  });
 });

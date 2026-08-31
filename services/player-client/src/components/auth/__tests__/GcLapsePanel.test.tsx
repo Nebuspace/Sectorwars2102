@@ -129,4 +129,16 @@ describe('GcLapsePanel', () => {
     expect(text).not.toMatch(/Failed to fetch/i);
     expect(text).not.toMatch(/TypeError/i);
   });
+
+  it('falls back on axios Network Error / Failed to fetch (LEG-3367)', () => {
+    expect(formatGcLapseRelocateError(new Error('Network Error'))).toBe('Relocation failed');
+    expect(formatGcLapseRelocateError(new Error('Failed to fetch'))).toBe('Relocation failed');
+    expect(formatGcLapseRelocateError(new Error('Network Error'))).not.toMatch(/Network Error/i);
+  });
+
+  it('preserves non-generic Error.message detail when not transport collapse', () => {
+    expect(formatGcLapseRelocateError(new Error('Emergency relocation already used'))).toBe(
+      'Emergency relocation already used'
+    );
+  });
 });
