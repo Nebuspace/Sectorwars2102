@@ -28,4 +28,12 @@ describe('SiegeStatusMonitor TypeError densify (LEG-3074)', () => {
     expect(formatSiegeAidError(new Error('siege_aid_denied'))).toBe('siege_aid_denied');
     expect(formatSiegeHailError(new Error('siege_hail_denied'))).toBe('siege_hail_denied');
   });
+
+  it('formatSiegeAid/Hail fall back on axios Network Error / Failed to fetch (LEG-3366)', () => {
+    expect(formatSiegeAidError(new Error('Network Error'))).toBe('Failed to send emergency aid request.');
+    expect(formatSiegeAidError(new Error('Failed to fetch'))).toBe('Failed to send emergency aid request.');
+    expect(formatSiegeHailError(new Error('Network Error'))).toBe('Failed to send negotiation hail.');
+    expect(formatSiegeHailError(new Error('Failed to fetch'))).toBe('Failed to send negotiation hail.');
+    expect(formatSiegeAidError(new Error('Network Error'))).not.toMatch(/Network Error/i);
+  });
 });

@@ -949,6 +949,18 @@ class ContrabandService:
         # notoriety nudge — that is the reward for a completed SALE (brief §1.5);
         # merely surviving a customs check is not a black-market transaction, and
         # nudging here would let a player farm outlaw cred by pacing a border.
+        # Emergent FA +10 (LEG-3375 / factions-and-teams.md FA table): the scan
+        # happened and the smuggler got away — routed through apply_emergent_action
+        # (flush-only, never raises) inside this txn before the cooldown anchor
+        # commits.
+        from src.services.emergent_reputation_service import apply_emergent_action
+
+        apply_emergent_action(
+            self.db,
+            player,
+            "CONTRABAND_TRANSIT_EVADE_FA",
+            {"sector_id": destination_sector_id, "reason": "contraband_transit_scan"},
+        )
         self.db.flush()
         return {
             "scanned": True,
