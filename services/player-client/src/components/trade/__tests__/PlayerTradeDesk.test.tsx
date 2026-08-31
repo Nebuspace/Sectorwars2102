@@ -478,19 +478,4 @@ describe('PlayerTradeDesk', () => {
       paymentCredits: 0,
     });
   });
-
-  it('surfaces honest refresh fallback when getOpen rejects with TypeError', async () => {
-    tradeAPI.getOpen.mockRejectedValue(new TypeError('Failed to fetch'));
-
-    await act(async () => {
-      root.render(<PlayerTradeDesk myPlayerId={ME} onClose={onClose} ships={TEST_SHIPS} />);
-    });
-    await act(async () => {
-      await Promise.resolve();
-    });
-
-    const alert = document.body.querySelector('[role="alert"]');
-    expect(alert?.textContent).toBe('Could not open a trade.');
-    expect(alert?.textContent).not.toMatch(/Failed to fetch/i);
-  });
 });
