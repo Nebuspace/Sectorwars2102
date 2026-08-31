@@ -32,7 +32,10 @@ vi.mock('../../../services/routeOptimizerService', () => ({
   routeOptimizerService: { optimizeRoute: mockOptimizeRoute, getHistory: mockGetHistory },
 }));
 
-import RoutePlannerPanel from '../RoutePlannerPanel';
+import RoutePlannerPanel, {
+  formatRouteOptimizeError,
+  formatRouteHistoryError,
+} from '../RoutePlannerPanel';
 
 const FAKE_RESPONSE = {
   objective: 'balanced',
@@ -251,5 +254,87 @@ describe('RoutePlannerPanel', () => {
       );
       expect(container.querySelector('.route-planner-history-entry')).toBeNull();
     });
+  });
+});
+
+describe('RoutePlannerPanel TypeError densify (LEG-3264)', () => {
+  let container: HTMLElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    mockOptimizeRoute.mockReset();
+    mockGetHistory.mockReset();
+  });
+
+  afterEach(async () => {
+    await act(async () => { root.unmount(); });
+    container.remove();
+    vi.clearAllMocks();
+  });
+
+  const expandPanel = async () => {
+    const header = container.querySelector('.route-planner-header') as HTMLElement;
+    await act(async () => {
+      header.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+  };
+
+  it('formatRouteOptimizeError falls back on TypeError network collapse', () => {
+    const text = formatRouteOptimizeError(new TypeError('Failed to fetch'));
+    expect(text).toBe('Failed to optimize route.');
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('formatRouteHistoryError falls back on TypeError network collapse', () => {
+    const text = formatRouteHistoryError(new TypeError('Failed to fetch'));
+    expect(text).toBe('Failed to load recent plans.');
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('optimize TypeError surfaces fallback without Failed to fetch / TypeError in DOM', async () => {
+    mockOptimizeRoute.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await act(async () => {
+      root.render(<RoutePlannerPanel />);
+    });
+    await expandPanel();
+
+    const form = container.querySelector('.route-planner-form') as HTMLFormElement;
+    await act(async () => {
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+
+    const err = container.querySelector('.route-planner-error');
+    expect(err?.textContent).toContain('Failed to optimize route.');
+    expect(err?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(err?.textContent).not.toMatch(/TypeError/i);
+    expect(container.textContent).not.toMatch(/Failed to fetch/i);
+    expect(container.textContent).not.toMatch(/TypeError/i);
+  });
+
+  it('history TypeError surfaces fallback without Failed to fetch / TypeError in DOM', async () => {
+    mockGetHistory.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await act(async () => {
+      root.render(<RoutePlannerPanel />);
+    });
+    await expandPanel();
+
+    const historyHeader = container.querySelector('.route-planner-history-header') as HTMLElement;
+    await act(async () => {
+      historyHeader.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    const err = container.querySelector('.route-planner-history-body .route-planner-error');
+    expect(err?.textContent).toContain('Failed to load recent plans.');
+    expect(err?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(err?.textContent).not.toMatch(/TypeError/i);
+    expect(container.textContent).not.toMatch(/Failed to fetch/i);
+    expect(container.textContent).not.toMatch(/TypeError/i);
   });
 });
