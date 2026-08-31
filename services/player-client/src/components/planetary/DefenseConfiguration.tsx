@@ -19,15 +19,27 @@ interface DefenseType {
   maxUnits: number;
 }
 
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
+};
+
 /** Surface gameserver 400 detail on defenses update refusal. */
 export function formatDefenseUpdateError(err: unknown): string {
   const message = err instanceof Error ? err.message : undefined;
-  // Network collapse (fetch TypeError) is not gameserver copy — use the caller fallback.
+  // Network collapse (fetch TypeError / axios transport) is not gameserver copy — use the caller fallback.
   const hasServerDetail =
     !(err instanceof TypeError) &&
     typeof message === 'string' &&
     message.trim().length > 0 &&
-    !/^API Error: \d+$/.test(message.trim());
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNetworkCollapseMessage(message);
 
   if (hasServerDetail) return message!;
   return 'Failed to update defenses';
