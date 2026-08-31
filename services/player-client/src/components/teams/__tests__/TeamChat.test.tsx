@@ -20,7 +20,7 @@ vi.mock('../../../services/api', () => ({
   },
 }));
 
-import { TeamChat } from '../TeamChat';
+import { TeamChat, formatTeamChatSendError } from '../TeamChat';
 import type { TeamMember, TeamMessageApiResponse } from '../../../types/team';
 
 const members: TeamMember[] = [
@@ -181,5 +181,31 @@ describe('TeamChat', () => {
     });
 
     expect(container.querySelector('.form-error')?.textContent).toContain('radio silence');
+  });
+
+  it('send TypeError surfaces Failed to send message. without Failed to fetch / TypeError (LEG-3256)', async () => {
+    expect(formatTeamChatSendError(new TypeError('Failed to fetch'))).toBe(
+      'Failed to send message.',
+    );
+    expect(formatTeamChatSendError(new TypeError('Failed to fetch'))).not.toMatch(
+      /Failed to fetch/i,
+    );
+
+    getMessages.mockResolvedValue([]);
+    sendMessage.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await act(async () => {
+      root.render(<TeamChat teamId="t1" playerId="p1" members={members} />);
+    });
+
+    await typeInto(container.querySelector('input') as HTMLInputElement, 'ping');
+    await act(async () => {
+      (container.querySelector('form') as HTMLFormElement).requestSubmit();
+    });
+
+    const err = container.querySelector('.form-error');
+    expect(err?.textContent).toBe('Failed to send message.');
+    expect(err?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(err?.textContent).not.toMatch(/TypeError/i);
   });
 });
