@@ -38,6 +38,7 @@ from typing import List, Optional
 import uuid
 
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from src.models.player import Player
 
@@ -49,6 +50,10 @@ SUSPECT_MAX_CUMULATIVE = timedelta(hours=4)
 # ships.md:294 -- "Permanent personal-reputation hit -- -25 ... per early-salvage event."
 # Per the WO, contraband-heat suspect events get the identical treatment.
 SUSPECT_REP_PENALTY = -25
+# factions-and-teams.md FA table: cycle must be >= 1 hour to earn +15 FA.
+SUSPECT_CYCLE_MIN_DURATION = timedelta(hours=1)
+# player.settings dedup ledger — one award per suspect_declared_at anchor.
+SURVIVE_SUSPECT_CYCLE_FA_SETTINGS_KEY = "survive_suspect_cycle_fa_awarded"
 
 
 def _now(now: Optional[datetime]) -> datetime:
@@ -149,6 +154,52 @@ def apply_suspect_event(
     return first_acquisition
 
 
+def _maybe_award_survive_suspect_cycle_fa(db: Session, player: Player) -> None:
+    """Emergent FA +15 when a suspect cycle clears after >= 1h (LEG-3377).
+
+    Evaluated BEFORE the clear sweep wipes suspect_declared_at/suspect_until.
+    Dedup via ``player.settings[SURVIVE_SUSPECT_CYCLE_FA_SETTINGS_KEY]`` —
+    a list of ISO suspect_declared_at anchors already rewarded (mirrors the
+    per-hull ``mg_rep_awarded`` insurance ledger). Rep failure is non-fatal.
+    """
+    declared = player.suspect_declared_at
+    until = player.suspect_until
+    if declared is None or until is None:
+        return
+    if until - declared < SUSPECT_CYCLE_MIN_DURATION:
+        return
+
+    cycle_key = declared.isoformat()
+    settings = dict(player.settings) if isinstance(player.settings, dict) else {}
+    prior_awarded = settings.get(SURVIVE_SUSPECT_CYCLE_FA_SETTINGS_KEY)
+    awarded = list(prior_awarded) if isinstance(prior_awarded, list) else []
+    if cycle_key in awarded:
+        return
+
+    try:
+        from src.services.emergent_reputation_service import apply_emergent_action
+
+        result = apply_emergent_action(
+            db,
+            player,
+            "SURVIVE_SUSPECT_CYCLE_FA",
+            {
+                "reason": "survive_suspect_cycle",
+                "suspect_declared_at": cycle_key,
+            },
+        )
+        if result.get("success"):
+            awarded.append(cycle_key)
+            settings[SURVIVE_SUSPECT_CYCLE_FA_SETTINGS_KEY] = awarded
+            player.settings = settings
+            flag_modified(player, "settings")
+    except Exception:
+        logger.warning(
+            "survive suspect cycle FA emergent rep failed (non-fatal)",
+            exc_info=True,
+        )
+
+
 def clear_expired_suspects(db: Session, *, now: Optional[datetime] = None) -> int:
     """Auto-clear sweep (ships.md:293 -- "Auto-clears at suspect_until --
     suspect_team_snapshot clears at the same time."). Clears is_suspect,
@@ -178,6 +229,7 @@ def clear_expired_suspects(db: Session, *, now: Optional[datetime] = None) -> in
         .all()
     )
     for player in expired:
+        _maybe_award_survive_suspect_cycle_fa(db, player)
         player.is_suspect = False
         player.suspect_until = None
         player.suspect_team_snapshot = None
