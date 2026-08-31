@@ -2,6 +2,12 @@ import React from 'react';
 import { useGame } from '../../contexts/GameContext';
 import { combatAPI } from '../../services/api';
 
+export function formatSectorRetreatError(error: unknown, fallback: string): string {
+  if (error instanceof TypeError) return fallback;
+  if (error instanceof Error && error.message) return error.message;
+  return fallback;
+}
+
 /**
  * Sector flee control — POST /combat/retreat (LEG-3107).
  * Mounted on the TACTICAL monitor THREAT page; disabled when docked or landed.
@@ -46,8 +52,7 @@ const SectorRetreatControl: React.FC = () => {
         }
       }
     } catch (e: unknown) {
-      const err = e as { message?: string };
-      setMsg({ ok: false, text: err?.message || 'Sector retreat failed' });
+      setMsg({ ok: false, text: formatSectorRetreatError(e, 'Sector retreat failed') });
     } finally {
       setBusy(false);
     }
