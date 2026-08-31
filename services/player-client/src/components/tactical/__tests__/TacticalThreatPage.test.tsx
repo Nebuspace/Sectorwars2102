@@ -227,6 +227,7 @@ describe('TacticalThreatPage', () => {
       'LAW STATUS',
       'MINES ABOARD armored 3 · limpet 2',
       'LIMPET TRACKER',
+      'SECTOR RETREAT',
       'HAZARD READOUT',
     ]);
     titles.forEach((t) => {
