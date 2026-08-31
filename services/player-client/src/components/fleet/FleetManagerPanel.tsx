@@ -170,12 +170,26 @@ type Busy =
   | 'simulate'
   | null;
 
+/** Transport collapse copy is not gameserver detail (LEG-3279 densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
 export function formatFleetManagerError(
   e: unknown,
   fallback = 'Fleet request failed',
 ): string {
   if (e instanceof TypeError) return fallback;
-  return e instanceof Error ? e.message : fallback;
+  if (e instanceof Error) {
+    if (isNetworkCollapseMessage(e.message)) return fallback;
+    return e.message;
+  }
+  return fallback;
 }
 
 const isUuid = (value: string): boolean =>
