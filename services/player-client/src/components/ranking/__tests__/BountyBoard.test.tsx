@@ -168,6 +168,20 @@ describe('BountyBoard', () => {
     expect(alert?.textContent).not.toMatch(/TypeError/i);
   });
 
+  it('surfaces honest load fallback when getAvailable rejects with axios Network Error (LEG-3519)', async () => {
+    getAvailable.mockRejectedValue(new Error('Network Error'));
+    await act(async () => {
+      root.render(<BountyBoard />);
+    });
+    await act(async () => {
+      await flush();
+    });
+    const alert = container.querySelector('[data-testid="bounty-board-error"]');
+    expect(alert?.getAttribute('role')).toBe('alert');
+    expect(alert?.textContent).toMatch(/Failed to load bounty board/i);
+    expect(alert?.textContent).not.toMatch(/Network Error/i);
+  });
+
   it('marks missing sector as unavailable without inventing a value', async () => {
     getAvailable.mockResolvedValue({
       success: true,
