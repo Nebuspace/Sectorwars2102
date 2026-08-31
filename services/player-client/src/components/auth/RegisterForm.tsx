@@ -3,6 +3,8 @@ import { useAuth } from '../../contexts/AuthContext';
 import { inviteCodeFromUrl } from './inviteCodeFromUrl';
 import './auth.css';
 
+const REGISTER_NETWORK_FALLBACK =
+  'Registration failed. Please check your connection and try again.';
 const REGISTER_GENERIC_FALLBACK = 'Registration failed. Please try again.';
 
 const isNetworkCollapseMessage = (msg: string): boolean => {
@@ -17,7 +19,7 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
 /** Collapses fetch TypeError / network noise; preserves structured API detail (LEG-3321). */
 export function formatRegisterError(err: unknown): string {
   if (err instanceof TypeError) {
-    return REGISTER_GENERIC_FALLBACK;
+    return REGISTER_NETWORK_FALLBACK;
   }
   if (typeof err === 'object' && err !== null && 'response' in err) {
     const detail = (err as { response?: { data?: { detail?: unknown } } }).response
@@ -28,7 +30,7 @@ export function formatRegisterError(err: unknown): string {
   }
   const raw = err instanceof Error ? err.message : String(err ?? '');
   if (isNetworkCollapseMessage(raw)) {
-    return REGISTER_GENERIC_FALLBACK;
+    return REGISTER_NETWORK_FALLBACK;
   }
   if (raw.trim()) return raw;
   return REGISTER_GENERIC_FALLBACK;
