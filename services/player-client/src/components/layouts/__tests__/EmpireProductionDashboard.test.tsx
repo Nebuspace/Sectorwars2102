@@ -100,6 +100,14 @@ describe('EmpireProductionDashboard', () => {
     expect(text).not.toMatch(/TypeError/i);
   });
 
+  it('formatEmpireProductionLoadError densifies Network Error / Failed to fetch non-TypeError (LEG-3283)', () => {
+    const fallback = 'Failed to load production data';
+    expect(formatEmpireProductionLoadError(new Error('Network Error'), fallback)).toBe(fallback);
+    expect(formatEmpireProductionLoadError(new Error('Failed to fetch'), fallback)).toBe(fallback);
+    expect(formatEmpireProductionLoadError(new Error(''), fallback)).toBe(fallback);
+    expect(formatEmpireProductionLoadError(new Error('boom'), fallback)).toBe('boom');
+  });
+
   it('load TypeError surfaces honest fallback without Failed to fetch / TypeError (LEG-3173)', async () => {
     getOwnedPlanets.mockRejectedValue(new TypeError('Failed to fetch'));
 

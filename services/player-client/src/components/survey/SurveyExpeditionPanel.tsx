@@ -44,9 +44,22 @@ const formatCountdown = (secondsLeft: number): string => {
 };
 
 /** TypeError (fetch network collapse) → fallback; preserve gameserver Error.message otherwise. */
+/** Transport collapse copy is not gameserver detail (LEG-3288 densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
 export function formatSurveyExpeditionError(err: unknown, fallback: string): string {
   if (err instanceof TypeError) return fallback;
-  if (err instanceof Error && err.message) return err.message;
+  if (err instanceof Error && err.message) {
+    if (isNetworkCollapseMessage(err.message)) return fallback;
+    return err.message;
+  }
   return fallback;
 }
 

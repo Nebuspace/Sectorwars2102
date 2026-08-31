@@ -23,10 +23,23 @@ const rate = (planet: Planet, key: 'fuel' | 'organics' | 'equipment'): number =>
 
 const EMPIRE_PRODUCTION_LOAD_FALLBACK = 'Failed to load production data';
 
-/** Exported for TypeError/network honesty Vitest (LEG-3173). */
+/** Transport collapse copy is not gameserver detail (LEG-3283 densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+/** Exported for TypeError/network honesty Vitest (LEG-3173 / LEG-3283). */
 export function formatEmpireProductionLoadError(err: unknown, fallback: string): string {
   if (err instanceof TypeError) return fallback;
-  if (err instanceof Error && err.message) return err.message;
+  if (err instanceof Error && err.message) {
+    if (isNetworkCollapseMessage(err.message)) return fallback;
+    return err.message;
+  }
   return fallback;
 }
 
