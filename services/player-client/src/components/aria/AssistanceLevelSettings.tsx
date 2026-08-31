@@ -37,21 +37,28 @@ function httpStatus(err: unknown): number | undefined {
   return undefined;
 }
 
-/** Surface gameserver detail on ARIA profile load/update refusals. */
+/**
+ * Surface gameserver detail on ARIA profile load/update refusals; network
+ * collapse (fetch TypeError) is not GS copy — use the stable fallback
+ * (LEG-3071 Soft-ORDER).
+ */
 export function formatAssistanceLevelError(
   err: unknown,
   context: 'load' | 'update',
 ): string {
+  const fallback =
+    context === 'load'
+      ? 'Failed to load ARIA assistance level'
+      : 'Failed to update ARIA assistance level';
+  // Network collapse (fetch TypeError) is not gameserver copy — use the fallback.
+  if (err instanceof TypeError) return fallback;
+
   const status = httpStatus(err);
   const message = err instanceof Error ? err.message : undefined;
   const hasServerDetail =
     typeof message === 'string' &&
     message.trim().length > 0 &&
     !/^API Error: \d+$/.test(message.trim());
-  const fallback =
-    context === 'load'
-      ? 'Failed to load ARIA assistance level'
-      : 'Failed to update ARIA assistance level';
 
   if (status === 403 || status === 429 || status === 500) {
     if (hasServerDetail) return message!;
