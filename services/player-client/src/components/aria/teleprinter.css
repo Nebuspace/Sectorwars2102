@@ -229,8 +229,29 @@
 .tp-body-header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 0.5rem;
+  flex-shrink: 0;
   margin-bottom: 0.35rem;
+}
+
+.tp-body-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-shrink: 0;
+}
+
+.tp-journal-toggle.active,
+.tp-settings-toggle.active {
+  box-shadow: 0 0 0 1px rgba(212, 175, 55, 0.65);
+}
+
+.tp-journal,
+.tp-settings {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 
 /* ── Mode tabs — three switchable content channels (WAVE-2's own richer

@@ -128,12 +128,13 @@ import { useGame } from '../../contexts/GameContext';
 import { useAutopilot } from '../../contexts/AutopilotContext';
 import { ariaFeed, useAriaFeed } from '../mfd/ariaFeedStore';
 import './teleprinter.css';
+import MemoryJournalPanel from './MemoryJournalPanel';
+import AssistanceLevelSettings from './AssistanceLevelSettings';
 
 /** Content-channel tab, independent of the two display-toggle booleans
  *  below. PANEL keeps this 3-way split; LOG shows the merged stream
  *  unfiltered (see the module doc-comment). */
 export type TeleprinterMode = 'narration' | 'dialogue' | 'command-echo';
-
 interface TeleprinterProps {
   /** PANEL (true) vs TICKER (false) — which form the input area takes.
    *  Owned by GameLayout: also drives the MFD-B→MFD-A fold there. */
@@ -277,6 +278,14 @@ const Teleprinter: React.FC<TeleprinterProps> = ({
   const [inputValue, setInputValue] = useState('');
   const [inputFocused, setInputFocused] = useState(false);
   const [tickerInputValue, setTickerInputValue] = useState('');
+  // LEG-397 — JOURNAL browse surface (owner GET /ai/memories). Orthogonal to
+  // NARRATION/DIALOGUE/CMD tabs: when open, replaces the feed+input body
+  // without extending TeleprinterMode (keeps mode/aria-live contracts intact).
+  const [journalOpen, setJournalOpen] = useState(false);
+  // LEG-785 — SETTINGS (assistance level) uses the same exclusive-panel
+  // pattern as JOURNAL; do not extend TeleprinterMode.
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const overlayOpen = journalOpen || settingsOpen;
   // Offline-fallback echoes (Pixel a11y REVISE #2) — component-local, never
   // sent anywhere, pinned to the mode active when sendARIAMessage failed.
   const [localEchoes, setLocalEchoes] = useState<FeedEntry[]>([]);
@@ -734,78 +743,122 @@ const Teleprinter: React.FC<TeleprinterProps> = ({
                 role="tab"
                 id={`tp-mode-tab-${m.id}`}
                 ref={(el) => { modeTabRefs.current[i] = el; }}
-                aria-selected={mode === m.id}
-                aria-controls="tp-log"
-                tabIndex={mode === m.id ? 0 : -1}
-                className={`tkey tp-mode-btn tp-mode-${m.id}${mode === m.id ? ' active' : ''}`}
-                onClick={() => setMode(m.id)}
+                aria-selected={!overlayOpen && mode === m.id}
+                aria-controls={settingsOpen ? 'tp-settings' : journalOpen ? 'tp-journal' : 'tp-log'}
+                tabIndex={!overlayOpen && mode === m.id ? 0 : -1}
+                className={`tkey tp-mode-btn tp-mode-${m.id}${!overlayOpen && mode === m.id ? ' active' : ''}`}
+                onClick={() => {
+                  setJournalOpen(false);
+                  setSettingsOpen(false);
+                  setMode(m.id);
+                }}
               >
                 {m.label}
               </button>
             ))}
           </div>
-        </div>
-
-        <div
-          id="tp-log"
-          className={`tp-log tp-log-${mode}`}
-          role="log"
-          // Silenced while LOG is open (Pixel a11y, WO-UI-MAX-BATCH-1 REVISE
-          // follow-up): PANEL and LOG can now both be open at once (the
-          // whole point of the two orthogonal toggles), and #tp-log's
-          // FILTERED content + .telelog's UNFILTERED content would both be
-          // aria-live="polite" simultaneously, double-announcing every
-          // qualifying message to a screen-reader user. When LOG is open it
-          // is the AUTHORITATIVE live surface (the fuller, unfiltered
-          // transcript), so #tp-log goes quiet — same gating idiom as
-          // `tlineAriaLive` above and `.telelog`'s own aria-live below.
-          // Net invariant: exactly ONE aria-live region across all 4
-          // toggle states; in the both-open state the winner is `.telelog`.
-          aria-live={transcriptOpen ? undefined : 'polite'}
-          aria-labelledby={`tp-mode-tab-${mode}`}
-        >
-          {filtered.length === 0 && (
-            <div className="tp-line tp-empty">
-              <span className="tp-prefix">ARIA&gt;</span>
-              <span className="tp-text">{EMPTY_TEXT[mode]}</span>
-            </div>
-          )}
-          {filtered.map((entry) => (
-            <div
-              key={entry.id}
-              className={`tp-line ${entry.type}${entry.isNav ? ' nav' : ''}${entry.isNarration ? ' narration' : ''}`}
+          <div className="tp-body-header-actions">
+            <button
+              type="button"
+              className={`tkey tp-journal-toggle${journalOpen ? ' active' : ''}`}
+              aria-pressed={journalOpen}
+              aria-controls="tp-journal"
+              aria-label={journalOpen ? 'Hide ARIA memory journal' : 'Show ARIA memory journal'}
+              onClick={() => {
+                setSettingsOpen(false);
+                setJournalOpen((open) => !open);
+              }}
             >
-              <span className="tp-prefix">{entry.type === 'ai' ? 'ARIA>' : 'YOU>'}</span>
-              <span className="tp-text">{entry.content}</span>
-            </div>
-          ))}
-          <div ref={logEndRef} />
+              JOURNAL
+            </button>
+            <button
+              type="button"
+              className={`tkey tp-settings-toggle${settingsOpen ? ' active' : ''}`}
+              aria-pressed={settingsOpen}
+              aria-controls="tp-settings"
+              aria-label={settingsOpen ? 'Hide ARIA assistance settings' : 'Show ARIA assistance settings'}
+              onClick={() => {
+                setJournalOpen(false);
+                setSettingsOpen((open) => !open);
+              }}
+            >
+              SETTINGS
+            </button>
+          </div>
         </div>
 
-        <div className="tp-input-row">
-          <span className="tp-prompt" aria-hidden="true">&gt;</span>
-          <input
-            type="text"
-            className={`tin tp-input${inputFocused ? ' tp-input-focused' : ''}`}
-            value={inputValue}
-            onChange={(e) => setInputValue(e.target.value)}
-            onKeyDown={handleKeyDown}
-            onFocus={() => setInputFocused(true)}
-            onBlur={() => setInputFocused(false)}
-            placeholder={placeholder}
-            maxLength={MAX_MESSAGE_LENGTH}
-            aria-label={inputAriaLabel}
-          />
-          <button
-            type="button"
-            className="tkey tp-xmit"
-            onClick={submit}
-            disabled={!inputValue.trim()}
-            aria-label="Transmit"
-          >
-            XMIT
-          </button>
-        </div>
+        {settingsOpen ? (
+          <div id="tp-settings" className="tp-settings" role="region" aria-label="ARIA assistance settings">
+            <AssistanceLevelSettings />
+          </div>
+        ) : journalOpen ? (
+          <div id="tp-journal" className="tp-journal" role="region" aria-label="ARIA memory journal">
+            <MemoryJournalPanel />
+          </div>
+        ) : (
+          <>
+            <div
+              id="tp-log"
+              className={`tp-log tp-log-${mode}`}
+              role="log"
+              // Silenced while LOG is open (Pixel a11y, WO-UI-MAX-BATCH-1 REVISE
+              // follow-up): PANEL and LOG can now both be open at once (the
+              // whole point of the two orthogonal toggles), and #tp-log's
+              // FILTERED content + .telelog's UNFILTERED content would both be
+              // aria-live="polite" simultaneously, double-announcing every
+              // qualifying message to a screen-reader user. When LOG is open it
+              // is the AUTHORITATIVE live surface (the fuller, unfiltered
+              // transcript), so #tp-log goes quiet — same gating idiom as
+              // `tlineAriaLive` above and `.telelog`'s own aria-live below.
+              // Net invariant: exactly ONE aria-live region across all 4
+              // toggle states; in the both-open state the winner is `.telelog`.
+              aria-live={transcriptOpen ? undefined : 'polite'}
+              aria-labelledby={`tp-mode-tab-${mode}`}
+            >
+              {filtered.length === 0 && (
+                <div className="tp-line tp-empty">
+                  <span className="tp-prefix">ARIA&gt;</span>
+                  <span className="tp-text">{EMPTY_TEXT[mode]}</span>
+                </div>
+              )}
+              {filtered.map((entry) => (
+                <div
+                  key={entry.id}
+                  className={`tp-line ${entry.type}${entry.isNav ? ' nav' : ''}${entry.isNarration ? ' narration' : ''}`}
+                >
+                  <span className="tp-prefix">{entry.type === 'ai' ? 'ARIA>' : 'YOU>'}</span>
+                  <span className="tp-text">{entry.content}</span>
+                </div>
+              ))}
+              <div ref={logEndRef} />
+            </div>
+
+            <div className="tp-input-row">
+              <span className="tp-prompt" aria-hidden="true">&gt;</span>
+              <input
+                type="text"
+                className={`tin tp-input${inputFocused ? ' tp-input-focused' : ''}`}
+                value={inputValue}
+                onChange={(e) => setInputValue(e.target.value)}
+                onKeyDown={handleKeyDown}
+                onFocus={() => setInputFocused(true)}
+                onBlur={() => setInputFocused(false)}
+                placeholder={placeholder}
+                maxLength={MAX_MESSAGE_LENGTH}
+                aria-label={inputAriaLabel}
+              />
+              <button
+                type="button"
+                className="tkey tp-xmit"
+                onClick={submit}
+                disabled={!inputValue.trim()}
+                aria-label="Transmit"
+              >
+                XMIT
+              </button>
+            </div>
+          </>
+        )}
       </div>
 
       {/* ── LOG overlay — the artifact's own flat, read-only, UNFILTERED
