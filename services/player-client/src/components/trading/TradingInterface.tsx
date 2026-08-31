@@ -97,6 +97,36 @@ interface DockFullInfo {
 
 const formatName = (name: string) => name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 
+/** Surface GS trade detail; hide fetch TypeError noise (LEG-3134). */
+export function formatTradingExecuteError(err: unknown, resourceType: string): string {
+  if (err instanceof TypeError) return 'Failed to execute trade';
+  const error = err as { response?: { data?: { detail?: string; message?: string } } };
+  const serverMessage: string = error.response?.data?.detail || error.response?.data?.message || '';
+  let content = serverMessage || 'Failed to execute trade';
+  if (serverMessage.includes('does not sell')) {
+    content = `This station doesn't sell ${formatName(resourceType)} — but it may buy it. Try the Sell Resources tab.`;
+  } else if (serverMessage.includes('does not buy')) {
+    content = `This station doesn't buy ${formatName(resourceType)} — but it may sell it. Try the Buy Resources tab.`;
+  }
+  return content;
+}
+
+export function formatTradingDockError(err: unknown): string {
+  if (err instanceof TypeError) return 'Failed to dock at station.';
+  const error = err as { response?: { data?: { detail?: string; message?: string } } };
+  return error.response?.data?.detail || error.response?.data?.message || 'Failed to dock at station.';
+}
+
+export function formatTradingBumpError(err: unknown): string {
+  if (err instanceof TypeError) return 'Bump failed — the slip may have already changed hands.';
+  const error = err as { response?: { data?: { detail?: string; message?: string } } };
+  return (
+    error.response?.data?.detail ||
+    error.response?.data?.message ||
+    'Bump failed — the slip may have already changed hands.'
+  );
+}
+
 // Mirrors PRICE_TREND_EPSILON in npc_scheduler_service.py (WO-ECON-MKT-
 // TIMESERIES, NO-CANON — proposed to DECISIONS alongside the retention
 // window): a move within +/-0.5% reads as flat rather than noise-flickering
@@ -590,10 +620,10 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
         content: 'Successfully docked at station.',
         level: 'success'
       });
-    } catch (err: any) {
+    } catch (err: unknown) {
       addNotification({
         title: 'Docking Failed',
-        content: err.response?.data?.detail || err.response?.data?.message || 'Failed to dock at station.',
+        content: formatTradingDockError(err),
         level: 'error'
       });
     } finally {
@@ -640,12 +670,8 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
         content: `Slip secured at ${stationName} — ${target.name} was evicted.`,
         level: 'success'
       });
-    } catch (err: any) {
-      setBumpError(
-        err.response?.data?.detail ||
-        err.response?.data?.message ||
-        'Bump failed — the slip may have already changed hands.'
-      );
+    } catch (err: unknown) {
+      setBumpError(formatTradingBumpError(err));
       if (dockFull) {
         refreshStationSlips(dockFull.stationId);
       }
@@ -832,18 +858,10 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
       setTradeQuantity(1);
       closeTradeModal();
 
-    } catch (error: any) {
-      const serverMessage: string = error.response?.data?.detail || error.response?.data?.message || '';
-      let content = serverMessage || 'Failed to execute trade';
-      // Map directionality errors to friendlier hints pointing at the other tab
-      if (serverMessage.includes('does not sell')) {
-        content = `This station doesn't sell ${formatName(selectedResource)} — but it may buy it. Try the Sell Resources tab.`;
-      } else if (serverMessage.includes('does not buy')) {
-        content = `This station doesn't buy ${formatName(selectedResource)} — but it may sell it. Try the Buy Resources tab.`;
-      }
+    } catch (error: unknown) {
       addNotification({
         title: 'Trade Failed',
-        content,
+        content: formatTradingExecuteError(error, selectedResource),
         level: 'error'
       });
     } finally {
