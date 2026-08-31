@@ -540,6 +540,19 @@ EMERGENT_ACTIONS: Dict[str, EmergentAction] = {
             "(1+ hour) (+15; one-shot per cycle)"
         ),
     ),
+    # LEG-3378 — Shadow Syndicate: "Survive a full Wanted Status cycle without
+    # impound | +10 | one-shot per Wanted cycle" (factions-and-teams.md SS
+    # table, line 167). Wired at wanted_service.clear_expired_wanted when the
+    # bust-timer window (wanted_until − wanted_declared_at) is >= WANTED_DURATION;
+    # dedup ledger in player.settings prevents double-award per cycle anchor.
+    "SURVIVE_WANTED_CYCLE_SS": EmergentAction(
+        name="SURVIVE_WANTED_CYCLE_SS",
+        deltas=[FactionDelta(FactionType.SYNDICATE, 10)],
+        doc_source=(
+            "factions-and-teams.md SS: Survive a full Wanted Status cycle "
+            "without impound (+10; one-shot per Wanted cycle)"
+        ),
+    ),
 }
 
 
