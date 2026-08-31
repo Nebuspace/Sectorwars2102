@@ -208,4 +208,11 @@ describe('TeamChat', () => {
     expect(err?.textContent).not.toMatch(/Failed to fetch/i);
     expect(err?.textContent).not.toMatch(/TypeError/i);
   });
+
+  it('formatTeamChatSendError densifies Failed to fetch / Network Error (LEG-3268)', () => {
+    expect(formatTeamChatSendError(new Error('Failed to fetch'))).toBe('Failed to send message.');
+    expect(formatTeamChatSendError(new Error('Network Error'))).toBe('Failed to send message.');
+    expect(formatTeamChatSendError(new Error('Failed to fetch'))).not.toMatch(/Failed to fetch/i);
+    expect(formatTeamChatSendError(new Error('Failed to fetch'))).not.toMatch(/TypeError/i);
+  });
 });
