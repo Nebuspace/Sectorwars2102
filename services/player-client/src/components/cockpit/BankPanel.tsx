@@ -44,10 +44,23 @@ const clampAmount = (n: number, max: number): number => {
 
 const commodityTurnCost = (qty: number): number => Math.ceil(Math.max(0, qty) / 100);
 
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
 /** Exported for TypeError densify tests — balance load + withdraw catch paths use this. */
 export function bankErrorMessage(err: unknown): string {
   if (err instanceof TypeError) return 'Bank request failed';
   const e = err as { message?: string; data?: { detail?: unknown } };
+  if (typeof e?.message === 'string' && isNetworkCollapseMessage(e.message)) {
+    return 'Bank request failed';
+  }
   const detail = e?.data?.detail;
   let extra = '';
   if (detail && typeof detail === 'object' && !Array.isArray(detail)) {

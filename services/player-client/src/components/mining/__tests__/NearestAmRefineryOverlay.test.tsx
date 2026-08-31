@@ -25,6 +25,13 @@ describe('formatNearestAmRefineryError (LEG-3245)', () => {
     expect(text).not.toMatch(/TypeError/i);
   });
 
+  it('falls back on axios Network Error / Failed to fetch non-TypeError (LEG-3298)', () => {
+    expect(formatNearestAmRefineryError(new Error('Network Error'))).toBe('Nearest AM refinery lookup failed');
+    expect(formatNearestAmRefineryError(new Error('Failed to fetch'))).toBe('Nearest AM refinery lookup failed');
+    expect(formatNearestAmRefineryError(new Error('   '))).toBe('Nearest AM refinery lookup failed');
+    expect(formatNearestAmRefineryError(new Error('sector offline'))).toBe('sector offline');
+  });
+
   it('preserves non-TypeError Error messages', () => {
     expect(formatNearestAmRefineryError(new Error('network down'))).toBe('network down');
   });

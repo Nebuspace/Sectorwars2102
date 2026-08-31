@@ -296,6 +296,15 @@ describe('RoutePlannerPanel TypeError densify (LEG-3264)', () => {
     expect(text).not.toMatch(/TypeError/i);
   });
 
+  it('formatRouteOptimize/History fall back on axios Network Error / Failed to fetch (LEG-3292)', () => {
+    expect(formatRouteOptimizeError(new Error('Network Error'))).toBe('Failed to optimize route.');
+    expect(formatRouteOptimizeError(new Error('Failed to fetch'))).toBe('Failed to optimize route.');
+    expect(formatRouteOptimizeError(new Error('   '))).toBe('Failed to optimize route.');
+    expect(formatRouteHistoryError(new Error('Network Error'))).toBe('Failed to load recent plans.');
+    expect(formatRouteHistoryError(new Error('Failed to fetch'))).toBe('Failed to load recent plans.');
+    expect(formatRouteOptimizeError(new Error('sector unreachable'))).toBe('sector unreachable');
+  });
+
   it('optimize TypeError surfaces fallback without Failed to fetch / TypeError in DOM', async () => {
     mockOptimizeRoute.mockRejectedValue(new TypeError('Failed to fetch'));
 
