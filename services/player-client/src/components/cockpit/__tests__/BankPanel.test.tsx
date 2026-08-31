@@ -59,6 +59,13 @@ describe('bankErrorMessage (LEG-3100)', () => {
     expect(text).not.toMatch(/TypeError/i);
   });
 
+  it('falls back on axios Network Error / Failed to fetch non-TypeError (LEG-3293)', () => {
+    expect(bankErrorMessage(new Error('Network Error'))).toBe('Bank request failed');
+    expect(bankErrorMessage(new Error('Failed to fetch'))).toBe('Bank request failed');
+    expect(bankErrorMessage(new Error('   '))).toBe('Bank request failed');
+    expect(bankErrorMessage(new Error('Network Error'))).not.toMatch(/Network Error/i);
+  });
+
   it('preserves server detail for non-TypeError errors', () => {
     const err = {
       message: 'Withdrawal exceeds access-override balance',

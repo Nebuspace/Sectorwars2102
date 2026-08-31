@@ -42,6 +42,18 @@ describe('formatSectorRetreatError TypeError densify (LEG-3159)', () => {
     expect(text).not.toMatch(/TypeError/i);
   });
 
+  it('falls back on axios Network Error / Failed to fetch non-TypeError (LEG-3296)', () => {
+    expect(formatSectorRetreatError(new Error('Network Error'), 'Sector retreat failed')).toBe(
+      'Sector retreat failed',
+    );
+    expect(formatSectorRetreatError(new Error('Failed to fetch'), 'Sector retreat failed')).toBe(
+      'Sector retreat failed',
+    );
+    expect(formatSectorRetreatError(new Error('   '), 'Sector retreat failed')).toBe(
+      'Sector retreat failed',
+    );
+  });
+
   it('preserves server detail for non-TypeError errors', () => {
     expect(formatSectorRetreatError(new Error('Not enough turns'), 'Sector retreat failed')).toBe(
       'Not enough turns',

@@ -575,6 +575,14 @@ describe('GridManager TypeError densify (LEG-3263)', () => {
     expect(text).not.toMatch(/TypeError/i);
   });
 
+  it('formatGridLoad/Action fall back on axios Network Error / Failed to fetch (LEG-3294)', () => {
+    expect(formatGridLoadError(new Error('Network Error'))).toBe('Failed to load planet grid');
+    expect(formatGridLoadError(new Error('Failed to fetch'))).toBe('Failed to load planet grid');
+    expect(formatGridLoadError(new Error('   '))).toBe('Failed to load planet grid');
+    expect(formatGridActionError(new Error('Network Error'), 'Placement failed')).toBe('Placement failed');
+    expect(formatGridActionError(new Error('plot occupied'), 'Placement failed')).toBe('plot occupied');
+  });
+
   it('load TypeError surfaces fallback without Failed to fetch / TypeError in DOM', async () => {
     mockGetGrid.mockRejectedValue(new TypeError('Failed to fetch'));
     await mount();

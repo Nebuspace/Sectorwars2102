@@ -60,6 +60,12 @@ describe('formatPlanetaryLanderInstallError TypeError densify (LEG-3096)', () =>
     expect(text).not.toMatch(/TypeError/i);
   });
 
+  it('falls back on axios Network Error / Failed to fetch non-TypeError (LEG-3295)', () => {
+    expect(formatPlanetaryLanderInstallError(new Error('Network Error'))).toBe('Planetary Lander install failed');
+    expect(formatPlanetaryLanderInstallError(new Error('Failed to fetch'))).toBe('Planetary Lander install failed');
+    expect(formatPlanetaryLanderInstallError(new Error('   '))).toBe('Planetary Lander install failed');
+  });
+
   it('preserves server detail for non-TypeError errors', () => {
     const err = Object.assign(new Error('insufficient credits'), {
       response: { data: { detail: 'Not enough credits for Planetary Lander.' } },
