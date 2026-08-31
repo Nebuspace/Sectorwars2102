@@ -1,5 +1,31 @@
 import React, { createContext, useState, useContext, useEffect, ReactNode } from 'react';
 import { api } from '../utils/auth';
+import { formatAdminApiError } from '../utils/adminApiError';
+
+const AUTH_NETWORK_FALLBACKS = {
+  login: 'Gameserver unreachable — network error during login',
+  refresh: 'Gameserver unreachable — network error refreshing session',
+  verifyMFA: 'Gameserver unreachable — network error verifying MFA',
+} as const;
+
+function isNetworkTransportFailure(err: unknown): boolean {
+  if (err instanceof TypeError) {
+    return true;
+  }
+  if (err instanceof Error) {
+    const msg = err.message;
+    return msg === 'Failed to fetch' || msg === 'Network Error';
+  }
+  return false;
+}
+
+/** Collapse fetch/network TypeErrors to operator-facing copy; preserve intentional auth errors. */
+function surfaceAuthError(err: unknown, fallback: string): never {
+  if (!isNetworkTransportFailure(err)) {
+    throw err;
+  }
+  throw new Error(formatAdminApiError(err, { fallback }));
+}
 
 export interface User {
   id: string;
@@ -128,7 +154,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       console.error('Token refresh failed:', error);
       // Clear tokens and user on refresh failure
       clearAuthData();
-      throw error;
+      surfaceAuthError(error, AUTH_NETWORK_FALLBACKS.refresh);
     }
   };
   
@@ -334,12 +360,12 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         return { requiresMFA: false };
       } catch (error) {
         console.error('Login attempt failed:', error);
-        throw error;
+        surfaceAuthError(error, AUTH_NETWORK_FALLBACKS.login);
       }
     } catch (error) {
       console.error('All login attempts failed:', error);
       clearAuthData();
-      throw error;
+      surfaceAuthError(error, AUTH_NETWORK_FALLBACKS.login);
     } finally {
       setIsLoading(false);
     }
@@ -394,7 +420,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       }
     } catch (error) {
       console.error('MFA verification failed:', error);
-      throw error;
+      surfaceAuthError(error, AUTH_NETWORK_FALLBACKS.verifyMFA);
     } finally {
       setIsLoading(false);
     }
