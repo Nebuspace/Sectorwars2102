@@ -59,7 +59,7 @@ vi.mock('../../contexts/GameContext', () => ({
   }),
 }));
 
-import { ShipSelector } from './ShipSelector';
+import { ShipSelector, formatShipSelectorError } from './ShipSelector';
 
 describe('ShipSelector — FLEET location-gate', () => {
   let container: HTMLElement;
@@ -162,5 +162,48 @@ describe('ShipSelector — FLEET location-gate', () => {
     expect(btn.disabled).toBe(false);
     await click(btn);
     expect(mockSetCurrentShip).toHaveBeenCalledWith('ship-1');
+  });
+
+  it('formatShipSelectorError falls back on TypeError network collapse (LEG-3330)', () => {
+    const text = formatShipSelectorError(new TypeError('Failed to fetch'));
+    expect(text).toBe('Failed to change ship. Please try again.');
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('formatShipSelectorError falls back on axios Network Error / Failed to fetch (LEG-3330)', () => {
+    expect(formatShipSelectorError(new Error('Network Error'))).toBe(
+      'Failed to change ship. Please try again.',
+    );
+    expect(formatShipSelectorError(new Error('Failed to fetch'))).toBe(
+      'Failed to change ship. Please try again.',
+    );
+  });
+
+  it('formatShipSelectorError preserves gameserver API detail (LEG-3330)', () => {
+    expect(formatShipSelectorError(new Error('Target ship is in another sector'))).toBe(
+      'Target ship is in another sector',
+    );
+  });
+
+  it('change-ship TypeError surfaces fallback without Failed to fetch / TypeError in DOM (LEG-3330)', async () => {
+    mockSetCurrentShip.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    await mount();
+    const cards = container.querySelectorAll('.ship-card');
+    const homeCard = Array.from(cards).find((c) => c.textContent?.includes('Home Cruiser'))!;
+    await click(homeCard);
+
+    const btn = container.querySelector('.selector-actions button.primary') as HTMLButtonElement;
+    await click(btn);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const err = container.querySelector('.selector-error');
+    expect(err?.textContent).toContain('Failed to change ship');
+    expect(err?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(err?.textContent).not.toMatch(/TypeError/i);
+    expect(container.textContent).not.toMatch(/Failed to fetch/i);
   });
 });
