@@ -16,7 +16,7 @@ vi.mock('../../../services/api', () => ({
   gameAPI: { planetary: { getOwnedPlanets } },
 }));
 
-import ColoniesRosterTab from '../ColoniesRosterTab';
+import ColoniesRosterTab, { formatColoniesRosterLoadError } from '../ColoniesRosterTab';
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -63,9 +63,33 @@ describe('ColoniesRosterTab', () => {
     await act(async () => {
       await flush();
     });
-    expect(container.querySelector('.sb-colonies-error')?.textContent).toBe(
+    expect(container.querySelector('.sb-colonies-error')?.textContent).toBe('boom');
+  });
+
+  it('formatColoniesRosterLoadError falls back on TypeError network collapse (LEG-3103)', () => {
+    const text = formatColoniesRosterLoadError(
+      new TypeError('Failed to fetch'),
       'Failed to load colonies',
     );
+    expect(text).toMatch(/Failed to load colonies/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('load TypeError surfaces honest fallback without Failed to fetch / TypeError (LEG-3103)', async () => {
+    getOwnedPlanets.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await act(async () => {
+      root.render(<ColoniesRosterTab />);
+    });
+    await act(async () => {
+      await flush();
+    });
+
+    const errorEl = container.querySelector('.sb-colonies-error');
+    expect(errorEl?.textContent).toMatch(/Failed to load colonies/i);
+    expect(errorEl?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(errorEl?.textContent).not.toMatch(/TypeError/i);
   });
 
   it('renders EmptyState when the roster is empty', async () => {
