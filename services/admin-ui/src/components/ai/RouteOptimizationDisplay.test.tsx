@@ -110,3 +110,25 @@ describe('RouteOptimizationDisplay route-stats secondary honesty (LEG-1260)', ()
     expect(screen.getByRole('alert').textContent ?? '').toMatch(/rate limit/i);
   });
 });
+
+describe('RouteOptimizationDisplay axios Network Error densify (LEG-3512)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('collapses axios-shaped Network Error on routes load', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
+
+    render(<RouteOptimizationDisplay />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Failed to load routes/i);
+    expect(alert).not.toBe('Network Error');
+    expect(alert).not.toContain('Network Error');
+  });
+});
