@@ -71,8 +71,18 @@ type AuditFeedState =
   | { status: 'ok'; entries: AuditLogEntry[] }
   | { status: 'error'; message: string };
 
+function isTransportCollapse(err: unknown): boolean {
+  if (err instanceof TypeError) return true;
+  if (!(err instanceof Error)) return false;
+  const msg = err.message.trim();
+  return msg === '' || msg === 'Network Error' || /failed to fetch/i.test(msg);
+}
+
 /** Map rejected api.get audit fetch via shared admin helper (RBAC / rate-limit). */
 function auditFetchErrorMessage(reason: unknown): string {
+  if (isTransportCollapse(reason)) {
+    return 'Unable to load recent audit events.';
+  }
   return formatAdminApiError(reason, {
     fallback: 'Unable to load recent audit events.',
     scopeHint:
@@ -82,27 +92,14 @@ function auditFetchErrorMessage(reason: unknown): string {
 
 /** Map rejected /admin/stats (PLAYERS_VIEW) — LEG-1250 invent=0 inline colonization. */
 function statsFetchErrorMessage(reason: unknown): string {
-  if (reason && typeof reason === 'object') {
-    const err = reason as { response?: { status?: number }; code?: string };
-    if (err.response?.status === 401 || err.response?.status === 403) {
-      return (
-        'Access denied — loading dashboard stats requires the admin players view scope (PLAYERS_VIEW).'
-      );
-    }
-    if (err.response?.status === 429) {
-      return 'Admin rate limit exceeded — wait a moment and try again.';
-    }
-    if (err.response?.status != null) {
-      return `Dashboard stats request failed (HTTP ${err.response.status}).`;
-    }
-    if (err.code === 'ECONNABORTED') {
-      return 'Dashboard stats request timed out.';
-    }
-    if ('response' in err || 'request' in err) {
-      return 'Gameserver unreachable — network error loading dashboard stats.';
-    }
+  if (isTransportCollapse(reason)) {
+    return 'Gameserver unreachable — network error loading dashboard stats.';
   }
-  return 'Unable to load dashboard stats.';
+  return formatAdminApiError(reason, {
+    fallback: 'Unable to load dashboard stats.',
+    scopeHint:
+      'loading dashboard stats requires the admin players view scope (PLAYERS_VIEW).',
+  });
 }
 
 const Dashboard: React.FC = () => {
@@ -192,7 +189,7 @@ const Dashboard: React.FC = () => {
         universe_stats: { total_sectors: null, total_planets: null, total_ports: null, total_ships: null, total_warp_tunnels: null },
         last_updated: new Date().toISOString()
       });
-      setAuditFeed({ status: 'error', message: 'Unable to load recent audit events.' });
+      setAuditFeed({ status: 'error', message: auditFetchErrorMessage(error) });
     } finally {
       setIsLoading(false);
     }
