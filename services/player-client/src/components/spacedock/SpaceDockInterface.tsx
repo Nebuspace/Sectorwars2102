@@ -41,14 +41,25 @@ function httpStatus(err: unknown): number | undefined {
   return undefined;
 }
 
+/** Transport collapse copy is not gameserver detail (LEG-3575 densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
 function hasNonBareApiDetail(err: unknown): string | undefined {
-  // Network collapse (fetch TypeError) is not gameserver copy — use the fallback.
+  // Network collapse (fetch TypeError / axios Network Error) is not gameserver copy — use the fallback.
   if (err instanceof TypeError) return undefined;
   const message = err instanceof Error ? err.message : undefined;
   if (
     typeof message === 'string' &&
     message.trim().length > 0 &&
-    !/^API Error: \d+$/.test(message.trim())
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNetworkCollapseMessage(message)
   ) {
     return message;
   }
@@ -102,15 +113,6 @@ export function formatSpaceDockRegistryLookupError(
   if (detail) return detail;
   return 'Lookup failed.';
 }
-
-const isNetworkCollapseMessage = (msg: string): boolean => {
-  const trimmed = msg.trim();
-  return (
-    !trimmed ||
-    /^failed to fetch$/i.test(trimmed) ||
-    /^network\s*error$/i.test(trimmed)
-  );
-};
 
 /** Collapse fetch/transport TypeErrors for spacedock shell actions (LEG-3325). */
 export function formatSpaceDockShellError(error: unknown, fallback: string): string {

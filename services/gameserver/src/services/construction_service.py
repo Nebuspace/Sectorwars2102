@@ -257,6 +257,16 @@ RENT_STATES = {
 # (100% of the bundle is required to start outfitting anyway).
 DELIVERY_STATES = {"deposit_collected", "frame_assembly", "systems_integration", "outfitting"}
 TERMINAL_STATES = {"claimed", "cancelled", "forfeited"}
+# Per-project engineer assignment applies while the build is active (LEG-3599).
+ENGINEER_ASSIGNABLE_STATES = {
+    "queued",
+    "hold_active",
+    "deposit_collected",
+    "frame_assembly",
+    "systems_integration",
+    "outfitting",
+    "final_assembly",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -620,9 +630,7 @@ def _roll_construction_events(
     Caller holds the station lock and owns the commit.
     """
     if db is not None and getattr(reservation, "player_id", None) is not None:
-        from src.services.profession_service import construction_engineer_count
-
-        engineer_count = construction_engineer_count(db, reservation.player_id)
+        engineer_count = assigned_construction_engineer_count(db, reservation)
     else:
         engineer_count = 0
 
@@ -1907,6 +1915,202 @@ def create_region_funded_construction(
 
 
 # ---------------------------------------------------------------------------
+# Per-project Space Engineer assignment (LEG-3599)
+# ---------------------------------------------------------------------------
+
+def _assigned_engineers_raw(reservation: ConstructionReservation) -> List[Any]:
+    """assigned_engineers JSONB list; tolerate pre-migration rows and test stubs."""
+    return getattr(reservation, "assigned_engineers", None) or []
+
+
+def _assigned_engineer_map(reservation: ConstructionReservation) -> Dict[str, int]:
+    """Planet-id -> assigned count for one reservation."""
+    raw = _assigned_engineers_raw(reservation)
+    out: Dict[str, int] = {}
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        planet_id = str(entry.get("planet_id") or "")
+        count = int(entry.get("count") or 0)
+        if planet_id and count > 0:
+            out[planet_id] = out.get(planet_id, 0) + count
+    return out
+
+
+def _assigned_engineer_list(planet_map: Dict[str, int]) -> List[Dict[str, Any]]:
+    return [
+        {"planet_id": planet_id, "count": count}
+        for planet_id, count in sorted(planet_map.items())
+        if count > 0
+    ]
+
+
+def _engineer_assignable(reservation: ConstructionReservation) -> bool:
+    return reservation.state in ENGINEER_ASSIGNABLE_STATES
+
+
+def _planet_assigned_on_other_reservations(
+    db: Session,
+    player_id: Any,
+    planet_id: Any,
+    exclude_reservation_id: Any,
+) -> int:
+    """Engineers from ``planet_id`` already assigned on sibling active builds."""
+    planet_key = str(planet_id)
+    peers = (
+        db.query(ConstructionReservation)
+        .filter(
+            ConstructionReservation.player_id == player_id,
+            ConstructionReservation.id != exclude_reservation_id,
+            ConstructionReservation.state.in_(list(ENGINEER_ASSIGNABLE_STATES)),
+        )
+        .all()
+    )
+    return sum(_assigned_engineer_map(res).get(planet_key, 0) for res in peers)
+
+
+def assigned_construction_engineer_count(
+    db: Session, reservation: ConstructionReservation
+) -> int:
+    """Assigned Space Engineers on this project (RNG input, cap 3)."""
+    from src.services.profession_service import MAX_CONSTRUCTION_ENGINEERS_PER_PROJECT
+
+    total = sum(_assigned_engineer_map(reservation).values())
+    return min(total, MAX_CONSTRUCTION_ENGINEERS_PER_PROJECT)
+
+
+def assign_engineer(
+    db: Session,
+    reservation: ConstructionReservation,
+    player: Player,
+    planet_id: Any,
+    count: int = 1,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Assign Space Engineers from an owned planet to this construction project."""
+    from uuid import UUID
+
+    from src.models.planet import player_planets
+    from src.services.profession_service import (
+        MAX_CONSTRUCTION_ENGINEERS_PER_PROJECT,
+        space_engineers_on_planet,
+    )
+
+    now = now or datetime.now(UTC)
+    if count < 1:
+        raise ConstructionError(400, "count must be at least 1")
+    if reservation.player_id != player.id:
+        raise ConstructionError(404, "Reservation not found")
+    if not _engineer_assignable(reservation):
+        raise ConstructionError(
+            400, f"Engineers cannot be assigned while reservation is {reservation.state}"
+        )
+
+    try:
+        planet_uuid = UUID(str(planet_id))
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise ConstructionError(400, "Invalid planet_id") from exc
+
+    owned = (
+        db.query(player_planets.c.planet_id)
+        .filter(
+            player_planets.c.player_id == player.id,
+            player_planets.c.planet_id == planet_uuid,
+        )
+        .first()
+    )
+    if owned is None:
+        raise ConstructionError(404, "Planet not found")
+
+    current = _assigned_engineer_map(reservation)
+    planet_key = str(planet_uuid)
+    already_on_project = current.get(planet_key, 0)
+    total_on_project = sum(current.values())
+    if total_on_project + count > MAX_CONSTRUCTION_ENGINEERS_PER_PROJECT:
+        raise ConstructionError(
+            400,
+            f"At most {MAX_CONSTRUCTION_ENGINEERS_PER_PROJECT} engineers per project",
+        )
+
+    on_planet = space_engineers_on_planet(db, planet_uuid)
+    assigned_elsewhere = _planet_assigned_on_other_reservations(
+        db, player.id, planet_uuid, reservation.id
+    )
+    available = on_planet - assigned_elsewhere - already_on_project
+    if count > available:
+        raise ConstructionError(
+            400,
+            f"Only {max(available, 0)} Space Engineer(s) available on that planet",
+        )
+
+    current[planet_key] = already_on_project + count
+    reservation.assigned_engineers = _assigned_engineer_list(current)
+    flag_modified(reservation, "assigned_engineers")
+    reservation.updated_at = now
+    db.flush()
+
+    return {
+        "planet_id": planet_key,
+        "assigned_count": count,
+        "assigned_engineer_count": assigned_construction_engineer_count(db, reservation),
+        "assigned_engineers": list(reservation.assigned_engineers or []),
+    }
+
+
+def unassign_engineer(
+    db: Session,
+    reservation: ConstructionReservation,
+    player: Player,
+    planet_id: Any,
+    count: int = 1,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Remove Space Engineer assignments from this project for a planet."""
+    from uuid import UUID
+
+    now = now or datetime.now(UTC)
+    if count < 1:
+        raise ConstructionError(400, "count must be at least 1")
+    if reservation.player_id != player.id:
+        raise ConstructionError(404, "Reservation not found")
+    if not _engineer_assignable(reservation):
+        raise ConstructionError(
+            400, f"Engineers cannot be unassigned while reservation is {reservation.state}"
+        )
+
+    try:
+        planet_uuid = UUID(str(planet_id))
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise ConstructionError(400, "Invalid planet_id") from exc
+
+    current = _assigned_engineer_map(reservation)
+    planet_key = str(planet_uuid)
+    already_on_project = current.get(planet_key, 0)
+    if already_on_project < count:
+        raise ConstructionError(
+            400,
+            f"Only {already_on_project} engineer(s) assigned from that planet on this project",
+        )
+
+    remaining = already_on_project - count
+    if remaining:
+        current[planet_key] = remaining
+    else:
+        current.pop(planet_key, None)
+    reservation.assigned_engineers = _assigned_engineer_list(current)
+    flag_modified(reservation, "assigned_engineers")
+    reservation.updated_at = now
+    db.flush()
+
+    return {
+        "planet_id": planet_key,
+        "unassigned_count": count,
+        "assigned_engineer_count": assigned_construction_engineer_count(db, reservation),
+        "assigned_engineers": list(reservation.assigned_engineers or []),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Status payload
 # ---------------------------------------------------------------------------
 
@@ -1933,6 +2137,8 @@ def status_payload(
         "credits_paid": reservation.credits_paid,
         "queue_bonus_credit": reservation.queue_bonus_credit,
         "priority_bumps_count": reservation.priority_bumps_count or 0,
+        "assigned_engineers": list(_assigned_engineers_raw(reservation)),
+        "assigned_engineer_count": assigned_construction_engineer_count(db, reservation),
         "milestones": {
             name: {"amount": amounts[name], "paid": bool((reservation.milestones or {}).get(name))}
             for name in MILESTONE_ORDER

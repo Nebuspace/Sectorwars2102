@@ -62,6 +62,11 @@ interface NextCheckpoint {
   shortfall?: Record<string, number>;
 }
 
+interface AssignedEngineer {
+  planet_id: string;
+  count: number;
+}
+
 interface ConstructionReservation {
   id: string;
   station_id?: string;
@@ -70,6 +75,8 @@ interface ConstructionReservation {
   ship_name?: string | null;
   total_cost?: number;
   credits_paid?: number;
+  assigned_engineers?: AssignedEngineer[];
+  assigned_engineer_count?: number;
   // Server-computed advisory (mirrors cancel()'s authoritative cancel_refund() at commit time).
   estimated_refund?: number;
   queue_bonus_credit: number;

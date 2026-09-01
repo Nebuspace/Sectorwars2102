@@ -28,6 +28,7 @@ from src.models.station import Station
 from src.models.user import User
 from src.services import construction_service
 from src.services.construction_service import ConstructionError
+from src.services.profession_service import MAX_CONSTRUCTION_ENGINEERS_PER_PROJECT
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,16 @@ class PriorityBumpRequest(BaseModel):
 
 class RentRequest(BaseModel):
     days: int = Field(..., ge=1, le=construction_service.RENT_MAX_PREPAY_DAYS)
+
+
+class EngineerAssignRequest(BaseModel):
+    planet_id: str
+    count: int = Field(1, ge=1, le=MAX_CONSTRUCTION_ENGINEERS_PER_PROJECT)
+
+
+class EngineerUnassignRequest(BaseModel):
+    planet_id: str
+    count: int = Field(1, ge=1, le=MAX_CONSTRUCTION_ENGINEERS_PER_PROJECT)
 
 
 def _get_station_or_404(db: Session, station_id: str) -> Station:
@@ -355,6 +366,64 @@ async def claim_ship(
             "type": ship.type.value,
             "sector_id": ship.sector_id,
         },
+        "reservation": construction_service.status_payload(db, reservation),
+    }
+
+
+@router.post("/reservations/{reservation_id}/assign-engineer")
+async def assign_engineer(
+    reservation_id: str,
+    request: EngineerAssignRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player),
+):
+    """Assign Space Engineers from an owned planet to this construction project."""
+    reservation = _get_owned_reservation_or_404(db, reservation_id, current_player)
+    try:
+        result = construction_service.assign_engineer(
+            db,
+            reservation,
+            current_player,
+            request.planet_id,
+            count=request.count,
+        )
+        db.commit()
+    except ConstructionError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return {
+        "message": f"Assigned {request.count} Space Engineer(s) to project",
+        **result,
+        "reservation": construction_service.status_payload(db, reservation),
+    }
+
+
+@router.post("/reservations/{reservation_id}/unassign-engineer")
+async def unassign_engineer(
+    reservation_id: str,
+    request: EngineerUnassignRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player),
+):
+    """Remove Space Engineer assignments from this construction project."""
+    reservation = _get_owned_reservation_or_404(db, reservation_id, current_player)
+    try:
+        result = construction_service.unassign_engineer(
+            db,
+            reservation,
+            current_player,
+            request.planet_id,
+            count=request.count,
+        )
+        db.commit()
+    except ConstructionError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return {
+        "message": f"Unassigned {request.count} Space Engineer(s) from project",
+        **result,
         "reservation": construction_service.status_payload(db, reservation),
     }
 
