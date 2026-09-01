@@ -1786,7 +1786,7 @@ async def get_security_report(current_admin: User = Depends(require_scope(PLAYER
         
     except Exception as e:
         logger.error(f"Error generating security report: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to generate security report: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to generate security report")
 
 
 @router.get("/security/alerts", summary="Get current security alerts")
@@ -1810,7 +1810,7 @@ async def get_security_alerts(current_admin: User = Depends(require_scope(PLAYER
         
     except Exception as e:
         logger.error(f"Error getting security alerts: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get security alerts: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to get security alerts")
 
 
 @router.get("/security/player/{player_id}/risk", summary="Get player risk assessment")
@@ -1834,7 +1834,7 @@ async def get_player_risk_assessment(
         
     except Exception as e:
         logger.error(f"Error getting player risk assessment: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get player risk assessment: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to get player risk assessment")
 
 
 @router.get("/security/player/{player_id}/status", summary="Get player security status")
@@ -1857,7 +1857,7 @@ async def get_player_security_status(
         
     except Exception as e:
         logger.error(f"Error getting player security status: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get player security status: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to get player security status")
 
 
 def _describe_aria_security_log_event(event_data: Any) -> str:
@@ -1936,7 +1936,7 @@ async def list_player_security_logs(
         raise
     except Exception as e:
         logger.error(f"Error listing player security logs: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to list player security logs: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to list player security logs")
 
 
 @router.post("/security/cleanup", summary="Clean up old security data")
@@ -1961,7 +1961,7 @@ async def cleanup_security_data(
         
     except Exception as e:
         logger.error(f"Error cleaning up security data: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to clean up security data: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to clean up security data")
 
 
 class PlayerSecurityAction(BaseModel):
@@ -2044,7 +2044,7 @@ async def take_security_action(
         raise
     except Exception as e:
         logger.error(f"Error taking security action: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to take security action: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to take security action")
 
 
 # =============================================================================
