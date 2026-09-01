@@ -886,3 +886,101 @@
     text-align: center;
   }
 }
+
+.aria-player-security-ops {
+  margin-top: 1.25rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--border-color);
+}
+
+.aria-player-security-ops h4 {
+  margin: 0 0 0.5rem 0;
+}
+
+.aria-security-load-error {
+  margin: 0.75rem 0;
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-md);
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: #fca5a5;
+}
+
+.aria-security-assessment-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 1rem;
+  margin: 1rem 0;
+}
+
+.aria-security-card {
+  padding: 1rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-color);
+}
+
+.aria-security-card h5 {
+  margin: 0 0 0.75rem 0;
+}
+
+.aria-risk-badge {
+  display: inline-block;
+  margin-bottom: 0.75rem;
+  padding: 0.25rem 0.6rem;
+  border-radius: var(--radius-sm);
+  font-weight: 700;
+  text-transform: uppercase;
+  font-size: 0.75rem;
+}
+
+.aria-risk-badge.risk-critical,
+.aria-risk-badge.risk-high {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+
+.aria-risk-badge.risk-medium {
+  background: rgba(251, 191, 36, 0.15);
+  color: #f59e0b;
+}
+
+.aria-risk-badge.risk-low {
+  background: rgba(34, 197, 94, 0.15);
+  color: var(--accent-color);
+}
+
+.aria-risk-badge.risk-unknown {
+  background: rgba(148, 163, 184, 0.15);
+  color: #94a3b8;
+}
+
+.aria-security-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem 1rem;
+  margin: 0;
+}
+
+.aria-security-metrics div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.aria-security-metrics dt {
+  margin: 0;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+
+.aria-security-metrics dd {
+  margin: 0;
+  font-weight: 600;
+}
+
+.aria-risk-factors {
+  margin: 0.75rem 0 0 1rem;
+  padding: 0;
+}
