@@ -980,6 +980,55 @@
   font-weight: 600;
 }
 
+.aria-security-log-section {
+  margin-top: 1.25rem;
+}
+
+.aria-security-log-section h5 {
+  margin: 0 0 0.75rem 0;
+}
+
+.aria-security-log-error {
+  margin: 0.5rem 0 0.75rem;
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-md);
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: #fca5a5;
+}
+
+.aria-security-log-loading,
+.aria-security-log-empty {
+  margin: 0.5rem 0;
+  color: var(--text-muted);
+}
+
+.aria-security-log-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.aria-security-log-table th,
+.aria-security-log-table td {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border-color);
+  text-align: left;
+  vertical-align: top;
+}
+
+.aria-security-log-table th {
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.aria-security-log-pagination {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
 .aria-risk-factors {
   margin: 0.75rem 0 0 1rem;
   padding: 0;

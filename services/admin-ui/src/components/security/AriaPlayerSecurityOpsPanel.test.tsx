@@ -46,6 +46,39 @@ const sampleStatus = {
   block_expires: null,
 };
 
+const emptyLogPage = {
+  items: [] as Array<{
+    id: string;
+    timestamp: string;
+    event_type: string;
+    severity: string;
+    description: string;
+  }>,
+  page: 1,
+  limit: 20,
+  total: 0,
+  pages: 0,
+};
+
+function mockRiskStatusLogs(
+  risk = sampleRisk,
+  status = sampleStatus,
+  logs = emptyLogPage,
+) {
+  vi.mocked(api.get).mockImplementation(async (url: string) => {
+    if (String(url).includes('/risk')) {
+      return { data: risk };
+    }
+    if (String(url).includes('/status')) {
+      return { data: status };
+    }
+    if (String(url).includes('/logs')) {
+      return { data: logs };
+    }
+    return { data: {} };
+  });
+}
+
 describe('AriaPlayerSecurityOpsPanel (LEG-272)', () => {
   beforeEach(() => {
     vi.mocked(api.get).mockReset();
@@ -57,15 +90,7 @@ describe('AriaPlayerSecurityOpsPanel (LEG-272)', () => {
   });
 
   it('loads risk and status when assessment is requested', async () => {
-    vi.mocked(api.get).mockImplementation(async (url: string) => {
-      if (String(url).includes('/risk')) {
-        return { data: sampleRisk };
-      }
-      if (String(url).includes('/status')) {
-        return { data: sampleStatus };
-      }
-      return { data: {} };
-    });
+    mockRiskStatusLogs();
 
     render(<AriaPlayerSecurityOpsPanel />);
 
@@ -81,6 +106,9 @@ describe('AriaPlayerSecurityOpsPanel (LEG-272)', () => {
       expect(api.get).toHaveBeenCalledWith(
         '/api/v1/admin/security/player/player-uuid-1/status',
       );
+      expect(api.get).toHaveBeenCalledWith(
+        '/api/v1/admin/security/player/player-uuid-1/logs?page=1&limit=20',
+      );
     });
 
     expect(await screen.findByLabelText('Player risk assessment')).toBeTruthy();
@@ -90,15 +118,7 @@ describe('AriaPlayerSecurityOpsPanel (LEG-272)', () => {
   });
 
   it('confirms then posts block action and reloads assessment', async () => {
-    vi.mocked(api.get).mockImplementation(async (url: string) => {
-      if (String(url).includes('/risk')) {
-        return { data: sampleRisk };
-      }
-      if (String(url).includes('/status')) {
-        return { data: sampleStatus };
-      }
-      return { data: {} };
-    });
+    mockRiskStatusLogs();
     vi.mocked(api.post).mockResolvedValue({
       data: { message: 'Player blocked for 24 hours' },
     });
@@ -122,7 +142,7 @@ describe('AriaPlayerSecurityOpsPanel (LEG-272)', () => {
     });
 
     expect(toastSuccess).toHaveBeenCalledWith('Player blocked for 24 hours');
-    expect(api.get).toHaveBeenCalledTimes(2);
+    expect(api.get).toHaveBeenCalledTimes(3);
   });
 
   it('skips POST when operator cancels confirm', async () => {
@@ -150,6 +170,9 @@ describe('AriaPlayerSecurityOpsPanel (LEG-272)', () => {
       }
       if (String(url).includes('/status')) {
         return { data: sampleStatus };
+      }
+      if (String(url).includes('/logs')) {
+        return { data: emptyLogPage };
       }
       return { data: {} };
     });
@@ -285,5 +308,104 @@ describe('AriaPlayerSecurityOpsPanel Network Error densify (LEG-3544)', () => {
     expect(msg).toMatch(/Failed to take player security action/i);
     expect(msg).not.toMatch(/Failed to fetch/i);
     expect(msg).not.toMatch(/TypeError/i);
+  });
+});
+
+describe('AriaPlayerSecurityOpsPanel ARIASecurityLog history (LEG-3607)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    toastSuccess.mockReset();
+    toastError.mockReset();
+    confirmMock.mockReset();
+    confirmMock.mockResolvedValue(true);
+  });
+
+  it('renders log rows after assessment load', async () => {
+    mockRiskStatusLogs(sampleRisk, sampleStatus, {
+      items: [
+        {
+          id: 'log-1',
+          timestamp: '2026-08-30T10:00:00Z',
+          event_type: 'invalid_market_observation',
+          severity: 'warning',
+          description: 'Player not docked at station',
+        },
+      ],
+      page: 1,
+      limit: 20,
+      total: 1,
+      pages: 1,
+    });
+
+    render(<AriaPlayerSecurityOpsPanel />);
+
+    fireEvent.change(screen.getByLabelText('Player id for ARIA security assessment'), {
+      target: { value: 'player-uuid-1' },
+    });
+    fireEvent.click(screen.getByLabelText('Load ARIA security assessment'));
+
+    expect(await screen.findByLabelText('ARIA security log history')).toBeTruthy();
+    expect(screen.getByText('invalid_market_observation')).toBeTruthy();
+    expect(screen.getByText('warning')).toBeTruthy();
+    expect(screen.getByText('Player not docked at station')).toBeTruthy();
+  });
+
+  it('403 on log fetch surfaces admin.aria.audit scope copy', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/risk')) {
+        return { data: sampleRisk };
+      }
+      if (String(url).includes('/status')) {
+        return { data: sampleStatus };
+      }
+      if (String(url).includes('/logs')) {
+        throw { response: { status: 403, data: {} } };
+      }
+      return { data: {} };
+    });
+
+    render(<AriaPlayerSecurityOpsPanel />);
+
+    fireEvent.change(screen.getByLabelText('Player id for ARIA security assessment'), {
+      target: { value: 'player-uuid-1' },
+    });
+    fireEvent.click(screen.getByLabelText('Load ARIA security assessment'));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('ARIA security log history')).toBeTruthy();
+    });
+
+    const logAlert = screen.getByLabelText('ARIA security log history').querySelector('[role="alert"]');
+    expect(logAlert?.textContent ?? '').toMatch(/admin\.aria\.audit/i);
+  });
+
+  it('429 on log fetch surfaces rate-limit copy', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/risk')) {
+        return { data: sampleRisk };
+      }
+      if (String(url).includes('/status')) {
+        return { data: sampleStatus };
+      }
+      if (String(url).includes('/logs')) {
+        throw { response: { status: 429, data: {} } };
+      }
+      return { data: {} };
+    });
+
+    render(<AriaPlayerSecurityOpsPanel />);
+
+    fireEvent.change(screen.getByLabelText('Player id for ARIA security assessment'), {
+      target: { value: 'player-uuid-1' },
+    });
+    fireEvent.click(screen.getByLabelText('Load ARIA security assessment'));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('ARIA security log history')).toBeTruthy();
+    });
+
+    const logAlert = screen.getByLabelText('ARIA security log history').querySelector('[role="alert"]');
+    expect(logAlert?.textContent ?? '').toMatch(/rate limit/i);
   });
 });

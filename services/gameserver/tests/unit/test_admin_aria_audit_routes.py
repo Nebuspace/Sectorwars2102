@@ -37,6 +37,14 @@ class TestAriaAuditPlayerSecurityRoutes:
         assert "require_scope(SECURITY_ACT)" not in block
         assert block.index("require_scope(ARIA_AUDIT)") < block.index("get_db")
 
+    def test_security_logs_requires_aria_audit(self):
+        block = _extract_route_block(
+            _COMP_SRC, '@router.get("/security/player/{player_id}/logs"'
+        )
+        assert "require_scope(ARIA_AUDIT)" in block
+        assert "require_scope(PLAYERS_VIEW)" not in block
+        assert block.index("require_scope(ARIA_AUDIT)") < block.index("get_db")
+
     def test_report_and_alerts_still_players_view(self):
         report = _extract_route_block(_COMP_SRC, '@router.get("/security/report"')
         alerts = _extract_route_block(_COMP_SRC, '@router.get("/security/alerts"')
