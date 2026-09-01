@@ -6,6 +6,7 @@ import React, { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { SUPPORTED_LANGUAGES } from '../../i18n';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import './language-switcher.css';
 
 interface Language {
@@ -78,8 +79,13 @@ const LanguageSwitcher: React.FC = () => {
                 'Access denied — translation progress requires the admin i18n / players view scope.';
             } else if (status === 429) {
               httpHonesty = 'Admin rate limit exceeded — wait a moment and try again.';
+            } else if (status === undefined) {
+              httpHonesty = formatAdminApiError(err, {
+                fallback:
+                  'Could not load translation progress — check your connection and try again.',
+              });
             }
-            // Transport/non-HTTP: static fallback — launch-complete stay 100%, never a 0% bar.
+            // Non-HTTP with status already handled above; static % fallback — launch-complete stay 100%.
           }
           return lang;
         })

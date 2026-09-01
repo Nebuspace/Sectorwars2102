@@ -4,6 +4,7 @@ List flagged sector beacons and clear false-report hides. Mirrors
 admin_messages.py scope pattern: PLAYERS_VIEW to list, SECURITY_ACT to act.
 """
 
+import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -16,6 +17,8 @@ from src.models.user import User
 from src.services import message_beacon_service
 from src.services.message_beacon_service import BeaconError, BeaconNotFoundError
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/admin/beacons", tags=["admin-beacons"])
 
 
@@ -26,7 +29,11 @@ async def get_flagged_beacons(
     db: Session = Depends(get_db),
 ):
     """Paginated queue of player-reported (flagged) message beacons."""
-    return message_beacon_service.list_flagged_beacons(db, page=page)
+    try:
+        return message_beacon_service.list_flagged_beacons(db, page=page)
+    except Exception:
+        logger.exception("Error in get_flagged_beacons")
+        raise HTTPException(status_code=500, detail="Failed to fetch flagged beacons")
 
 
 @router.post("/{beacon_id}/clear-flag")
@@ -45,6 +52,10 @@ async def clear_beacon_flag(
     except BeaconError as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception:
+        db.rollback()
+        logger.exception("Error in clear_beacon_flag")
+        raise HTTPException(status_code=500, detail="Failed to clear beacon flag")
     return {"success": True, **result}
 
 
@@ -68,4 +79,8 @@ async def confirm_beacon_abuse(
     except BeaconError as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception:
+        db.rollback()
+        logger.exception("Error in confirm_beacon_abuse")
+        raise HTTPException(status_code=500, detail="Failed to confirm beacon abuse")
     return {"success": True, **result}

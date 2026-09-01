@@ -359,7 +359,7 @@ function prefersReducedMotionSync(): boolean {
   );
 }
 
-function hasSeenLandingBootSync(): boolean {
+export function hasSeenLandingBootSync(): boolean {
   try {
     return typeof window !== 'undefined' && window.localStorage.getItem(LANDING_BOOT_SEEN_KEY) === '1';
   } catch {
@@ -368,7 +368,7 @@ function hasSeenLandingBootSync(): boolean {
   }
 }
 
-function markLandingBootSeen(): void {
+export function markLandingBootSeen(): void {
   try {
     window.localStorage.setItem(LANDING_BOOT_SEEN_KEY, '1');
   } catch {

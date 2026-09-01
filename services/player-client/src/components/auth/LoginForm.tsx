@@ -2,6 +2,49 @@ import React, { useState } from 'react';
 import { useAuth, MFARequiredError } from '../../contexts/AuthContext';
 import './auth.css';
 
+const LOGIN_NETWORK_FALLBACK =
+  'Unable to sign in. Please check your connection and try again.';
+const LOGIN_CREDENTIAL_FALLBACK = 'Invalid username or password';
+const LOGIN_MFA_FALLBACK = 'Invalid authentication code';
+
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+/** Collapses fetch TypeError / network noise; preserves structured API detail (LEG-3695). */
+export function formatLoginError(err: unknown, options?: { mfa?: boolean }): string {
+  if (err instanceof TypeError) {
+    return LOGIN_NETWORK_FALLBACK;
+  }
+  if (typeof err === 'object' && err !== null && 'response' in err) {
+    const detail = (err as { response?: { data?: { detail?: unknown } } }).response
+      ?.data?.detail;
+    if (typeof detail === 'string' && detail.trim() && !isNetworkCollapseMessage(detail)) {
+      return detail;
+    }
+  }
+  const raw = err instanceof Error ? err.message : String(err ?? '');
+  if (isNetworkCollapseMessage(raw)) {
+    return LOGIN_NETWORK_FALLBACK;
+  }
+  // Malformed JSON / parse noise from transport collapse — never surface raw text.
+  if (raw.trim() && /unexpected token|json|syntaxerror/i.test(raw)) {
+    return LOGIN_NETWORK_FALLBACK;
+  }
+  if (options?.mfa) {
+    return LOGIN_MFA_FALLBACK;
+  }
+  if (raw.trim()) {
+    return raw;
+  }
+  return LOGIN_CREDENTIAL_FALLBACK;
+}
+
 interface LoginFormProps {
   onLoginSuccess?: () => void;
   switchToRegister?: () => void;
@@ -54,11 +97,11 @@ const LoginForm: React.FC<LoginFormProps> = ({ onLoginSuccess, switchToRegister,
         setError(null);
       } else if (mfaRequired) {
         console.error('MFA verification failed:', err);
-        setError('Invalid authentication code');
+        setError(formatLoginError(err, { mfa: true }));
         setMfaCode('');
       } else {
         console.error('Login failed:', err);
-        setError('Invalid username or password');
+        setError(formatLoginError(err));
       }
     } finally {
       setIsSubmitting(false);
