@@ -13,6 +13,7 @@ import { gameAPI } from '../../services/api';
 import { InputValidator, SecurityAudit } from '../../utils/security/inputValidation';
 import CockpitInstrument from '../cockpit/CockpitInstrument';
 import { CombatHistoryPanel } from './CombatHistoryPanel';
+import CombatAdvicePanel from './CombatAdvicePanel';
 import './combat-interface.css';
 
 /* WEAPONS CONSOLE shell (Law 3) — module-level so the frame keeps its
@@ -93,6 +94,7 @@ interface CombatTarget {
   name: string;
   type: 'ship' | 'planet' | 'port';
   isNpc?: boolean;
+  shipType?: string;
 }
 
 interface CombatInterfaceProps {
@@ -130,6 +132,7 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
   // Target selected from the in-sector target list (when no target prop is given,
   // e.g. when rendered as the /game/combat route)
   const [selectedTarget, setSelectedTarget] = useState<CombatTarget | null>(null);
+  const [ariaAdviceShipType, setAriaAdviceShipType] = useState<string | null>(null);
   const combatTarget = target ?? selectedTarget;
 
   // UI state
@@ -257,6 +260,7 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
     note?: string;
     /** NPC moral standing: true = a lawful target a paladin can engage freely */
     lawful?: boolean;
+    shipType?: string;
   };
 
   // NPC standing read for the target list (mirrors the server notoriety tiers).
@@ -286,6 +290,7 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
           : p.username || 'Unknown pilot',
         type: 'ship' as const,
         isNpc: !!p.is_npc,
+        shipType: p.ship_type && p.ship_type !== 'None' ? String(p.ship_type) : undefined,
         subtype: standing ? `${hull} · ${standing.label}` : hull,
         lawful: standing?.lawful
       };
@@ -380,13 +385,33 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
                 {t.note || 'N/A'}
               </button>
             ) : (
-              <button
-                className="cockpit-btn danger engage-target-btn"
-                onClick={() => handleEngageTarget({ id: t.id, name: t.name, type: t.type, isNpc: t.isNpc })}
-                disabled={isEngaging}
-              >
-                {isEngaging ? '...' : 'ENGAGE'}
-              </button>
+              <div className="target-actions">
+                {t.type === 'ship' && t.shipType && (
+                  <button
+                    type="button"
+                    className="cockpit-btn aria-advice-btn"
+                    onClick={() => setAriaAdviceShipType(
+                      ariaAdviceShipType === t.shipType ? null : t.shipType!,
+                    )}
+                    aria-pressed={ariaAdviceShipType === t.shipType}
+                  >
+                    ARIA
+                  </button>
+                )}
+                <button
+                  className="cockpit-btn danger engage-target-btn"
+                  onClick={() => handleEngageTarget({
+                    id: t.id,
+                    name: t.name,
+                    type: t.type,
+                    isNpc: t.isNpc,
+                    shipType: t.shipType,
+                  })}
+                  disabled={isEngaging}
+                >
+                  {isEngaging ? '...' : 'ENGAGE'}
+                </button>
+              </div>
             )}
           </div>
         ))
@@ -417,6 +442,10 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
               ? `Targets in sector ${currentSector.sector_number ?? currentSector.sector_id} — ${currentSector.name}`
               : 'Scanning sector for targets...'}
           </p>
+
+          {ariaAdviceShipType && (
+            <CombatAdvicePanel opponentShipType={ariaAdviceShipType} />
+          )}
 
           <div className="target-groups">
             {renderTargetGroup('Ships', shipTargets, 'No ships in sector')}

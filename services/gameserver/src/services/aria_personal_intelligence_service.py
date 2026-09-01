@@ -31,7 +31,7 @@ from sqlalchemy import select, and_, func, delete
 from sqlalchemy.orm import Session
 
 from src.models.player import Player
-from src.models.sector import sector_warps
+from src.models.sector import Sector, sector_warps
 from src.models.station import Station
 from src.models.warp_tunnel import WarpTunnel, WarpTunnelStatus
 from src.models.aria_personal_intelligence import (
@@ -2090,6 +2090,276 @@ class ARIAPersonalIntelligenceService:
                 player_id, e,
             )
             return recommendations
+
+    async def get_exploration_suggestions(
+        self, player_id: str, db: AsyncSession,
+    ) -> Dict[str, Any]:
+        """Exploration-map suggestions for the client panel (LEG-46 /
+        aria-companion.md § Exploration suggestions).
+
+        Surfaces repeat-visit sectors (high visit_count + trade_opportunity),
+        adjacent unexplored expansion targets, and risky sectors
+        (safety_rating < 0.3). Never invents sectors outside the player's
+        exploration map + one-hop frontier.
+        """
+        explored = await self._get_explored_sectors(player_id, db)
+        if not explored:
+            return {
+                "suggestions": [],
+                "empty_message": (
+                    "I have no exploration data yet. Visit more sectors and "
+                    "I can suggest where to expand or revisit."
+                ),
+            }
+
+        explored_ids = {str(row.sector_id) for row in explored}
+        sector_meta = await self._load_sector_labels(explored_ids, db)
+
+        suggestions: List[Dict[str, Any]] = []
+
+        for row in sorted(
+            explored,
+            key=lambda r: (r.trade_opportunity_score or 0.0, r.visit_count or 0),
+            reverse=True,
+        ):
+            visit_count = row.visit_count or 0
+            trade_score = float(row.trade_opportunity_score or 0.0)
+            if visit_count >= 3 and trade_score >= 0.5:
+                label = sector_meta.get(str(row.sector_id), {})
+                suggestions.append({
+                    "kind": "repeat_visit",
+                    "sector_id": str(row.sector_id),
+                    "sector_number": label.get("sector_number"),
+                    "sector_name": label.get("name"),
+                    "visit_count": visit_count,
+                    "trade_opportunity_score": trade_score,
+                    "summary": (
+                        f"Sector {label.get('sector_number', '?')} "
+                        f"({label.get('name', 'unknown')}) — visited {visit_count} "
+                        f"times with strong trade signals."
+                    ),
+                })
+
+        risky = [
+            row for row in explored
+            if float(row.safety_rating or 0.5) < 0.3
+        ]
+        for row in sorted(risky, key=lambda r: float(r.safety_rating or 0.0)):
+            label = sector_meta.get(str(row.sector_id), {})
+            safety = float(row.safety_rating or 0.0)
+            suggestions.append({
+                "kind": "risky",
+                "sector_id": str(row.sector_id),
+                "sector_number": label.get("sector_number"),
+                "sector_name": label.get("name"),
+                "safety_rating": safety,
+                "summary": (
+                    f"Sector {label.get('sector_number', '?')} "
+                    f"({label.get('name', 'unknown')}) — safety rating "
+                    f"{safety:.0%}; proceed with caution."
+                ),
+            })
+
+        frontier_ids = await self._get_frontier_neighbor_ids(list(explored_ids), db)
+        unexplored_frontier = sorted(frontier_ids - explored_ids)
+        if unexplored_frontier:
+            frontier_meta = await self._load_sector_labels(set(unexplored_frontier), db)
+            for sector_id in unexplored_frontier[:10]:
+                label = frontier_meta.get(sector_id, {})
+                suggestions.append({
+                    "kind": "expand",
+                    "sector_id": sector_id,
+                    "sector_number": label.get("sector_number"),
+                    "sector_name": label.get("name"),
+                    "summary": (
+                        f"Unexplored neighbour Sector {label.get('sector_number', '?')} "
+                        f"({label.get('name', 'unknown')}) — expand intelligence."
+                    ),
+                })
+
+        if not suggestions:
+            return {
+                "suggestions": [],
+                "empty_message": (
+                    "Keep exploring and trading — I need more visits before I "
+                    "can rank repeat targets or frontier opportunities."
+                ),
+            }
+
+        return {"suggestions": suggestions[:15], "empty_message": None}
+
+    async def get_combat_advice(
+        self,
+        player_id: str,
+        opponent_ship_type: str,
+        player_ship_type: Optional[str],
+        db: AsyncSession,
+    ) -> Dict[str, Any]:
+        """Combat-advice surface backing data (LEG-46 / aria-companion.md § Combat advice).
+
+        Aggregates the player's own ``threat.combat`` memories against the
+        requested opponent ship type and adds a deterministic ship-matchup
+        hint from ``CombatService.SHIP_COMBAT_MODIFIERS`` when both types are
+        known. Never invents encounter history.
+        """
+        normalized_opponent = (opponent_ship_type or "").strip().upper()
+        if not normalized_opponent:
+            return {
+                "has_history": False,
+                "opponent_ship_type": opponent_ship_type,
+                "summary": "Select a ship target to receive ARIA combat advice.",
+                "weapon_suggestion": None,
+                "encounters": 0,
+                "wins": 0,
+                "losses": 0,
+            }
+
+        memories = await self.recall_memories(
+            player_id, db, memory_type="threat.combat", limit=200,
+        )
+
+        def _matches_ship(content: Dict[str, Any]) -> bool:
+            for key in ("defender_ship", "attacker_ship", "opponent_name"):
+                raw = content.get(key)
+                if raw and str(raw).strip().upper() == normalized_opponent:
+                    return True
+            return False
+
+        relevant = [m for m in memories if _matches_ship(m.get("content") or {})]
+        wins = losses = 0
+        last_outcome: Optional[str] = None
+        last_sector: Optional[Any] = None
+        for mem in relevant:
+            content = mem.get("content") or {}
+            outcome = str(content.get("outcome", "")).lower()
+            if outcome in {"victory", "win", "attacker_win"}:
+                wins += 1
+            elif outcome in {"defeat", "loss", "defender_win"}:
+                losses += 1
+            last_outcome = content.get("outcome")
+            last_sector = content.get("sector_id")
+
+        weapon_suggestion = self._ship_matchup_advice(
+            player_ship_type, normalized_opponent,
+        )
+
+        encounters = len(relevant)
+        if encounters == 0:
+            summary = (
+                f"I have no combat memories against {normalized_opponent.replace('_', ' ').title()} "
+                "yet. Engage once and I can factor your outcomes into future advice."
+            )
+            if weapon_suggestion:
+                summary = f"{summary} {weapon_suggestion}"
+            return {
+                "has_history": False,
+                "opponent_ship_type": normalized_opponent,
+                "summary": summary,
+                "weapon_suggestion": weapon_suggestion,
+                "encounters": 0,
+                "wins": 0,
+                "losses": 0,
+            }
+
+        summary = (
+            f"You've fought {normalized_opponent.replace('_', ' ').title()} "
+            f"{encounters} time{'s' if encounters != 1 else ''}: "
+            f"{wins} win{'s' if wins != 1 else ''}, {losses} loss{'es' if losses != 1 else ''}."
+        )
+        if last_outcome and last_sector is not None:
+            summary += (
+                f" Last outcome: {last_outcome} in sector {last_sector}."
+            )
+        if weapon_suggestion:
+            summary += f" {weapon_suggestion}"
+
+        return {
+            "has_history": True,
+            "opponent_ship_type": normalized_opponent,
+            "summary": summary,
+            "weapon_suggestion": weapon_suggestion,
+            "encounters": encounters,
+            "wins": wins,
+            "losses": losses,
+        }
+
+    async def _load_sector_labels(
+        self, sector_ids: Set[str], db: AsyncSession,
+    ) -> Dict[str, Dict[str, Any]]:
+        if not sector_ids:
+            return {}
+        stmt = select(Sector).where(Sector.id.in_(list(sector_ids)))
+        rows = (await db.execute(stmt)).scalars().all()
+        return {
+            str(row.id): {
+                "sector_number": row.sector_id,
+                "name": row.name,
+            }
+            for row in rows
+        }
+
+    async def _get_frontier_neighbor_ids(
+        self, explored_ids: List[str], db: AsyncSession,
+    ) -> Set[str]:
+        """One-hop warp neighbours of explored sectors (any destination)."""
+        if not explored_ids:
+            return set()
+        neighbors: Set[str] = set()
+        warp_rows = (
+            await db.execute(
+                sector_warps.select().where(
+                    sector_warps.c.source_sector_id.in_(explored_ids),
+                ),
+            )
+        ).fetchall()
+        for row in warp_rows:
+            neighbors.add(str(row.destination_sector_id))
+            if row.is_bidirectional:
+                neighbors.add(str(row.source_sector_id))
+
+        tunnel_stmt = select(WarpTunnel).where(
+            WarpTunnel.origin_sector_id.in_(explored_ids),
+        )
+        for tunnel in (await db.execute(tunnel_stmt)).scalars().all():
+            neighbors.add(str(tunnel.destination_sector_id))
+            if tunnel.is_bidirectional:
+                neighbors.add(str(tunnel.origin_sector_id))
+
+        return neighbors
+
+    def _ship_matchup_advice(
+        self, player_ship_type: Optional[str], opponent_ship_type: str,
+    ) -> Optional[str]:
+        if not player_ship_type:
+            return None
+        try:
+            from src.models.ship import ShipType
+            from src.services.combat_service import CombatService
+
+            attacker = ShipType[player_ship_type.strip().upper()]
+            defender = ShipType[opponent_ship_type.strip().upper()]
+        except (KeyError, AttributeError, ValueError):
+            return None
+
+        modifier = CombatService.SHIP_COMBAT_MODIFIERS.get((attacker, defender))
+        if modifier is None:
+            return (
+                "No strong ship-type matchup modifier on record — rely on "
+                "shields, drones, and weapon loadout."
+            )
+        if modifier >= 1.3:
+            return (
+                "Ship-type matchup favours you — press the advantage with your "
+                "primary weapons."
+            )
+        if modifier <= 0.7:
+            return (
+                "Ship-type matchup disfavours you — consider defensive drones "
+                "or disengaging."
+            )
+        return (
+            "Ship-type matchup is neutral — standard weapons should suffice."
+        )
 
     async def get_gameplay_recommendations(
         self, player_id: str, db: AsyncSession

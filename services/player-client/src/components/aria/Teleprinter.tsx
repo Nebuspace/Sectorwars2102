@@ -130,6 +130,7 @@ import { ariaFeed, useAriaFeed } from '../mfd/ariaFeedStore';
 import './teleprinter.css';
 import MemoryJournalPanel from './MemoryJournalPanel';
 import AssistanceLevelSettings from './AssistanceLevelSettings';
+import ExplorationSuggestionPanel from './ExplorationSuggestionPanel';
 
 /** Content-channel tab, independent of the two display-toggle booleans
  *  below. PANEL keeps this 3-way split; LOG shows the merged stream
@@ -285,7 +286,8 @@ const Teleprinter: React.FC<TeleprinterProps> = ({
   // LEG-785 — SETTINGS (assistance level) uses the same exclusive-panel
   // pattern as JOURNAL; do not extend TeleprinterMode.
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const overlayOpen = journalOpen || settingsOpen;
+  const [exploreOpen, setExploreOpen] = useState(false);
+  const overlayOpen = journalOpen || settingsOpen || exploreOpen;
   // Offline-fallback echoes (Pixel a11y REVISE #2) — component-local, never
   // sent anywhere, pinned to the mode active when sendARIAMessage failed.
   const [localEchoes, setLocalEchoes] = useState<FeedEntry[]>([]);
@@ -744,7 +746,7 @@ const Teleprinter: React.FC<TeleprinterProps> = ({
                 id={`tp-mode-tab-${m.id}`}
                 ref={(el) => { modeTabRefs.current[i] = el; }}
                 aria-selected={!overlayOpen && mode === m.id}
-                aria-controls={settingsOpen ? 'tp-settings' : journalOpen ? 'tp-journal' : 'tp-log'}
+                aria-controls={settingsOpen ? 'tp-settings' : exploreOpen ? 'tp-explore' : journalOpen ? 'tp-journal' : 'tp-log'}
                 tabIndex={!overlayOpen && mode === m.id ? 0 : -1}
                 className={`tkey tp-mode-btn tp-mode-${m.id}${!overlayOpen && mode === m.id ? ' active' : ''}`}
                 onClick={() => {
@@ -760,12 +762,27 @@ const Teleprinter: React.FC<TeleprinterProps> = ({
           <div className="tp-body-header-actions">
             <button
               type="button"
+              className={`tkey tp-explore-toggle${exploreOpen ? ' active' : ''}`}
+              aria-pressed={exploreOpen}
+              aria-controls="tp-explore"
+              aria-label={exploreOpen ? 'Hide ARIA exploration suggestions' : 'Show ARIA exploration suggestions'}
+              onClick={() => {
+                setSettingsOpen(false);
+                setJournalOpen(false);
+                setExploreOpen((open) => !open);
+              }}
+            >
+              EXPLORE
+            </button>
+            <button
+              type="button"
               className={`tkey tp-journal-toggle${journalOpen ? ' active' : ''}`}
               aria-pressed={journalOpen}
               aria-controls="tp-journal"
               aria-label={journalOpen ? 'Hide ARIA memory journal' : 'Show ARIA memory journal'}
               onClick={() => {
                 setSettingsOpen(false);
+                setExploreOpen(false);
                 setJournalOpen((open) => !open);
               }}
             >
@@ -779,6 +796,7 @@ const Teleprinter: React.FC<TeleprinterProps> = ({
               aria-label={settingsOpen ? 'Hide ARIA assistance settings' : 'Show ARIA assistance settings'}
               onClick={() => {
                 setJournalOpen(false);
+                setExploreOpen(false);
                 setSettingsOpen((open) => !open);
               }}
             >
@@ -790,6 +808,10 @@ const Teleprinter: React.FC<TeleprinterProps> = ({
         {settingsOpen ? (
           <div id="tp-settings" className="tp-settings" role="region" aria-label="ARIA assistance settings">
             <AssistanceLevelSettings />
+          </div>
+        ) : exploreOpen ? (
+          <div id="tp-explore" className="tp-explore" role="region" aria-label="ARIA exploration suggestions">
+            <ExplorationSuggestionPanel />
           </div>
         ) : journalOpen ? (
           <div id="tp-journal" className="tp-journal" role="region" aria-label="ARIA memory journal">

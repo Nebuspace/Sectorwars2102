@@ -1,0 +1,45 @@
+.aria-exploration-panel {
+  margin-top: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid rgba(255, 191, 71, 0.35);
+  background: rgba(12, 10, 6, 0.85);
+  color: #f0e6c8;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.8rem;
+}
+
+.aria-exploration-panel h3 {
+  margin: 0 0 0.5rem;
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  color: #ffbf47;
+}
+
+.aria-exploration-panel ul {
+  margin: 0;
+  padding-left: 1rem;
+}
+
+.aria-exploration-panel li {
+  margin-bottom: 0.35rem;
+}
+
+.aria-exploration-panel .kind {
+  color: #9fd3ff;
+  text-transform: uppercase;
+  font-size: 0.65rem;
+}
+
+.aria-exploration-panel .error {
+  color: #ff8a8a;
+}
+
+.aria-exploration-panel .empty {
+  color: #c9b88a;
+  font-style: italic;
+}
+
+.aria-exploration-panel button.refresh {
+  margin-top: 0.5rem;
+  font-size: 0.7rem;
+}
