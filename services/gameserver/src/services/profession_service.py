@@ -50,6 +50,10 @@ DEFENSE_COORDINATOR_MULTIPLIER = 1.30
 TERRAFORM_ENGINEER_RATE_PER_1K = 0.5  # habitability / month per 1k engineers
 TERRAFORM_ENGINEER_MONTHLY_CAP = 5.0  # at 10k engineers
 SPACE_ENGINEER_REPAIR_MULTIPLIER = 1.25  # professions.md L32
+# tradedock-shipyard.md §Space Engineer profession integration — up to three
+# engineers per active construction project (per-project assignment API is a
+# follow-on; this cap applies to the interim pool-wide count wire).
+MAX_CONSTRUCTION_ENGINEERS_PER_PROJECT = 3
 TRADE_SPECIALIST_CREDIT_MULTIPLIER = 1.25  # professions.md L57
 MINING_ENGINEER_ORE_MULTIPLIER = 1.30  # professions.md L34; mining.md step 5 (ore)
 
@@ -130,6 +134,25 @@ def space_engineer_repair_multiplier(db: Session, planet_id: UUID) -> float:
     if counts.get(ProfessionType.SPACE_ENGINEERS, 0) > 0:
         return SPACE_ENGINEER_REPAIR_MULTIPLIER
     return 1.0
+
+
+def construction_engineer_count(db: Session, player_id: UUID) -> int:
+    """Space Engineers available to bias TradeDock construction-event RNG.
+
+    Interim wire (LEG-302): sums ``SPACE_ENGINEERS`` across all planets the
+    player owns via ``player_planets``, capped at
+    ``MAX_CONSTRUCTION_ENGINEERS_PER_PROJECT``. Per-project assignment and
+    daily wages remain follow-on slices (LEG-309 / canon TBD wage cells).
+    """
+    planet_ids = (
+        db.query(player_planets.c.planet_id)
+        .filter(player_planets.c.player_id == player_id)
+        .all()
+    )
+    total = 0
+    for (planet_id,) in planet_ids:
+        total += profession_counts(db, planet_id).get(ProfessionType.SPACE_ENGINEERS, 0)
+    return min(total, MAX_CONSTRUCTION_ENGINEERS_PER_PROJECT)
 
 
 def trade_specialist_credit_multiplier(db: Session, planet_id: UUID) -> float:
