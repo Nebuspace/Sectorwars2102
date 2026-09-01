@@ -78,7 +78,11 @@ async def generate_central_nexus(
         )
         nexus_region = existing_nexus.scalar_one_or_none()
         
-        if nexus_region and not request.force_regenerate:
+        if (
+            nexus_region
+            and nexus_region.is_populated
+            and not request.force_regenerate
+        ):
             raise HTTPException(
                 status_code=409,
                 detail="Central Nexus already exists. Use force_regenerate=true to regenerate."
@@ -447,7 +451,10 @@ async def generate_nexus_task(
     try:
         async with get_async_session() as session:
             # Full Central Nexus generation with 20 clusters organizing 5000 sectors
-            await nexus_generation_service.generate_central_nexus(session)
+            await nexus_generation_service.generate_central_nexus(
+                session,
+                force_regenerate=force_regenerate,
+            )
             logger.info("Central Nexus generation completed successfully")
 
     except Exception as e:
