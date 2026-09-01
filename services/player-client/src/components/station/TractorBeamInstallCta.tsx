@@ -34,9 +34,20 @@ export function isTractorBeamHullCompatible(
   return (TRACTOR_BEAM_COMPATIBLE_HULLS as readonly string[]).includes(norm);
 }
 
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
+};
+
 /** Normalize GS/API detail from axios-shaped response or Error.message. */
 function tractorBeamInstallServerDetail(err: unknown): string | undefined {
-  // Network collapse (fetch TypeError) is not gameserver copy.
+  // Network collapse (fetch TypeError / axios Network Error) is not gameserver copy.
   if (err instanceof TypeError) return undefined;
 
   if (err && typeof err === 'object') {
@@ -45,6 +56,7 @@ function tractorBeamInstallServerDetail(err: unknown): string | undefined {
     if (typeof rawDetail === 'string' && rawDetail.trim()) return rawDetail.trim();
   }
   const message = err instanceof Error ? err.message : undefined;
+  if (typeof message === 'string' && isNetworkCollapseMessage(message)) return undefined;
   if (
     typeof message === 'string' &&
     message.trim().length > 0 &&
