@@ -322,6 +322,62 @@ describe('SecurityDashboard overview load errors (LEG-2682)', () => {
   });
 });
 
+describe('SecurityDashboard overview Network Error densify (LEG-3503)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    toastSuccess.mockReset();
+    toastError.mockReset();
+    confirmMock.mockReset();
+    confirmMock.mockResolvedValue(true);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('collapses axios-shaped Network Error on security report overview load', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/security/report')) {
+        throw new Error('Network Error');
+      }
+      if (String(url).includes('/security/alerts')) {
+        return { data: { alerts: [], alert_count: 0, high_priority_count: 0 } };
+      }
+      return { data: {} };
+    });
+
+    renderDash();
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/security report/i);
+    });
+    const text = screen.getByRole('alert').textContent ?? '';
+    expect(text).toMatch(/unavailable/i);
+    expect(text).not.toBe('Network Error');
+    expect(text).not.toContain('Network Error');
+  });
+
+  it('collapses axios-shaped Network Error on security alerts overview load', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/security/report')) {
+        return { data: sampleReport };
+      }
+      if (String(url).includes('/security/alerts')) {
+        throw new Error('Network Error');
+      }
+      return { data: {} };
+    });
+
+    renderDash();
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/security alerts/i);
+    });
+    const text = screen.getByRole('alert').textContent ?? '';
+    expect(text).toMatch(/unavailable/i);
+    expect(text).not.toBe('Network Error');
+    expect(text).not.toContain('Network Error');
+  });
+});
+
 describe('SecurityDashboard axios Network Error densify (LEG-3393)', () => {
   beforeEach(() => {
     vi.mocked(api.get).mockReset();
