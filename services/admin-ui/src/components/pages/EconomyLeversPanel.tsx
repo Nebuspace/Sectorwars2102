@@ -75,11 +75,13 @@ const EconomyLeversPanel: React.FC = () => {
     Record<string, { base_price: string; production_rate: string }>
   >({});
   const [commodityFilter, setCommodityFilter] = useState('');
+  const [error, setError] = useState<string | null>(null);
 
   const commodityKey = (row: StationCommodityLever) => `${row.station_id}::${row.commodity}`;
 
   const load = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
       const res = await api.get<LeversSnapshot>('/api/v1/admin/economy/levers');
       setData(res.data);
@@ -123,9 +125,12 @@ const EconomyLeversPanel: React.FC = () => {
       setCommodityDrafts(cDrafts);
     } catch (err) {
       console.error(err);
-      toast.error(
-        economyLeversApiError(err, 'Gameserver unreachable — network error loading economy levers'),
+      const message = economyLeversApiError(
+        err,
+        'Gameserver unreachable — network error loading economy levers',
       );
+      setError(message);
+      toast.error(message);
     } finally {
       setLoading(false);
     }
@@ -317,7 +322,16 @@ const EconomyLeversPanel: React.FC = () => {
   }
 
   if (!data) {
-    return null;
+    return (
+      <div className="levers-panel" data-testid="economy-levers-panel">
+        <h3>Economy Levers</h3>
+        {error && (
+          <div className="alert alert-error mb-3" role="alert">
+            {error}
+          </div>
+        )}
+      </div>
+    );
   }
 
   return (
@@ -328,6 +342,11 @@ const EconomyLeversPanel: React.FC = () => {
           ↻ Refresh
         </button>
       </div>
+      {error && (
+        <div className="alert alert-error mb-3" role="alert">
+          {error}
+        </div>
+      )}
       <p className="levers-blurb">
         Operator balancing controls from lifecycle.md — region tax / starting credits, ship purchase
         costs, upgrade ladders, bounty payout ratio, insurance tiers, and per-station commodity
