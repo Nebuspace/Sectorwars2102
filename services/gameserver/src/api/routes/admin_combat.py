@@ -221,10 +221,11 @@ async def intervene_in_combat(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        logger.error(f"Error performing combat intervention: {e}")
         raise HTTPException(
             status_code=500,
-            detail=f"Combat intervention failed: {str(e)}"
-        )
+            detail="Failed to perform combat intervention",
+        ) from e
 
 
 @router.get("/balance", response_model=CombatBalanceResponse)
