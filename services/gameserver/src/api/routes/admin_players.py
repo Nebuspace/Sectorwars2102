@@ -177,120 +177,126 @@ async def bulk_player_operation(
             detail=f"Missing required scope: {required_scope}",
         )
 
-    results: list[BulkOperationItemResult] = []
-    applied = 0
-    rejected = 0
+    try:
+        results: list[BulkOperationItemResult] = []
+        applied = 0
+        rejected = 0
 
-    for raw_id in request.player_ids:
-        try:
-            player_uuid = uuid.UUID(str(raw_id))
-        except (ValueError, TypeError):
-            rejected += 1
-            results.append(
-                BulkOperationItemResult(
-                    player_id=str(raw_id),
-                    success=False,
-                    detail="invalid_player_id",
-                )
-            )
-            continue
-
-        try:
-            player = db.query(Player).filter(Player.id == player_uuid).first()
-            if not player:
+        for raw_id in request.player_ids:
+            try:
+                player_uuid = uuid.UUID(str(raw_id))
+            except (ValueError, TypeError):
                 rejected += 1
                 results.append(
                     BulkOperationItemResult(
                         player_id=str(raw_id),
                         success=False,
-                        detail="player_not_found",
+                        detail="invalid_player_id",
                     )
                 )
                 continue
 
-            params = request.parameters
-            if request.operation == "CREDIT_ADJUST":
-                new_credits = player.credits + int(params.amount)
-                if new_credits < 0:
+            try:
+                player = db.query(Player).filter(Player.id == player_uuid).first()
+                if not player:
                     rejected += 1
                     results.append(
                         BulkOperationItemResult(
                             player_id=str(raw_id),
                             success=False,
-                            detail="credits_would_be_negative",
-                        )
-                    )
-                    continue
-                player.credits = new_credits
-            elif request.operation == "TURN_GRANT":
-                new_turns = player.turns + int(params.amount)
-                if new_turns < 0:
-                    rejected += 1
-                    results.append(
-                        BulkOperationItemResult(
-                            player_id=str(raw_id),
-                            success=False,
-                            detail="turns_would_be_negative",
-                        )
-                    )
-                    continue
-                player.turns = new_turns
-            elif request.operation == "STATUS_CHANGE":
-                _apply_status(player, params.new_status)
-            elif request.operation == "REPUTATION_ADJUST":
-                rep_errors = await _apply_reputation_changes(
-                    db,
-                    player=player,
-                    changes=params.reputation_changes or [],
-                    reason=params.reason,
-                    admin_username=admin.username,
-                )
-                if rep_errors:
-                    rejected += 1
-                    results.append(
-                        BulkOperationItemResult(
-                            player_id=str(raw_id),
-                            success=False,
-                            detail=";".join(rep_errors),
+                            detail="player_not_found",
                         )
                     )
                     continue
 
-            applied += 1
-            results.append(
-                BulkOperationItemResult(player_id=str(raw_id), success=True)
-            )
-        except Exception as exc:  # noqa: BLE001 — per-id soft fail
-            rejected += 1
-            results.append(
-                BulkOperationItemResult(
-                    player_id=str(raw_id),
-                    success=False,
-                    detail=str(exc)[:200],
-                )
-            )
+                params = request.parameters
+                if request.operation == "CREDIT_ADJUST":
+                    new_credits = player.credits + int(params.amount)
+                    if new_credits < 0:
+                        rejected += 1
+                        results.append(
+                            BulkOperationItemResult(
+                                player_id=str(raw_id),
+                                success=False,
+                                detail="credits_would_be_negative",
+                            )
+                        )
+                        continue
+                    player.credits = new_credits
+                elif request.operation == "TURN_GRANT":
+                    new_turns = player.turns + int(params.amount)
+                    if new_turns < 0:
+                        rejected += 1
+                        results.append(
+                            BulkOperationItemResult(
+                                player_id=str(raw_id),
+                                success=False,
+                                detail="turns_would_be_negative",
+                            )
+                        )
+                        continue
+                    player.turns = new_turns
+                elif request.operation == "STATUS_CHANGE":
+                    _apply_status(player, params.new_status)
+                elif request.operation == "REPUTATION_ADJUST":
+                    rep_errors = await _apply_reputation_changes(
+                        db,
+                        player=player,
+                        changes=params.reputation_changes or [],
+                        reason=params.reason,
+                        admin_username=admin.username,
+                    )
+                    if rep_errors:
+                        rejected += 1
+                        results.append(
+                            BulkOperationItemResult(
+                                player_id=str(raw_id),
+                                success=False,
+                                detail=";".join(rep_errors),
+                            )
+                        )
+                        continue
 
-    if applied:
-        log_admin_action(
-            db,
-            actor=admin,
-            scope_used=required_scope,
-            action="players_bulk_operation",
-            target_type="player",
-            target_id="bulk",
-            payload={
-                "operation": request.operation,
-                "player_count": len(request.player_ids),
-                "applied": applied,
-                "rejected": rejected,
-                "reason": request.parameters.reason,
-            },
+                applied += 1
+                results.append(
+                    BulkOperationItemResult(player_id=str(raw_id), success=True)
+                )
+            except Exception as exc:  # noqa: BLE001 — per-id soft fail
+                rejected += 1
+                results.append(
+                    BulkOperationItemResult(
+                        player_id=str(raw_id),
+                        success=False,
+                        detail=str(exc)[:200],
+                    )
+                )
+
+        if applied:
+            log_admin_action(
+                db,
+                actor=admin,
+                scope_used=required_scope,
+                action="players_bulk_operation",
+                target_type="player",
+                target_id="bulk",
+                payload={
+                    "operation": request.operation,
+                    "player_count": len(request.player_ids),
+                    "applied": applied,
+                    "rejected": rejected,
+                    "reason": request.parameters.reason,
+                },
+            )
+            db.commit()
+
+        return BulkOperationResponse(
+            operation=request.operation,
+            applied=applied,
+            rejected=rejected,
+            results=results,
         )
-        db.commit()
-
-    return BulkOperationResponse(
-        operation=request.operation,
-        applied=applied,
-        rejected=rejected,
-        results=results,
-    )
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Error in bulk_player_operation")
+        raise HTTPException(status_code=500, detail="Bulk player operation failed")
