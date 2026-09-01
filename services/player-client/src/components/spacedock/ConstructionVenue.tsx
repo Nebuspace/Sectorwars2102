@@ -245,6 +245,11 @@ export function formatConstructionQuotesLoadError(error: unknown, fallback: stri
   return fallback;
 }
 
+/** Transport collapse copy is not gameserver detail (LEG-3507 densify). */
+export function formatConstructionReservationsLoadError(error: unknown, fallback: string): string {
+  return formatConstructionQuotesLoadError(error, fallback);
+}
+
 // Pull a readable error from a {message|detail} 400 body
 const readError = async (response: Response, fallback: string): Promise<string> => {
   const data: unknown = await response.json().catch(() => null);
@@ -642,7 +647,9 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
       setReservationsError(null);
     } catch (error) {
       console.error('Construction reservations error:', error);
-      setReservationsError('Connection error. Please try again.');
+      setReservationsError(
+        formatConstructionReservationsLoadError(error, 'Connection error. Please try again.'),
+      );
     } finally {
       setReservationsLoading(false);
     }
