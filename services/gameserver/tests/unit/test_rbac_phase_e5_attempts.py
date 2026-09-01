@@ -63,6 +63,8 @@ class TestE5WrappedRouteSet:
                 "PATCH /admin/players/{player_id}",
                 "POST /admin/players/create-from-user",
                 "POST /admin/players/create-bulk",
+                "POST /admin/players/{player_id}/galactic-citizen/grant",
+                "POST /admin/players/{player_id}/galactic-citizen/revoke",
                 "POST /admin/ships",
                 "PUT /admin/ships/{ship_id}",
                 "DELETE /admin/ships/{ship_id}",
@@ -95,6 +97,8 @@ class TestE5WrappedRouteSet:
                 "POST /admin/warp-tunnel/create-enhanced",
                 "POST /admin/factions/",
                 "PUT /admin/factions/{faction_id}",
+                "POST /admin/players/{player_id}/galactic-citizen/grant",
+                "POST /admin/players/{player_id}/galactic-citizen/revoke",
             }
         )
         assert SCOPES_REVOKE in HIGH_IMPACT_SCOPES
