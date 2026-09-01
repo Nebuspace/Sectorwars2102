@@ -84,4 +84,17 @@ describe('ColonyOverview (LEG-212 shared api)', () => {
     expect(text).not.toMatch(/Failed to fetch/i);
     expect(text).not.toMatch(/TypeError/i);
   });
+
+  it('collapses axios Network Error on overview load to honest fallback (LEG-3516)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
+
+    render(<ColonyOverview />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/Failed to load colonies/i);
+    });
+    const text = screen.getByRole('alert').textContent ?? '';
+    expect(text).not.toBe('Network Error');
+    expect(text).not.toMatch(/Network Error/i);
+  });
 });

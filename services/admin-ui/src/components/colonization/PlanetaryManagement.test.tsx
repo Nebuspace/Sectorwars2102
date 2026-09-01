@@ -145,6 +145,21 @@ describe('PlanetaryManagement (LEG-151)', () => {
     expect(alert).not.toBe('Failed to fetch');
     expect(alert).not.toMatch(/Failed to load planetary data/i);
   });
+
+  it('collapses axios Network Error on initial planets load to honest fallback (LEG-3514)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
+
+    render(<PlanetaryManagement />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Gameserver unreachable|network error fetching planetary/i);
+    expect(alert).not.toBe('Network Error');
+    expect(alert).not.toContain('Network Error');
+  });
 });
 
 describe('PlanetaryManagement force tick errors (LEG-2769)', () => {
@@ -214,5 +229,21 @@ describe('PlanetaryManagement force tick errors (LEG-2769)', () => {
     expect(alert).toMatch(/Gameserver unreachable|network error advancing production/i);
     expect(alert).not.toMatch(/TypeError/i);
     expect(alert).not.toBe('Failed to fetch');
+  });
+
+  it('collapses axios Network Error on force-tick POST to honest fallback (LEG-3514)', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.post).mockRejectedValue(new Error('Network Error'));
+
+    await openPlanetAndForceTick(user);
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith('/api/v1/admin/planets/pl-1/tick');
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Gameserver unreachable|network error advancing production/i);
+    expect(alert).not.toBe('Network Error');
+    expect(alert).not.toContain('Network Error');
   });
 });

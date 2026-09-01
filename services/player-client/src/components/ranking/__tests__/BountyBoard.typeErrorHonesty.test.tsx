@@ -16,4 +16,10 @@ describe('BountyBoard TypeError densify (LEG-3086)', () => {
   it('preserves non-generic Error.message detail when not TypeError', () => {
     expect(formatBountyBoardLoadError(new Error('board_denied'))).toBe('board_denied');
   });
+
+  it('formatBountyBoardLoadError falls back on axios Network Error / Failed to fetch (LEG-3519)', () => {
+    expect(formatBountyBoardLoadError(new Error('Network Error'))).toMatch(/Failed to load bounty board/i);
+    expect(formatBountyBoardLoadError(new Error('Failed to fetch'))).toMatch(/Failed to load bounty board/i);
+    expect(formatBountyBoardLoadError(new Error('Network Error'))).not.toBe('Network Error');
+  });
 });
