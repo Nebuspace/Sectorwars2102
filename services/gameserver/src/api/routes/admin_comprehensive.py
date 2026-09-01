@@ -1695,9 +1695,9 @@ async def create_analytics_snapshot(
             "timestamp": snapshot.snapshot_time.isoformat()
         }
         
-    except Exception as e:
-        logger.error(f"Error creating analytics snapshot: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to create snapshot: {str(e)}")
+    except Exception:
+        logger.exception("Error in create_analytics_snapshot")
+        raise HTTPException(status_code=500, detail="Failed to create analytics snapshot")
 
 
 @router.post("/ports/update-stock-levels", response_model=Dict[str, Any])
@@ -1758,10 +1758,10 @@ async def update_all_port_stock_levels(
             "has_more": len(updated_ports) > 20
         }
         
-    except Exception as e:
+    except Exception:
         db.rollback()
-        logger.error(f"Error updating port stock levels: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to update port stock levels: {str(e)}")
+        logger.exception("Error in update_all_port_stock_levels")
+        raise HTTPException(status_code=500, detail="Failed to update port stock levels")
 
 
 # =============================================================================
@@ -3061,9 +3061,9 @@ async def get_ai_models(
         logger.info(f"Admin {current_admin.username} requested AI models data")
         return models
         
-    except Exception as e:
-        logger.error(f"Error getting AI models: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get AI models: {str(e)}")
+    except Exception:
+        logger.exception("Error in get_ai_models")
+        raise HTTPException(status_code=500, detail="Failed to get AI models")
 
 @router.get("/ai/predictions/accuracy", response_model=List[Dict[str, Any]])
 async def get_ai_prediction_accuracy(
@@ -3080,9 +3080,9 @@ async def get_ai_prediction_accuracy(
         logger.info(f"Admin {current_admin.username} requested AI prediction accuracy data")
         return commodities
         
-    except Exception as e:
-        logger.error(f"Error getting AI prediction accuracy: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get AI prediction accuracy: {str(e)}")
+    except Exception:
+        logger.exception("Error in get_ai_prediction_accuracy")
+        raise HTTPException(status_code=500, detail="Failed to get AI prediction accuracy")
 
 @router.get("/ai/profiles", response_model=List[Dict[str, Any]])
 async def get_ai_player_profiles(
@@ -3108,9 +3108,9 @@ async def get_ai_player_profiles(
         logger.info(f"Admin {current_admin.username} requested AI player profiles")
         return profiles
         
-    except Exception as e:
-        logger.error(f"Error getting AI player profiles: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get AI player profiles: {str(e)}")
+    except Exception:
+        logger.exception("Error in get_ai_player_profiles")
+        raise HTTPException(status_code=500, detail="Failed to get AI player profiles")
 
 @router.get("/ai/metrics", response_model=Dict[str, Any])
 async def get_ai_system_metrics(
@@ -3147,9 +3147,9 @@ async def get_ai_system_metrics(
         logger.info(f"Admin {current_admin.username} requested AI system metrics")
         return metrics
         
-    except Exception as e:
-        logger.error(f"Error getting AI system metrics: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get AI system metrics: {str(e)}")
+    except Exception:
+        logger.exception("Error in get_ai_system_metrics")
+        raise HTTPException(status_code=500, detail="Failed to get AI system metrics")
 
 @router.get("/ai/predictions", response_model=List[Dict[str, Any]])
 async def get_ai_predictions(
@@ -3272,9 +3272,9 @@ async def get_ai_route_optimization_data(
         logger.info(f"Admin {current_admin.username} requested AI route optimization data")
         return data
 
-    except Exception as e:
-        logger.error(f"Error getting AI route optimization data: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get AI route optimization data: {str(e)}")
+    except Exception:
+        logger.exception("Error in get_ai_route_optimization_data")
+        raise HTTPException(status_code=500, detail="Failed to get AI route optimization data")
 
 @router.get("/ai/behavior-analytics", response_model=Dict[str, Any])
 async def get_ai_behavior_analytics(
@@ -3298,9 +3298,9 @@ async def get_ai_behavior_analytics(
         logger.info(f"Admin {current_admin.username} requested AI behavior analytics")
         return data
 
-    except Exception as e:
-        logger.error(f"Error getting AI behavior analytics: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get AI behavior analytics: {str(e)}")
+    except Exception:
+        logger.exception("Error in get_ai_behavior_analytics")
+        raise HTTPException(status_code=500, detail="Failed to get AI behavior analytics")
 
 
 class FactionBountyRequest(BaseModel):

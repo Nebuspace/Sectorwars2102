@@ -4,12 +4,21 @@ from __future__ import annotations
 
 import inspect
 import uuid
+from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
+
+from src.api.routes import admin_subscriptions as routes_mod
+from src.api.routes.admin_subscriptions import (
+    GcMutationRequest,
+    grant_galactic_citizen,
+    revoke_galactic_citizen,
+)
 
 from src.auth.dependencies import get_current_user
 from src.core.database import get_db
@@ -238,3 +247,66 @@ class TestE5WrappedRoutesIncludeGC:
 
         assert "POST /admin/players/{player_id}/galactic-citizen/grant" in E5_WRAPPED_ROUTES
         assert "POST /admin/players/{player_id}/galactic-citizen/revoke" in E5_WRAPPED_ROUTES
+
+
+class TestGcMutationOpaque500:
+    """LEG-3619 — grant/revoke HTTP 500 catches must not echo Exception text."""
+
+    @pytest.mark.asyncio
+    async def test_grant_unexpected_is_opaque_500(self):
+        secret = "secret-gc-grant-should-not-leak"
+        player = _make_player(is_gc=False)
+        body = GcMutationRequest(reason="comp for outage")
+        db = MagicMock()
+        db.query.return_value.filter.return_value.first.return_value = player
+
+        with patch.object(
+            routes_mod, "manual_grant_galactic_citizen", side_effect=RuntimeError(secret)
+        ):
+            with pytest.raises(HTTPException) as excinfo:
+                await grant_galactic_citizen(
+                    player_id=str(player.id),
+                    body=body,
+                    actor=SimpleNamespace(id=uuid.uuid4()),
+                    db=db,
+                )
+
+        exc = excinfo.value
+        assert exc.status_code == 500
+        assert exc.detail == "Failed to grant galactic citizenship"
+        assert secret not in str(exc.detail)
+
+    @pytest.mark.asyncio
+    async def test_revoke_unexpected_is_opaque_500(self):
+        secret = "secret-gc-revoke-should-not-leak"
+        player = _make_player(is_gc=True)
+        body = GcMutationRequest(reason="chargeback")
+        db = MagicMock()
+        db.query.return_value.filter.return_value.first.return_value = player
+
+        with patch.object(
+            routes_mod, "manual_revoke_galactic_citizen", side_effect=RuntimeError(secret)
+        ):
+            with pytest.raises(HTTPException) as excinfo:
+                await revoke_galactic_citizen(
+                    player_id=str(player.id),
+                    body=body,
+                    actor=SimpleNamespace(id=uuid.uuid4()),
+                    db=db,
+                )
+
+        exc = excinfo.value
+        assert exc.status_code == 500
+        assert exc.detail == "Failed to revoke galactic citizenship"
+        assert secret not in str(exc.detail)
+
+    def test_admin_subscriptions_http500_catches_have_no_detail_str_e(self):
+        """LEG-3619 — static pin: both HTTP 500 catch paths stay opaque."""
+        src = Path(routes_mod.__file__).read_text(encoding="utf-8")
+        for stable in (
+            'detail="Failed to grant galactic citizenship"',
+            'detail="Failed to revoke galactic citizenship"',
+        ):
+            assert stable in src
+        assert "Failed to grant galactic citizenship: {str(e)}" not in src
+        assert "Failed to revoke galactic citizenship: {str(e)}" not in src

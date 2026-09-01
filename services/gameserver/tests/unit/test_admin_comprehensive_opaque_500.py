@@ -1,8 +1,9 @@
-"""LEG-3582 / LEG-3626 — admin_comprehensive HTTP 500 catches must not echo Exception text.
+"""LEG-3582 / LEG-3626 / LEG-3638 — admin_comprehensive HTTP 500 catches must not echo Exception text.
 
 Mirrors LEG-3570 admin_colonization / LEG-3569 claim_ship / LEG-3605 admin_economy opaque densify.
 Representative cluster: players/sectors/ports/planets/analytics/health/warp/teams.
 Security cluster (LEG-3626): risk/status/logs/action routes.
+Economy cluster (LEG-3638): analytics snapshot, port stock levels, AI trading admin routes.
 """
 
 from __future__ import annotations
@@ -17,25 +18,26 @@ from fastapi import HTTPException
 from src.api.routes import admin_comprehensive as ac
 from src.api.routes.admin_comprehensive import (
     PlayerSecurityAction,
+    create_analytics_snapshot,
+    get_ai_models,
+    get_ai_player_profiles,
     get_player_risk_assessment,
     get_player_security_status,
     get_players_comprehensive,
     list_player_security_logs,
     take_security_action,
+    update_all_port_stock_levels,
 )
 
 _PLAYER_ID = "00000000-0000-0000-0000-000000000001"
 
 
-def _run(coro):
-    import asyncio
-
-    return asyncio.run(coro)
-
-
 class _BoomDB:
     def query(self, *args, **kwargs):
         raise RuntimeError("secret-admin-comp-query-should-not-leak")
+
+    def rollback(self):
+        pass
 
 
 @pytest.mark.asyncio
@@ -178,3 +180,98 @@ def test_admin_comprehensive_security_cluster_http500_opaque():
     assert "Failed to list player security logs: {str(e)}" not in src
     assert "Failed to clean up security data: {str(e)}" not in src
     assert "Failed to take security action: {str(e)}" not in src
+
+
+@pytest.mark.asyncio
+async def test_create_analytics_snapshot_unexpected_is_opaque_500():
+    """LEG-3638 — analytics snapshot catch must not echo raw Exception text."""
+    secret = "secret-analytics-snapshot-should-not-leak"
+    db = MagicMock()
+
+    with patch.object(ac, "log_admin_action"):
+        with patch.object(ac, "AnalyticsService") as svc_cls:
+            svc_cls.return_value.create_analytics_snapshot.side_effect = RuntimeError(secret)
+            with pytest.raises(HTTPException) as excinfo:
+                await create_analytics_snapshot(
+                    snapshot_type="manual",
+                    current_admin=SimpleNamespace(username="admin"),
+                    db=db,
+                )
+
+    exc = excinfo.value
+    assert exc.status_code == 500
+    assert exc.detail == "Failed to create analytics snapshot"
+    assert secret not in str(exc.detail)
+
+
+@pytest.mark.asyncio
+async def test_update_all_port_stock_levels_unexpected_is_opaque_500():
+    """LEG-3638 — port stock-level update catch must not echo raw Exception text."""
+    with pytest.raises(HTTPException) as excinfo:
+        await update_all_port_stock_levels(
+            current_admin=SimpleNamespace(username="admin"),
+            db=_BoomDB(),
+        )
+
+    exc = excinfo.value
+    assert exc.status_code == 500
+    assert exc.detail == "Failed to update port stock levels"
+    assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
+
+
+@pytest.mark.asyncio
+async def test_get_ai_models_unexpected_is_opaque_500():
+    """LEG-3638 — AI models catch must not echo raw Exception text."""
+    secret = "secret-ai-models-should-not-leak"
+
+    with patch.object(ac.logger, "info", side_effect=RuntimeError(secret)):
+        with pytest.raises(HTTPException) as excinfo:
+            await get_ai_models(
+                current_admin=SimpleNamespace(username="admin"),
+                db=MagicMock(),
+            )
+
+    exc = excinfo.value
+    assert exc.status_code == 500
+    assert exc.detail == "Failed to get AI models"
+    assert secret not in str(exc.detail)
+
+
+@pytest.mark.asyncio
+async def test_get_ai_player_profiles_unexpected_is_opaque_500():
+    """LEG-3638 — AI player profiles catch must not echo raw Exception text."""
+    with pytest.raises(HTTPException) as excinfo:
+        await get_ai_player_profiles(
+            current_admin=SimpleNamespace(username="admin"),
+            db=_BoomDB(),
+        )
+
+    exc = excinfo.value
+    assert exc.status_code == 500
+    assert exc.detail == "Failed to get AI player profiles"
+    assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
+
+
+def test_admin_comprehensive_economy_cluster_http500_opaque():
+    """LEG-3638 — static pin: economy cluster 500 details stay opaque."""
+    src = Path(ac.__file__).read_text(encoding="utf-8")
+    for stable in (
+        'detail="Failed to create analytics snapshot"',
+        'detail="Failed to update port stock levels"',
+        'detail="Failed to get AI models"',
+        'detail="Failed to get AI prediction accuracy"',
+        'detail="Failed to get AI player profiles"',
+        'detail="Failed to get AI system metrics"',
+        'detail="Failed to get AI predictions"',
+        'detail="Failed to get AI route optimization data"',
+        'detail="Failed to get AI behavior analytics"',
+    ):
+        assert stable in src
+    assert "Failed to create analytics snapshot: {str(e)}" not in src
+    assert "Failed to update port stock levels: {str(e)}" not in src
+    assert "Failed to get AI models: {str(e)}" not in src
+    assert "Failed to get AI prediction accuracy: {str(e)}" not in src
+    assert "Failed to get AI player profiles: {str(e)}" not in src
+    assert "Failed to get AI system metrics: {str(e)}" not in src
+    assert "Failed to get AI route optimization data: {str(e)}" not in src
+    assert "Failed to get AI behavior analytics: {str(e)}" not in src
