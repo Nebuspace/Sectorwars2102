@@ -55,6 +55,10 @@ async def get_tradedock_overview(
     except ConstructionError as e:
         db.rollback()
         raise HTTPException(status_code=e.status_code, detail=e.detail) from e
+    except Exception:
+        db.rollback()
+        logger.exception("Error in get_tradedock_overview")
+        raise HTTPException(status_code=500, detail="Failed to get tradedock overview")
 
 
 @router.get("/reservations/{reservation_id}")
@@ -71,6 +75,10 @@ async def get_reservation_admin(
     except ConstructionError as e:
         db.rollback()
         raise HTTPException(status_code=e.status_code, detail=e.detail) from e
+    except Exception:
+        db.rollback()
+        logger.exception("Error in get_reservation_admin")
+        raise HTTPException(status_code=500, detail="Failed to get reservation detail")
 
 
 @router.post("/reservations/{reservation_id}/force-cancel")
@@ -111,3 +119,7 @@ async def force_cancel_reservation(
     except ConstructionError as e:
         db.rollback()
         raise HTTPException(status_code=e.status_code, detail=e.detail) from e
+    except Exception:
+        db.rollback()
+        logger.exception("Error in force_cancel_reservation")
+        raise HTTPException(status_code=500, detail="Failed to force-cancel reservation")
