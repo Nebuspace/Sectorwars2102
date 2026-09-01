@@ -1,8 +1,9 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { gameAPI } from '../../services/api';
-import type { Planet } from '../../types/planetary';
-import { BuildingManager } from '../planetary/BuildingManager';
+import type { Planet, BuildingType } from '../../types/planetary';
+import { useGame } from '../../contexts/GameContext';
+import { BuildingManager, formatBuildingUpgradeError } from '../planetary/BuildingManager';
 import { DefenseConfiguration } from '../planetary/DefenseConfiguration';
 import SpecializationDrawer from '../planetary/SpecializationDrawer';
 import { SiegeStatusMonitor } from '../planetary/SiegeStatusMonitor';
@@ -15,6 +16,16 @@ import type { RoleAllocation, ProdRole, PerColonistRates } from './CoupledColoni
 import DeckPageTabs from './DeckPageTabs';
 import '../planetary/planet-manager.css'; // .modal-overlay / .modal-content
 import './cockpit-colony.css';
+
+/** Matches gameserver MAX_BUILDING_LEVEL — inline upgrade cap. */
+const MAX_BUILDING_LEVEL = 10;
+
+/** Commodity row → production-building type for POST …/buildings/upgrade. */
+const COMMODITY_BUILDING: Record<'fuel' | 'organics' | 'equipment', BuildingType> = {
+  fuel: 'mine',
+  organics: 'farm',
+  equipment: 'factory',
+};
 
 /** The tabs of the landed-colony management console. */
 type ColonyTab = 'citadel' | 'grid' | 'terraform' | 'research' | 'production' | 'defense' | 'safe';
@@ -119,6 +130,10 @@ const CockpitColonyManagement: React.FC<CockpitColonyManagementProps> = ({
   defenseTab,
   safeTab,
 }) => {
+  const { playerState, upgradePlanetBuilding } = useGame();
+  const [upgradingBuilding, setUpgradingBuilding] = useState<BuildingType | null>(null);
+  const [buildingUpgradeError, setBuildingUpgradeError] = useState<string | null>(null);
+
   // The rich owned-Planet object for the modals (the landed poll's detail shape
   // is not the same as the /planets/owned shape the modals were written for).
   const [ownedPlanet, setOwnedPlanet] = useState<Planet | null>(null);
@@ -165,6 +180,77 @@ const CockpitColonyManagement: React.FC<CockpitColonyManagementProps> = ({
     loadOwnedPlanet();
     onOpsChange();
   }, [loadOwnedPlanet, onOpsChange]);
+
+  const handleInlineBuildingUpgrade = useCallback(
+    async (buildingType: BuildingType, currentLevel: number) => {
+      if (currentLevel >= MAX_BUILDING_LEVEL) {
+        setBuildingUpgradeError('Building is already at maximum level');
+        return;
+      }
+      const building = ownedPlanet?.buildings?.find((b) => b.type === buildingType);
+      const cost = building?.nextUpgradeCost?.credits;
+      const playerCredits = playerState?.credits ?? 0;
+      if (cost != null && playerCredits < cost) {
+        setBuildingUpgradeError(
+          `Insufficient credits: need ${(cost - playerCredits).toLocaleString()} more`,
+        );
+        return;
+      }
+
+      try {
+        setUpgradingBuilding(buildingType);
+        setBuildingUpgradeError(null);
+        await upgradePlanetBuilding(planetId, buildingType, currentLevel + 1);
+        handlePanelUpdate();
+      } catch (err) {
+        setBuildingUpgradeError(formatBuildingUpgradeError(err));
+      } finally {
+        setUpgradingBuilding(null);
+      }
+    },
+    [ownedPlanet, planetId, playerState?.credits, upgradePlanetBuilding, handlePanelUpdate],
+  );
+
+  const productionLinesWithUpgrades = useMemo(() => {
+    if (!ownedPlanet) return productionLines;
+    return productionLines.map((line) => {
+      const buildingType = COMMODITY_BUILDING[line.key];
+      const building = ownedPlanet.buildings?.find((b) => b.type === buildingType);
+      const level = building?.level ?? 0;
+      const upgrading = !!building?.upgrading;
+      const busy = upgradingBuilding === buildingType;
+      const atCap = level >= MAX_BUILDING_LEVEL;
+      const cost = building?.nextUpgradeCost?.credits ?? null;
+      const playerCredits = playerState?.credits ?? 0;
+      let upgradeDisabledTitle: string | undefined;
+      if (atCap) {
+        upgradeDisabledTitle = `Maximum level (${MAX_BUILDING_LEVEL})`;
+      } else if (upgrading) {
+        upgradeDisabledTitle = 'Upgrade in progress';
+      } else if (cost != null && playerCredits < cost) {
+        upgradeDisabledTitle = `Need ${(cost - playerCredits).toLocaleString()} more credits`;
+      }
+
+      return {
+        ...line,
+        buildingLevel: level,
+        maxBuildingLevel: MAX_BUILDING_LEVEL,
+        nextUpgradeCredits: cost,
+        upgradeBusy: busy,
+        buildingUpgrading: upgrading,
+        upgradeDisabledTitle,
+        onUpgrade: () => {
+          void handleInlineBuildingUpgrade(buildingType, level);
+        },
+      };
+    });
+  }, [
+    productionLines,
+    ownedPlanet,
+    upgradingBuilding,
+    playerState?.credits,
+    handleInlineBuildingUpgrade,
+  ]);
 
   // ── Modal visibility ──
   // (Workforce allocation is now an in-tab control on the Production panel — the
@@ -274,7 +360,7 @@ const CockpitColonyManagement: React.FC<CockpitColonyManagementProps> = ({
         {tab === 'research' && <ResearchPanel />}
         {tab === 'production' && (
           <ProductionPanel
-            lines={productionLines}
+            lines={productionLinesWithUpgrades}
             overflowResources={overflowResources}
             onOpenSpecialization={() => setShowSpecialization(true)}
             allocations={allocations}
@@ -287,6 +373,7 @@ const CockpitColonyManagement: React.FC<CockpitColonyManagementProps> = ({
             allocError={allocError}
             onStoreToSafe={onStoreToSafe}
             onWithdrawToCargo={onWithdrawToCargo}
+            buildingUpgradeError={buildingUpgradeError}
           />
         )}
         {tab === 'defense' && (defenseTab ?? <div className="cp-empty">Defense telemetry unavailable</div>)}

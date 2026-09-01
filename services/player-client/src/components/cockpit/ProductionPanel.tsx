@@ -31,6 +31,20 @@ export interface ProductionLine {
   withdrawDisabledTitle?: string;
   /** Days until storage cap at current rate; null when uncapped / atCap / no rate. */
   daysUntilFull?: number | null;
+  /** Production-building level (mine/farm/factory) for inline upgrade affordance. */
+  buildingLevel?: number;
+  /** Server building level cap — upgrade hidden/disabled at cap. */
+  maxBuildingLevel?: number;
+  /** Server-authoritative credits for the next level (cost preview). */
+  nextUpgradeCredits?: number | null;
+  /** True while this row's upgrade call is in flight. */
+  upgradeBusy?: boolean;
+  /** True when the server reports an upgrade already in progress. */
+  buildingUpgrading?: boolean;
+  /** Tooltip when the upgrade control is disabled. */
+  upgradeDisabledTitle?: string;
+  /** Fired when the player clicks Upgrade on this row. */
+  onUpgrade?: () => void;
 }
 
 /** Existing GameDashboard helper — display only; do not invent a new formula. */
@@ -71,6 +85,8 @@ export interface ProductionPanelProps {
   onStoreToSafe: (key: 'fuel' | 'organics' | 'equipment', amount: number) => void;
   /** Load the given resource's stockpile into docked ship cargo (GS stockpile/withdraw). */
   onWithdrawToCargo: (key: 'fuel' | 'organics' | 'equipment', amount: number) => void;
+  /** Verbatim error from the last failed inline building upgrade (any row). */
+  buildingUpgradeError?: string | null;
 }
 
 const fmt = (n: number) => Math.floor(n).toLocaleString();
@@ -139,6 +155,7 @@ const ProductionPanel: React.FC<ProductionPanelProps> = ({
   allocError,
   onStoreToSafe,
   onWithdrawToCargo,
+  buildingUpgradeError,
 }) => (
   <CockpitPanel title="Production" accent="#7dd3fc" readout={<span className="cp-live-tag">┄ LIVE ┄</span>}>
     <CoupledColonistSliders
@@ -164,7 +181,23 @@ const ProductionPanel: React.FC<ProductionPanelProps> = ({
         <div className="cp-empty">Colony ledger unavailable</div>
       ) : (
         <div className="cp-production-lines">
-          {lines.map((l) => (
+          {lines.map((l) => {
+            const showUpgrade = l.buildingLevel !== undefined && l.maxBuildingLevel !== undefined;
+            const atBuildingCap = showUpgrade && l.buildingLevel! >= l.maxBuildingLevel!;
+            const upgradeDisabled =
+              !l.onUpgrade ||
+              l.upgradeBusy ||
+              l.buildingUpgrading ||
+              atBuildingCap;
+            const upgradeTitle = atBuildingCap
+              ? `Building at maximum level (${l.maxBuildingLevel})`
+              : l.buildingUpgrading
+                ? 'Upgrade already in progress'
+                : l.upgradeDisabledTitle
+                  ?? (l.nextUpgradeCredits != null
+                    ? `Upgrade to level ${l.buildingLevel! + 1} (${l.nextUpgradeCredits.toLocaleString()} credits)`
+                    : `Upgrade to level ${l.buildingLevel! + 1}`);
+            return (
             <div className="cp-prod-row" key={l.key}>
               <span className="cp-prod-icon">{l.icon}</span>
               <span className="cp-prod-name">{l.name}</span>
@@ -172,7 +205,24 @@ const ProductionPanel: React.FC<ProductionPanelProps> = ({
                 📦 <RollingStock value={l.stock} />
                 {l.capped ? `/${l.cap.toLocaleString()}` : ''}
                 <span className="cp-prod-rate"> +{Math.round(l.rate).toLocaleString()}/day</span>
+                {showUpgrade && (
+                  <span className="cp-prod-bldg-lvl" data-testid={`building-level-${l.key}`}>
+                    {' '}· Lv {l.buildingLevel}/{l.maxBuildingLevel}
+                  </span>
+                )}
               </span>
+              {showUpgrade && (
+                <button
+                  type="button"
+                  className="cp-store-btn cp-upgrade-btn"
+                  data-testid={`upgrade-${l.key}`}
+                  disabled={upgradeDisabled}
+                  title={upgradeTitle}
+                  onClick={() => l.onUpgrade?.()}
+                >
+                  {l.upgradeBusy ? '…' : '⬆ Upgrade'}
+                </button>
+              )}
               <button
                 type="button"
                 className="cp-store-btn"
@@ -217,7 +267,13 @@ const ProductionPanel: React.FC<ProductionPanelProps> = ({
                 </span>
               )}
             </div>
-          ))}
+            );
+          })}
+        </div>
+      )}
+      {buildingUpgradeError && (
+        <div className="cp-prod-upgrade-error" role="alert" data-testid="building-upgrade-error">
+          {buildingUpgradeError}
         </div>
       )}
       {overflowResources.length > 0 && (
