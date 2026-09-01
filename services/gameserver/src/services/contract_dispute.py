@@ -7,8 +7,9 @@ the admin route is impl-admin-ui's lane) -- see this module's own
 NO-CANON pins below (no delivery-event log exists for cargo-manifest
 verification; the expiry sweep already releases escrow before any dispute
 can be filed, reconciled as a fresh credit movement rather than
-re-touching the emptied escrow ledger; reputation/cooldowns are unbuilt
-anywhere in this codebase).
+re-touching the emptied escrow ledger; Tier-2 ``resolve_dispute`` reputation effects ship via
+``contract_reputation_service`` (LEG-2071); cooldown/ban persistence
+remains unbuilt).
 
 Imports primitives from `contract_escrow_core.py` and the insurance
 mid-term-cancellation refund helper from `contract_insurance.py` (never
@@ -18,21 +19,13 @@ dependency layering). `contract_service.py` (lifecycle) re-exports
 `contract_service.file_dispute` / `.resolve_dispute` -- see its own
 docstring for the full re-export list.
 
-Reputation columns everywhere in this module (reward/penalty/forgive/
-reverse language in canon's own tables) are DELIBERATELY NOT applied
-anywhere below. contracts.md's own Reputation Effects section (verified
-again for this WO): "reputation_reward and reputation_penalty are
-written on the contract row at posting time but are never READ by
-complete() or abandon() -- design-only." Grepped this module for any
-existing reputation code: zero hits. There is nothing anywhere in this
-codebase for a dispute resolution to pause, apply, forgive, or reverse
--- building a reputation side effect here would be inventing the FIRST
-consumer of a system nothing else wires either. `_is_reputation_
-penalty_paused` below is the one exception: a real, correct, testable
-GATE a future reputation-application pass would consult, built now so
-it exists and is provably wired, exactly like `_is_player_blocklisted`'s
-established no-op-seam precedent (contract_service.py) -- not a false
-claim that reputation is applied end-to-end today.
+Tier-2 ``resolve_dispute`` applies contracts.md's Reputation column via
+``contract_reputation_service.apply_dispute_outcome_reputation`` (LEG-
+2071) using frozen row magnitudes only. Tier-1 automated paths still
+do not apply reputation. ``_is_reputation_penalty_paused`` below is the
+real gate consulted by the kernel for PENALTY (paused while DISPUTED;
+lifts after ``resolve_dispute``'s guarded transition so doubled penalty
+applies on ruling).
 
 Cooldowns ("24h cooldown on that issuer", "72h cooldown; account flag
 on repeat") are the SAME situation -- contracts.md's own Reputation
@@ -626,9 +619,9 @@ def resolve_dispute(
     regardless of whether the acceptor draws anything; this is also what
     fixes a pre-existing gap this function had even before WO-2b -- no
     outcome below ever used to SET `escrow_state` at all, leaving it
-    stuck at DISPUTED forever after resolution. Reputation/cooldown
-    columns in canon's own table are NOT applied (see this module's own
-    header comment) -- only the Settlement column is built. Insurance
+    stuck at DISPUTED forever after resolution. Reputation column effects
+    are applied via ``apply_dispute_outcome_reputation`` after settlement
+    (cooldown/ban persistence remains out of scope). Insurance
     premium: see `_apply_dispute_insurance_refund`'s own docstring --
     applied for every CANCELLED outcome, always evaluates to 0 today,
     wired in anyway.
@@ -721,6 +714,17 @@ def resolve_dispute(
     insurance_refund = 0
     if target_status == ContractStatus.CANCELLED:
         insurance_refund = _apply_dispute_insurance_refund(contract, acceptor, now)
+
+    # Lazy import breaks contract_dispute <-> contract_reputation_service cycle.
+    from src.services.contract_reputation_service import apply_dispute_outcome_reputation
+
+    apply_dispute_outcome_reputation(
+        db,
+        contract,
+        outcome,
+        player_id=contract.acceptor_player_id,
+        now=now,
+    )
 
     db.flush()
 
