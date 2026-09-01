@@ -66,6 +66,7 @@ class TestInitiateRaid:
         with pytest.raises(PirateHoldingRaidError) as exc:
             phrs.initiate_raid(db, uuid.uuid4(), _player())
         assert exc.value.status_code == 404
+        assert exc.value.detail == "Pirate holding not found"
 
     def test_already_captured_400(self):
         holding = _holding(owner_player_id=uuid.uuid4())
@@ -73,6 +74,7 @@ class TestInitiateRaid:
         with pytest.raises(PirateHoldingRaidError) as exc:
             phrs.initiate_raid(db, holding.id, _player())
         assert exc.value.status_code == 400
+        assert exc.value.detail == "Holding is already captured"
 
     def test_wrong_sector_403(self):
         holding = _holding(sector_id=99)
@@ -80,6 +82,9 @@ class TestInitiateRaid:
         with pytest.raises(PirateHoldingRaidError) as exc:
             phrs.initiate_raid(db, holding.id, _player(sector_id=42))
         assert exc.value.status_code == 403
+        assert exc.value.detail == (
+            "Player must be in the holding anchor sector to initiate a raid"
+        )
 
     def test_camp_skips_lock(self):
         holding = _holding(tier=PirateHoldingTier.CAMP)
@@ -119,3 +124,24 @@ class TestInitiateRaid:
         with pytest.raises(PirateHoldingRaidError) as exc:
             phrs.initiate_raid(db, holding.id, _player(sector_id=holding.sector_id))
         assert exc.value.status_code == 409
+        assert exc.value.detail == "Holding is locked by another attacker"
+
+    def test_late_join_teammate_not_in_snapshot_409(self):
+        holder_id = uuid.uuid4()
+        teammate_id = uuid.uuid4()
+        late_join_id = uuid.uuid4()
+        holding = _holding(
+            tier=PirateHoldingTier.OUTPOST,
+            combat_lock_held_by=holder_id,
+            combat_lock_team_snapshot=[holder_id, teammate_id],
+        )
+        db = _FakeSession(holding)
+        late_join = _player(
+            sector_id=holding.sector_id,
+            player_id=late_join_id,
+            team=_team([holder_id, teammate_id, late_join_id]),
+        )
+        with pytest.raises(PirateHoldingRaidError) as exc:
+            phrs.initiate_raid(db, holding.id, late_join)
+        assert exc.value.status_code == 409
+        assert exc.value.detail == "Holding is locked by another attacker"
