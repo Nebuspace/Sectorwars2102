@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const { getPlanetProfessions, trainPlanetProfession, OWNER_STATE } = vi.hoisted(() => {
+const { getPlanetProfessions, trainPlanetProfession, assignPlanetProfession, OWNER_STATE } = vi.hoisted(() => {
   const state = {
     planet_id: 'planet-1',
     generic_colonists: 5000,
@@ -17,6 +17,20 @@ const { getPlanetProfessions, trainPlanetProfession, OWNER_STATE } = vi.hoisted(
       SPACE_ENGINEERS: 0,
       STRUCTURAL_ENGINEERS: 0,
       MINING_ENGINEERS: 120,
+      RESEARCH_SCIENTISTS: 0,
+      AGRICULTURAL_SCIENTISTS: 0,
+      MEDICAL_PROFESSIONALS: 0,
+      TERRAFORM_ENGINEERS: 0,
+      COMBAT_PILOTS: 0,
+      DEFENSE_COORDINATORS: 0,
+      STRATEGIC_ANALYSTS: 0,
+      TRADE_SPECIALISTS: 0,
+      INDUSTRIAL_MANAGERS: 0,
+    },
+    active_professions: {
+      SPACE_ENGINEERS: 0,
+      STRUCTURAL_ENGINEERS: 0,
+      MINING_ENGINEERS: 80,
       RESEARCH_SCIENTISTS: 0,
       AGRICULTURAL_SCIENTISTS: 0,
       MEDICAL_PROFESSIONALS: 0,
@@ -51,6 +65,10 @@ const { getPlanetProfessions, trainPlanetProfession, OWNER_STATE } = vi.hoisted(
       success: true,
       message: 'Training queued.',
     })),
+    assignPlanetProfession: vi.fn(async () => ({
+      success: true,
+      message: 'Active profession assignment updated.',
+    })),
   };
 });
 
@@ -58,16 +76,19 @@ vi.mock('../../../services/api', () => ({
   planetaryAPI: {
     getPlanetProfessions,
     trainPlanetProfession,
+    assignPlanetProfession,
   },
 }));
 
 import ProfessionsPanel, {
+  formatProfessionsAssignError,
   formatProfessionsLoadError,
   formatProfessionsTrainError,
 } from '../ProfessionsPanel';
 
 const LOAD_FALLBACK = 'Failed to load professions';
 const TRAIN_FALLBACK = 'Training failed';
+const ASSIGN_FALLBACK = 'Active assignment failed';
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe('ProfessionsPanel load TypeError densify (LEG-3671)', () => {
@@ -115,8 +136,13 @@ describe('ProfessionsPanel transport collapse densify (LEG-3671)', () => {
   beforeEach(() => {
     getPlanetProfessions.mockReset();
     trainPlanetProfession.mockReset();
+    assignPlanetProfession.mockReset();
     getPlanetProfessions.mockResolvedValue(OWNER_STATE);
     trainPlanetProfession.mockResolvedValue({ success: true, message: 'Training queued.' });
+    assignPlanetProfession.mockResolvedValue({
+      success: true,
+      message: 'Active profession assignment updated.',
+    });
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -165,5 +191,50 @@ describe('ProfessionsPanel transport collapse densify (LEG-3671)', () => {
 
     expect(container.textContent).toContain(TRAIN_FALLBACK);
     expect(container.textContent).not.toMatch(/Network Error/i);
+  });
+
+  it('assign Network Error surfaces honest fallback without raw transport text', async () => {
+    assignPlanetProfession.mockRejectedValue(new Error('Network Error'));
+
+    await act(async () => {
+      root.render(<ProfessionsPanel planetId="planet-1" citadelLevel={3} />);
+    });
+    await act(async () => {
+      await flush();
+    });
+
+    const assignBtn = Array.from(container.querySelectorAll('button')).find((btn) =>
+      btn.textContent?.includes('Set active'),
+    );
+    expect(assignBtn).toBeTruthy();
+
+    await act(async () => {
+      assignBtn!.click();
+      await flush();
+    });
+
+    expect(container.textContent).toContain(ASSIGN_FALLBACK);
+    expect(container.textContent).not.toMatch(/Network Error/i);
+  });
+});
+
+describe('ProfessionsPanel assign TypeError densify (LEG-3719)', () => {
+  it('formatProfessionsAssignError falls back on TypeError network collapse', () => {
+    const text = formatProfessionsAssignError(new TypeError('Failed to fetch'));
+    expect(text).toBe(ASSIGN_FALLBACK);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('falls back on axios Network Error / Failed to fetch', () => {
+    expect(formatProfessionsAssignError(new Error('Network Error'))).toBe(ASSIGN_FALLBACK);
+    expect(formatProfessionsAssignError(new Error('Failed to fetch'))).toBe(ASSIGN_FALLBACK);
+    expect(formatProfessionsAssignError(new Error('Network Error'))).not.toMatch(/Network Error/i);
+  });
+
+  it('preserves non-generic Error.message detail when not TypeError', () => {
+    expect(formatProfessionsAssignError(new Error('active_count_exceeds_trained'))).toBe(
+      'active_count_exceeds_trained',
+    );
   });
 });

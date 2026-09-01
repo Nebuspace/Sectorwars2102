@@ -52,6 +52,7 @@ interface PlanetProfessionsState {
   cost_blocked: boolean;
   cost_block_reason?: string;
   professions: Record<string, number>;
+  active_professions?: Record<string, number>;
   training_queue: TrainingQueueRow[];
   training_durations_days?: Record<string, number>;
   /** Per-profession training gates from gameserver (LEG-2697 / LEG-2698). */
@@ -153,6 +154,20 @@ export function formatProfessionsTrainError(err: unknown): string {
   return 'Training failed';
 }
 
+/** Surface gameserver detail when active profession assignment fails. */
+export function formatProfessionsAssignError(err: unknown): string {
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    !(err instanceof TypeError) &&
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNetworkCollapseMessage(message);
+
+  if (hasServerDetail) return message!;
+  return 'Active assignment failed';
+}
+
 const ProfessionsPanel: React.FC<ProfessionsPanelProps> = ({
   planetId,
   citadelLevel,
@@ -166,6 +181,9 @@ const ProfessionsPanel: React.FC<ProfessionsPanelProps> = ({
   const [actionLoading, setActionLoading] = useState(false);
   const [selectedProfession, setSelectedProfession] = useState<string>(PROFESSION_ORDER[0]);
   const [traineeCount, setTraineeCount] = useState(100);
+  const [assignProfession, setAssignProfession] = useState<string>(PROFESSION_ORDER[0]);
+  const [activeCount, setActiveCount] = useState(0);
+  const [assignLoading, setAssignLoading] = useState(false);
 
   const citadelGateOpen =
     typeof citadelLevel === 'number' && citadelLevel >= MIN_CITADEL_FOR_TRAINING;
@@ -221,6 +239,70 @@ const ProfessionsPanel: React.FC<ProfessionsPanelProps> = ({
         : [],
     [citadelGateOpen, eligibility],
   );
+
+  const trainedProfessions = useMemo(
+    () => PROFESSION_ORDER.filter((key) => (state?.professions?.[key] ?? 0) > 0),
+    [state?.professions],
+  );
+
+  useEffect(() => {
+    if (trainedProfessions.length === 0) {
+      return;
+    }
+    if (!trainedProfessions.includes(assignProfession as (typeof PROFESSION_ORDER)[number])) {
+      setAssignProfession(trainedProfessions[0]);
+    }
+  }, [trainedProfessions, assignProfession]);
+
+  useEffect(() => {
+    if (!state?.active_professions) {
+      return;
+    }
+    const trained = state.professions?.[assignProfession] ?? 0;
+    const active = state.active_professions[assignProfession];
+    const next =
+      typeof active === 'number' ? active : trained > 0 ? trained : 0;
+    setActiveCount(next);
+  }, [state?.active_professions, state?.professions, assignProfession]);
+
+  const handleAssign = async () => {
+    const trained = state?.professions?.[assignProfession] ?? 0;
+    if (trained <= 0) {
+      setActionMessage('No trained specialists for this profession yet.');
+      return;
+    }
+    if (activeCount < 0 || activeCount > trained) {
+      setActionMessage(`Active count must be between 0 and ${trained.toLocaleString()}.`);
+      return;
+    }
+    setAssignLoading(true);
+    setActionMessage(null);
+    try {
+      const result = await planetaryAPI.assignPlanetProfession(
+        planetId,
+        assignProfession,
+        activeCount,
+      );
+      const msg =
+        typeof result?.message === 'string'
+          ? result.message
+          : 'Active profession assignment updated.';
+      setActionMessage(msg);
+      await fetchState();
+      onUpdate?.();
+    } catch (err) {
+      const rawMessage = err instanceof Error ? err.message : '';
+      if (rawMessage.includes('active_count_exceeds_trained')) {
+        setActionMessage('Active count cannot exceed trained specialists.');
+      } else if (isNotOwnerError(rawMessage)) {
+        setHidden(true);
+      } else {
+        setActionMessage(formatProfessionsAssignError(err));
+      }
+    } finally {
+      setAssignLoading(false);
+    }
+  };
 
   const handleTrain = async () => {
     if (!citadelGateOpen) {
@@ -320,12 +402,21 @@ const ProfessionsPanel: React.FC<ProfessionsPanelProps> = ({
       ))}
 
       <div className="professions-panel__grid">
-        {PROFESSION_ORDER.map((key) => (
-          <div key={key} className="professions-panel__row">
-            <span>{formatProfessionLabel(key)}</span>
-            <span>{(state.professions?.[key] ?? 0).toLocaleString()}</span>
-          </div>
-        ))}
+        {PROFESSION_ORDER.map((key) => {
+          const trained = state.professions?.[key] ?? 0;
+          const active =
+            state.active_professions?.[key] ??
+            (trained > 0 ? trained : 0);
+          return (
+            <div key={key} className="professions-panel__row">
+              <span>{formatProfessionLabel(key)}</span>
+              <span data-testid={`professions-count-${key}`}>
+                {trained.toLocaleString()}
+                {trained > 0 ? ` / ${active.toLocaleString()} active` : ''}
+              </span>
+            </div>
+          );
+        })}
       </div>
 
       {queue.length > 0 && (
@@ -341,13 +432,57 @@ const ProfessionsPanel: React.FC<ProfessionsPanelProps> = ({
         </div>
       )}
 
+      {trainedProfessions.length > 0 && (
+        <div
+          className="professions-panel__assign"
+          data-testid="professions-active-assign"
+        >
+          <strong>Active assignment</strong>
+          <label>
+            Profession
+            <select
+              value={assignProfession}
+              onChange={(e) => setAssignProfession(e.target.value)}
+              disabled={assignLoading || actionLoading}
+            >
+              {trainedProfessions.map((key) => (
+                <option key={key} value={key}>
+                  {formatProfessionLabel(key)} (
+                  {(state.professions?.[key] ?? 0).toLocaleString()} trained)
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Active headcount
+            <input
+              type="number"
+              min={0}
+              max={state.professions?.[assignProfession] ?? 0}
+              value={activeCount}
+              onChange={(e) =>
+                setActiveCount(Math.max(0, Number(e.target.value) || 0))
+              }
+              disabled={assignLoading || actionLoading}
+            />
+          </label>
+          <button
+            type="button"
+            onClick={handleAssign}
+            disabled={assignLoading || actionLoading}
+          >
+            {assignLoading ? 'Saving…' : 'Set active'}
+          </button>
+        </div>
+      )}
+
       <div className="professions-panel__train">
         <label>
           Profession
           <select
             value={selectedProfession}
             onChange={(e) => setSelectedProfession(e.target.value)}
-            disabled={!citadelGateOpen || actionLoading}
+            disabled={!citadelGateOpen || actionLoading || assignLoading}
           >
             {eligibleProfessions.map((key) => (
               <option key={key} value={key}>
@@ -364,13 +499,13 @@ const ProfessionsPanel: React.FC<ProfessionsPanelProps> = ({
             min={1}
             value={traineeCount}
             onChange={(e) => setTraineeCount(Math.max(1, Number(e.target.value) || 1))}
-            disabled={!citadelGateOpen || actionLoading}
+            disabled={!citadelGateOpen || actionLoading || assignLoading}
           />
         </label>
         <button
           type="button"
           onClick={handleTrain}
-          disabled={!citadelGateOpen || actionLoading}
+          disabled={!citadelGateOpen || actionLoading || assignLoading}
         >
           {actionLoading ? 'Queueing…' : 'Queue training'}
         </button>
