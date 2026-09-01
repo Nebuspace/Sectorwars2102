@@ -678,7 +678,7 @@ async def update_player(
             raise
         except Exception as e:
             logger.error(f"Error updating player {player_id}: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to update player: {str(e)}") from e
+            raise HTTPException(status_code=500, detail="Failed to update player") from e
 
 @router.get("/colonies", response_model=dict)
 async def get_all_colonies(
@@ -1260,7 +1260,7 @@ async def get_all_stations(
         return {"stations": stations_list, "total": total, "limit": limit, "offset": offset}
     except Exception as e:
         logger.error(f"Error fetching stations: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch stations: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to fetch stations")
 
 @router.get("/sectors", response_model=dict)
 async def get_all_sectors(
@@ -1485,8 +1485,9 @@ async def create_warp_tunnel(
         except HTTPException:
             raise
         except Exception as e:
+            logger.error(f"Error creating warp tunnel: {e}")
             raise HTTPException(
-                status_code=500, detail=f"Failed to create warp tunnel: {str(e)}"
+                status_code=500, detail="Failed to create warp tunnel"
             ) from e
 
 @router.delete("/galaxy/clear", response_model=dict)
@@ -1530,7 +1531,7 @@ async def clear_all_galaxy_data(
         except Exception as e:
             logger.error(f"Failed to clear galaxy data: {str(e)}")
             raise HTTPException(
-                status_code=500, detail=f"Failed to clear galaxy data: {str(e)}"
+                status_code=500, detail="Failed to clear galaxy data"
             ) from e
 
 @router.post("/galaxy/fix-statistics", response_model=dict)
@@ -1594,7 +1595,7 @@ async def fix_galaxy_statistics(
             logger.error(f"Failed to fix galaxy statistics: {str(e)}")
             raise HTTPException(
                 status_code=500,
-                detail=f"Failed to fix galaxy statistics: {str(e)}",
+                detail="Failed to fix galaxy statistics",
             ) from e
 
 # NOTE: DELETE /galaxy/{galaxy_id} intentionally removed from this router.
@@ -1837,7 +1838,7 @@ async def update_port(
         except Exception as e:
             logger.error(f"Error updating port: {e}")
             raise HTTPException(
-                status_code=500, detail=f"Failed to update port: {str(e)}"
+                status_code=500, detail="Failed to update port"
             ) from e
 
 
@@ -2124,7 +2125,7 @@ async def create_game_event(
         except Exception as e:
             logger.error(f"Error creating game event: {e}")
             raise HTTPException(
-                status_code=500, detail=f"Failed to create game event: {str(e)}"
+                status_code=500, detail="Failed to create game event"
             ) from e
 
 
@@ -2265,7 +2266,7 @@ async def get_game_event_detail(
         raise
     except Exception as e:
         logger.error(f"Error fetching game event {event_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch game event: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to fetch game event")
 
 
 @router.patch("/game-events/{event_id}", response_model=dict)
@@ -2389,7 +2390,7 @@ async def update_game_event(
         except Exception as e:
             logger.error(f"Error updating game event {event_id}: {e}")
             raise HTTPException(
-                status_code=500, detail=f"Failed to update game event: {str(e)}"
+                status_code=500, detail="Failed to update game event"
             ) from e
 
 
@@ -2448,7 +2449,7 @@ async def activate_game_event(
         except Exception as e:
             logger.error(f"Error activating game event {event_id}: {e}")
             raise HTTPException(
-                status_code=500, detail=f"Failed to activate game event: {str(e)}"
+                status_code=500, detail="Failed to activate game event"
             ) from e
 
 
@@ -2513,7 +2514,7 @@ async def deactivate_game_event(
             logger.error(f"Error deactivating game event {event_id}: {e}")
             raise HTTPException(
                 status_code=500,
-                detail=f"Failed to deactivate game event: {str(e)}",
+                detail="Failed to deactivate game event",
             ) from e
 
 
@@ -2564,7 +2565,7 @@ async def delete_game_event(
         except Exception as e:
             logger.error(f"Error deleting game event {event_id}: {e}")
             raise HTTPException(
-                status_code=500, detail=f"Failed to delete game event: {str(e)}"
+                status_code=500, detail="Failed to delete game event"
             ) from e
 
 

@@ -5,6 +5,7 @@ Admin Combat Overview API routes
 from typing import Optional, List
 from uuid import UUID
 from datetime import datetime, timedelta
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc, and_
@@ -20,6 +21,8 @@ from src.services.combat_analytics_service import CombatAnalyticsService
 
 
 router = APIRouter(prefix="/admin/combat", tags=["admin-combat"])
+
+logger = logging.getLogger(__name__)
 
 
 # Request/Response models
@@ -166,10 +169,11 @@ async def get_live_combat_feed(
         
         return [CombatFeedItem(**combat) for combat in combat_feed]
     except Exception as e:
+        logger.error(f"Error retrieving combat feed: {e}")
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to retrieve combat feed: {str(e)}"
-        )
+            detail="Failed to retrieve combat feed",
+        ) from e
 
 
 @router.post("/{combat_id}/intervene", response_model=InterventionResponse)
@@ -253,10 +257,11 @@ async def get_combat_balance_analytics(
         
         return CombatBalanceResponse(**balance_data)
     except Exception as e:
+        logger.error(f"Error retrieving balance analytics: {e}")
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to retrieve balance analytics: {str(e)}"
-        )
+            detail="Failed to retrieve balance analytics",
+        ) from e
 
 
 @router.get("/disputes", response_model=List[CombatDisputeResponse])
@@ -288,10 +293,11 @@ async def get_combat_disputes(
         
         return [CombatDisputeResponse(**dispute) for dispute in disputes]
     except Exception as e:
+        logger.error(f"Error retrieving combat disputes: {e}")
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to retrieve combat disputes: {str(e)}"
-        )
+            detail="Failed to retrieve combat disputes",
+        ) from e
 
 
 # ---------------------------------------------------------------------------
@@ -564,7 +570,8 @@ async def get_combat_dashboard_summary(
             "recent_combats": live_combats[:5]
         }
     except Exception as e:
+        logger.error(f"Error generating combat dashboard summary: {e}")
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to generate dashboard summary: {str(e)}"
-        )
+            detail="Failed to generate dashboard summary",
+        ) from e
