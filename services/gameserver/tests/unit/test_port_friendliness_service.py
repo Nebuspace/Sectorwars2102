@@ -7,17 +7,10 @@ file targets this module's own resolution logic directly. Adds direct,
 DB-free unit tests for `_player_reputation_level_for_faction`,
 `_station_controlling_faction`, and `check_friendly_port` itself.
 
-Sections:
-  TestPlayerReputationLevelForFaction — None-faction -> NEUTRAL, missing
-    Reputation row -> NEUTRAL, a null current_level -> NEUTRAL, and the
-    real stored level passed through unchanged.
-  TestStationControllingFaction — no faction_affiliation -> None, a name
-    that doesn't resolve to a seeded Faction -> None, and a resolving name
-    -> the matching Faction row.
-  TestCheckFriendlyPort — the full gate: unaffiliated/unresolvable stations
-    always pass, every reputation rank at-or-above NEUTRAL passes, every
-    rank below NEUTRAL rejects with the ERR_UNFRIENDLY_PORT reason, and the
-    exact boundary at NEUTRAL itself.
+Team standing (LEG-1908 / LEG-1907 shared helper): level comes from
+``resolve_effective_faction_standing_value`` mapped through FactionService
+thresholds — teamed players honor team AVERAGE; factionless always-pass
+unchanged.
 """
 
 from uuid import uuid4
@@ -25,6 +18,7 @@ from uuid import uuid4
 import pytest
 
 from src.models.faction import Faction
+from src.models.player import Player
 from src.models.reputation import Reputation, ReputationLevel
 from src.models.station import Station
 from src.services.port_friendliness_service import (
@@ -32,6 +26,28 @@ from src.services.port_friendliness_service import (
     _station_controlling_faction,
     check_friendly_port,
 )
+
+# Representative numeric values inside each ReputationLevel band
+# (FactionService._calculate_reputation_level thresholds).
+_LEVEL_VALUE = {
+    ReputationLevel.PUBLIC_ENEMY: -750,
+    ReputationLevel.CRIMINAL: -650,
+    ReputationLevel.OUTLAW: -550,
+    ReputationLevel.PIRATE: -450,
+    ReputationLevel.SMUGGLER: -350,
+    ReputationLevel.UNTRUSTWORTHY: -250,
+    ReputationLevel.SUSPICIOUS: -150,
+    ReputationLevel.QUESTIONABLE: -75,
+    ReputationLevel.NEUTRAL: 0,
+    ReputationLevel.RECOGNIZED: 50,
+    ReputationLevel.ACKNOWLEDGED: 100,
+    ReputationLevel.TRUSTED: 200,
+    ReputationLevel.RESPECTED: 300,
+    ReputationLevel.VALUED: 400,
+    ReputationLevel.HONORED: 500,
+    ReputationLevel.REVERED: 600,
+    ReputationLevel.EXALTED: 700,
+}
 
 
 class _FakeQuery:
@@ -69,12 +85,23 @@ def _station(faction_affiliation=None):
     return s
 
 
-def _reputation(current_level=ReputationLevel.NEUTRAL):
+def _reputation(current_level=ReputationLevel.NEUTRAL, current_value=None):
     r = Reputation()
     r.player_id = uuid4()
     r.faction_id = uuid4()
     r.current_level = current_level
+    r.current_value = (
+        _LEVEL_VALUE[current_level] if current_value is None else current_value
+    )
     return r
+
+
+def _solo_db(*, faction=None, rep=None):
+    """Player → None team; Reputation row for personal resolve path."""
+    queues = {Player: [None], Reputation: [rep]}
+    if faction is not None:
+        queues[Faction] = [faction]
+    return _FakeDb(results=queues)
 
 
 class TestPlayerReputationLevelForFaction:
@@ -85,24 +112,48 @@ class TestPlayerReputationLevelForFaction:
 
     def test_missing_reputation_row_is_neutral(self):
         faction = _faction()
-        db = _FakeDb(results={Reputation: [None]})
+        db = _solo_db(rep=None)
         level = _player_reputation_level_for_faction(db, uuid4(), faction)
         assert level == ReputationLevel.NEUTRAL
 
-    def test_null_current_level_is_neutral(self):
+    def test_zero_value_maps_to_neutral(self):
         faction = _faction()
-        rep = _reputation()
-        rep.current_level = None
-        db = _FakeDb(results={Reputation: [rep]})
+        rep = _reputation(current_level=ReputationLevel.NEUTRAL, current_value=0)
+        db = _solo_db(rep=rep)
         level = _player_reputation_level_for_faction(db, uuid4(), faction)
         assert level == ReputationLevel.NEUTRAL
 
-    def test_real_stored_level_passes_through(self):
+    def test_exalted_value_maps_to_exalted(self):
         faction = _faction()
         rep = _reputation(current_level=ReputationLevel.EXALTED)
-        db = _FakeDb(results={Reputation: [rep]})
+        db = _solo_db(rep=rep)
         level = _player_reputation_level_for_faction(db, uuid4(), faction)
         assert level == ReputationLevel.EXALTED
+
+    def test_teamed_player_uses_team_aggregate_level(self, monkeypatch):
+        faction = _faction()
+        player_id = uuid4()
+
+        def _resolve(db, pid, fid, *, team_id=None):
+            assert pid == player_id
+            assert fid == faction.id
+            return 700, "team"
+
+        monkeypatch.setattr(
+            "src.services.faction_service.resolve_effective_faction_standing_value",
+            _resolve,
+        )
+        level = _player_reputation_level_for_faction(_FakeDb(), player_id, faction)
+        assert level == ReputationLevel.EXALTED
+
+    def test_teamed_player_below_neutral_maps_questionable(self, monkeypatch):
+        faction = _faction()
+        monkeypatch.setattr(
+            "src.services.faction_service.resolve_effective_faction_standing_value",
+            lambda *_a, **_k: (-75, "team"),
+        )
+        level = _player_reputation_level_for_faction(_FakeDb(), uuid4(), faction)
+        assert level == ReputationLevel.QUESTIONABLE
 
 
 class TestStationControllingFaction:
@@ -148,7 +199,7 @@ class TestCheckFriendlyPort:
         faction = _faction()
         station = _station(faction_affiliation=faction.name)
         rep = _reputation(current_level=ReputationLevel.NEUTRAL)
-        db = _FakeDb(results={Faction: [faction], Reputation: [rep]})
+        db = _FakeDb(results={Faction: [faction], Player: [None], Reputation: [rep]})
         ok, reason = check_friendly_port(db, uuid4(), station)
         assert ok is True
         assert reason is None
@@ -157,7 +208,7 @@ class TestCheckFriendlyPort:
         faction = _faction()
         station = _station(faction_affiliation=faction.name)
         rep = _reputation(current_level=ReputationLevel.EXALTED)
-        db = _FakeDb(results={Faction: [faction], Reputation: [rep]})
+        db = _FakeDb(results={Faction: [faction], Player: [None], Reputation: [rep]})
         ok, reason = check_friendly_port(db, uuid4(), station)
         assert ok is True
         assert reason is None
@@ -165,7 +216,7 @@ class TestCheckFriendlyPort:
     def test_no_reputation_row_defaults_to_neutral_and_passes(self):
         faction = _faction()
         station = _station(faction_affiliation=faction.name)
-        db = _FakeDb(results={Faction: [faction], Reputation: [None]})
+        db = _FakeDb(results={Faction: [faction], Player: [None], Reputation: [None]})
         ok, reason = check_friendly_port(db, uuid4(), station)
         assert ok is True
         assert reason is None
@@ -174,7 +225,7 @@ class TestCheckFriendlyPort:
         faction = _faction(name="Terran Federation")
         station = _station(faction_affiliation=faction.name)
         rep = _reputation(current_level=ReputationLevel.QUESTIONABLE)
-        db = _FakeDb(results={Faction: [faction], Reputation: [rep]})
+        db = _FakeDb(results={Faction: [faction], Player: [None], Reputation: [rep]})
         ok, reason = check_friendly_port(db, uuid4(), station)
         assert ok is False
         assert reason == (
@@ -186,10 +237,34 @@ class TestCheckFriendlyPort:
         faction = _faction()
         station = _station(faction_affiliation=faction.name)
         rep = _reputation(current_level=ReputationLevel.PUBLIC_ENEMY)
-        db = _FakeDb(results={Faction: [faction], Reputation: [rep]})
+        db = _FakeDb(results={Faction: [faction], Player: [None], Reputation: [rep]})
         ok, reason = check_friendly_port(db, uuid4(), station)
         assert ok is False
         assert "PUBLIC_ENEMY" in reason
+
+    def test_teamed_player_passes_via_team_aggregate(self, monkeypatch):
+        faction = _faction(name="Terran Federation")
+        station = _station(faction_affiliation=faction.name)
+        monkeypatch.setattr(
+            "src.services.faction_service.resolve_effective_faction_standing_value",
+            lambda *_a, **_k: (0, "team"),
+        )
+        db = _FakeDb(results={Faction: [faction]})
+        ok, reason = check_friendly_port(db, uuid4(), station)
+        assert ok is True
+        assert reason is None
+
+    def test_teamed_player_denied_when_team_below_neutral(self, monkeypatch):
+        faction = _faction(name="Terran Federation")
+        station = _station(faction_affiliation=faction.name)
+        monkeypatch.setattr(
+            "src.services.faction_service.resolve_effective_faction_standing_value",
+            lambda *_a, **_k: (-75, "team"),
+        )
+        db = _FakeDb(results={Faction: [faction]})
+        ok, reason = check_friendly_port(db, uuid4(), station)
+        assert ok is False
+        assert "QUESTIONABLE" in reason
 
     @pytest.mark.parametrize(
         "level",
@@ -208,7 +283,7 @@ class TestCheckFriendlyPort:
         faction = _faction()
         station = _station(faction_affiliation=faction.name)
         rep = _reputation(current_level=level)
-        db = _FakeDb(results={Faction: [faction], Reputation: [rep]})
+        db = _FakeDb(results={Faction: [faction], Player: [None], Reputation: [rep]})
         ok, _reason = check_friendly_port(db, uuid4(), station)
         assert ok is False
 
@@ -230,7 +305,7 @@ class TestCheckFriendlyPort:
         faction = _faction()
         station = _station(faction_affiliation=faction.name)
         rep = _reputation(current_level=level)
-        db = _FakeDb(results={Faction: [faction], Reputation: [rep]})
+        db = _FakeDb(results={Faction: [faction], Player: [None], Reputation: [rep]})
         ok, reason = check_friendly_port(db, uuid4(), station)
         assert ok is True
         assert reason is None

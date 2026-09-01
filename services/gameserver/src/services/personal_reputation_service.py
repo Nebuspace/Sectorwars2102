@@ -6,14 +6,23 @@ Tracks player morality through combat actions, trade behavior, and diplomacy.
 """
 
 import logging
+import math
 import uuid
-from typing import Dict, Any
+from typing import Any, Dict, Optional
 
 from sqlalchemy.orm import Session
 
 from src.models.player import Player
 from src.services.trading_service import _PERSONAL_REP_TIER_MULTIPLIERS
 from src.services.wanted_service import recompute_is_wanted
+
+# bounty-and-reputation.md:148 — encounter-rate increase at this score.
+BOUNTY_HUNTER_AGGRO_THRESHOLD = -500
+# ranking.md Villain row lists 1.20 alongside "bounty hunters target".
+# Canon states direction ("increased") not a spawn formula; this is that
+# table's only numeric encounter-adjacent magnitude, applied at the :148
+# threshold (Criminal and Villain both ≤ −500). Not a new band.
+BOUNTY_HUNTER_ENCOUNTER_MULTIPLIER = 1.20
 
 logger = logging.getLogger(__name__)
 
@@ -177,3 +186,43 @@ class PersonalReputationService:
             "new_score": new_score,
             "tier": tier,
         }
+
+
+def bounty_hunter_encounter_multiplier(personal_reputation: Optional[int]) -> float:
+    """Spawn/encounter weight for bounty-hunter NPCs.
+
+    1.0 below the Criminal threshold; 1.20 at ``personal_reputation ≤ −500``
+    (bounty-and-reputation.md:148 + ranking.md Villain 1.20).
+    """
+    if personal_reputation is None:
+        return 1.0
+    if personal_reputation <= BOUNTY_HUNTER_AGGRO_THRESHOLD:
+        return BOUNTY_HUNTER_ENCOUNTER_MULTIPLIER
+    return 1.0
+
+
+def bounty_hunter_spawn_count(base: int, personal_reputation: Optional[int]) -> int:
+    """Integer Loop-B fill size after applying :func:`bounty_hunter_encounter_multiplier`.
+
+    ``ceil(base * 1.20)`` so a live cadence of 1 becomes 2 at threshold
+    (``floor`` would no-op). ``base <= 0`` stays 0.
+    """
+    if base <= 0:
+        return 0
+    return max(base, math.ceil(base * bounty_hunter_encounter_multiplier(personal_reputation)))
+
+
+def lowest_personal_reputation_in_sector(db: Session, sector_id: int) -> Optional[int]:
+    """Most-negative ``Player.personal_reputation`` currently in ``sector_id``.
+
+    ``None`` when the sector is empty of players (neutral spawn cadence).
+    """
+    row = (
+        db.query(Player.personal_reputation)
+        .filter(Player.current_sector_id == sector_id)
+        .order_by(Player.personal_reputation.asc())
+        .first()
+    )
+    if row is None:
+        return None
+    return row[0]

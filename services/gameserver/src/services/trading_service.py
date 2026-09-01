@@ -48,20 +48,9 @@ logger = logging.getLogger(__name__)
 # On BUY apply as-is; on SELL the route divides station buy_price by the
 # player-pays multiplier (and inverts the rest of the stack).
 
-# Faction-reputation TRADE_MODIFIERS mirror faction_service.TRADE_MODIFIERS
-# (kept inline so this sync path needs no async FactionService bridge). Each
-# entry is (min_reputation_value, player_pays_multiplier).
-_FACTION_TRADE_MODIFIERS = [
-    (700, 0.85),   # EXALTED   — 15% better
-    (500, 0.90),   # REVERED
-    (300, 0.95),   # HONORED
-    (100, 0.97),   # FRIENDLY
-    (-99, 1.00),   # NEUTRAL
-    (-299, 1.05),  # UNFRIENDLY
-    (-499, 1.15),  # HOSTILE
-    (-699, 1.30),  # HATED
-]
-_FACTION_TRADE_MODIFIER_PUBLIC_ENEMY = 1.50  # <= -700
+# Faction-reputation ladder lives in faction_service.trade_modifier_from_standing_value
+# (shared with get_trade_modifier / LEG-800). Soft-ORDER #1991 routes the money-path
+# through resolve_effective_faction_standing_value + that helper — no local fork.
 
 # Personal-reputation tier multipliers. ADR-0062 E-D3 fixes the endpoints
 # (0.90 Legendary .. 1.20 Villain) but not the per-tier steps; the 8 tiers in
@@ -98,31 +87,26 @@ def compute_player_price_multiplier(db: Session, player, station) -> float:
     multiplier = 1.0
 
     # --- Faction reputation (station's controlling faction) ---------------
+    # Team-aware via resolve_effective_faction_standing_value + shared
+    # trade_modifier_from_standing_value ladder (LEG-800 / Soft-ORDER #1991).
+    # Personal-rep + first-login layers below stay unchanged.
     try:
         faction_name = getattr(station, "faction_affiliation", None)
         if faction_name:
             from src.models.faction import Faction
-            from src.models.reputation import Reputation
+            from src.services.faction_service import (
+                resolve_effective_faction_standing_value,
+                trade_modifier_from_standing_value,
+            )
+
             faction = (
                 db.query(Faction).filter(Faction.name == faction_name).first()
             )
             if faction is not None:
-                rep = (
-                    db.query(Reputation)
-                    .filter(
-                        Reputation.player_id == player.id,
-                        Reputation.faction_id == faction.id,
-                    )
-                    .first()
+                value, _source = resolve_effective_faction_standing_value(
+                    db, player.id, faction.id
                 )
-                if rep is not None:
-                    value = rep.current_value
-                    faction_mult = _FACTION_TRADE_MODIFIER_PUBLIC_ENEMY
-                    for threshold, mod in _FACTION_TRADE_MODIFIERS:
-                        if value >= threshold:
-                            faction_mult = mod
-                            break
-                    multiplier *= faction_mult
+                multiplier *= trade_modifier_from_standing_value(value)
     except Exception:
         logger.warning("faction-rep price modifier failed; using neutral", exc_info=True)
 

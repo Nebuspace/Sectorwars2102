@@ -73,6 +73,11 @@ TRADE_MODIFIER_PUBLIC_ENEMY = 1.50  # Fallback for -700 and below
 #   (3) construction_service.tradedock_access — TradeDock construction gate (LEG-2819)
 #   (4) get_faction_pricing_modifier — GET /factions/{id}/pricing-modifier (LEG-2819)
 #   (5) check_territory_access — faction territory gate (LEG-2819)
+#   (7) trading_service.compute_player_price_multiplier — live buy/sell unit price
+#       (Soft-ORDER #1991; reuses trade_modifier_from_standing_value)
+#   (8) construction_service._faction_rep_tier — shipyard queue sort (#1988)
+#   (9) haggle_service._faction_band_factor — haggling band (#1989)
+#  (10) economy_faucet_service.daily_stipend_amount — guild stipend (#1990)
 #   (6) mission-gate consumers — none located on tip; separate WO if found
 # Not interaction consumers (personal-row maintenance / display only):
 #   update_reputation / apply_faction_rep_delta / apply_reputation_decay derived
@@ -124,7 +129,8 @@ def resolve_effective_faction_standing_value(
             snapshot = team_reputation_service.get_team_reputation(db, team)
             entry = (snapshot.get("standings") or {}).get(str(faction_id))
             if entry is not None:
-                return int(entry.get("value", 0)), "team"
+                # None-safe: JSONB may carry explicit null value.
+                return int(entry.get("value") or 0), "team"
 
     reputation = (
         db.query(Reputation)
@@ -138,7 +144,8 @@ def resolve_effective_faction_standing_value(
     )
     if reputation is None:
         return 0, "personal"
-    return int(reputation.current_value), "personal"
+    # None-safe: some fixtures/rows only set current_level historically.
+    return int(reputation.current_value or 0), "personal"
 
 
 def build_effective_faction_standing(

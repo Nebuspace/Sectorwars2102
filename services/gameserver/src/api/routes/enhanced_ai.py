@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field, validator
 from src.core.database import get_async_session
 from src.auth.dependencies import get_current_player
 from src.models.player import Player
+from src.models.station import Station
 from src.services.enhanced_ai_service import (
     EnhancedAIService, AISystemType
 )
@@ -283,6 +284,29 @@ class ARIAMemoryOut(BaseModel):
                 "content": {"event": "trade_transaction", "commodity": "organics"},
             }
         }
+
+
+class ARIAMarketIntelligenceOut(BaseModel):
+    """Player-owned market intelligence at a visited port (aria-companion.md:21-31)."""
+    commodity: str
+    observation_count: int
+    average_price: Optional[float] = Field(
+        None, description="Mean observed price; null until ≥5 observations",
+    )
+    price_band: Optional[float] = Field(
+        None, description="± band from stored price_volatility; null until ≥5 observations",
+    )
+    next_prediction: Optional[float] = Field(
+        None, description="Stored next_prediction; null until ≥5 observations",
+    )
+    prediction_confidence: Optional[float] = Field(
+        None, description="0–1 confidence; null until ≥5 observations",
+    )
+
+
+class ARIAMarketIntelligenceListOut(BaseModel):
+    station_id: str
+    items: List[ARIAMarketIntelligenceOut]
 
 
 # =============================================================================
@@ -900,6 +924,149 @@ async def get_aria_data_index(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="ARIA data index temporarily unavailable"
+        )
+
+
+@router.get(
+    "/market-intelligence/{station_id}",
+    response_model=ARIAMarketIntelligenceListOut,
+    summary="Read your ARIA market intelligence at a docked station",
+    description=(
+        "Returns the authenticated player's own ARIAMarketIntelligence rows for "
+        "the requested station while docked there (aria-companion.md Market "
+        "predictions). Prediction fields stay empty until ≥5 observations."
+    ),
+)
+async def get_aria_market_intelligence(
+    station_id: str,
+    commodity: Optional[str] = Query(
+        None, description="Optional filter to one commodity at this station",
+    ),
+    current_player: Player = Depends(get_current_player),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Owner-only by construction (ADR-0016): player id comes from JWT, never
+    from path/query spoof parameters."""
+    station = await db.get(Station, station_id)
+    if not station:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Station not found",
+        )
+
+    if not current_player.is_docked or not current_player.current_port_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You must be docked at a station to view ARIA market intelligence",
+        )
+
+    if str(current_player.current_port_id) != str(station_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You must be docked at this station to view its market intelligence",
+        )
+
+    from src.services.trading_service import TradingService
+
+    can_trade, reason = TradingService.can_player_trade(current_player, station)
+    if not can_trade:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=reason,
+        )
+
+    try:
+        from src.services.aria_personal_intelligence_service import (
+            get_aria_intelligence_service,
+        )
+
+        aria_service = get_aria_intelligence_service()
+        items = await aria_service.list_market_intelligence_at_station(
+            str(current_player.id),
+            station_id,
+            db,
+            commodity=commodity,
+        )
+        return {"station_id": station_id, "items": items}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error reading ARIA market intelligence: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="ARIA market intelligence temporarily unavailable",
+        )
+
+
+@router.get(
+    "/memories/dump",
+    summary="Export your ARIA personal memory store",
+    description=(
+        "Owner-scoped data export of the caller's ARIA personal memory store "
+        "(aria-companion.md:173-175). Path is /memories/dump not /export so it "
+        "cannot collide with security.py _ADMIN_REPORT_MARKERS if this router "
+        "is ever mounted under /admin. Decrypts Tier-1 memories with the same "
+        "path as GET /ai/memories (no player-id parameter). Does not call "
+        "POST /ai/system/cleanup."
+    ),
+)
+async def export_aria_personal_store(
+    current_player: Player = Depends(get_current_player),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """JWT owner only — ``current_player.id`` is the sole filter."""
+    try:
+        from src.services.aria_personal_intelligence_service import (
+            get_aria_intelligence_service,
+        )
+
+        aria_service = get_aria_intelligence_service()
+        payload = await aria_service.export_personal_store(
+            str(current_player.id), db,
+        )
+        await db.commit()
+        return payload
+    except Exception as e:
+        logger.error(f"Error exporting ARIA personal store: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="ARIA memory export temporarily unavailable",
+        )
+
+
+@router.post(
+    "/memories/reset",
+    summary="Reset your ARIA personal data",
+    description=(
+        "Owner-scoped delete of the caller's ARIA personal tables listed in "
+        "aria-companion.md:169. Never a global cleanup — POST /ai/system/cleanup "
+        "is untouched."
+    ),
+)
+async def reset_aria_personal_store(
+    current_player: Player = Depends(get_current_player),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """JWT owner only — deletes rows for ``current_player.id`` only."""
+    try:
+        from src.services.aria_personal_intelligence_service import (
+            get_aria_intelligence_service,
+        )
+
+        aria_service = get_aria_intelligence_service()
+        deleted = await aria_service.reset_personal_store(
+            str(current_player.id), db,
+        )
+        await db.commit()
+        return {
+            "status": "success",
+            "deleted": deleted,
+        }
+    except Exception as e:
+        logger.error(f"Error resetting ARIA personal store: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="ARIA memory reset temporarily unavailable",
         )
 
 

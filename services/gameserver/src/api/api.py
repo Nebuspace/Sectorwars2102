@@ -79,6 +79,7 @@ from src.api.routes.medals import router as medals_router
 from src.api.routes.haggle import router as haggle_router
 from src.api.routes.research_cockpit import router as research_cockpit_router
 from src.api.routes.black_market import router as black_market_router
+from src.api.routes.syndicate_fence import router as syndicate_fence_router
 from src.api.routes.resources import router as resources_router  # WO-ARCH-RES-1-KERNEL (router carries /resources prefix)
 from src.api.routes.pirate_ecosystem import router as pirate_ecosystem_router  # WO-PIRATE-ECO-1
 from src.api.routes.contracts import router as contracts_router  # WO-ECON-CONTRACT-1-KERNEL
@@ -89,6 +90,7 @@ from src.api.routes.beacons import router as beacons_router  # WO-P4-play-beacon
 from src.api.routes.storage import router as storage_router  # WO-STORE-DEPOSIT-FLOW
 from src.api.routes.intrasystem import router as intrasystem_router  # WO-ISP
 from src.api.routes.admin_reports import router as admin_reports_router  # WO-PADMIN-analytics
+from src.api.routes.pending_engagements import router as pending_engagements_router  # LEG-480
 from src.api.routes.admin_re_engagement import router as admin_re_engagement_router  # LEG-332 / retention.md
 from src.core.config import settings
 
@@ -221,6 +223,7 @@ api_router.include_router(bang_galaxy_router, prefix="/admin", tags=["admin-bang
 # sell with detection roll (router carries its own /trading prefix → endpoints at
 # /trading/black-market/...)
 api_router.include_router(black_market_router, tags=["black-market"])
+api_router.include_router(syndicate_fence_router, tags=["syndicate-fence"])
 # Resource registry catalog (WO-ARCH-RES-1-KERNEL): read-only seeded canon
 # resource list (router carries its own /resources prefix → GET /resources).
 api_router.include_router(resources_router, tags=["resources"])
@@ -248,6 +251,7 @@ api_router.include_router(storage_router, tags=["storage"])
 # /helm/intrasystem prefix).
 api_router.include_router(intrasystem_router, tags=["intrasystem"])
 api_router.include_router(admin_reports_router, tags=["admin-reports"])  # WO-PADMIN-analytics
+api_router.include_router(pending_engagements_router, tags=["pending-engagements"])  # LEG-480
 api_router.include_router(admin_re_engagement_router, tags=["admin-re-engagement"])  # LEG-332
 
 # Only include test + debug routes in development/test environments.
