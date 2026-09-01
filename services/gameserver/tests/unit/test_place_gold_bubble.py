@@ -248,6 +248,52 @@ def test_route_symbol_place_gold_bubble_exists():
     assert af.place_gold_bubble is af.place_gold_bubble_route
 
 
+def test_map_gold_bubble_error_region_missing_404():
+    """LEG-3551 — route-layer densify: region_not_found → 404."""
+    from src.api.routes.admin_formations import _map_gold_bubble_error
+
+    http = _map_gold_bubble_error(
+        GoldBubblePlacementError("region_not_found", "Region not found.")
+    )
+    assert http.status_code == 404
+    assert http.detail == "Region not found."
+
+
+def test_map_gold_bubble_error_sector_not_in_region_404():
+    """LEG-3551 — route-layer densify: sector_not_in_region → 404."""
+    from src.api.routes.admin_formations import _map_gold_bubble_error
+
+    http = _map_gold_bubble_error(
+        GoldBubblePlacementError(
+            "sector_not_in_region", "Sector is not in the target region."
+        )
+    )
+    assert http.status_code == 404
+    assert "not in the target region" in str(http.detail)
+
+
+def test_map_gold_bubble_error_formation_overlap_409():
+    """LEG-3551 — route-layer densify: formation_overlap → 409."""
+    from src.api.routes.admin_formations import _map_gold_bubble_error
+
+    http = _map_gold_bubble_error(
+        GoldBubblePlacementError("formation_overlap", "Overlaps existing bubble.")
+    )
+    assert http.status_code == 409
+    assert http.detail == "Overlaps existing bubble."
+
+
+def test_map_gold_bubble_error_validation_400():
+    """LEG-3551 — route-layer densify: non-404/409 codes → 400."""
+    from src.api.routes.admin_formations import _map_gold_bubble_error
+
+    http = _map_gold_bubble_error(
+        GoldBubblePlacementError("interior_too_small", "Interior too small.")
+    )
+    assert http.status_code == 400
+    assert http.detail == "Interior too small."
+
+
 def test_api_router_mounts_admin_formations():
     from src.api.api import api_router
     from src.api.routes import admin_formations as af
