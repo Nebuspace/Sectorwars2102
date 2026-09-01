@@ -8,14 +8,17 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
 
 from src.api.routes import admin_combat as ac_mod
 from src.api.routes.admin_combat import (
+    CombatInterventionRequest,
     get_combat_balance_analytics,
     get_live_combat_feed,
+    intervene_in_combat,
 )
 
 
@@ -57,6 +60,31 @@ async def test_get_combat_balance_analytics_unexpected_is_opaque_500():
     assert secret not in str(exc.detail)
 
 
+@pytest.mark.asyncio
+async def test_intervene_in_combat_unexpected_is_opaque_500():
+    """Combat intervention catch must not echo raw Exception text."""
+    secret = "secret-combat-intervention-should-not-leak"
+    combat_id = uuid4()
+
+    with patch.object(ac_mod, "CombatAnalyticsService") as svc_cls:
+        svc_cls.return_value.intervene_in_combat.side_effect = RuntimeError(secret)
+        with pytest.raises(HTTPException) as excinfo:
+            await intervene_in_combat(
+                combat_id=combat_id,
+                request=CombatInterventionRequest(
+                    intervention_type="stop_combat",
+                    parameters={"reason": "test"},
+                ),
+                admin=SimpleNamespace(id=uuid4()),
+                db=MagicMock(),
+            )
+
+    exc = excinfo.value
+    assert exc.status_code == 500
+    assert exc.detail == "Failed to perform combat intervention"
+    assert secret not in str(exc.detail)
+
+
 def test_admin_combat_http500_catches_have_no_detail_str_e():
     """LEG-3629 — static pin: admin_combat 500 details stay opaque."""
     src = Path(ac_mod.__file__).read_text(encoding="utf-8")
@@ -65,9 +93,11 @@ def test_admin_combat_http500_catches_have_no_detail_str_e():
         'detail="Failed to retrieve balance analytics"',
         'detail="Failed to retrieve combat disputes"',
         'detail="Failed to generate dashboard summary"',
+        'detail="Failed to perform combat intervention"',
     ):
         assert stable in src
     assert "Failed to retrieve combat feed: {str(e)}" not in src
     assert "Failed to retrieve balance analytics: {str(e)}" not in src
     assert "Failed to retrieve combat disputes: {str(e)}" not in src
     assert "Failed to generate dashboard summary: {str(e)}" not in src
+    assert "Combat intervention failed: {str(e)}" not in src

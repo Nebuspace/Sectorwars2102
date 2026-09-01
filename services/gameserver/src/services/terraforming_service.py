@@ -750,11 +750,11 @@ class TerraformingService:
         increment = self._calculate_increment(planet)
         try:
             from src.services.profession_service import (
-                profession_counts,
+                active_profession_counts,
                 ProfessionType,
                 terraform_engineer_bonus_for_tick,
             )
-            engineer_count = profession_counts(self.db, planet.id).get(
+            engineer_count = active_profession_counts(self.db, planet.id).get(
                 ProfessionType.TERRAFORM_ENGINEERS, 0
             )
             increment += int(

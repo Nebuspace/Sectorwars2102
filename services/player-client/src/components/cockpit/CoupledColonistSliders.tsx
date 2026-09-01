@@ -49,6 +49,43 @@ export interface CoupledColonistSlidersProps {
   error?: string | null;
 }
 
+export const ALLOCATION_PERSIST_FALLBACK = 'Allocation update failed';
+
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
+};
+
+/** Exported for TypeError densify Vitest (LEG-3643). */
+export function formatCoupledColonistAllocError(
+  err: unknown,
+  fallback = ALLOCATION_PERSIST_FALLBACK,
+): string {
+  if (err instanceof TypeError) return fallback;
+  if (err instanceof Error && err.message) {
+    if (isNetworkCollapseMessage(err.message)) return fallback;
+    if (/not implemented/i.test(err.message)) return fallback;
+    return err.message;
+  }
+  return fallback;
+}
+
+/** Defense-in-depth when parent passes a raw transport string via `error` prop. */
+export function sanitizeAllocationErrorDisplay(
+  msg: string,
+  fallback = ALLOCATION_PERSIST_FALLBACK,
+): string {
+  if (isNetworkCollapseMessage(msg)) return fallback;
+  if (/not implemented/i.test(msg)) return fallback;
+  return msg;
+}
+
 const ROLES: { key: ProdRole; icon: string; label: string; color: string }[] = [
   { key: 'fuel', icon: resourceIcon('fuel'), label: 'Fuel', color: resourceColor('fuel') },
   { key: 'organics', icon: resourceIcon('organics'), label: 'Organics', color: resourceColor('organics') },
@@ -250,6 +287,7 @@ const CoupledColonistSliders: React.FC<CoupledColonistSlidersProps> = ({
   };
 
   const disabled = budget <= 0;
+  const displayError = error ? sanitizeAllocationErrorDisplay(error) : null;
 
   return (
     <div className="cp-sliders">
@@ -343,9 +381,9 @@ const CoupledColonistSliders: React.FC<CoupledColonistSlidersProps> = ({
         })}
       </div>
 
-      {error && (
+      {displayError && (
         <div className="cp-slider-error" role="alert">
-          ⚠️ {error}
+          ⚠️ {displayError}
         </div>
       )}
     </div>

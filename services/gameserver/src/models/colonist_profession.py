@@ -109,3 +109,5 @@ class ColonistProfession(Base):
     )
     profession = Column(String(40), nullable=False)
     count = Column(Integer, nullable=False, default=0)
+    # NULL = legacy implicit (all trained specialists active); explicit int = owner assignment.
+    active_count = Column(Integer, nullable=True)

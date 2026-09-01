@@ -175,11 +175,13 @@ describe('MultiAccountReview cluster detail GET (LEG-2679)', () => {
       );
     });
 
-    const detailError = screen.getByRole('alert');
-    expect(detailError.textContent).toMatch(
-      /admin multi-account review scopes required|Access denied/i,
-    );
-    expect(detailError.textContent).not.toMatch(/^Failed to load cluster detail$/);
+    await waitFor(() => {
+      const detailError = screen.getByRole('alert');
+      expect(detailError.textContent).toMatch(
+        /admin multi-account review scopes required|Access denied/i,
+      );
+      expect(detailError.textContent).not.toMatch(/^Failed to load cluster detail$/);
+    });
   });
 
   it('surfaces rate-limit copy on cluster detail GET 429', async () => {
@@ -207,9 +209,11 @@ describe('MultiAccountReview cluster detail GET (LEG-2679)', () => {
       );
     });
 
-    const detailError = screen.getByRole('alert');
-    expect(detailError.textContent).toMatch(/rate limit/i);
-    expect(detailError.textContent).not.toMatch(/^Failed to load cluster detail$/);
+    await waitFor(() => {
+      const detailError = screen.getByRole('alert');
+      expect(detailError.textContent).toMatch(/rate limit/i);
+      expect(detailError.textContent).not.toMatch(/^Failed to load cluster detail$/);
+    });
   });
 });
 
@@ -232,9 +236,11 @@ describe('MultiAccountReview decide POST (LEG-2765)', () => {
       );
     });
 
-    const decideError = screen.getByRole('alert');
-    expect(decideError.textContent).toMatch(/admin multi-account review scopes required|Access denied/i);
-    expect(decideError.textContent).not.toMatch(/^Failed to record decision$/);
+    await waitFor(() => {
+      const decideError = screen.getByRole('alert');
+      expect(decideError.textContent).toMatch(/admin multi-account review scopes required|Access denied/i);
+      expect(decideError.textContent).not.toMatch(/^Failed to record decision$/);
+    });
   });
 
   it('decide POST 429 surfaces rate-limit copy', async () => {
@@ -247,9 +253,11 @@ describe('MultiAccountReview decide POST (LEG-2765)', () => {
       expect(api.post).toHaveBeenCalled();
     });
 
-    const decideError = screen.getByRole('alert');
-    expect(decideError.textContent).toMatch(/rate limit/i);
-    expect(decideError.textContent).not.toMatch(/^Failed to record decision$/);
+    await waitFor(() => {
+      const decideError = screen.getByRole('alert');
+      expect(decideError.textContent).toMatch(/rate limit/i);
+      expect(decideError.textContent).not.toMatch(/^Failed to record decision$/);
+    });
   });
 });
 
@@ -309,9 +317,11 @@ describe('MultiAccountReview axios Network Error densify (LEG-3534)', () => {
       );
     });
 
-    const decideError = screen.getByRole('alert');
-    expect(decideError.textContent).toMatch(/Failed to record decision/i);
-    expect(decideError.textContent).not.toBe('Network Error');
-    expect(decideError.textContent).not.toContain('Network Error');
+    await waitFor(() => {
+      const decideError = screen.getByRole('alert');
+      expect(decideError.textContent).toMatch(/Failed to record decision/i);
+      expect(decideError.textContent).not.toBe('Network Error');
+      expect(decideError.textContent).not.toContain('Network Error');
+    });
   });
 });
