@@ -101,4 +101,13 @@ describe('nav threat rollup on TacticalThreatPage (LEG-3143)', () => {
     expect(alert?.textContent).toMatch(/check your connection/i);
     expect(alert?.textContent).not.toMatch(/Failed to fetch/i);
   });
+
+  it('shows stable fallback on axios Network Error — not raw transport text (LEG-3574)', async () => {
+    mockGetThreat.mockRejectedValue(new Error('Network Error'));
+    await mount();
+    const alert = container.querySelector('.threat-warnline[role="alert"]');
+    expect(alert?.textContent).toMatch(/check your connection/i);
+    expect(alert?.textContent).not.toMatch(/Network Error/i);
+    expect(alert?.textContent).not.toMatch(/Failed to fetch/i);
+  });
 });
