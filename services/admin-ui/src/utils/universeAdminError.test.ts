@@ -38,4 +38,16 @@ describe('formatUniverseAdminError (LEG-1213 invent=0 colonization)', () => {
       formatUniverseAdminError(new TypeError('Failed to fetch'), 'Failed to update sector'),
     ).toBe('Failed to update sector');
   });
+
+  it('uses fallback on axios-shaped Network Error (LEG-3578)', () => {
+    expect(
+      formatUniverseAdminError(new Error('Network Error'), 'Failed to save planet changes'),
+    ).toBe('Failed to save planet changes');
+  });
+
+  it('uses fallback on Failed to fetch string Error (LEG-3578)', () => {
+    expect(
+      formatUniverseAdminError(new Error('Failed to fetch'), 'Failed to load port data'),
+    ).toBe('Failed to load port data');
+  });
 });
