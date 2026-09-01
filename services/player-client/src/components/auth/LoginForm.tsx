@@ -32,14 +32,14 @@ export function formatLoginError(err: unknown, options?: { mfa?: boolean }): str
   if (isNetworkCollapseMessage(raw)) {
     return LOGIN_NETWORK_FALLBACK;
   }
+  // Malformed JSON / parse noise from transport collapse — never surface raw text.
+  if (raw.trim() && /unexpected token|json|syntaxerror/i.test(raw)) {
+    return LOGIN_NETWORK_FALLBACK;
+  }
   if (options?.mfa) {
     return LOGIN_MFA_FALLBACK;
   }
   if (raw.trim()) {
-    // Malformed JSON / parse noise from transport collapse — never surface raw text.
-    if (/unexpected token|json|syntaxerror/i.test(raw)) {
-      return LOGIN_NETWORK_FALLBACK;
-    }
     return raw;
   }
   return LOGIN_CREDENTIAL_FALLBACK;
