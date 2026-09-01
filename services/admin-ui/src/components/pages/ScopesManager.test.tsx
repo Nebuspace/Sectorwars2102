@@ -284,3 +284,71 @@ describe('ScopesManager grant/revoke mutation errors (LEG-2627)', () => {
     expect(actionAlert).not.toHaveTextContent('Revoke failed');
   });
 });
+
+describe('ScopesManager axios Network Error densify (LEG-3509)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('collapses axios-shaped Network Error on initial load to honest fallback', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
+
+    renderScopes();
+
+    await waitFor(() => {
+      expect(api.get).toHaveBeenCalled();
+    });
+
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveTextContent(/Failed to load scope holders/i);
+    expect(alert).not.toHaveTextContent('Network Error');
+    expect(alert.textContent ?? '').not.toMatch(/Network Error/i);
+  });
+
+  it('collapses axios-shaped Network Error on grant POST to honest fallback', async () => {
+    const user = userEvent.setup();
+    mockSuccessfulLoad();
+    vi.mocked(api.post).mockRejectedValue(new Error('Network Error'));
+
+    await selectAliceForGrant(user);
+    await user.click(screen.getByRole('button', { name: 'Grant' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith('/api/v1/admin/scopes/grant', {
+        user_id: 'u1',
+        scope: 'admin.galaxy.manage',
+      });
+    });
+
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveTextContent(/Grant failed/i);
+    expect(alert).not.toHaveTextContent('Network Error');
+    expect(alert.textContent ?? '').not.toMatch(/Network Error/i);
+  });
+
+  it('collapses axios-shaped Network Error on revoke POST to honest fallback', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.post).mockRejectedValue(new Error('Network Error'));
+
+    await openRevokeConfirm(user);
+    const dialog = screen.getByRole('dialog');
+    await user.click(
+      within(dialog).getByRole('button', { name: /^Revoke$/i }),
+    );
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith('/api/v1/admin/scopes/revoke', {
+        user_id: 'u1',
+        scope: 'admin.galaxy.manage',
+      });
+    });
+
+    const alerts = screen.getAllByRole('alert');
+    const actionAlert = alerts.find((el) => /Revoke failed/i.test(el.textContent ?? ''));
+    expect(actionAlert).toBeTruthy();
+    expect(actionAlert).not.toHaveTextContent('Network Error');
+    expect(actionAlert?.textContent ?? '').not.toMatch(/Network Error/i);
+  });
+});
