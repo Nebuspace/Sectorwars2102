@@ -2173,7 +2173,7 @@ async def update_sector(
         except Exception as e:
             db.rollback()
             logger.error(f"Error updating sector {sector_id}: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to update sector: {str(e)}")
+            raise HTTPException(status_code=500, detail="Failed to update sector")
 
 @router.post("/sectors/{sector_id}/planet", response_model=Dict[str, Any])
 async def create_planet_in_sector(
@@ -2264,7 +2264,7 @@ async def create_planet_in_sector(
         except Exception as e:
             db.rollback()
             logger.error(f"Error creating planet in sector {sector_id}: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to create planet: {str(e)}")
+            raise HTTPException(status_code=500, detail="Failed to create planet")
 
 class PlanetUpdateRequest(BaseModel):
     name: Optional[str] = Field(None, max_length=100)
@@ -2337,7 +2337,7 @@ async def update_planet(
         except Exception as e:
             logger.error(f"Error updating planet {planet_id}: {e}")
             db.rollback()
-            raise HTTPException(status_code=500, detail=f"Failed to update planet: {str(e)}")
+            raise HTTPException(status_code=500, detail="Failed to update planet")
 
 
 @router.delete("/planets/{planet_id}", response_model=Dict[str, Any])
@@ -2408,7 +2408,7 @@ async def delete_planet(
         except Exception as e:
             logger.error(f"Error deleting planet {planet_id}: {e}")
             db.rollback()
-            raise HTTPException(status_code=500, detail=f"Failed to delete planet: {str(e)}")
+            raise HTTPException(status_code=500, detail="Failed to delete planet")
 
 
 @router.post("/sectors/{sector_id}/port", response_model=Dict[str, Any])
@@ -2499,7 +2499,7 @@ async def create_port_in_sector(
         except Exception as e:
             db.rollback()
             logger.error(f"Error creating port in sector {sector_id}: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to create port: {str(e)}")
+            raise HTTPException(status_code=500, detail="Failed to create port")
 
 @router.get("/sectors/{sector_id}/warp-tunnels")
 async def get_sector_warp_tunnels(
@@ -2588,7 +2588,7 @@ async def get_sector_warp_tunnels(
         logger.error(f"Error getting warp tunnels for sector {sector_id}: {e}")
         import traceback
         logger.error(f"Full traceback: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"Failed to get sector warp tunnels: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to get sector warp tunnels")
 
 class WarpTunnelCreateRequest(BaseModel):
     """Request model for creating a new warp tunnel"""
@@ -2725,7 +2725,7 @@ async def create_warp_tunnel(
             logger.error(f"Error creating warp tunnel: {e}")
             import traceback
             logger.error(f"Full traceback: {traceback.format_exc()}")
-            raise HTTPException(status_code=500, detail=f"Failed to create warp tunnel: {str(e)}")
+            raise HTTPException(status_code=500, detail="Failed to create warp tunnel")
 
 @router.put("/warp-tunnels/{tunnel_id}")
 async def update_warp_tunnel(
@@ -2810,7 +2810,7 @@ async def update_warp_tunnel(
             logger.error(f"Error updating warp tunnel {tunnel_id}: {e}")
             import traceback
             logger.error(f"Full traceback: {traceback.format_exc()}")
-            raise HTTPException(status_code=500, detail=f"Failed to update warp tunnel: {str(e)}")
+            raise HTTPException(status_code=500, detail="Failed to update warp tunnel")
 
 @router.delete("/warp-tunnels/{tunnel_id}")
 async def delete_warp_tunnel(
@@ -2864,7 +2864,7 @@ async def delete_warp_tunnel(
             logger.error(f"Error deleting warp tunnel {tunnel_id}: {e}")
             import traceback
             logger.error(f"Full traceback: {traceback.format_exc()}")
-            raise HTTPException(status_code=500, detail=f"Failed to delete warp tunnel: {str(e)}")
+            raise HTTPException(status_code=500, detail="Failed to delete warp tunnel")
 
 @router.get("/warp-tunnels", response_model=Dict[str, Any])
 async def get_warp_tunnels(
@@ -2930,7 +2930,7 @@ async def delete_port(
         except Exception as e:
             logger.error(f"Error deleting port {station_id}: {e}")
             db.rollback()
-            raise HTTPException(status_code=500, detail=f"Failed to delete port: {str(e)}")
+            raise HTTPException(status_code=500, detail="Failed to delete port")
 
 @router.post("/ports", response_model=Dict[str, Any])
 async def create_port(
@@ -3036,7 +3036,7 @@ async def create_port(
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
             db.rollback()
-            raise HTTPException(status_code=500, detail=f"Failed to create port: {str(e)}")
+            raise HTTPException(status_code=500, detail="Failed to create port")
 
     # =============================================================================
     # AI TRADING INTELLIGENCE ADMIN ENDPOINTS

@@ -1,4 +1,4 @@
-"""LEG-3582 / LEG-3626 / LEG-3638 / LEG-3646 / LEG-3650 — admin_comprehensive HTTP 500 catches must not echo Exception text.
+"""LEG-3582 / LEG-3626 / LEG-3638 / LEG-3646 / LEG-3650 / LEG-3647 — admin_comprehensive HTTP 500 catches must not echo Exception text.
 
 Mirrors LEG-3570 admin_colonization / LEG-3569 claim_ship / LEG-3605 admin_economy opaque densify.
 Representative cluster: players/sectors/ports/planets/analytics/health/warp/teams.
@@ -6,6 +6,7 @@ Security cluster (LEG-3626): risk/status/logs/action routes.
 Economy cluster (LEG-3638): analytics snapshot, port stock levels, AI trading admin routes.
 Ship/player mutation cluster (LEG-3646): create/update/delete/teleport ship, update player.
 Create-player mutation cluster (LEG-3650): create-from-user, create-bulk player routes.
+World-entity mutation cluster (LEG-3647): sector/planet/port/warp CRUD mutations.
 """
 
 from __future__ import annotations
@@ -20,30 +21,51 @@ from fastapi import HTTPException
 
 from src.api.routes import admin_comprehensive as ac
 from src.api.routes.admin_comprehensive import (
+    PlanetCreateRequest,
+    PlanetUpdateRequest,
     PlayerSecurityAction,
     PlayerUpdateRequest,
+    SectorUpdateRequest,
     ShipCreateRequest,
     ShipUpdateRequest,
+    StationCreateRequest,
+    WarpTunnelCreateRequest,
+    WarpTunnelUpdateRequest,
     create_analytics_snapshot,
+    create_planet_in_sector,
     create_player_from_user,
     create_players_from_all_users,
+    create_port,
+    create_port_in_sector,
     create_ship,
+    create_warp_tunnel,
+    delete_planet,
+    delete_port,
     delete_ship,
+    delete_warp_tunnel,
     get_ai_models,
     get_ai_player_profiles,
     get_player_risk_assessment,
     get_player_security_status,
     get_players_comprehensive,
+    get_sector_warp_tunnels,
     list_player_security_logs,
     take_security_action,
     teleport_ship,
     update_all_port_stock_levels,
+    update_planet,
     update_player,
+    update_sector,
     update_ship,
+    update_warp_tunnel,
 )
 
 _PLAYER_ID = "00000000-0000-0000-0000-000000000001"
 _SHIP_ID = "00000000-0000-0000-0000-000000000002"
+_SECTOR_ID = "1"
+_PLANET_ID = "00000000-0000-0000-0000-000000000003"
+_STATION_ID = "00000000-0000-0000-0000-000000000004"
+_TUNNEL_ID = "00000000-0000-0000-0000-000000000005"
 
 
 @contextmanager
@@ -443,3 +465,236 @@ def test_admin_comprehensive_ship_player_mutation_cluster_http500_opaque():
     assert "Failed to teleport ship: {str(e)}" not in src
     assert "Failed to create player: {str(e)}" not in src
     assert "Failed to create players: {str(e)}" not in src
+
+
+@pytest.mark.asyncio
+async def test_update_sector_unexpected_is_opaque_500():
+    """LEG-3647 — update_sector catch must not echo raw Exception text."""
+    with patch.object(ac, "admin_action_attempt", _noop_admin_action_attempt):
+        with pytest.raises(HTTPException) as excinfo:
+            await update_sector(
+                sector_id=_SECTOR_ID,
+                sector_data=SectorUpdateRequest(name="Renamed"),
+                current_admin=SimpleNamespace(username="admin"),
+                db=_BoomDB(),
+            )
+
+    exc = excinfo.value
+    assert exc.status_code == 500
+    assert exc.detail == "Failed to update sector"
+    assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
+
+
+@pytest.mark.asyncio
+async def test_create_planet_in_sector_unexpected_is_opaque_500():
+    """LEG-3647 — create_planet_in_sector catch must not echo raw Exception text."""
+    planet_data = PlanetCreateRequest(name="Test Planet", type="TERRAN")
+
+    with patch.object(ac, "admin_action_attempt", _noop_admin_action_attempt):
+        with pytest.raises(HTTPException) as excinfo:
+            await create_planet_in_sector(
+                sector_id=_SECTOR_ID,
+                planet_data=planet_data,
+                current_admin=SimpleNamespace(username="admin"),
+                db=_BoomDB(),
+            )
+
+    exc = excinfo.value
+    assert exc.status_code == 500
+    assert exc.detail == "Failed to create planet"
+    assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
+
+
+@pytest.mark.asyncio
+async def test_update_planet_unexpected_is_opaque_500():
+    """LEG-3647 — update_planet catch must not echo raw Exception text."""
+    with patch.object(ac, "admin_action_attempt", _noop_admin_action_attempt):
+        with pytest.raises(HTTPException) as excinfo:
+            await update_planet(
+                planet_id=_PLANET_ID,
+                planet_data=PlanetUpdateRequest(name="Renamed"),
+                current_admin=SimpleNamespace(username="admin"),
+                db=_BoomDB(),
+            )
+
+    exc = excinfo.value
+    assert exc.status_code == 500
+    assert exc.detail == "Failed to update planet"
+    assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
+
+
+@pytest.mark.asyncio
+async def test_delete_planet_unexpected_is_opaque_500():
+    """LEG-3647 — delete_planet catch must not echo raw Exception text."""
+    with patch.object(ac, "admin_action_attempt", _noop_admin_action_attempt):
+        with pytest.raises(HTTPException) as excinfo:
+            await delete_planet(
+                planet_id=_PLANET_ID,
+                current_admin=SimpleNamespace(username="admin"),
+                db=_BoomDB(),
+            )
+
+    exc = excinfo.value
+    assert exc.status_code == 500
+    assert exc.detail == "Failed to delete planet"
+    assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
+
+
+@pytest.mark.asyncio
+async def test_create_port_in_sector_unexpected_is_opaque_500():
+    """LEG-3647 — create_port_in_sector catch must not echo raw Exception text."""
+    station_data = StationCreateRequest(
+        name="Test Port",
+        station_class=1,
+        type="TRADING",
+    )
+
+    with patch.object(ac, "admin_action_attempt", _noop_admin_action_attempt):
+        with pytest.raises(HTTPException) as excinfo:
+            await create_port_in_sector(
+                sector_id=_SECTOR_ID,
+                station_data=station_data,
+                current_admin=SimpleNamespace(username="admin"),
+                db=_BoomDB(),
+            )
+
+    exc = excinfo.value
+    assert exc.status_code == 500
+    assert exc.detail == "Failed to create port"
+    assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
+
+
+@pytest.mark.asyncio
+async def test_get_sector_warp_tunnels_unexpected_is_opaque_500():
+    """LEG-3647 — get_sector_warp_tunnels catch must not echo raw Exception text."""
+    with pytest.raises(HTTPException) as excinfo:
+        await get_sector_warp_tunnels(
+            sector_id=_SECTOR_ID,
+            current_admin=SimpleNamespace(username="admin"),
+            db=_BoomDB(),
+        )
+
+    exc = excinfo.value
+    assert exc.status_code == 500
+    assert exc.detail == "Failed to get sector warp tunnels"
+    assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
+
+
+@pytest.mark.asyncio
+async def test_create_warp_tunnel_unexpected_is_opaque_500():
+    """LEG-3647 — create_warp_tunnel catch must not echo raw Exception text."""
+    tunnel_data = WarpTunnelCreateRequest(
+        name="Test Tunnel",
+        destination_sector_id=2,
+    )
+
+    with patch.object(ac, "admin_action_attempt", _noop_admin_action_attempt):
+        with pytest.raises(HTTPException) as excinfo:
+            await create_warp_tunnel(
+                sector_id=_SECTOR_ID,
+                tunnel_data=tunnel_data,
+                current_admin=SimpleNamespace(username="admin"),
+                db=_BoomDB(),
+            )
+
+    exc = excinfo.value
+    assert exc.status_code == 500
+    assert exc.detail == "Failed to create warp tunnel"
+    assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
+
+
+@pytest.mark.asyncio
+async def test_update_warp_tunnel_unexpected_is_opaque_500():
+    """LEG-3647 — update_warp_tunnel catch must not echo raw Exception text."""
+    with patch.object(ac, "admin_action_attempt", _noop_admin_action_attempt):
+        with pytest.raises(HTTPException) as excinfo:
+            await update_warp_tunnel(
+                tunnel_id=_TUNNEL_ID,
+                tunnel_data=WarpTunnelUpdateRequest(name="Renamed"),
+                current_admin=SimpleNamespace(username="admin"),
+                db=_BoomDB(),
+            )
+
+    exc = excinfo.value
+    assert exc.status_code == 500
+    assert exc.detail == "Failed to update warp tunnel"
+    assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
+
+
+@pytest.mark.asyncio
+async def test_delete_warp_tunnel_unexpected_is_opaque_500():
+    """LEG-3647 — delete_warp_tunnel catch must not echo raw Exception text."""
+    with patch.object(ac, "admin_action_attempt", _noop_admin_action_attempt):
+        with pytest.raises(HTTPException) as excinfo:
+            await delete_warp_tunnel(
+                tunnel_id=_TUNNEL_ID,
+                current_admin=SimpleNamespace(username="admin"),
+                db=_BoomDB(),
+            )
+
+    exc = excinfo.value
+    assert exc.status_code == 500
+    assert exc.detail == "Failed to delete warp tunnel"
+    assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
+
+
+@pytest.mark.asyncio
+async def test_delete_port_unexpected_is_opaque_500():
+    """LEG-3647 — delete_port catch must not echo raw Exception text."""
+    with patch.object(ac, "admin_action_attempt", _noop_admin_action_attempt):
+        with pytest.raises(HTTPException) as excinfo:
+            await delete_port(
+                station_id=_STATION_ID,
+                current_admin=SimpleNamespace(username="admin"),
+                db=_BoomDB(),
+            )
+
+    exc = excinfo.value
+    assert exc.status_code == 500
+    assert exc.detail == "Failed to delete port"
+    assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
+
+
+@pytest.mark.asyncio
+async def test_create_port_unexpected_is_opaque_500():
+    """LEG-3647 — create_port catch must not echo raw Exception text."""
+    with patch.object(ac, "admin_action_attempt", _noop_admin_action_attempt):
+        with pytest.raises(HTTPException) as excinfo:
+            await create_port(
+                port_data={"name": "Test Port", "sector_id": _SECTOR_ID},
+                current_admin=SimpleNamespace(username="admin"),
+                db=_BoomDB(),
+            )
+
+    exc = excinfo.value
+    assert exc.status_code == 500
+    assert exc.detail == "Failed to create port"
+    assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
+
+
+def test_admin_comprehensive_world_entity_mutation_cluster_http500_opaque():
+    """LEG-3647 — static pin: world-entity mutation cluster 500 details stay opaque."""
+    src = Path(ac.__file__).read_text(encoding="utf-8")
+    for stable in (
+        'detail="Failed to update sector"',
+        'detail="Failed to create planet"',
+        'detail="Failed to update planet"',
+        'detail="Failed to delete planet"',
+        'detail="Failed to create port"',
+        'detail="Failed to get sector warp tunnels"',
+        'detail="Failed to create warp tunnel"',
+        'detail="Failed to update warp tunnel"',
+        'detail="Failed to delete warp tunnel"',
+        'detail="Failed to delete port"',
+    ):
+        assert stable in src
+    assert "Failed to update sector: {str(e)}" not in src
+    assert "Failed to create planet: {str(e)}" not in src
+    assert "Failed to update planet: {str(e)}" not in src
+    assert "Failed to delete planet: {str(e)}" not in src
+    assert "Failed to create port: {str(e)}" not in src
+    assert "Failed to get sector warp tunnels: {str(e)}" not in src
+    assert "Failed to create warp tunnel: {str(e)}" not in src
+    assert "Failed to update warp tunnel: {str(e)}" not in src
+    assert "Failed to delete warp tunnel: {str(e)}" not in src
+    assert "Failed to delete port: {str(e)}" not in src
