@@ -67,4 +67,17 @@ describe('GalaxyGenerationHistory load errors (LEG-2713)', () => {
     expect(text).not.toMatch(/Failed to fetch/i);
     expect(text).not.toMatch(/TypeError/i);
   });
+
+  it('surfaces honest fallback on axios-shaped Network Error (LEG-3579)', async () => {
+    loadBangHistory.mockRejectedValue(new Error('Network Error'));
+
+    render(<GalaxyGenerationHistory />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to load history/i)).toBeTruthy();
+    });
+    const text = screen.getByText(/bang\.history\.loadFailed/i).textContent ?? '';
+    expect(text).not.toBe('Network Error');
+    expect(text).not.toContain('Network Error');
+  });
 });
