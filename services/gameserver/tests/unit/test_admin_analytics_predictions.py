@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastapi import HTTPException
 
 from src.api.routes import admin_comprehensive as admin_route
 from src.services.market_prediction_engine import PricePrediction
@@ -119,3 +120,30 @@ async def test_ai_predictions_legacy_row_shape(monkeypatch):
     row = rows[0]
     assert row["resourceId"] == "ore"
     assert row["confidence"] == 75.0
+
+
+@pytest.mark.asyncio
+async def test_analytics_predictions_unexpected_is_opaque_500(monkeypatch):
+    """LEG-3614 — outer catch must not echo raw Exception text."""
+    secret = "secret-prediction-should-not-leak"
+    engine = MagicMock()
+    engine.batch_predict = AsyncMock(side_effect=RuntimeError(secret))
+    monkeypatch.setattr(admin_route, "_market_prediction_engine", engine)
+
+    admin = SimpleNamespace(username="ops")
+    db = MagicMock()
+
+    with pytest.raises(HTTPException) as excinfo:
+        await admin_route.get_analytics_predictions(
+            timeframe="1h",
+            resource=None,
+            station_id=None,
+            hours_ahead=None,
+            current_admin=admin,
+            db=db,
+        )
+
+    exc = excinfo.value
+    assert exc.status_code == 500
+    assert exc.detail == "Failed to fetch analytics predictions"
+    assert secret not in str(exc.detail)
