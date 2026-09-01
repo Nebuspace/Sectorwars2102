@@ -38,7 +38,7 @@ from src.models.contract import (
 from src.models.ship import Ship, ShipType
 from src.models.station import StationStatus
 from src.models.faction import FactionType
-from src.services import contract_bulk, contract_dispute, contract_escrow_core, contract_service, storage_service
+from src.services import contract_bulk, contract_dispute, contract_escrow_core, contract_reputation_service, contract_service, storage_service
 from src.services.contract_service import (
     ContractConflictError,
     ContractError,
@@ -2488,6 +2488,62 @@ class TestResolveDispute:
         db = _FakeSession(contracts=[c], players=[acceptor])
         with pytest.raises(ContractError, match="unknown_outcome"):
             contract_service.resolve_dispute(db, c.id, uuid.uuid4(), "not_a_real_outcome", now=_NOW)
+
+    def test_full_payout_applies_dispute_reputation_reward(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """LEG-2071: resolve_dispute wires contract_reputation_service."""
+        calls: List[Any] = []
+        monkeypatch.setattr(
+            contract_reputation_service, "apply_faction_rep_delta",
+            lambda db, pid, ft, delta, reason, faction_name=None: calls.append(
+                (pid, ft, delta, reason)
+            ),
+        )
+        faction = SimpleNamespace(
+            id=uuid.uuid4(), faction_type=FactionType.MINING, name="Test Mining",
+        )
+        c = self._disputed_contract(reputation_reward=30, faction=faction, faction_id=faction.id)
+        acceptor = _player(credits=5000)
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[acceptor])
+
+        contract_service.resolve_dispute(
+            db, c.id, uuid.uuid4(), ContractDisputeResolution.FULL_PAYOUT, now=_NOW,
+        )
+
+        assert len(calls) == 1
+        assert calls[0][0] == acceptor.id
+        assert calls[0][1] == FactionType.MINING
+        assert calls[0][2] == 30
+        assert calls[0][3] == "dispute_full_payout_reputation_reward"
+
+    def test_penalty_applies_doubled_reputation_penalty_after_resolve(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """LEG-2071: PENALTY reputation runs after guarded transition (pause lifted)."""
+        calls: List[Any] = []
+        monkeypatch.setattr(
+            contract_reputation_service, "apply_faction_rep_delta",
+            lambda db, pid, ft, delta, reason, faction_name=None: calls.append(
+                (pid, ft, delta, reason)
+            ),
+        )
+        faction = SimpleNamespace(
+            id=uuid.uuid4(), faction_type=FactionType.FEDERATION, name="Federation",
+        )
+        c = self._disputed_contract(reputation_penalty=-25, faction=faction, faction_id=faction.id)
+        acceptor = _player(credits=5000)
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[acceptor])
+
+        contract_service.resolve_dispute(
+            db, c.id, uuid.uuid4(), ContractDisputeResolution.PENALTY, now=_NOW,
+        )
+
+        assert len(calls) == 1
+        assert calls[0][0] == acceptor.id
+        assert calls[0][1] == FactionType.FEDERATION
+        assert calls[0][2] == -50
+        assert calls[0][3] == "dispute_penalty_doubled_reputation_penalty"
 
 
 @pytest.mark.unit
