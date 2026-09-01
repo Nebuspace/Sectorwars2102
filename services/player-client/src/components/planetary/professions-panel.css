@@ -56,6 +56,20 @@
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
+.professions-panel__assign {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.5rem 0.75rem;
+  margin: 0.75rem 0;
+  font-size: 0.78rem;
+}
+
+.professions-panel__assign strong {
+  flex-basis: 100%;
+  color: rgba(255, 255, 255, 0.85);
+}
+
 .professions-panel__train {
   display: flex;
   flex-wrap: wrap;

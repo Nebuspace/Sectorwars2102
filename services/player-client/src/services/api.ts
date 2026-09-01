@@ -543,6 +543,16 @@ export const planetaryAPI = {
       method: 'POST',
       body: JSON.stringify({ profession, trainee_count: traineeCount }),
     }),
+
+  assignPlanetProfession: (
+    planetId: string,
+    profession: string,
+    activeCount: number,
+  ) =>
+    apiRequest(`/api/v1/planets/${planetId}/professions/assign`, {
+      method: 'POST',
+      body: JSON.stringify({ profession, active_count: activeCount }),
+    }),
 };
 
 /** GET/POST /station-security/stations/{id} — security tier readout + owner upgrade/downgrade (LEG-3105/3106). */

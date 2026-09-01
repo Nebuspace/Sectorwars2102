@@ -18,6 +18,16 @@ function httpStatus(err: unknown): number | undefined {
   return undefined;
 }
 
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
+};
+
 export function formatExplorationSuggestionError(err: unknown): string {
   const fallback = 'Failed to load exploration suggestions';
   if (err instanceof TypeError) return fallback;
@@ -26,7 +36,8 @@ export function formatExplorationSuggestionError(err: unknown): string {
   const hasServerDetail =
     typeof message === 'string' &&
     message.trim().length > 0 &&
-    !/^API Error: \d+$/.test(message.trim());
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNetworkCollapseMessage(message);
   if ((status === 500 || status === 503) && hasServerDetail) return message!;
   if (hasServerDetail) return message!;
   return fallback;

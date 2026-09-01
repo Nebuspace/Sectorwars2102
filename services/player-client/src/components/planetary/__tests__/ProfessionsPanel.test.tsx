@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const { getPlanetProfessions, trainPlanetProfession, OWNER_STATE } = vi.hoisted(() => {
+const { getPlanetProfessions, trainPlanetProfession, assignPlanetProfession, OWNER_STATE } = vi.hoisted(() => {
   const state = {
     planet_id: 'planet-1',
     generic_colonists: 5000,
@@ -18,6 +18,20 @@ const { getPlanetProfessions, trainPlanetProfession, OWNER_STATE } = vi.hoisted(
       SPACE_ENGINEERS: 0,
       STRUCTURAL_ENGINEERS: 0,
       MINING_ENGINEERS: 120,
+      RESEARCH_SCIENTISTS: 0,
+      AGRICULTURAL_SCIENTISTS: 0,
+      MEDICAL_PROFESSIONALS: 0,
+      TERRAFORM_ENGINEERS: 0,
+      COMBAT_PILOTS: 0,
+      DEFENSE_COORDINATORS: 0,
+      STRATEGIC_ANALYSTS: 0,
+      TRADE_SPECIALISTS: 0,
+      INDUSTRIAL_MANAGERS: 0,
+    },
+    active_professions: {
+      SPACE_ENGINEERS: 0,
+      STRUCTURAL_ENGINEERS: 0,
+      MINING_ENGINEERS: 80,
       RESEARCH_SCIENTISTS: 0,
       AGRICULTURAL_SCIENTISTS: 0,
       MEDICAL_PROFESSIONALS: 0,
@@ -62,6 +76,11 @@ const { getPlanetProfessions, trainPlanetProfession, OWNER_STATE } = vi.hoisted(
       cost_blocked: true,
       message: 'Training queued without charge — profession cost magnitudes remain DECISION-NEEDED.',
     })),
+    assignPlanetProfession: vi.fn(async () => ({
+      success: true,
+      changed: true,
+      message: 'Active profession assignment updated.',
+    })),
   };
 });
 
@@ -69,6 +88,7 @@ vi.mock('../../../services/api', () => ({
   planetaryAPI: {
     getPlanetProfessions,
     trainPlanetProfession,
+    assignPlanetProfession,
   },
 }));
 
@@ -83,11 +103,17 @@ describe('ProfessionsPanel', () => {
   beforeEach(() => {
     getPlanetProfessions.mockClear();
     trainPlanetProfession.mockClear();
+    assignPlanetProfession.mockClear();
     getPlanetProfessions.mockResolvedValue(OWNER_STATE);
     trainPlanetProfession.mockResolvedValue({
       success: true,
       cost_blocked: true,
       message: 'Training queued without charge — profession cost magnitudes remain DECISION-NEEDED.',
+    });
+    assignPlanetProfession.mockResolvedValue({
+      success: true,
+      changed: true,
+      message: 'Active profession assignment updated.',
     });
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -324,7 +350,6 @@ describe('ProfessionsPanel', () => {
     expect(container.querySelector('.professions-panel__error')).toBeNull();
     expect(container.querySelector('.professions-panel')).toBeNull();
   });
-});
 
   it('falls back on TypeError network collapse (LEG-3055)', () => {
     const text = formatProfessionsLoadError(new TypeError('Failed to fetch'));
@@ -339,3 +364,31 @@ describe('ProfessionsPanel', () => {
     expect(formatProfessionsLoadError(new Error('Network Error'))).not.toMatch(/Network Error/i);
     expect(formatProfessionsLoadError(new Error('Failed to fetch'))).not.toMatch(/Failed to fetch/i);
   });
+
+  it('wires assign API for active headcount (LEG-3719)', async () => {
+    await act(async () => {
+      root.render(<ProfessionsPanel planetId="planet-1" citadelLevel={3} />);
+    });
+    await act(async () => {
+      await flush();
+    });
+
+    expect(container.querySelector('[data-testid="professions-active-assign"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="professions-count-MINING_ENGINEERS"]')?.textContent).toContain(
+      '120 / 80 active',
+    );
+
+    const assignBtn = Array.from(container.querySelectorAll('button')).find((btn) =>
+      btn.textContent?.includes('Set active'),
+    );
+    expect(assignBtn).toBeTruthy();
+
+    await act(async () => {
+      assignBtn!.click();
+      await flush();
+    });
+
+    expect(assignPlanetProfession).toHaveBeenCalledWith('planet-1', 'MINING_ENGINEERS', 80);
+    expect(container.textContent).toContain('Active profession assignment updated.');
+  });
+});
