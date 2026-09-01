@@ -266,4 +266,34 @@ describe('PlanetDetail PATCH errors (LEG-2616)', () => {
     expect(msg).not.toMatch(/Failed to fetch/i);
     expect(msg).not.toMatch(/TypeError/i);
   });
+
+  it('surfaces honest fallback on name PATCH Network Error densify (LEG-3553)', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.patch).mockRejectedValue(new Error('Network Error'));
+
+    render(<PlanetDetail planet={basePlanet} onBack={() => undefined} />);
+
+    const nameLabel = screen.getByText('Name:');
+    const row = nameLabel.closest('.info-item');
+    await user.click(row!.querySelector('.editable-field.clickable') as HTMLElement);
+
+    const input = screen.getByRole('textbox');
+    await user.clear(input);
+    await user.type(input, 'Network Collapse');
+    await user.click(screen.getByRole('button', { name: '✓' }));
+
+    await waitFor(() => {
+      expect(api.patch).toHaveBeenCalledWith('/api/v1/admin/planets/planet-1', {
+        name: 'Network Collapse',
+      });
+    });
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/Failed to update name/i);
+    });
+
+    const msg = screen.getByRole('alert').textContent ?? '';
+    expect(msg).not.toBe('Network Error');
+    expect(msg).not.toContain('Network Error');
+    expect(msg).not.toMatch(/TypeError/i);
+  });
 });
