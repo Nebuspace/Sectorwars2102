@@ -49,7 +49,10 @@ describe('formatTradeCascadeError (LEG-2957)', () => {
   });
 
   it('falls back for network-ish failures without status', () => {
-    expect(formatTradeCascadeError(new Error('Failed to fetch'))).toBe('Failed to fetch');
+    // LEG-3505 densify: Error('Failed to fetch') is transport collapse, not GS detail.
+    expect(formatTradeCascadeError(new Error('Failed to fetch'))).toBe(
+      'Failed to plan trade cascade.',
+    );
     expect(formatTradeCascadeError(new Error('API Error: 500'))).toBe(
       'Failed to plan trade cascade.',
     );
