@@ -181,9 +181,13 @@ function makeGameState(overrides: Record<string, unknown> = {}) {
 }
 
 let gameState: ReturnType<typeof makeGameState>;
-vi.mock('../../../contexts/GameContext', () => ({
-  useGame: () => gameState,
-}));
+vi.mock('../../../contexts/GameContext', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../contexts/GameContext')>();
+  return {
+    ...actual,
+    useGame: () => gameState,
+  };
+});
 
 let autopilotState: any;
 vi.mock('../../../contexts/AutopilotContext', () => ({

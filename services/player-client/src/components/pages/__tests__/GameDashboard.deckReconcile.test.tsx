@@ -123,6 +123,14 @@ function makeGameState(overrides: Record<string, unknown> = {}) {
     upgradeShields: vi.fn(),
     exploreCurrentLocation: vi.fn().mockResolvedValue(undefined),
     getAvailableMoves: vi.fn().mockResolvedValue(undefined),
+    scanAdjacentSector: vi.fn().mockResolvedValue({
+      success: true,
+      sector_id: 101,
+      name: 'Sector 101',
+      hazard_level: 2,
+      presence_echo: 'silent',
+      turns_remaining: 48,
+    }),
     refreshPlayerState: vi.fn().mockResolvedValue(undefined),
     sendPlayerMessage: vi.fn(),
     deployMines: vi.fn(),
@@ -135,9 +143,13 @@ function makeGameState(overrides: Record<string, unknown> = {}) {
 }
 
 let gameState: ReturnType<typeof makeGameState>;
-vi.mock('../../../contexts/GameContext', () => ({
-  useGame: () => gameState,
-}));
+vi.mock('../../../contexts/GameContext', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../contexts/GameContext')>();
+  return {
+    ...actual,
+    useGame: () => gameState,
+  };
+});
 
 vi.mock('../../../contexts/AutopilotContext', () => ({
   useAutopilot: () => ({
@@ -309,6 +321,36 @@ describe('GameDashboard — flying deck collapsed to 3 monitors (WO-UI2-DECK-REC
 
     expect(gameState.moveToSector).toHaveBeenCalledWith(101);
   }, 15000);
+
+  it('NAV: COURSE adjacent exits expose SCAN wired to scanAdjacentSector (2 turns)', async () => {
+    await mount();
+
+    const nav = container.querySelector('.mon.nav-monitor')!;
+    const exitRow = nav.querySelector('.nav-exit-row')!;
+    const scanBtn = exitRow.querySelector('.nav-exit-scan-btn')!;
+    expect(scanBtn.textContent).toContain('SCAN (2)');
+
+    await click(scanBtn);
+
+    expect(gameState.scanAdjacentSector).toHaveBeenCalledWith(101);
+    expect(container.textContent).toMatch(/SECTOR SCAN COMPLETE/i);
+    expect(container.textContent).toContain('SECTOR 101');
+  });
+
+  it('NAV: COURSE SCAN Network Error densify surfaces honest fallback', async () => {
+    gameState = makeGameState({
+      scanAdjacentSector: vi.fn().mockRejectedValue(new Error('Network Error')),
+    });
+    await mount();
+
+    const nav = container.querySelector('.mon.nav-monitor')!;
+    const scanBtn = nav.querySelector('.nav-exit-scan-btn')!;
+    await click(scanBtn);
+
+    expect(container.textContent).toMatch(/SECTOR SCAN FAILED/i);
+    expect(container.textContent).toMatch(/Failed to scan adjacent sector/i);
+    expect(container.textContent).not.toMatch(/Network Error/i);
+  });
 
   it('NAV: CHART page is a separate tab and the graph is not visible on COURSE', async () => {
     await mount();

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { useGame, type MoveOption, type SpecialFormationSummary } from '../../contexts/GameContext';
+import { useGame, type MoveOption, type SpecialFormationSummary, ADJACENT_SECTOR_SCAN_TURN_COST, formatScanAdjacentSectorError } from '../../contexts/GameContext';
 import { useAutopilot } from '../../contexts/AutopilotContext';
 import { WindshieldFlightProvider, useWindshieldFlight } from '../../contexts/WindshieldFlightContext';
 import { useFirstLogin } from '../../contexts/FirstLoginContext';
@@ -700,6 +700,7 @@ const GameDashboardInner: React.FC = () => {
     upgradeShields,
     exploreCurrentLocation,
     getAvailableMoves,
+    scanAdjacentSector,
     refreshPlayerState,
     updatePlayerCredits,
     quantumStatus,
@@ -919,6 +920,8 @@ const GameDashboardInner: React.FC = () => {
   const [investigatedFormationIds, setInvestigatedFormationIds] = useState<Set<string>>(new Set());
   const [investigatingFormationId, setInvestigatingFormationId] = useState<string | null>(null);
   const [investigateResult, setInvestigateResult] = useState<any>(null);
+  const [adjacentScanResult, setAdjacentScanResult] = useState<any>(null);
+  const [scanningSectorId, setScanningSectorId] = useState<number | null>(null);
 
   // Shell portal targets (WO-UI0-SHELL-TRANSPLANT): GameLayout's `.band`/
   // `.deck` slots, published via context. `bandEl`/`deckEl` are null until
@@ -2255,6 +2258,18 @@ const GameDashboardInner: React.FC = () => {
     return () => { if (investigateTimerRef.current) clearTimeout(investigateTimerRef.current); };
   }, [investigateResult]);
 
+  const adjacentScanTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (adjacentScanTimerRef.current) clearTimeout(adjacentScanTimerRef.current);
+    if (adjacentScanResult) {
+      adjacentScanTimerRef.current = setTimeout(
+        () => dismissOverlay(setAdjacentScanResult),
+        9000,
+      );
+    }
+    return () => { if (adjacentScanTimerRef.current) clearTimeout(adjacentScanTimerRef.current); };
+  }, [adjacentScanResult]);
+
 
   const handleMove = async (sectorId: number) => {
     // Manual helm always wins over ARIA autopilot — a live engage loop was
@@ -2285,6 +2300,25 @@ const GameDashboardInner: React.FC = () => {
     } catch (error) {
       setWarpDepart(null);
       console.error('Error moving to sector:', error);
+    }
+  };
+
+  const handleScanAdjacent = async (sectorId: number) => {
+    if (helmBusy || scanningSectorId != null) return;
+    autopilot.abort('manual helm action');
+    setScanningSectorId(sectorId);
+    try {
+      const result = await scanAdjacentSector(sectorId);
+      setAdjacentScanResult({ success: true, ...result });
+    } catch (error: any) {
+      const payload = error?.data ?? error?.response?.data;
+      const detail = typeof payload?.detail === 'string' ? payload.detail : undefined;
+      setAdjacentScanResult({
+        success: false,
+        message: detail || formatScanAdjacentSectorError(error),
+      });
+    } finally {
+      setScanningSectorId(null);
     }
   };
   
@@ -2817,6 +2851,50 @@ const GameDashboardInner: React.FC = () => {
               </div>
             ) : (
               <div className="alert-message">{investigateResult.message}</div>
+            )}
+          </div>
+        )}
+
+        {adjacentScanResult && (
+          <div
+            className={`cockpit-alert ${adjacentScanResult.success ? 'success' : 'error'}`}
+            role="status"
+            onClick={() => dismissOverlay(setAdjacentScanResult)}
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                dismissOverlay(setAdjacentScanResult);
+              }
+            }}
+          >
+            <div className="alert-header">
+              <span>{adjacentScanResult.success ? '📡 SECTOR SCAN COMPLETE' : '📡 SECTOR SCAN FAILED'}</span>
+              <button
+                className="alert-dismiss"
+                onClick={(e) => { e.stopPropagation(); dismissOverlay(setAdjacentScanResult); }}
+                aria-label="Dismiss sector scan result"
+              >
+                ×
+              </button>
+            </div>
+            {adjacentScanResult.success ? (
+              <div className="alert-message">
+                {adjacentScanResult.name
+                  ? `${String(adjacentScanResult.name).toUpperCase()}`
+                  : `SECTOR ${adjacentScanResult.sector_id ?? '—'}`}
+                {typeof adjacentScanResult.hazard_level === 'number'
+                  ? ` · HAZARD ${adjacentScanResult.hazard_level}`
+                  : ''}
+                {adjacentScanResult.presence_echo
+                  ? ` · ECHO ${String(adjacentScanResult.presence_echo).toUpperCase()}`
+                  : ''}
+                {typeof adjacentScanResult.turns_remaining === 'number'
+                  ? ` · ${adjacentScanResult.turns_remaining} TURNS LEFT`
+                  : ''}
+              </div>
+            ) : (
+              <div className="alert-message">{adjacentScanResult.message}</div>
             )}
           </div>
         )}
@@ -3784,7 +3862,11 @@ const GameDashboardInner: React.FC = () => {
                         {adjacentExits.length === 0 ? (
                           <div className="empty-state">No charted exits</div>
                         ) : (
-                          adjacentExits.map((exit) => (
+                          adjacentExits.map((exit) => {
+                            const canAffordScan =
+                              (playerState?.turns ?? 0) >= ADJACENT_SECTOR_SCAN_TURN_COST;
+                            const scanBusy = scanningSectorId === exit.sector_id;
+                            return (
                             <div key={exit.sector_id} className="nav-exit-row">
                               <span className="nav-exit-name">→ {exit.name}</span>
                               {navThreatBandBySector[exit.sector_id] && (
@@ -3797,6 +3879,19 @@ const GameDashboardInner: React.FC = () => {
                               <span className="nav-exit-cost"><TurnsIcon /> {exit.turn_cost}</span>
                               <button
                                 type="button"
+                                className="nav-exit-scan-btn"
+                                onClick={() => handleScanAdjacent(exit.sector_id)}
+                                disabled={!canAffordScan || scanBusy || helmBusy}
+                                title={
+                                  canAffordScan
+                                    ? `Scan ${exit.name} (${ADJACENT_SECTOR_SCAN_TURN_COST} turns)`
+                                    : `Need ${ADJACENT_SECTOR_SCAN_TURN_COST} turns to scan`
+                                }
+                              >
+                                {scanBusy ? '…' : `SCAN (${ADJACENT_SECTOR_SCAN_TURN_COST})`}
+                              </button>
+                              <button
+                                type="button"
                                 className="nav-exit-move-btn"
                                 onClick={() => handleMove(exit.sector_id)}
                                 disabled={!exit.can_afford}
@@ -3805,7 +3900,8 @@ const GameDashboardInner: React.FC = () => {
                                 MOVE ▸
                               </button>
                             </div>
-                          ))
+                            );
+                          })
                         )}
                       </div>
 
