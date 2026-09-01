@@ -238,4 +238,75 @@ describe('ProductionPanel', () => {
     expect(container.querySelector('[data-testid="days-until-full-fuel"]')).toBeNull();
     expect(container.textContent).not.toContain('to cap');
   });
+
+  it('renders inline upgrade CTA with building level when upgrade track present', async () => {
+    const onUpgrade = vi.fn();
+    await act(async () => {
+      root.render(
+        <ProductionPanel
+          {...defaultProps}
+          lines={[
+            baseLine({
+              buildingLevel: 2,
+              maxBuildingLevel: 10,
+              nextUpgradeCredits: 1500,
+              onUpgrade,
+            }),
+          ]}
+        />,
+      );
+    });
+
+    expect(container.querySelector('[data-testid="building-level-fuel"]')?.textContent).toContain('Lv 2/10');
+    const upgradeBtn = container.querySelector('[data-testid="upgrade-fuel"]') as HTMLButtonElement;
+    expect(upgradeBtn).toBeTruthy();
+    expect(upgradeBtn.disabled).toBe(false);
+
+    await act(async () => {
+      upgradeBtn.click();
+    });
+    expect(onUpgrade).toHaveBeenCalledTimes(1);
+  });
+
+  it('disables upgrade CTA at max building level', async () => {
+    await act(async () => {
+      root.render(
+        <ProductionPanel
+          {...defaultProps}
+          lines={[
+            baseLine({
+              buildingLevel: 10,
+              maxBuildingLevel: 10,
+              onUpgrade: vi.fn(),
+            }),
+          ]}
+        />,
+      );
+    });
+
+    const upgradeBtn = container.querySelector('[data-testid="upgrade-fuel"]') as HTMLButtonElement;
+    expect(upgradeBtn.disabled).toBe(true);
+  });
+
+  it('surfaces building upgrade error without literal Network Error', async () => {
+    await act(async () => {
+      root.render(
+        <ProductionPanel
+          {...defaultProps}
+          buildingUpgradeError="Failed to upgrade building"
+          lines={[
+            baseLine({
+              buildingLevel: 1,
+              maxBuildingLevel: 10,
+              onUpgrade: vi.fn(),
+            }),
+          ]}
+        />,
+      );
+    });
+
+    const alert = container.querySelector('[data-testid="building-upgrade-error"]');
+    expect(alert?.textContent).toBe('Failed to upgrade building');
+    expect(alert?.textContent).not.toContain('Network Error');
+  });
 });

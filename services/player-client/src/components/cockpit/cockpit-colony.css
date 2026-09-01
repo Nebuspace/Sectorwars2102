@@ -616,6 +616,20 @@
 .cp-cargo-btn:hover:not(:disabled) {
   background: color-mix(in srgb, #fbbf24 24%, transparent);
 }
+.cp-upgrade-btn {
+  color: color-mix(in srgb, #34d399 75%, #ffffff 25%);
+  background: color-mix(in srgb, #34d399 10%, transparent);
+  border-color: color-mix(in srgb, #34d399 32%, transparent);
+}
+.cp-prod-bldg-lvl {
+  font-size: 0.58rem;
+  opacity: 0.85;
+}
+.cp-prod-upgrade-error {
+  margin-top: 0.35rem;
+  font-size: 0.62rem;
+  color: #f87171;
+}
 
 @keyframes cp-live-pulse {
   0%, 100% { opacity: 1; }

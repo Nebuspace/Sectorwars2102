@@ -39,6 +39,15 @@ vi.mock('../../../services/api', () => ({
   gameAPI: { planetary: { getOwnedPlanets } },
 }));
 
+// CockpitColonyManagement now calls useGame() for inline building upgrades (LEG-515).
+// This suite isolates the tab-rail migration — stub GameContext like other cockpit tests.
+vi.mock('../../../contexts/GameContext', () => ({
+  useGame: () => ({
+    playerState: { credits: 10_000 },
+    upgradePlanetBuilding: vi.fn(),
+  }),
+}));
+
 vi.mock('../CitadelPanel', () => ({ default: () => <div data-testid="panel-citadel" /> }));
 vi.mock('../GridPanel', () => ({ default: () => <div data-testid="panel-grid" /> }));
 vi.mock('../TerraformPanel', () => ({ default: () => <div data-testid="panel-terraform" /> }));
