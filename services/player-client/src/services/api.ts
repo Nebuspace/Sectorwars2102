@@ -1941,6 +1941,24 @@ export const constructionAPI = {
 
   getReservation: (reservationId: string) =>
     apiRequest(`/api/v1/construction/reservations/${reservationId}`),
+
+  assignEngineer: (
+    reservationId: string,
+    body: { planet_id: string; count: number },
+  ) =>
+    apiRequest(`/api/v1/construction/reservations/${reservationId}/assign-engineer`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  unassignEngineer: (
+    reservationId: string,
+    body: { planet_id: string; count: number },
+  ) =>
+    apiRequest(`/api/v1/construction/reservations/${reservationId}/unassign-engineer`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
 };
 
 // Haggle APIs (ADR-0079 — numerical price negotiation)

@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { useGame } from '../../contexts/GameContext';
+import { gameAPI, planetaryAPI } from '../../services/api';
 import { formatCredits } from '../../utils/formatters';
 import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import { resourceIcon } from '../../services/resourceCatalog';
@@ -144,6 +145,9 @@ const PHASE_LABELS: Record<BuildPhase, string> = {
 const RESOURCES = ['ore', 'equipment', 'organics'] as const;
 type ConstructionResource = typeof RESOURCES[number];
 
+/** Canon cap — matches gameserver MAX_CONSTRUCTION_ENGINEERS_PER_PROJECT (LEG-3599). */
+const MAX_CONSTRUCTION_ENGINEERS_PER_PROJECT = 3;
+
 // Construction/shipyard context uses a bolt glyph for equipment (vs. the gear
 // glyph the catalog default gives planetary equipment production elsewhere)
 // — preserved as a local override so this UI's look doesn't shift under the
@@ -254,6 +258,11 @@ export function formatConstructionQuotesLoadError(error: unknown, fallback: stri
 
 /** Transport collapse copy is not gameserver detail (LEG-3507 densify). */
 export function formatConstructionReservationsLoadError(error: unknown, fallback: string): string {
+  return formatConstructionQuotesLoadError(error, fallback);
+}
+
+/** Transport collapse copy is not gameserver detail (LEG-3600 densify). */
+export function formatConstructionEngineerError(error: unknown, fallback: string): string {
   return formatConstructionQuotesLoadError(error, fallback);
 }
 
@@ -519,6 +528,14 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
   const [rentFor, setRentFor] = useState<string | null>(null);
   const [rentDays, setRentDays] = useState(7);
   const [cancelFor, setCancelFor] = useState<ConstructionReservation | null>(null);
+
+  // Space Engineer assignment (LEG-3600)
+  const [engineersFor, setEngineersFor] = useState<string | null>(null);
+  const [ownedPlanets, setOwnedPlanets] = useState<{ id: string; name: string }[]>([]);
+  const [planetEngineerCounts, setPlanetEngineerCounts] = useState<Record<string, number>>({});
+  const [engineersLoading, setEngineersLoading] = useState(false);
+  const [assignPlanetId, setAssignPlanetId] = useState('');
+  const [assignCount, setAssignCount] = useState(1);
 
   // Claim ceremony
   const [ceremony, setCeremony] = useState<{ name: string; shipType: string } | null>(null);
@@ -858,6 +875,115 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
     }
   }, [reservationAction]);
 
+  const loadEngineerSources = useCallback(async () => {
+    setEngineersLoading(true);
+    try {
+      const response = await gameAPI.planetary.getOwnedPlanets() as { planets?: { id: string; name: string }[] };
+      const planets = response.planets ?? [];
+      setOwnedPlanets(planets.map(p => ({ id: p.id, name: p.name })));
+      const counts: Record<string, number> = {};
+      await Promise.all(
+        planets.map(async (planet) => {
+          try {
+            const prof = await planetaryAPI.getPlanetProfessions(planet.id) as {
+              professions?: Record<string, number>;
+            };
+            counts[planet.id] = prof.professions?.SPACE_ENGINEERS ?? 0;
+          } catch {
+            counts[planet.id] = 0;
+          }
+        }),
+      );
+      setPlanetEngineerCounts(counts);
+      if (!assignPlanetId && planets.length > 0) {
+        setAssignPlanetId(planets[0].id);
+      }
+    } catch (error) {
+      console.error('Construction engineer sources error:', error);
+    } finally {
+      setEngineersLoading(false);
+    }
+  }, [assignPlanetId]);
+
+  const engineerAction = useCallback(async (
+    reservationId: string,
+    endpoint: 'assign-engineer' | 'unassign-engineer',
+    body: { planet_id: string; count: number },
+    failureMessage: string,
+  ): Promise<boolean> => {
+    const token = getToken();
+    if (!token) {
+      setCardError(reservationId, 'Not authenticated. Please log in again.');
+      return false;
+    }
+
+    setBusyAction(`${reservationId}:${endpoint}`);
+    setCardError(reservationId, null);
+
+    try {
+      const response = await fetch(
+        `${getApiBaseUrl()}/api/v1/construction/reservations/${encodeURIComponent(reservationId)}/${endpoint}`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(body),
+        },
+      );
+
+      if (!response.ok) {
+        setCardError(reservationId, await readError(response, failureMessage));
+        return false;
+      }
+
+      await fetchReservations();
+      refreshPlayerState();
+      return true;
+    } catch (error) {
+      console.error(`Construction ${endpoint} error:`, error);
+      setCardError(
+        reservationId,
+        formatConstructionEngineerError(error, 'Connection error. Please try again.'),
+      );
+      return false;
+    } finally {
+      setBusyAction(null);
+    }
+  }, [setCardError, fetchReservations, refreshPlayerState]);
+
+  const submitAssignEngineers = useCallback(async (reservation: ConstructionReservation) => {
+    if (!assignPlanetId) return;
+    const count = Math.max(1, Math.min(MAX_CONSTRUCTION_ENGINEERS_PER_PROJECT, assignCount));
+    const ok = await engineerAction(
+      reservation.id,
+      'assign-engineer',
+      { planet_id: assignPlanetId, count },
+      'Engineer assignment failed',
+    );
+    if (ok) {
+      setAssignCount(1);
+      await loadEngineerSources();
+    }
+  }, [assignPlanetId, assignCount, engineerAction, loadEngineerSources]);
+
+  const submitUnassignEngineers = useCallback(async (
+    reservation: ConstructionReservation,
+    planetId: string,
+    count: number,
+  ) => {
+    const ok = await engineerAction(
+      reservation.id,
+      'unassign-engineer',
+      { planet_id: planetId, count },
+      'Engineer unassignment failed',
+    );
+    if (ok) {
+      await loadEngineerSources();
+    }
+  }, [engineerAction, loadEngineerSources]);
+
   // --- Render helpers ---
 
   const renderResourceBundle = (bundle?: ResourceBundle) => (
@@ -1093,6 +1219,117 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
     );
   };
 
+  const planetNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    ownedPlanets.forEach(p => map.set(p.id, p.name));
+    return map;
+  }, [ownedPlanets]);
+
+  const renderEngineerPanel = (reservation: ConstructionReservation) => {
+    const assigned = reservation.assigned_engineers ?? [];
+    const assignedTotal = reservation.assigned_engineer_count
+      ?? assigned.reduce((sum, row) => sum + row.count, 0);
+    const slotsLeft = Math.max(0, MAX_CONSTRUCTION_ENGINEERS_PER_PROJECT - assignedTotal);
+    const selectedPlanetAvailable = assignPlanetId
+      ? Math.max(0, (planetEngineerCounts[assignPlanetId] ?? 0)
+        - (assigned.find(a => a.planet_id === assignPlanetId)?.count ?? 0))
+      : 0;
+    const maxAssignable = Math.min(slotsLeft, selectedPlanetAvailable, MAX_CONSTRUCTION_ENGINEERS_PER_PROJECT);
+    const assignBusy = busyAction === `${reservation.id}:assign-engineer`;
+
+    return (
+      <div className="cr-panel engineer-panel">
+        <h5>👷 Space Engineers</h5>
+        <p className="cr-panel-warning">
+          Assign up to {MAX_CONSTRUCTION_ENGINEERS_PER_PROJECT} Space Engineers from any owned planet
+          to accelerate this build and improve construction-event odds.
+        </p>
+        {engineersLoading ? (
+          <p className="section-description">Loading planetary engineer pools…</p>
+        ) : (
+          <>
+            {assigned.length > 0 ? (
+              <ul className="cr-engineer-assignments">
+                {assigned.map(row => (
+                  <li key={row.planet_id} className="cr-engineer-row">
+                    <span>
+                      {planetNameById.get(row.planet_id) ?? 'Colony'} — {row.count} assigned
+                    </span>
+                    <button
+                      type="button"
+                      className="cr-max-btn"
+                      onClick={() => submitUnassignEngineers(reservation, row.planet_id, 1)}
+                      disabled={Boolean(busyAction)}
+                    >
+                      Remove 1
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="section-description">No engineers assigned yet.</p>
+            )}
+            {ownedPlanets.length === 0 ? (
+              <p className="section-description">
+                No owned colonies — train Space Engineers on a planet to assign them here.
+              </p>
+            ) : slotsLeft > 0 ? (
+              <div className="cr-engineer-assign">
+                <label htmlFor={`engineer-planet-${reservation.id}`}>Source colony</label>
+                <select
+                  id={`engineer-planet-${reservation.id}`}
+                  value={assignPlanetId}
+                  onChange={e => setAssignPlanetId(e.target.value)}
+                  disabled={Boolean(busyAction)}
+                >
+                  {ownedPlanets.map(planet => (
+                    <option key={planet.id} value={planet.id}>
+                      {planet.name} ({planetEngineerCounts[planet.id] ?? 0} Space Engineers)
+                    </option>
+                  ))}
+                </select>
+                <label htmlFor={`engineer-count-${reservation.id}`}>Count</label>
+                <input
+                  id={`engineer-count-${reservation.id}`}
+                  type="number"
+                  min={1}
+                  max={Math.max(1, maxAssignable)}
+                  value={Math.min(assignCount, Math.max(1, maxAssignable))}
+                  onChange={e => setAssignCount(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                  disabled={Boolean(busyAction) || maxAssignable < 1}
+                />
+              </div>
+            ) : (
+              <p className="section-description">
+                Engineer cap reached ({assignedTotal}/{MAX_CONSTRUCTION_ENGINEERS_PER_PROJECT}).
+              </p>
+            )}
+          </>
+        )}
+        <div className="cr-panel-actions">
+          <button
+            type="button"
+            className="action-button"
+            onClick={() => setEngineersFor(null)}
+            disabled={Boolean(busyAction)}
+          >
+            Close
+          </button>
+          {slotsLeft > 0 && ownedPlanets.length > 0 && maxAssignable > 0 && (
+            <button
+              type="button"
+              className="action-button primary"
+              onClick={() => submitAssignEngineers(reservation)}
+              disabled={Boolean(busyAction) || engineersLoading}
+            >
+              {assignBusy ? 'Assigning…' : 'Assign Engineers'}
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   const renderReservationCard = (reservation: ConstructionReservation) => {
     const state = normalizeState(reservation.state);
     const display = STATE_DISPLAY[state] ?? { label: (reservation.state || 'UNKNOWN').toUpperCase(), cls: 'unknown' };
@@ -1153,6 +1390,9 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
     const canClaim = isHere && isReady;
     // Backend rejects cancel on 'complete' (claim it or let the window lapse)
     const canCancel = isActive && !READY_STATES.has(state);
+    const canAssignEngineers = isActive && !isTerminal;
+    const assignedEngineerCount = reservation.assigned_engineer_count
+      ?? (reservation.assigned_engineers?.reduce((sum, row) => sum + row.count, 0) ?? 0);
 
     const displayName = reservation.ship_name || prettyShipType(reservation.ship_type);
     const progressPct = Math.max(0, Math.min(100, Math.round(
@@ -1223,6 +1463,13 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
                 <li key={reason}>{reason}</li>
               ))}
             </ul>
+          </div>
+        )}
+
+        {isActive && assignedEngineerCount > 0 && (
+          <div className="cr-phase-line">
+            👷 <strong>{assignedEngineerCount}</strong> Space Engineer
+            {assignedEngineerCount === 1 ? '' : 's'} assigned to this project
           </div>
         )}
 
@@ -1301,6 +1548,7 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
                   setDeliverFor(deliverFor === reservation.id ? null : reservation.id);
                   setDeliverAmounts({});
                   setRentFor(null);
+                  setEngineersFor(null);
                 }}
                 disabled={Boolean(busyAction)}
               >
@@ -1314,10 +1562,32 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
                   setRentFor(rentFor === reservation.id ? null : reservation.id);
                   setRentDays(7);
                   setDeliverFor(null);
+                  setEngineersFor(null);
                 }}
                 disabled={Boolean(busyAction)}
               >
                 🏠 Pay Rent
+              </button>
+            )}
+            {canAssignEngineers && (
+              <button
+                type="button"
+                className="action-button"
+                onClick={() => {
+                  const opening = engineersFor !== reservation.id;
+                  setEngineersFor(opening ? reservation.id : null);
+                  setDeliverFor(null);
+                  setRentFor(null);
+                  if (opening) {
+                    void loadEngineerSources();
+                  }
+                }}
+                disabled={Boolean(busyAction)}
+              >
+                👷 Engineers
+                {assignedEngineerCount > 0
+                  ? ` (${assignedEngineerCount}/${MAX_CONSTRUCTION_ENGINEERS_PER_PROJECT})`
+                  : ''}
               </button>
             )}
             {canClaim && (
@@ -1343,6 +1613,7 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
 
         {deliverFor === reservation.id && canDeliver && renderDeliverPanel(reservation, remaining)}
         {rentFor === reservation.id && canPayRent && renderRentPanel(reservation)}
+        {engineersFor === reservation.id && canAssignEngineers && renderEngineerPanel(reservation)}
       </div>
     );
   };

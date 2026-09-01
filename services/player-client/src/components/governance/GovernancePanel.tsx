@@ -32,6 +32,52 @@ const GovShell: React.FC<{ children: React.ReactNode }> = ({ children }) => (
 
 type GovTab = 'elections' | 'policies' | 'treaties';
 
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
+};
+
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+function hasGovernanceServerDetail(err: unknown, message: string | undefined): boolean {
+  if (err instanceof TypeError) return false;
+  if (typeof message === 'string' && isNetworkCollapseMessage(message)) return false;
+  return typeof message === 'string' && message.trim().length > 0;
+}
+
+/** Surface gameserver detail when governance load fails (LEG-3603 densify). */
+export function formatGovernanceLoadError(err: unknown): string {
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail = hasGovernanceServerDetail(err, message);
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You are not a member of this region.';
+  }
+
+  if (status === 404) {
+    if (hasServerDetail) return message!;
+    return 'Region not found.';
+  }
+
+  if (hasServerDetail) return message!;
+  return 'Failed to load regional governance.';
+}
+
 const GovernancePanel: React.FC = () => {
   const { playerState, currentSector } = useGame();
   const regionId = currentSector?.region_id ?? null;
@@ -91,8 +137,12 @@ const GovernancePanel: React.FC = () => {
       setTreaties(treatyData || []);
     } catch (error) {
       console.error('Failed to load regional governance data:', error);
-      setNoGovernanceSurface(true);
+      setLoadError(formatGovernanceLoadError(error));
+      setNoGovernanceSurface(false);
       setMembership(null);
+      setElections([]);
+      setPolicies([]);
+      setTreaties([]);
     } finally {
       setLoading(false);
     }
