@@ -44,6 +44,7 @@ from src.core import game_time
 from src.core.market_bootstrap import build_market_prices
 from src.models.construction import ConstructionReservation
 from src.models.market_transaction import MarketPrice
+from src.models.planet import player_planets
 from src.models.player import Player
 from src.models.region import Region, RegionalTreasuryEntry
 from src.models.station import Station
@@ -694,7 +695,11 @@ class _FakeClaimSession(_FakeSession):
     .first() re-read (populate_existing().with_for_update().first()) and
     _advance_station()'s .all() reservations-at-this-station scan with the
     SAME single reservation -- both call sites hit the identical fake
-    session/entity mapping the base _FakeSession already supports."""
+    session/entity mapping the base _FakeSession already supports.
+
+    LEG-302: advance() may roll construction events for in-phase reservations,
+    which queries ``player_planets`` for pooled Space Engineers — stub it to
+    an empty planet list so claim-path tests stay DB-free."""
 
 
 def _make_reservation(
@@ -745,6 +750,7 @@ def _make_claim_session(*, player: Any, station: Any, reservation: Any) -> _Fake
         Player: _FakeQuery(first=player),
         Station: _FakeQuery(first=station),
         ConstructionReservation: _FakeQuery(first=reservation, all=[reservation]),
+        player_planets.c.planet_id: _FakeQuery(all=[]),
     })
 
 
@@ -901,6 +907,7 @@ class TestClaimRoute:
             Player: _FakeQuery(first=current_player),
             Station: _FakeQuery(first=station),
             ConstructionReservation: _FakeQuery(first=reservation, all=[reservation]),
+            player_planets.c.planet_id: _FakeQuery(all=[]),
         })
 
         result = await construction_routes.claim_ship(
