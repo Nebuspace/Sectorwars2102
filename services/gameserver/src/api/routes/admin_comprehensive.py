@@ -521,7 +521,7 @@ async def update_player(
     except Exception as e:
         db.rollback()
         logger.error(f"Error updating player {player_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to update player: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to update player")
 
 # Ship Management Endpoints
 
@@ -736,7 +736,7 @@ async def create_ship(
             raise
         except Exception as e:
             logger.error(f"Error creating ship: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to create ship: {str(e)}") from e
+            raise HTTPException(status_code=500, detail="Failed to create ship") from e
 
 @router.put("/ships/{ship_id}", response_model=Dict[str, str])
 async def update_ship(
@@ -785,7 +785,7 @@ async def update_ship(
             raise
         except Exception as e:
             logger.error(f"Error updating ship {ship_id}: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to update ship: {str(e)}") from e
+            raise HTTPException(status_code=500, detail="Failed to update ship") from e
 
 @router.delete("/ships/{ship_id}", response_model=Dict[str, str])
 async def delete_ship(
@@ -834,7 +834,7 @@ async def delete_ship(
             raise
         except Exception as e:
             logger.error(f"Error deleting ship {ship_id}: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to delete ship: {str(e)}") from e
+            raise HTTPException(status_code=500, detail="Failed to delete ship") from e
 
 @router.post("/ships/{ship_id}/teleport", response_model=Dict[str, str])
 async def teleport_ship(
@@ -885,7 +885,7 @@ async def teleport_ship(
             raise
         except Exception as e:
             logger.error(f"Error teleporting ship {ship_id}: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to teleport ship: {str(e)}") from e
+            raise HTTPException(status_code=500, detail="Failed to teleport ship") from e
 
 
 @router.post("/ships/registry/backfill", response_model=Dict[str, Any])

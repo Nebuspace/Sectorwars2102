@@ -1,13 +1,15 @@
-"""LEG-3582 / LEG-3626 / LEG-3638 — admin_comprehensive HTTP 500 catches must not echo Exception text.
+"""LEG-3582 / LEG-3626 / LEG-3638 / LEG-3646 — admin_comprehensive HTTP 500 catches must not echo Exception text.
 
 Mirrors LEG-3570 admin_colonization / LEG-3569 claim_ship / LEG-3605 admin_economy opaque densify.
 Representative cluster: players/sectors/ports/planets/analytics/health/warp/teams.
 Security cluster (LEG-3626): risk/status/logs/action routes.
 Economy cluster (LEG-3638): analytics snapshot, port stock levels, AI trading admin routes.
+Ship/player mutation cluster (LEG-3646): create/update/delete/teleport ship, update player.
 """
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -18,7 +20,12 @@ from fastapi import HTTPException
 from src.api.routes import admin_comprehensive as ac
 from src.api.routes.admin_comprehensive import (
     PlayerSecurityAction,
+    PlayerUpdateRequest,
+    ShipCreateRequest,
+    ShipUpdateRequest,
     create_analytics_snapshot,
+    create_ship,
+    delete_ship,
     get_ai_models,
     get_ai_player_profiles,
     get_player_risk_assessment,
@@ -26,10 +33,19 @@ from src.api.routes.admin_comprehensive import (
     get_players_comprehensive,
     list_player_security_logs,
     take_security_action,
+    teleport_ship,
     update_all_port_stock_levels,
+    update_player,
+    update_ship,
 )
 
 _PLAYER_ID = "00000000-0000-0000-0000-000000000001"
+_SHIP_ID = "00000000-0000-0000-0000-000000000002"
+
+
+@contextmanager
+def _noop_admin_action_attempt(*_args, **_kwargs):
+    yield MagicMock()
 
 
 class _BoomDB:
@@ -275,3 +291,115 @@ def test_admin_comprehensive_economy_cluster_http500_opaque():
     assert "Failed to get AI system metrics: {str(e)}" not in src
     assert "Failed to get AI route optimization data: {str(e)}" not in src
     assert "Failed to get AI behavior analytics: {str(e)}" not in src
+
+
+@pytest.mark.asyncio
+async def test_update_player_unexpected_is_opaque_500():
+    """LEG-3646 — update_player catch must not echo raw Exception text."""
+    with pytest.raises(HTTPException) as excinfo:
+        await update_player(
+            player_id=_PLAYER_ID,
+            update_data=PlayerUpdateRequest(credits=100),
+            current_admin=SimpleNamespace(username="admin"),
+            db=_BoomDB(),
+        )
+
+    exc = excinfo.value
+    assert exc.status_code == 500
+    assert exc.detail == "Failed to update player"
+    assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
+
+
+@pytest.mark.asyncio
+async def test_create_ship_unexpected_is_opaque_500():
+    """LEG-3646 — create_ship catch must not echo raw Exception text."""
+    ship_data = ShipCreateRequest(
+        name="Test Ship",
+        ship_type="freighter",
+        owner_id=_PLAYER_ID,
+        current_sector_id=1,
+    )
+
+    with patch.object(ac, "admin_action_attempt", _noop_admin_action_attempt):
+        with pytest.raises(HTTPException) as excinfo:
+            await create_ship(
+                ship_data=ship_data,
+                current_admin=SimpleNamespace(username="admin"),
+                db=_BoomDB(),
+            )
+
+    exc = excinfo.value
+    assert exc.status_code == 500
+    assert exc.detail == "Failed to create ship"
+    assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
+
+
+@pytest.mark.asyncio
+async def test_update_ship_unexpected_is_opaque_500():
+    """LEG-3646 — update_ship catch must not echo raw Exception text."""
+    with patch.object(ac, "admin_action_attempt", _noop_admin_action_attempt):
+        with pytest.raises(HTTPException) as excinfo:
+            await update_ship(
+                ship_id=_SHIP_ID,
+                ship_data=ShipUpdateRequest(name="Renamed"),
+                current_admin=SimpleNamespace(username="admin"),
+                db=_BoomDB(),
+            )
+
+    exc = excinfo.value
+    assert exc.status_code == 500
+    assert exc.detail == "Failed to update ship"
+    assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
+
+
+@pytest.mark.asyncio
+async def test_delete_ship_unexpected_is_opaque_500():
+    """LEG-3646 — delete_ship catch must not echo raw Exception text."""
+    with patch.object(ac, "admin_action_attempt", _noop_admin_action_attempt):
+        with pytest.raises(HTTPException) as excinfo:
+            await delete_ship(
+                ship_id=_SHIP_ID,
+                current_admin=SimpleNamespace(username="admin"),
+                db=_BoomDB(),
+            )
+
+    exc = excinfo.value
+    assert exc.status_code == 500
+    assert exc.detail == "Failed to delete ship"
+    assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
+
+
+@pytest.mark.asyncio
+async def test_teleport_ship_unexpected_is_opaque_500():
+    """LEG-3646 — teleport_ship catch must not echo raw Exception text."""
+    with patch.object(ac, "admin_action_attempt", _noop_admin_action_attempt):
+        with pytest.raises(HTTPException) as excinfo:
+            await teleport_ship(
+                ship_id=_SHIP_ID,
+                target_sector_id=42,
+                current_admin=SimpleNamespace(username="admin"),
+                db=_BoomDB(),
+            )
+
+    exc = excinfo.value
+    assert exc.status_code == 500
+    assert exc.detail == "Failed to teleport ship"
+    assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
+
+
+def test_admin_comprehensive_ship_player_mutation_cluster_http500_opaque():
+    """LEG-3646 — static pin: ship/player mutation cluster 500 details stay opaque."""
+    src = Path(ac.__file__).read_text(encoding="utf-8")
+    for stable in (
+        'detail="Failed to update player"',
+        'detail="Failed to create ship"',
+        'detail="Failed to update ship"',
+        'detail="Failed to delete ship"',
+        'detail="Failed to teleport ship"',
+    ):
+        assert stable in src
+    assert "Failed to update player: {str(e)}" not in src
+    assert "Failed to create ship: {str(e)}" not in src
+    assert "Failed to update ship: {str(e)}" not in src
+    assert "Failed to delete ship: {str(e)}" not in src
+    assert "Failed to teleport ship: {str(e)}" not in src
