@@ -189,3 +189,58 @@ describe('Dashboard (LEG-233)', () => {
     expect(msg).not.toMatch(/TypeError/i);
   });
 });
+
+describe('Dashboard axios Network Error densify (LEG-3535)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('collapses axios-shaped Network Error on audit feed load', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/admin/audit/logs')) {
+        throw new Error('Network Error');
+      }
+      return byUrl(url);
+    });
+
+    render(
+      <MemoryRouter>
+        <Dashboard />
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/Unable to load recent audit events/i)).toBeTruthy();
+    });
+
+    const text = document.body.textContent ?? '';
+    expect(text).toMatch(/Unable to load recent audit events/i);
+    expect(text).not.toBe('Network Error');
+    expect(text).not.toContain('Network Error');
+  });
+
+  it('collapses axios-shaped Network Error on dashboard stats load', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/admin/stats')) {
+        throw new Error('Network Error');
+      }
+      return byUrl(url);
+    });
+
+    render(
+      <MemoryRouter>
+        <Dashboard />
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Unable to load dashboard stats|Gameserver unreachable/i);
+    expect(alert).not.toBe('Network Error');
+    expect(alert).not.toContain('Network Error');
+  });
+});

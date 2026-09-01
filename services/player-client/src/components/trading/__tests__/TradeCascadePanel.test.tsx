@@ -49,10 +49,16 @@ describe('formatTradeCascadeError (LEG-2957)', () => {
   });
 
   it('falls back for network-ish failures without status', () => {
-    expect(formatTradeCascadeError(new Error('Failed to fetch'))).toBe('Failed to fetch');
+    expect(formatTradeCascadeError(new Error('Failed to fetch'))).toBe('Failed to plan trade cascade.');
     expect(formatTradeCascadeError(new Error('API Error: 500'))).toBe(
       'Failed to plan trade cascade.',
     );
+  });
+
+  it('falls back on Error Network Error (LEG-3505)', () => {
+    const text = formatTradeCascadeError(new Error('Network Error'));
+    expect(text).toBe('Failed to plan trade cascade.');
+    expect(text).not.toMatch(/Network Error/i);
   });
 
   it('falls back on TypeError network collapse (LEG-3057)', () => {

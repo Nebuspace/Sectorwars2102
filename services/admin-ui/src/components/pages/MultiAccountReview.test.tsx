@@ -273,3 +273,45 @@ describe('MultiAccountReview TypeError densify (LEG-3068)', () => {
     expect(text).not.toMatch(/Failed to fetch/i);
   });
 });
+
+describe('MultiAccountReview axios Network Error densify (LEG-3534)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('collapses axios-shaped Network Error on clusters load', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
+
+    render(<MultiAccountReview />);
+
+    await waitFor(() => {
+      expect(document.body.textContent).toMatch(/Failed to load clusters/i);
+    });
+
+    const text = document.body.textContent ?? '';
+    expect(text).toMatch(/Failed to load clusters/i);
+    expect(text).not.toBe('Network Error');
+    expect(text).not.toContain('Network Error');
+  });
+
+  it('collapses axios-shaped Network Error on decide POST', async () => {
+    await openDecideForm();
+    vi.mocked(api.post).mockRejectedValue(new Error('Network Error'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Submit Ruling' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/multi-account/clusters/cluster-1/decide',
+        expect.objectContaining({ decision: 'confirmed' }),
+      );
+    });
+
+    const decideError = screen.getByRole('alert');
+    expect(decideError.textContent).toMatch(/Failed to record decision/i);
+    expect(decideError.textContent).not.toBe('Network Error');
+    expect(decideError.textContent).not.toContain('Network Error');
+  });
+});
