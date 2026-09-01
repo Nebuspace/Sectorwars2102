@@ -6,7 +6,7 @@ import logging
 from datetime import datetime
 from typing import Dict, List, Tuple, Optional, Any
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, insert
+from sqlalchemy import delete, select, insert
 
 from src.core.commodity_economy import base_price as commodity_base_price
 from src.core.station_class_map import apply_class_pattern
@@ -46,6 +46,34 @@ BLACK_MARKET_FRONTIER_CHANCE = 0.04
 # occupies 1–300 in the shared region). Gateway Plaza is cluster index 9.
 NEXUS_FIRST_SECTOR_NUM = 301
 GATEWAY_PLAZA_CLUSTER_INDEX = 9
+
+# LEG-47 / LEG-2577 — TRADE_HUB + POPULATION_CENTER biases (sw2102-bang content.ts).
+_POPULATION_CENTER_HABITABILITY_BOOST = 10
+_PORT_CLASS_WEIGHTS_TRADE_HUB: List[Tuple[int, int]] = [
+    (1, 1), (2, 1), (3, 1), (4, 4), (5, 4), (6, 3), (7, 3), (8, 2),
+]
+
+
+def _pick_weighted_int(weights: List[Tuple[int, int]]) -> int:
+    total = sum(weight for _, weight in weights)
+    roll = random.random() * total
+    for value, weight in weights:
+        roll -= weight
+        if roll < 0:
+            return value
+    return weights[-1][0]
+
+
+def _pick_weighted_choice(
+    choices: List[Tuple[Any, int]],
+) -> Any:
+    total = sum(weight for _, weight in choices)
+    roll = random.random() * total
+    for choice, weight in choices:
+        roll -= weight
+        if roll < 0:
+            return choice
+    return choices[-1][0]
 
 
 def nexus_expanse_sector_range(total_sectors: int) -> tuple[int, int]:
@@ -161,7 +189,11 @@ class NexusGenerationService:
         sectors_per_cluster = total_sectors // cluster_count
         return first_sector + GATEWAY_PLAZA_CLUSTER_INDEX * sectors_per_cluster
 
-    async def generate_central_nexus(self, session: AsyncSession) -> Dict[str, Any]:
+    async def generate_central_nexus(
+        self,
+        session: AsyncSession,
+        force_regenerate: bool = False,
+    ) -> Dict[str, Any]:
         """Generate the complete Central Nexus - a sparse 5000-sector galactic hub
 
         Architecture:
@@ -169,24 +201,37 @@ class NexusGenerationService:
         - 20 clusters (250 sectors each)
         - 5000 sectors total
         - Sparse infrastructure (5% ports, 10% planets, 0.3x warp density)
+
+        ``force_regenerate`` drops a populated Nexus and re-seeds. A row with
+        ``is_populated=False`` (partial/failed generation) is removed and
+        retried without requiring force.
         """
         logger.info("Starting Central Nexus galaxy generation...")
 
-        try:
-            # Check if Central Nexus already exists
-            existing_nexus = await self._check_existing_nexus(session)
-            if existing_nexus:
-                logger.info("Central Nexus already exists, skipping generation")
+        existing_nexus = await self._check_existing_nexus(session)
+        if existing_nexus:
+            if existing_nexus.is_populated and not force_regenerate:
+                logger.info("Central Nexus already populated, skipping generation")
                 return {"status": "exists", "nexus_id": str(existing_nexus.id)}
+            logger.info(
+                "Removing existing Central Nexus before re-seed "
+                "(is_populated=%s, force_regenerate=%s)",
+                existing_nexus.is_populated,
+                force_regenerate,
+            )
+            await self._delete_central_nexus_region(session, existing_nexus)
+            await session.commit()
 
-            # Create Central Nexus region entry
+        try:
             nexus_region = await self._create_nexus_region(session)
+            nexus_region.is_populated = False
 
             # Create "The Expanse" zone for all 5000 sectors
             nexus_zone = await self._create_nexus_zone(session, str(nexus_region.id))
 
             # Create 20 clusters for organization (250 sectors each)
             nexus_clusters = await self._create_nexus_clusters(session, str(nexus_region.id))
+            await session.commit()
 
             generation_stats = {
                 "total_sectors": 0,
@@ -242,6 +287,7 @@ class NexusGenerationService:
 
                 current_sector_num = end_sector + 1
                 logger.info(f"Cluster {cluster.name} completed: {cluster_stats}")
+                await session.commit()
 
             # Generate intra-regional warp tunnels with sparse density
             logger.info("Generating warp tunnels for Central Nexus sectors (sparse density)...")
@@ -316,6 +362,9 @@ class NexusGenerationService:
             # This avoids async/sync context issues when called from sync endpoints
             await session.flush()  # Flush changes to get IDs
 
+            nexus_region.is_populated = True
+            await session.commit()
+
             logger.info(f"Central Nexus generation completed: {generation_stats}")
 
             return {
@@ -326,9 +375,41 @@ class NexusGenerationService:
 
         except Exception as e:
             logger.error(f"Failed to generate Central Nexus: {e}")
-            await session.rollback()
+            try:
+                partial = await self._check_existing_nexus(session)
+                if partial is not None:
+                    partial.is_populated = False
+                    await session.commit()
+                else:
+                    await session.rollback()
+            except Exception:
+                await session.rollback()
             raise
     
+    async def _delete_central_nexus_region(
+        self,
+        session: AsyncSession,
+        region: Region,
+    ) -> None:
+        """Drop a Central Nexus region and all generated content (LEG-2577).
+
+        Used for force_regenerate and partial-seed recovery. Region-scoped
+        children are removed explicitly because several FKs omit ON DELETE
+        CASCADE at the DB layer.
+        """
+        region_id = region.id
+        sector_ids = select(Sector.id).where(Sector.region_id == region_id)
+        await session.execute(
+            delete(WarpTunnel).where(
+                WarpTunnel.origin_sector_id.in_(sector_ids)
+                | WarpTunnel.destination_sector_id.in_(sector_ids)
+            )
+        )
+        await session.execute(delete(Station).where(Station.region_id == region_id))
+        await session.execute(delete(Planet).where(Planet.region_id == region_id))
+        await session.execute(delete(Sector).where(Sector.region_id == region_id))
+        await session.delete(region)
+        await session.flush()
     async def _check_existing_nexus(self, session: AsyncSession) -> Optional[Region]:
         """Check if Central Nexus already exists"""
         result = await session.execute(
@@ -630,13 +711,20 @@ class NexusGenerationService:
             # FRONTIER_OUTPOST halves effective station density (fewer ports);
             # all other cluster types use the baseline 5% density unchanged.
             if sector_num == 1 or random.random() < effective_port_density:
-                port_data = self._generate_port_for_sector(sector_num, region_id, is_frontier=is_frontier)
+                port_data = self._generate_port_for_sector(
+                    sector_num,
+                    region_id,
+                    is_frontier=is_frontier,
+                    cluster_type=cluster_type,
+                )
                 batch_ports.append(port_data)
                 stats["ports"] += 1
 
             # Generate planet - ALWAYS create for Sector 1 (starter sector), otherwise sparse (10%)
             if sector_num == 1 or random.random() < self.planet_density:
-                planet_data = self._generate_planet_for_sector(sector_num, region_id)
+                planet_data = self._generate_planet_for_sector(
+                    sector_num, region_id, cluster_type=cluster_type
+                )
                 batch_planets.append(planet_data)
                 stats["planets"] += 1
 
@@ -655,7 +743,11 @@ class NexusGenerationService:
         return stats
 
     def _generate_port_for_sector(
-        self, sector_num: int, region_id: str, is_frontier: bool = False,
+        self,
+        sector_num: int,
+        region_id: str,
+        is_frontier: bool = False,
+        cluster_type: ClusterType = ClusterType.STANDARD,
     ) -> Dict[str, Any]:
         """Generate a port configuration for a sector in Central Nexus
 
@@ -709,14 +801,28 @@ class NexusGenerationService:
         if is_frontier and random.random() < BLACK_MARKET_FRONTIER_CHANCE:
             port_type = StationType.BLACK_MARKET
 
-        # Random port class (mostly mid-tier)
-        port_class = random.choice([
-            StationClass.CLASS_4,
-            StationClass.CLASS_5,
-            StationClass.CLASS_6,
-            StationClass.CLASS_7,
-            StationClass.CLASS_8
-        ])
+        # LEG-2577: TRADE_HUB skews port class toward 4–8 (bang LEG-47 weights).
+        if cluster_type == ClusterType.TRADE_HUB:
+            klass_num = _pick_weighted_int(_PORT_CLASS_WEIGHTS_TRADE_HUB)
+            port_class = {
+                1: StationClass.CLASS_1,
+                2: StationClass.CLASS_2,
+                3: StationClass.CLASS_3,
+                4: StationClass.CLASS_4,
+                5: StationClass.CLASS_5,
+                6: StationClass.CLASS_6,
+                7: StationClass.CLASS_7,
+                8: StationClass.CLASS_8,
+            }[klass_num]
+        else:
+            # Random port class (mostly mid-tier)
+            port_class = random.choice([
+                StationClass.CLASS_4,
+                StationClass.CLASS_5,
+                StationClass.CLASS_6,
+                StationClass.CLASS_7,
+                StationClass.CLASS_8
+            ])
 
         # Random size (mostly medium)
         size = random.randint(4, 7)
@@ -734,7 +840,12 @@ class NexusGenerationService:
             "defenses": Station.default_defenses_for_class(port_class),
         }
     
-    def _generate_planet_for_sector(self, sector_num: int, region_id: str) -> Dict[str, Any]:
+    def _generate_planet_for_sector(
+        self,
+        sector_num: int,
+        region_id: str,
+        cluster_type: ClusterType = ClusterType.STANDARD,
+    ) -> Dict[str, Any]:
         """Generate a planet configuration for a sector in Central Nexus
 
         Sparse generation: Planets are randomly distributed with varied types.
@@ -749,16 +860,26 @@ class NexusGenerationService:
             )
 
         # Random planet type
-        planet_type = random.choice([
-            PlanetType.TERRAN,
-            PlanetType.TROPICAL,
-            PlanetType.JUNGLE,
-            PlanetType.OCEANIC,
-            PlanetType.MOUNTAINOUS,
-            PlanetType.DESERT,
-            PlanetType.BARREN,
-            PlanetType.ICE
-        ])
+        if cluster_type == ClusterType.POPULATION_CENTER:
+            pop_center_weights = [
+                (PlanetType.OCEANIC, 8),
+                (PlanetType.MOUNTAINOUS, 3),
+                (PlanetType.ICE, 1),
+                (PlanetType.VOLCANIC, 1),
+                (PlanetType.BARREN, 1),
+            ]
+            planet_type = _pick_weighted_choice(pop_center_weights)
+        else:
+            planet_type = random.choice([
+                PlanetType.TERRAN,
+                PlanetType.TROPICAL,
+                PlanetType.JUNGLE,
+                PlanetType.OCEANIC,
+                PlanetType.MOUNTAINOUS,
+                PlanetType.DESERT,
+                PlanetType.BARREN,
+                PlanetType.ICE
+            ])
 
         # Determine habitability based on planet type
         habitability_map = {
@@ -774,6 +895,11 @@ class NexusGenerationService:
         }
 
         habitability_score = habitability_map.get(planet_type, 50)
+        if cluster_type == ClusterType.POPULATION_CENTER:
+            habitability_score = min(
+                100,
+                habitability_score + _POPULATION_CENTER_HABITABILITY_BOOST,
+            )
         status = PlanetStatus.HABITABLE if habitability_score > 50 else PlanetStatus.UNINHABITABLE
 
         # Determine planet size (visual/resource scale only — not a population factor)
