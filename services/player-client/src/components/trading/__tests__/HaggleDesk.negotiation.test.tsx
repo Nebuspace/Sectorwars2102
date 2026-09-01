@@ -252,6 +252,12 @@ describe('HaggleDesk — negotiation money path', () => {
       expect(formatHaggleError(err)).toBe('Commodity locked for this docking session.');
     });
 
+    it('formatHaggleError falls back on Error Network Error (LEG-3505)', () => {
+      const text = formatHaggleError(new Error('Network Error'));
+      expect(text).toBe('The trader turned away.');
+      expect(text).not.toMatch(/Network Error/i);
+    });
+
     it('status TypeError surfaces honest fallback without Failed to fetch', async () => {
       mockStatus.mockRejectedValue(new TypeError('Failed to fetch'));
       await renderDesk();
