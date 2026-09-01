@@ -17,7 +17,11 @@ from src.models.message import Message
 from src.models.player import Player
 from src.models.team import Team
 from src.services.websocket_service import connection_manager as manager
-from src.services.notification_service import NotificationService
+from src.services.notification_service import (
+    MessageDeliveryError,
+    NotificationDispatchResult,
+    NotificationService,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -145,8 +149,13 @@ class MessageService:
         priority: str = "normal",
         reply_to_id: Optional[UUID] = None,
         thread_id: Optional[UUID] = None
-    ) -> Message:
-        """Send a message to a player or team"""
+    ) -> Tuple[Message, List[Dict[str, str]]]:
+        """Send a message to a player or team.
+
+        Returns the persisted ``Message`` plus any non-fatal delivery warnings
+        (e.g. offline push transport unavailable). Raises ``MessageDeliveryError``
+        when the inbox row was saved but the live notification transport failed.
+        """
         
         # Validate sender exists
         sender = db.query(Player).filter(Player.id == sender_id).first()
@@ -241,25 +250,36 @@ class MessageService:
         db.refresh(message)
         
         # Send WebSocket notification
-        await MessageService._send_notification(db, message, sender)
+        dispatch = await MessageService._send_notification(db, message, sender)
+        if dispatch.failed:
+            raise MessageDeliveryError(
+                dispatch.error_code or "live_notification_failed",
+                dispatch.error_message or (
+                    "Message was saved to inbox but the live notification could "
+                    "not be delivered."
+                ),
+                message_id=message.id,
+            )
         
         logger.info(f"Message {message.id} sent from {sender_id} to {recipient_id or team_id}")
         
-        return message
+        return message, list(dispatch.warnings)
     
     @staticmethod
-    async def _send_notification(db: Session, message: Message, sender: Player):
+    async def _send_notification(
+        db: Session, message: Message, sender: Player
+    ) -> NotificationDispatchResult:
         """Dispatch the live notification for a new message.
 
         Priority-driven fan-out is owned by NotificationService (the module the
         messaging canon names for this — see notification_service.py). It maps
         the message's `priority` to a delivery-surface list (inbox / toast /
         push / modal per messaging.md "Priority levels") and routes the WS frame
-        through the EXISTING ConnectionManager helper. Delivery failures there
-        are swallowed internally so they can never fail an already-committed
-        send.
+        through the EXISTING ConnectionManager helper. Failures are returned as
+        a structured ``NotificationDispatchResult`` so the send route can surface
+        honest client-facing errors instead of opaque 500s.
         """
-        await NotificationService.notify_new_message(db, message, sender, manager)
+        return await NotificationService.notify_new_message(db, message, sender, manager)
     
     @staticmethod
     async def get_inbox(
