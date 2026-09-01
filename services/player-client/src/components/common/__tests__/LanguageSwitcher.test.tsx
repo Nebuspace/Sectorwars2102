@@ -38,10 +38,12 @@ const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 describe('LanguageSwitcher', () => {
   let container: HTMLElement;
   let root: ReturnType<typeof createRoot>;
+  let errorSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     mockChangeLanguage.mockClear();
     mockI18n.language = 'en';
+    errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.stubGlobal(
       'fetch',
       vi.fn().mockRejectedValue(new Error('offline')),
@@ -56,6 +58,7 @@ describe('LanguageSwitcher', () => {
       root.unmount();
     });
     container.remove();
+    errorSpy.mockRestore();
     vi.unstubAllGlobals();
   });
 
@@ -125,6 +128,77 @@ describe('LanguageSwitcher', () => {
       (el) => el.textContent,
     );
     expect(options.some((t) => t?.includes('中文'))).toBe(true);
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  it('soft-falls back when response.ok but json() throws TypeError (LEG-3687)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: vi.fn().mockRejectedValue(new TypeError('Unexpected token < in JSON')),
+      }),
+    );
+
+    await act(async () => {
+      root.render(<LanguageSwitcher variant="full" />);
+    });
+    await act(async () => {
+      await flush();
+      await flush();
+    });
+
+    expect(container.textContent).not.toMatch(/Unexpected token/i);
+    expect(container.textContent).not.toMatch(/TypeError/i);
+    expect(container.querySelector('.language-text')?.textContent).toBe('English');
+    expect(errorSpy).not.toHaveBeenCalled();
+
+    await act(async () => {
+      (container.querySelector('.player-language-button') as HTMLButtonElement).click();
+      await flush();
+    });
+
+    const options = Array.from(container.querySelectorAll('.language-option')).map(
+      (el) => el.textContent,
+    );
+    expect(options.some((t) => t?.includes('Español'))).toBe(true);
+    expect(container.textContent).not.toMatch(/Unexpected token/i);
+    expect(container.textContent).not.toMatch(/TypeError/i);
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  it('soft-falls back when non-ok HTTP body json() also throws (LEG-3687)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        json: vi.fn().mockRejectedValue(new TypeError('body is not valid JSON')),
+      }),
+    );
+
+    await act(async () => {
+      root.render(<LanguageSwitcher variant="full" />);
+    });
+    await act(async () => {
+      await flush();
+      await flush();
+    });
+
+    expect(container.textContent).not.toMatch(/body is not valid JSON/i);
+    expect(container.textContent).not.toMatch(/TypeError/i);
+    expect(container.querySelector('.language-text')?.textContent).toBe('English');
+    expect(errorSpy).not.toHaveBeenCalled();
+
+    await act(async () => {
+      (container.querySelector('.player-language-button') as HTMLButtonElement).click();
+      await flush();
+    });
+
+    const options = Array.from(container.querySelectorAll('.language-option')).map(
+      (el) => el.textContent,
+    );
+    expect(options.some((t) => t?.includes('Español'))).toBe(true);
+    expect(errorSpy).not.toHaveBeenCalled();
   });
 
   it('shows honest completion for Complete locales and partial German on API-down fallback', async () => {
