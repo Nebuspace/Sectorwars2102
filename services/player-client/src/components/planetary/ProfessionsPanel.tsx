@@ -139,6 +139,20 @@ export function formatProfessionsLoadError(err: unknown): string {
   return 'Failed to load professions';
 }
 
+/** Surface gameserver detail when training queue mutation fails. */
+export function formatProfessionsTrainError(err: unknown): string {
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    !(err instanceof TypeError) &&
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNetworkCollapseMessage(message);
+
+  if (hasServerDetail) return message!;
+  return 'Training failed';
+}
+
 const ProfessionsPanel: React.FC<ProfessionsPanelProps> = ({
   planetId,
   citadelLevel,
@@ -229,17 +243,17 @@ const ProfessionsPanel: React.FC<ProfessionsPanelProps> = ({
       await fetchState();
       onUpdate?.();
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Training failed';
-      if (message.includes('citadel_level_too_low')) {
+      const rawMessage = err instanceof Error ? err.message : '';
+      if (rawMessage.includes('citadel_level_too_low')) {
         setActionMessage('Citadel level 3+ required to queue profession training.');
-      } else if (message.includes('research_lab_level_too_low')) {
+      } else if (rawMessage.includes('research_lab_level_too_low')) {
         setActionMessage('Research Lab level 3 required to train Research Scientists.');
-      } else if (message.includes('insufficient_generic_colonists')) {
+      } else if (rawMessage.includes('insufficient_generic_colonists')) {
         setActionMessage('Not enough generic colonists available for this training run.');
-      } else if (isNotOwnerError(message)) {
+      } else if (isNotOwnerError(rawMessage)) {
         setHidden(true);
       } else {
-        setActionMessage(message);
+        setActionMessage(formatProfessionsTrainError(err));
       }
     } finally {
       setActionLoading(false);
