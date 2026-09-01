@@ -787,6 +787,10 @@ describe('MedalAdmin Network Error densify (LEG-3355)', () => {
       expect(screen.getByTestId('medal-bulk-panel')).toBeTruthy();
     });
 
+    await waitFor(() => {
+      expect(screen.getByLabelText('Bulk medal')).toBeTruthy();
+    });
+
     fireEvent.change(screen.getByLabelText('Bulk medal'), {
       target: { value: 'bronze_cluster' },
     });
