@@ -177,3 +177,55 @@ describe('FirstLoginConversations detail GET formatAdminApiError (LEG-2680)', ()
     ).not.toBeInTheDocument();
   });
 });
+
+describe('FirstLoginConversations Network Error densify (LEG-3536)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('collapses axios-shaped Network Error on conversations list load', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
+
+    render(<FirstLoginConversations />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/An error occurred/i)).toBeTruthy();
+    });
+
+    const text = screen.getByText(/An error occurred/i).textContent ?? '';
+    expect(text).not.toBe('Network Error');
+    expect(text).not.toContain('Network Error');
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('collapses axios-shaped Network Error on conversation detail GET', async () => {
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url.includes('/conversations/session-1')) {
+        return Promise.reject(new Error('Network Error'));
+      }
+      return Promise.resolve({ data: [sampleConversation] });
+    });
+    const user = userEvent.setup();
+
+    render(<FirstLoginConversations />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'testplayer' })).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole('button', { name: 'testplayer' }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Failed to load conversation details/i),
+      ).toBeInTheDocument();
+    });
+
+    const text =
+      screen.getByText(/Failed to load conversation details/i).textContent ?? '';
+    expect(text).not.toBe('Network Error');
+    expect(text).not.toContain('Network Error');
+    expect(text).not.toMatch(/TypeError/i);
+  });
+});
