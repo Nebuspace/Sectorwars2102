@@ -5,6 +5,7 @@ Supports full game administration based on DOCS specifications
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text, func, desc, or_
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
@@ -12,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 import logging
 import uuid
 
-from src.core.database import get_db
+from src.core.database import get_db, get_async_session
 from src.auth.admin_scopes import (
     ARIA_AUDIT,
     ECONOMY_INTERVENE,
@@ -40,12 +41,47 @@ from src.models.team import Team
 from src.models.route_optimization_run import RouteOptimizationRun
 from src.models.faction import Faction
 from src.services.analytics_service import AnalyticsService
+from src.services.market_prediction_engine import MarketPredictionEngine
 from src.services.ai_security_service import get_security_service
 from src.services.faction_service import FactionService
 from src.models.aria_personal_intelligence import ARIASecurityLog
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+_market_prediction_engine = MarketPredictionEngine()
+
+_ADMIN_PREDICTION_TIMEFRAME_HOURS = {
+    "15m": 1,
+    "1h": 1,
+    "4h": 4,
+    "1d": 24,
+    "1w": 168,
+}
+
+
+def _admin_prediction_hours_ahead(timeframe: str, hours_ahead: Optional[int]) -> int:
+    if hours_ahead is not None:
+        return max(1, min(168, hours_ahead))
+    return _ADMIN_PREDICTION_TIMEFRAME_HOURS.get(timeframe, 24)
+
+
+def _admin_ai_prediction_row(prediction, timeframe: str) -> Dict[str, Any]:
+    commodity = prediction.commodity
+    station_key = prediction.station_id or "global"
+    return {
+        "id": f"{commodity}-{station_key}",
+        "resourceId": commodity,
+        "resourceName": commodity.replace("_", " ").title(),
+        "sectorId": station_key,
+        "sectorName": station_key if station_key == "global" else f"Station {station_key[:8]}",
+        "currentPrice": prediction.current_price,
+        "predictedPrice": prediction.predicted_price,
+        "confidence": round(prediction.confidence * 100, 1),
+        "timeframe": timeframe,
+        "factors": prediction.factors,
+        "timestamp": prediction.timestamp.isoformat(),
+    }
 
 # Pydantic Models for Requests/Responses
 
@@ -1582,6 +1618,51 @@ async def get_real_time_analytics(
         raise HTTPException(status_code=500, detail="Failed to fetch analytics")
 
 
+@router.get("/analytics/predictions", response_model=Dict[str, Any])
+async def get_analytics_predictions(
+    timeframe: str = Query("1h", description="Admin UI timeframe filter (echoed)"),
+    resource: Optional[str] = Query(None, description="Filter by commodity name"),
+    station_id: Optional[str] = Query(None, description="Restrict predictions to a station"),
+    hours_ahead: Optional[int] = Query(
+        None, ge=1, le=168, description="Prediction horizon in hours (overrides timeframe)"
+    ),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    db: AsyncSession = Depends(get_async_session),
+) -> Dict[str, Any]:
+    """Market price predictions for the admin Advanced Analytics surface."""
+    try:
+        horizon = _admin_prediction_hours_ahead(timeframe, hours_ahead)
+        if resource:
+            prediction = await _market_prediction_engine.predict_prices(
+                db, commodity=resource, station_id=station_id, hours_ahead=horizon
+            )
+            predictions = [prediction.to_dict()] if prediction else []
+        else:
+            batch = await _market_prediction_engine.batch_predict(
+                db, station_id=station_id, hours_ahead=horizon
+            )
+            predictions = [pred.to_dict() for pred in batch.values()]
+
+        logger.info(
+            "Admin %s requested analytics predictions (timeframe=%s count=%d)",
+            current_admin.username,
+            timeframe,
+            len(predictions),
+        )
+        return {
+            "timeframe": timeframe,
+            "hours_ahead": horizon,
+            "resource": resource,
+            "station_id": station_id,
+            "predictions": predictions,
+            "count": len(predictions),
+            "generated_at": datetime.utcnow().isoformat(),
+        }
+    except Exception:
+        logger.exception("Error fetching analytics predictions")
+        raise HTTPException(status_code=500, detail="Failed to fetch analytics predictions")
+
+
 @router.post("/analytics/snapshot", response_model=Dict[str, Any])
 async def create_analytics_snapshot(
     snapshot_type: str = "manual",
@@ -3074,23 +3155,42 @@ async def get_ai_system_metrics(
 async def get_ai_predictions(
     timeframe: str = Query("1h", description="Prediction timeframe"),
     resource: Optional[str] = Query(None, description="Filter by resource"),
+    station_id: Optional[str] = Query(None, description="Restrict to a station"),
+    hours_ahead: Optional[int] = Query(
+        None, ge=1, le=168, description="Prediction horizon in hours (overrides timeframe)"
+    ),
     current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_session),
 ):
-    """Get AI price predictions for admin dashboard"""
+    """Get AI price predictions for admin dashboard (AITradingDashboard tab)."""
     try:
-        # No price prediction engine exists; nothing in the system generates,
-        # stores, or scores price forecasts (see GET /ai/models — there is no
-        # model registry either). Return an empty list rather than fabricated
-        # predictions.
-        predictions: List[Dict[str, Any]] = []
+        horizon = _admin_prediction_hours_ahead(timeframe, hours_ahead)
+        if resource:
+            prediction = await _market_prediction_engine.predict_prices(
+                db, commodity=resource, station_id=station_id, hours_ahead=horizon
+            )
+            raw_predictions = [prediction] if prediction else []
+        else:
+            batch = await _market_prediction_engine.batch_predict(
+                db, station_id=station_id, hours_ahead=horizon
+            )
+            raw_predictions = list(batch.values())
 
-        logger.info(f"Admin {current_admin.username} requested AI predictions")
+        predictions = [
+            _admin_ai_prediction_row(pred, timeframe) for pred in raw_predictions
+        ]
+
+        logger.info(
+            "Admin %s requested AI predictions (timeframe=%s count=%d)",
+            current_admin.username,
+            timeframe,
+            len(predictions),
+        )
         return predictions
 
-    except Exception as e:
-        logger.error(f"Error getting AI predictions: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get AI predictions: {str(e)}")
+    except Exception:
+        logger.exception("Error getting AI predictions")
+        raise HTTPException(status_code=500, detail="Failed to get AI predictions")
 
 
 @router.get("/ai/route-optimization", response_model=Dict[str, Any])

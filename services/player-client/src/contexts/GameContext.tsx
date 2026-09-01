@@ -159,6 +159,28 @@ export interface ScanLatentTunnelsResult {
   sectors: number[];     // the sector numbers the revealed tunnels lead to
 }
 
+/** WO-PROG-SECTOR-SCAN-1 — paid adjacent-sector enrichment scan (2 turns). */
+export interface ScanAdjacentSectorResult {
+  success: boolean;
+  message?: string;
+  sector_id?: number;
+  name?: string;
+  type?: string;
+  tier?: number;
+  hazard_level?: number;
+  radiation_level?: number;
+  has_asteroids?: boolean;
+  has_gas_clouds?: boolean;
+  presence_echo?: string;
+  mines_present?: boolean;
+  patrol_band?: string;
+  has_planet?: boolean;
+  has_station?: boolean;
+  turns_remaining?: number;
+}
+
+export const ADJACENT_SECTOR_SCAN_TURN_COST = 2;
+
 export interface MarketInfo {
   resources: Record<string, {
     quantity: number;
@@ -355,6 +377,7 @@ interface GameContextType {
   getAvailableMoves: () => Promise<void>;
   // WO-LW — reveal latent warp tunnels in the current sector (per-player).
   scanForLatentTunnels: () => Promise<ScanLatentTunnelsResult | undefined>;
+  scanAdjacentSector: (sectorId: number) => Promise<ScanAdjacentSectorResult>;
 
   // Station interactions
   dockAtStation: (stationId: string) => Promise<any>;
@@ -603,6 +626,11 @@ export function formatMoveToSectorError(err: unknown): string {
 /** Exported for TypeError/network honesty Vitest (LEG-3324). */
 export function formatScanLatentTunnelsError(err: unknown): string {
   return formatGameContextTransportError(err, 'Failed to scan for latent tunnels');
+}
+
+/** Exported for adjacent-sector scan Network Error densify (LEG-3608). */
+export function formatScanAdjacentSectorError(err: unknown): string {
+  return formatGameContextTransportError(err, 'Failed to scan adjacent sector');
 }
 
 /** Exported for TypeError/network honesty Vitest (LEG-3324). */
@@ -907,7 +935,25 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       throw error;
     }
   };
-  
+
+  const scanAdjacentSector = async (sectorId: number): Promise<ScanAdjacentSectorResult> => {
+    if (!user || !playerState) {
+      throw new Error('Not authenticated');
+    }
+
+    setError(null);
+
+    try {
+      const data = (await playerAPI.scanAdjacentSector(sectorId)) as ScanAdjacentSectorResult;
+      await refreshPlayerState();
+      return data;
+    } catch (error: any) {
+      console.error('Error scanning adjacent sector:', error);
+      setError(formatScanAdjacentSectorError(error));
+      throw error;
+    }
+  };
+
   // Get available moves from current sector — playerAPI.getAvailableMoves.
   const getAvailableMoves = async () => {
     if (!user || !playerState) return;
@@ -2201,6 +2247,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     moveToSector,
     getAvailableMoves,
     scanForLatentTunnels,
+    scanAdjacentSector,
 
     // Station interactions
     dockAtStation,

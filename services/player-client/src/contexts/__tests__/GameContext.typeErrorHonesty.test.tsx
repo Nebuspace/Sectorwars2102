@@ -99,6 +99,7 @@ import {
   formatRefreshPlayerStateError,
   formatMoveToSectorError,
   formatScanLatentTunnelsError,
+  formatScanAdjacentSectorError,
   formatDockAtStationError,
   formatBuyResourceError,
   formatSellResourceError,
@@ -378,6 +379,12 @@ describe('GameContext Error Network Error densify (LEG-3401)', () => {
   it('formatScanLatentTunnelsError falls back on Error Network Error', () => {
     const text = formatScanLatentTunnelsError(new Error('Network Error'));
     expect(text).toBe('Failed to scan for latent tunnels');
+    expect(text).not.toMatch(/Network Error/i);
+  });
+
+  it('formatScanAdjacentSectorError falls back on Error Network Error (LEG-3608)', () => {
+    const text = formatScanAdjacentSectorError(new Error('Network Error'));
+    expect(text).toBe('Failed to scan adjacent sector');
     expect(text).not.toMatch(/Network Error/i);
   });
 

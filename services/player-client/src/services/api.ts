@@ -1000,6 +1000,9 @@ export const playerAPI = {
   scanLatentTunnels: () =>
     apiRequest('/api/v1/player/scan-latent-tunnels', { method: 'POST' }),
 
+  scanAdjacentSector: (sectorId: number) =>
+    apiRequest(`/api/v1/player/scan/${sectorId}`, { method: 'POST' }),
+
   /** One-time reward for a discovered special formation (WO-UI-ANOMALY). */
   investigateFormation: (formationId: string) =>
     apiRequest(`/api/v1/player/formations/${formationId}/investigate`, {
