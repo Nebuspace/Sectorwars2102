@@ -308,6 +308,21 @@ describe('StationsManager update-stock-levels (LEG-1712)', () => {
     });
   });
 
+  it('surfaces honest fallback on stock-levels TypeError/network collapse (LEG-2972)', async () => {
+    vi.mocked(api.post).mockRejectedValue(new TypeError('Failed to fetch'));
+    render(<StationsManager />);
+
+    fireEvent.click(await screen.findByLabelText('Update port stock levels'));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith('/api/v1/admin/ports/update-stock-levels');
+    });
+    const msg = String(toastError.mock.calls.map((call) => call[0]).join('\n'));
+    expect(msg).toMatch(/Failed to update port stock levels/i);
+    expect(msg).not.toMatch(/Failed to fetch/i);
+    expect(msg).not.toMatch(/TypeError/i);
+  });
+
   it('skips stock-levels POST when operator cancels confirm', async () => {
     confirmMock.mockResolvedValue(false);
     render(<StationsManager />);
@@ -413,5 +428,47 @@ describe('StationsManager AddPortModal load honesty (LEG-2399)', () => {
     expect(toastError.mock.calls.map((c) => String(c[0]))).not.toContain(
       'Failed to load players. Please try again.',
     );
+  });
+});
+
+describe('StationsManager axios Network Error densify (LEG-3399)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    toastSuccess.mockReset();
+    toastError.mockReset();
+    confirmMock.mockReset();
+    confirmMock.mockResolvedValue(true);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('collapses axios-shaped Network Error on load to honest fallback', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
+
+    render(<StationsManager />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/An unexpected error occurred/i)).toBeTruthy();
+    });
+    const text = screen.getByText(/An unexpected error occurred/i).textContent ?? '';
+    expect(text).toMatch(/An unexpected error occurred/i);
+    expect(text).not.toBe('Network Error');
+    expect(text).not.toContain('Network Error');
+  });
+
+  it('collapses axios-shaped Network Error on stock-levels POST to honest toast', async () => {
+    vi.mocked(api.get).mockResolvedValue({ data: { stations: [], total: 0 } });
+    vi.mocked(api.post).mockRejectedValue(new Error('Network Error'));
+
+    render(<StationsManager />);
+    fireEvent.click(await screen.findByLabelText('Update port stock levels'));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith('/api/v1/admin/ports/update-stock-levels');
+    });
+    const msg = String(toastError.mock.calls.map((call) => call[0]).join('\n'));
+    expect(msg).toMatch(/Failed to update port stock levels/i);
+    expect(msg).not.toBe('Network Error');
+    expect(msg).not.toContain('Network Error');
   });
 });

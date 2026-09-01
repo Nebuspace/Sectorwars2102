@@ -40,6 +40,35 @@ const formatLabel = (key: string): string =>
 const totalUnits = (cargo: Record<string, number>): number =>
   Object.values(cargo).reduce((sum, qty) => sum + (Number.isFinite(qty) ? qty : 0), 0);
 
+const SALVAGE_FAILED_FALLBACK = 'Salvage failed';
+
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+/** Exported for TypeError/network honesty Vitest (LEG-3260 / LEG-3303). */
+export function formatSalvageError(err: unknown): string {
+  if (err instanceof TypeError) return SALVAGE_FAILED_FALLBACK;
+  if (err instanceof Error && err.message) {
+    if (isNetworkCollapseMessage(err.message)) return SALVAGE_FAILED_FALLBACK;
+    return err.message;
+  }
+  if (err && typeof err === 'object') {
+    const msg = (err as { message?: unknown }).message;
+    if (typeof msg === 'string' && msg) {
+      if (isNetworkCollapseMessage(msg)) return SALVAGE_FAILED_FALLBACK;
+      return msg;
+    }
+  }
+  return SALVAGE_FAILED_FALLBACK;
+}
+
 const SolarSalvagePage: React.FC<SolarSalvagePageProps> = ({ wrecks, onSalvaged }) => {
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
   const [quantity, setQuantity] = React.useState<number>(1);
@@ -69,11 +98,12 @@ const SolarSalvagePage: React.FC<SolarSalvagePageProps> = ({ wrecks, onSalvaged 
       });
       setSelectedId(null);
       onSalvaged();
-    } catch (e: any) {
+    } catch (e: unknown) {
       // Wreck 404 on a raced expiry lands here same as any other salvage
       // failure — refetch so the list reflects reality instead of a stale
-      // row the player can no longer act on.
-      setSalvageMsg({ ok: false, text: e?.message || 'Salvage failed' });
+      // row the player can no longer act on. TypeError/network → stable
+      // fallback (LEG-3260); do not surface "Failed to fetch".
+      setSalvageMsg({ ok: false, text: formatSalvageError(e) });
       setSelectedId(null);
       onSalvaged();
     } finally {

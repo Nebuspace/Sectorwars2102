@@ -18,6 +18,31 @@ MAX_TOPIC_NAME_LENGTH = 128
 # subscription_rejected." (WO-RT-BUS-HARDENING)
 MAX_TOPICS_PER_USER = 50
 
+# Canon: SYSTEMS/realtime-bus.md Channel / topic model — personal:{user_id}
+# single-recipient invariant (ADR-0057 A-I1 / LEG-2575). Cross-user subscribe
+# must be rejected + logged; reuse subscription_rejected (no dedicated
+# forbidden error_code in tree — invent=0).
+PERSONAL_TOPIC_PREFIX = "personal:"
+
+
+def personal_topic_owner(topic: str) -> Optional[str]:
+    """Return owner user_id if topic uses personal: prefix, else None.
+
+    Empty string owner means a malformed ``personal:`` with no id — still a
+    personal-topic shape, and always forbidden for subscribe.
+    """
+    if not topic.startswith(PERSONAL_TOPIC_PREFIX):
+        return None
+    return topic[len(PERSONAL_TOPIC_PREFIX) :]
+
+
+def is_personal_topic_forbidden(user_id: str, topic: str) -> bool:
+    """True when topic is personal: and not owned by the authenticated user."""
+    owner = personal_topic_owner(topic)
+    if owner is None:
+        return False
+    return owner != user_id
+
 # WO-P1-BUS-RACE-CRITICAL (MEDIUM finding, Mack): send_personal_message's
 # local-hit-suppresses-bus-publish optimization assumes a local send_text()
 # "success" means real delivery -- but a half-open dead socket (network
@@ -536,10 +561,15 @@ class ConnectionManager:
         binding per SYSTEMS/realtime-bus.md's Rate limits table). A topic the
         user is already subscribed to never consumes a fresh slot (idempotent
         re-subscribe always succeeds). Returns True if the subscription is
-        registered (new or already-present), False if the cap was hit — the
-        caller (handle_websocket_message) sends a subscription_rejected frame
-        and does not register."""
+        registered (new or already-present), False if the cap was hit OR a
+        personal: ownership check failed — the caller (handle_websocket_message)
+        sends a subscription_rejected frame and does not register.
+
+        LEG-2575: also refuses personal:{other} (and malformed personal:) so
+        registry registration cannot bypass the handler ownership gate."""
         if not topic or user_id not in self.active_connections:
+            return False
+        if is_personal_topic_forbidden(user_id, topic):
             return False
         if topic in self.topic_subscriptions and user_id in self.topic_subscriptions[topic]:
             return True
@@ -561,6 +591,11 @@ class ConnectionManager:
 
     async def publish_topic(self, topic: str, message: Dict[str, Any], exclude: Optional[str] = None):
         """Publish a message to every subscriber of a generic topic.
+
+        LEG-2575 publisher audit: personal unicast must use
+        ``send_personal_message(user_id, …)`` (keyed by authenticated user),
+        not ``publish_topic("personal:…")``. Subscribe-side ownership gating
+        blocks cross-user opt-in; do not add personal: fan-out publishers.
 
         WO-DBB-RT5 — the generic fan-out primitive over the topic-subscription
         registry, so any service can fan out to arbitrary topic subscribers
@@ -1392,14 +1427,28 @@ async def handle_websocket_message(user_id: str, message_data: Dict[str, Any]):
     elif message_type == "subscribe_topic":
         # WO-DBB-RT5: opt the connection into a generic topic so a later
         # publish_topic() reaches it. Cap topic name length to keep the
-        # registry key bounded; the service-side publisher decides what topics
-        # carry sensitive data (this is opt-in fan-out, not authorization —
-        # publish_topic only ever delivers what a service explicitly fans out).
+        # registry key bounded. LEG-2575: personal:{user_id} is authorization
+        # (single-recipient invariant) — not mere opt-in fan-out.
         topic = (message_data.get("topic") or "").strip()
         if not topic or len(topic) > MAX_TOPIC_NAME_LENGTH:  # NO-CANON: cap to bound the registry key
             await connection_manager.send_personal_message(user_id, {
                 "type": "error",
                 "message": "Invalid topic name"
+            })
+            return
+        if is_personal_topic_forbidden(user_id, topic):
+            # Canon: reject + log security event; reuse subscription_rejected
+            # (realtime-bus.md Failure modes) — no dedicated forbidden code.
+            logger.warning(
+                "security_event personal_topic_cross_subscribe user_id=%s topic=%s",
+                user_id,
+                topic,
+            )
+            await connection_manager.send_personal_message(user_id, {
+                "type": "subscription_rejected",
+                "topic": topic,
+                "reason": "personal topic ownership denied",
+                "timestamp": datetime.now(UTC).isoformat()
             })
             return
         accepted = connection_manager.subscribe_topic(user_id, topic)

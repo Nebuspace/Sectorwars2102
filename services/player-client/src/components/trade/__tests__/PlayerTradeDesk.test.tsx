@@ -23,7 +23,7 @@ const { tradeAPI } = vi.hoisted(() => ({
 
 vi.mock('../../../services/api', () => ({ tradeAPI }));
 
-import PlayerTradeDesk from '../PlayerTradeDesk';
+import PlayerTradeDesk, { formatTradeError } from '../PlayerTradeDesk';
 
 const ME = 'player-me';
 const THEM = 'player-them';
@@ -49,6 +49,37 @@ function openSession(overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
 }
+
+describe('formatTradeError TypeError densify (LEG-3093)', () => {
+  it('falls back on TypeError network collapse for trade refresh', () => {
+    const text = formatTradeError(new TypeError('Failed to fetch'), 'trade_refresh_failed');
+    expect(text).toMatch(/Could not refresh the trade desk/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('falls back on TypeError network collapse for trade action', () => {
+    const text = formatTradeError(new TypeError('Failed to fetch'), 'trade_action_failed');
+    expect(text).toMatch(/That trade action failed/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('falls back on axios Network Error / Failed to fetch non-TypeError (LEG-3338)', () => {
+    expect(formatTradeError(new Error('Network Error'), 'trade_refresh_failed')).toBe(
+      'Could not refresh the trade desk.',
+    );
+    expect(formatTradeError(new Error('Network Error'), 'trade_action_failed')).toBe(
+      'That trade action failed.',
+    );
+    expect(formatTradeError(new Error('Failed to fetch'), 'trade_action_failed')).toBe(
+      'That trade action failed.',
+    );
+    expect(formatTradeError(new Error('Network Error'), 'trade_action_failed')).not.toMatch(
+      /Network Error/i,
+    );
+  });
+});
 
 describe('PlayerTradeDesk', () => {
   let container: HTMLElement;
@@ -311,6 +342,102 @@ describe('PlayerTradeDesk', () => {
 
     const alert = document.body.querySelector('[role="alert"]');
     expect(alert?.textContent).toBe('You must be in the same location to trade.');
+  });
+
+  it('surfaces honest fallback when getOpen rejects with TypeError', async () => {
+    tradeAPI.getOpen.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await act(async () => {
+      root.render(<PlayerTradeDesk myPlayerId={ME} onClose={onClose} ships={TEST_SHIPS} />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const alert = document.body.querySelector('[role="alert"]');
+    expect(alert?.textContent).toMatch(/Could not open a trade/i);
+    expect(alert?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(alert?.textContent).not.toMatch(/TypeError/i);
+  });
+
+  it('does not crash when getOpen returns a malformed (empty object) payload', async () => {
+    tradeAPI.getOpen.mockResolvedValue({});
+
+    await act(async () => {
+      root.render(<PlayerTradeDesk myPlayerId={ME} onClose={onClose} ships={TEST_SHIPS} />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(document.body.querySelector('.p2p-trade-desk')).toBeTruthy();
+    expect(document.body.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it('surfaces honest fallback when offer rejects with TypeError', async () => {
+    tradeAPI.getOpen.mockResolvedValue({ session: openSession() });
+    tradeAPI.offer.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await act(async () => {
+      root.render(<PlayerTradeDesk myPlayerId={ME} onClose={onClose} ships={TEST_SHIPS} />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      (document.body.querySelector('[data-testid="stage-offer"]') as HTMLButtonElement).click();
+      await Promise.resolve();
+    });
+
+    const alert = document.body.querySelector('[role="alert"]');
+    expect(alert?.textContent).toMatch(/That trade action failed/i);
+    expect(alert?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(alert?.textContent).not.toMatch(/TypeError/i);
+  });
+
+  it('surfaces honest fallback when offer rejects with axios Network Error (LEG-3338)', async () => {
+    tradeAPI.getOpen.mockResolvedValue({ session: openSession() });
+    tradeAPI.offer.mockRejectedValue(new Error('Network Error'));
+
+    await act(async () => {
+      root.render(<PlayerTradeDesk myPlayerId={ME} onClose={onClose} ships={TEST_SHIPS} />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      (document.body.querySelector('[data-testid="stage-offer"]') as HTMLButtonElement).click();
+      await Promise.resolve();
+    });
+
+    const alert = document.body.querySelector('[role="alert"]');
+    expect(alert?.textContent).toMatch(/That trade action failed/i);
+    expect(alert?.textContent).not.toMatch(/Network Error/i);
+    expect(alert?.textContent).not.toMatch(/TypeError/i);
+  });
+
+  it('surfaces honest fallback when deliverFuel rejects with axios Network Error (LEG-3338)', async () => {
+    tradeAPI.getOpen.mockResolvedValue({ session: openSession() });
+    tradeAPI.deliverFuel.mockRejectedValue(new Error('Network Error'));
+
+    await act(async () => {
+      root.render(<PlayerTradeDesk myPlayerId={ME} onClose={onClose} ships={TEST_SHIPS} />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      (document.body.querySelector('[data-testid="deliver-fuel-submit"]') as HTMLButtonElement).click();
+      await Promise.resolve();
+    });
+
+    const alert = document.body.querySelector('[role="alert"]');
+    expect(alert?.textContent).toMatch(/That trade action failed/i);
+    expect(alert?.textContent).not.toMatch(/Network Error/i);
+    expect(alert?.textContent).not.toMatch(/TypeError/i);
   });
 
   it('closes after a terminal SETTLED session', async () => {

@@ -24,7 +24,10 @@ vi.mock('../../../services/api', () => ({
   },
 }));
 
-import ModuleGridInterface from '../ModuleGridInterface';
+import ModuleGridInterface, {
+  formatModuleGridActionError,
+  formatModuleGridLoadError,
+} from '../ModuleGridInterface';
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
@@ -162,6 +165,40 @@ describe('ModuleGridInterface', () => {
       await flush();
     });
     expect(container.querySelector('.mgi-error')?.textContent).toContain('Ship not found');
+    expect(container.querySelector('.mgi-retry-btn')).toBeTruthy();
+  });
+
+  it('formatModuleGridLoadError falls back on TypeError network collapse (LEG-3002)', () => {
+    const text = formatModuleGridLoadError(new TypeError('Failed to fetch'));
+    expect(text).toBe('Failed to load module data');
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('formatModuleGridActionError falls back on TypeError network collapse (LEG-3002)', () => {
+    const text = formatModuleGridActionError(new TypeError('Failed to fetch'), 'Install failed');
+    expect(text).toBe('Install failed');
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('formatModuleGridLoad/Action fall back on axios Network Error / Failed to fetch (LEG-3346)', () => {
+    expect(formatModuleGridLoadError(new Error('Network Error'))).toBe('Failed to load module data');
+    expect(formatModuleGridLoadError(new Error('Failed to fetch'))).toBe('Failed to load module data');
+    expect(formatModuleGridActionError(new Error('Network Error'), 'Install failed')).toBe('Install failed');
+    expect(formatModuleGridActionError(new Error('plot occupied'), 'Install failed')).toBe('plot occupied');
+  });
+
+  it('surfaces Failed to load module data on getModules TypeError (LEG-3002)', async () => {
+    getModules.mockRejectedValue(new TypeError('Failed to fetch'));
+    await act(async () => {
+      root.render(<ModuleGridInterface ship={{ id: 'ship-1' }} />);
+      await flush();
+    });
+    const errText = container.querySelector('.mgi-error')?.textContent ?? '';
+    expect(errText).toContain('Failed to load module data');
+    expect(errText).not.toMatch(/Failed to fetch/i);
+    expect(errText).not.toMatch(/TypeError/i);
     expect(container.querySelector('.mgi-retry-btn')).toBeTruthy();
   });
 

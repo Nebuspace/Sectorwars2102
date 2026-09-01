@@ -3,13 +3,27 @@ import { gcLapseAPI } from '../../services/api';
 import { useGame } from '../../contexts/GameContext';
 import './gc-lapse-panel.css';
 
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
+};
+
 function serverDetail(err: unknown): string | undefined {
   if (err && typeof err === 'object') {
     const rawDetail = (err as { response?: { data?: { detail?: unknown } } }).response?.data
       ?.detail;
     if (typeof rawDetail === 'string' && rawDetail.trim()) return rawDetail.trim();
   }
+  // Network collapse (fetch TypeError) is not gameserver copy — use the fallback.
+  if (err instanceof TypeError) return undefined;
   const message = err instanceof Error ? err.message : undefined;
+  if (typeof message === 'string' && isNetworkCollapseMessage(message)) return undefined;
   if (
     typeof message === 'string' &&
     message.trim().length > 0 &&

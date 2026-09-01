@@ -31,6 +31,7 @@ vi.mock('../../../services/api', async (importOriginal) => {
 
 import PlanetaryLanderInstallCta, {
   PLANETARY_LANDER_INSTALL_COST_CR,
+  formatPlanetaryLanderInstallError,
   isPlanetaryLanderHullCompatible,
 } from '../PlanetaryLanderInstallCta';
 
@@ -48,6 +49,30 @@ describe('isPlanetaryLanderHullCompatible', () => {
     expect(isPlanetaryLanderHullCompatible('SCOUT')).toBe(false);
     expect(isPlanetaryLanderHullCompatible('WARP_JUMPER')).toBe(false);
     expect(isPlanetaryLanderHullCompatible(null)).toBe(false);
+  });
+});
+
+describe('formatPlanetaryLanderInstallError TypeError densify (LEG-3096)', () => {
+  it('falls back on TypeError network collapse', () => {
+    const text = formatPlanetaryLanderInstallError(new TypeError('Failed to fetch'));
+    expect(text).toBe('Planetary Lander install failed');
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('falls back on axios Network Error / Failed to fetch non-TypeError (LEG-3295)', () => {
+    expect(formatPlanetaryLanderInstallError(new Error('Network Error'))).toBe('Planetary Lander install failed');
+    expect(formatPlanetaryLanderInstallError(new Error('Failed to fetch'))).toBe('Planetary Lander install failed');
+    expect(formatPlanetaryLanderInstallError(new Error('   '))).toBe('Planetary Lander install failed');
+  });
+
+  it('preserves server detail for non-TypeError errors', () => {
+    const err = Object.assign(new Error('insufficient credits'), {
+      response: { data: { detail: 'Not enough credits for Planetary Lander.' } },
+    });
+    expect(formatPlanetaryLanderInstallError(err)).toBe(
+      'Not enough credits for Planetary Lander.',
+    );
   });
 });
 
@@ -155,5 +180,34 @@ describe('PlanetaryLanderInstallCta — LEG-117', () => {
     expect(container.querySelector('[data-testid="planetary-lander-cta"]')).toBeNull();
     expect(container.querySelector('[data-testid="planetary-lander-install-btn"]')).toBeNull();
     expect(getUpgradesMock).not.toHaveBeenCalled();
+  });
+
+  it('install TypeError surfaces fallback without Failed to fetch / TypeError (LEG-3096)', async () => {
+    getUpgradesMock.mockResolvedValue({
+      success: true,
+      equipment: {
+        planetary_lander: { installed: false, cost: PLANETARY_LANDER_INSTALL_COST_CR },
+      },
+      equipped: {},
+    });
+    installEquipmentMock.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await mount({});
+
+    const btn = container.querySelector(
+      '[data-testid="planetary-lander-install-btn"]',
+    ) as HTMLButtonElement | null;
+    expect(btn).toBeTruthy();
+
+    await act(async () => {
+      btn!.click();
+      await Promise.resolve();
+    });
+
+    const alert = container.querySelector('.planetary-lander-cta-err');
+    expect(alert).toBeTruthy();
+    expect(alert?.textContent).toBe('Planetary Lander install failed');
+    expect(alert?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(alert?.textContent).not.toMatch(/TypeError/i);
   });
 });

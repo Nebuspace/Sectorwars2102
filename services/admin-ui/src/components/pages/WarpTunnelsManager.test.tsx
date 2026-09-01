@@ -94,6 +94,21 @@ describe('WarpTunnelsManager scope errors (LEG-966)', () => {
     expect(text).not.toMatch(/TypeError/i);
     expect(text).not.toBe('Failed to fetch');
   });
+
+  it('collapses axios-shaped Network Error to warp-tunnels fallback (LEG-3347)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
+
+    render(<WarpTunnelsManager />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to fetch warp tunnels/i)).toBeTruthy();
+    });
+
+    const text = screen.getByText(/Failed to fetch warp tunnels/i).textContent ?? '';
+    expect(text).not.toBe('Network Error');
+    expect(text).not.toContain('Network Error');
+    expect(text).not.toMatch(/TypeError/i);
+  });
 });
 
 describe('WarpTunnelsManager mutation errors (LEG-2611)', () => {

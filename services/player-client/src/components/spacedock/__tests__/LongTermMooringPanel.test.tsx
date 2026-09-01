@@ -41,6 +41,7 @@ vi.mock('../../../services/api', () => ({
 
 import LongTermMooringPanel, {
   LONG_TERM_MOORING_RATE_PER_DAY,
+  errMessage,
 } from '../LongTermMooringPanel';
 
 describe('LongTermMooringPanel (LEG-438)', () => {
@@ -156,5 +157,51 @@ describe('LongTermMooringPanel (LEG-438)', () => {
     expect(
       (container.querySelector('[data-testid="mooring-acquire"]') as HTMLButtonElement).disabled,
     ).toBe(true);
+  });
+
+  it('acquire TypeError surfaces Long-term mooring request failed without Failed to fetch / TypeError (LEG-3255)', async () => {
+    expect(errMessage(new TypeError('Failed to fetch'))).toBe('Long-term mooring request failed');
+    expect(errMessage(new TypeError('Failed to fetch'))).not.toMatch(/Failed to fetch/i);
+
+    mockAcquire.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await act(async () => {
+      root.render(<LongTermMooringPanel />);
+    });
+
+    await act(async () => {
+      (container.querySelector('[data-testid="mooring-acquire"]') as HTMLButtonElement).click();
+    });
+
+    const alert = container.querySelector('[data-testid="mooring-error"]');
+    expect(alert?.textContent).toMatch(/Long-term mooring request failed/);
+    expect(alert?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(alert?.textContent).not.toMatch(/TypeError/i);
+  });
+
+  it('errMessage densifies Failed to fetch / Network Error message collapse (LEG-3267)', () => {
+    const fallback = 'Long-term mooring request failed';
+    expect(errMessage({ message: 'Failed to fetch' })).toBe(fallback);
+    expect(errMessage({ message: 'Network Error' })).toBe(fallback);
+    expect(errMessage({ message: '   ' })).toBe(fallback);
+    expect(errMessage({ message: 'Failed to fetch' })).not.toMatch(/Failed to fetch/i);
+    expect(errMessage({ message: 'Failed to fetch' })).not.toMatch(/TypeError/i);
+  });
+
+  it('release TypeError surfaces fallback without Failed to fetch / TypeError (LEG-3267)', async () => {
+    mockRelease.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await act(async () => {
+      root.render(<LongTermMooringPanel />);
+    });
+
+    await act(async () => {
+      (container.querySelector('[data-testid="mooring-release"]') as HTMLButtonElement).click();
+    });
+
+    const alert = container.querySelector('[data-testid="mooring-error"]');
+    expect(alert?.textContent).toMatch(/Long-term mooring request failed/);
+    expect(alert?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(alert?.textContent).not.toMatch(/TypeError/i);
   });
 });

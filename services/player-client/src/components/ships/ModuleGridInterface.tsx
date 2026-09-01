@@ -205,14 +205,33 @@ function httpStatus(err: unknown): number | undefined {
   return undefined;
 }
 
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+/** True when err looks like gameserver detail (not bare API Error: N / TypeError noise). */
+function hasModuleGridServerDetail(err: unknown, message: string | undefined): boolean {
+  // Network collapse (fetch TypeError / axios transport) is not gameserver copy.
+  if (err instanceof TypeError) return false;
+  if (typeof message === 'string' && isNetworkCollapseMessage(message)) return false;
+  return (
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim())
+  );
+}
+
 /** Surface gameserver detail when module lattice load fails. */
 export function formatModuleGridLoadError(err: unknown): string {
   const status = httpStatus(err);
   const message = err instanceof Error ? err.message : undefined;
-  const hasServerDetail =
-    typeof message === 'string' &&
-    message.trim().length > 0 &&
-    !/^API Error: \d+$/.test(message.trim());
+  const hasServerDetail = hasModuleGridServerDetail(err, message);
 
   if (status === 403) {
     if (hasServerDetail) return message!;
@@ -227,10 +246,7 @@ export function formatModuleGridLoadError(err: unknown): string {
 export function formatModuleGridActionError(err: unknown, fallback: string): string {
   const status = httpStatus(err);
   const message = err instanceof Error ? err.message : undefined;
-  const hasServerDetail =
-    typeof message === 'string' &&
-    message.trim().length > 0 &&
-    !/^API Error: \d+$/.test(message.trim());
+  const hasServerDetail = hasModuleGridServerDetail(err, message);
 
   if (status === 429) {
     if (hasServerDetail) return message!;

@@ -3,6 +3,39 @@ import { useAuth } from '../../contexts/AuthContext';
 import { inviteCodeFromUrl } from './inviteCodeFromUrl';
 import './auth.css';
 
+const REGISTER_NETWORK_FALLBACK =
+  'Registration failed. Please check your connection and try again.';
+const REGISTER_GENERIC_FALLBACK = 'Registration failed. Please try again.';
+
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+/** Collapses fetch TypeError / network noise; preserves structured API detail (LEG-3321). */
+export function formatRegisterError(err: unknown): string {
+  if (err instanceof TypeError) {
+    return REGISTER_NETWORK_FALLBACK;
+  }
+  if (typeof err === 'object' && err !== null && 'response' in err) {
+    const detail = (err as { response?: { data?: { detail?: unknown } } }).response
+      ?.data?.detail;
+    if (typeof detail === 'string' && detail.trim() && !isNetworkCollapseMessage(detail)) {
+      return detail;
+    }
+  }
+  const raw = err instanceof Error ? err.message : String(err ?? '');
+  if (isNetworkCollapseMessage(raw)) {
+    return REGISTER_NETWORK_FALLBACK;
+  }
+  if (raw.trim()) return raw;
+  return REGISTER_GENERIC_FALLBACK;
+}
+
 interface RegisterFormProps {
   onRegisterSuccess?: () => void;
   switchToLogin?: () => void;
@@ -59,13 +92,9 @@ const RegisterForm: React.FC<RegisterFormProps> = ({ onRegisterSuccess, switchTo
       if (onRegisterSuccess) {
         onRegisterSuccess();
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Registration failed:', err);
-      if (err.response?.data?.detail) {
-        setError(err.response.data.detail);
-      } else {
-        setError('Registration failed. Please try again.');
-      }
+      setError(formatRegisterError(err));
     } finally {
       setIsSubmitting(false);
     }

@@ -5045,6 +5045,33 @@
   border-radius: 3px;
 }
 
+.nav-course-threat-current {
+  font-family: 'Courier New', monospace;
+  font-size: 0.65em;
+  color: rgba(234, 246, 255, 0.85);
+  margin-bottom: 0.35rem;
+}
+
+.nav-exit-threat {
+  font-size: 0.58em;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 0.1rem 0.25rem;
+  border-radius: 2px;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.nav-threat-error {
+  font-size: 0.62em;
+  color: #ff8a8a;
+  margin-bottom: 0.35rem;
+}
+
+.nav-threat-clear { color: #7dffb3; }
+.nav-threat-caution { color: #ffd166; }
+.nav-threat-hostile { color: #ff9f43; }
+.nav-threat-lethal { color: #ff5a6a; }
+
 .nav-exit-name {
   flex: 1;
   min-width: 0;

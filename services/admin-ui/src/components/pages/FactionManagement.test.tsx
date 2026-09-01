@@ -92,6 +92,35 @@ describe('FactionManagement scope errors (LEG-968)', () => {
       expect(screen.getByText(/rate limit/i)).toBeTruthy();
     });
   });
+
+  it('collapses axios-shaped Network Error to load fallback (LEG-3379)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
+
+    render(<FactionManagement />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to load factions/i)).toBeTruthy();
+    });
+    const text = screen.getByText(/Failed to load factions/i).textContent ?? '';
+    expect(text).toMatch(/Failed to load factions/i);
+    expect(text).not.toBe('Network Error');
+    expect(text).not.toContain('Network Error');
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('collapses TypeError on load to honest fallback (LEG-3379)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<FactionManagement />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to load factions/i)).toBeTruthy();
+    });
+    const text = screen.getByText(/Failed to load factions/i).textContent ?? '';
+    expect(text).toMatch(/Failed to load factions/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
 });
 
 describe('FactionManagement mutation errors (LEG-2610)', () => {
@@ -190,6 +219,130 @@ describe('FactionManagement mutation errors (LEG-2610)', () => {
     expect(toastError).not.toHaveBeenCalledWith('Failed to update faction.');
   });
 
+  it('collapses axios-shaped Network Error on create POST to honest fallback (LEG-3379)', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.post).mockRejectedValue(new Error('Network Error'));
+
+    render(<FactionManagement />);
+    await waitFor(() => expect(screen.getByText('Test Faction')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: /\+ Create Faction/i }));
+    const modal = createModalRoot();
+    await user.type(within(modal).getAllByRole('textbox')[0], 'New Faction');
+    await user.click(within(modal).getByRole('button', { name: /^Create Faction$/i }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalled();
+    });
+    const msg = String(toastError.mock.calls.map((call) => call[0]).join('\n'));
+    expect(msg).toMatch(/Failed to create faction/i);
+    expect(msg).not.toBe('Network Error');
+    expect(msg).not.toContain('Network Error');
+    expect(msg).not.toMatch(/TypeError/i);
+  });
+
+  it('collapses TypeError on create POST to honest fallback (LEG-3379)', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.post).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<FactionManagement />);
+    await waitFor(() => expect(screen.getByText('Test Faction')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: /\+ Create Faction/i }));
+    const modal = createModalRoot();
+    await user.type(within(modal).getAllByRole('textbox')[0], 'New Faction');
+    await user.click(within(modal).getByRole('button', { name: /^Create Faction$/i }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalled();
+    });
+    const msg = String(toastError.mock.calls.map((call) => call[0]).join('\n'));
+    expect(msg).toMatch(/Failed to create faction/i);
+    expect(msg).not.toMatch(/Failed to fetch/i);
+    expect(msg).not.toMatch(/TypeError/i);
+  });
+
+  it('collapses axios-shaped Network Error on edit PUT to honest fallback (LEG-3379)', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.put).mockRejectedValue(new Error('Network Error'));
+
+    render(<FactionManagement />);
+    await waitFor(() => expect(screen.getByText('Test Faction')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: /^Edit$/i }));
+    await user.click(screen.getByRole('button', { name: /Save Changes/i }));
+
+    await waitFor(() => {
+      expect(api.put).toHaveBeenCalled();
+    });
+    const msg = String(toastError.mock.calls.map((call) => call[0]).join('\n'));
+    expect(msg).toMatch(/Failed to update faction/i);
+    expect(msg).not.toBe('Network Error');
+    expect(msg).not.toContain('Network Error');
+    expect(msg).not.toMatch(/TypeError/i);
+  });
+
+  it('surfaces honest fallback on edit PUT TypeError/network collapse (LEG-2971)', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.put).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<FactionManagement />);
+    await waitFor(() => expect(screen.getByText('Test Faction')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: /^Edit$/i }));
+    await user.click(screen.getByRole('button', { name: /Save Changes/i }));
+
+    await waitFor(() => {
+      expect(api.put).toHaveBeenCalledWith(
+        `/api/v1/admin/factions/${sampleFaction.id}`,
+        expect.objectContaining({ name: sampleFaction.name }),
+      );
+    });
+    const msg = String(toastError.mock.calls.map((call) => call[0]).join('\n'));
+    expect(msg).toMatch(/Failed to update faction/i);
+    expect(msg).not.toMatch(/Failed to fetch/i);
+    expect(msg).not.toMatch(/TypeError/i);
+  });
+
+  it('collapses axios-shaped Network Error on territory PUT to honest fallback (LEG-3379)', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.put).mockRejectedValue(new Error('Network Error'));
+
+    render(<FactionManagement />);
+    await waitFor(() => expect(screen.getByText('Test Faction')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: /^Territory$/i }));
+    await user.click(screen.getByRole('button', { name: /Save Territory/i }));
+
+    await waitFor(() => {
+      expect(api.put).toHaveBeenCalled();
+    });
+    const msg = String(toastError.mock.calls.map((call) => call[0]).join('\n'));
+    expect(msg).toMatch(/Failed to update territory/i);
+    expect(msg).not.toBe('Network Error');
+    expect(msg).not.toContain('Network Error');
+    expect(msg).not.toMatch(/TypeError/i);
+  });
+
+  it('collapses TypeError on territory PUT to honest fallback (LEG-3379)', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.put).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<FactionManagement />);
+    await waitFor(() => expect(screen.getByText('Test Faction')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: /^Territory$/i }));
+    await user.click(screen.getByRole('button', { name: /Save Territory/i }));
+
+    await waitFor(() => {
+      expect(api.put).toHaveBeenCalled();
+    });
+    const msg = String(toastError.mock.calls.map((call) => call[0]).join('\n'));
+    expect(msg).toMatch(/Failed to update territory/i);
+    expect(msg).not.toMatch(/Failed to fetch/i);
+    expect(msg).not.toMatch(/TypeError/i);
+  });
+
   it('surfaces formatAdminApiError on territory PUT 403', async () => {
     const user = userEvent.setup();
     vi.mocked(api.put).mockRejectedValue(
@@ -234,6 +387,47 @@ describe('FactionManagement mutation errors (LEG-2610)', () => {
     expect(toastError).not.toHaveBeenCalledWith(
       'Failed to update territory. Check that sector IDs are valid.',
     );
+  });
+
+  it('collapses axios-shaped Network Error on reputation PUT to honest fallback (LEG-3379)', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.put).mockRejectedValue(new Error('Network Error'));
+
+    render(<FactionManagement />);
+    await waitFor(() => expect(screen.getByText('Test Faction')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: /^Reputation$/i }));
+    await user.type(screen.getByPlaceholderText('Player UUID'), 'player-1');
+    await user.click(screen.getByRole('button', { name: /Apply Change/i }));
+
+    await waitFor(() => {
+      expect(api.put).toHaveBeenCalled();
+    });
+    const msg = String(toastError.mock.calls.map((call) => call[0]).join('\n'));
+    expect(msg).toMatch(/Failed to adjust reputation/i);
+    expect(msg).not.toBe('Network Error');
+    expect(msg).not.toContain('Network Error');
+    expect(msg).not.toMatch(/TypeError/i);
+  });
+
+  it('collapses TypeError on reputation PUT to honest fallback (LEG-3379)', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.put).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<FactionManagement />);
+    await waitFor(() => expect(screen.getByText('Test Faction')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: /^Reputation$/i }));
+    await user.type(screen.getByPlaceholderText('Player UUID'), 'player-1');
+    await user.click(screen.getByRole('button', { name: /Apply Change/i }));
+
+    await waitFor(() => {
+      expect(api.put).toHaveBeenCalled();
+    });
+    const msg = String(toastError.mock.calls.map((call) => call[0]).join('\n'));
+    expect(msg).toMatch(/Failed to adjust reputation/i);
+    expect(msg).not.toMatch(/Failed to fetch/i);
+    expect(msg).not.toMatch(/TypeError/i);
   });
 
   it('surfaces formatAdminApiError on reputation PUT 403', async () => {

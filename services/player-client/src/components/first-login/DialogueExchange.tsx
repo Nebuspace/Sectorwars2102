@@ -12,6 +12,26 @@ const formatDialogue = (text: string): ReactNode[] => {
   );
 };
 
+/** Transport collapse copy is not gameserver detail (LEG-3404 densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+/** Network collapse (fetch TypeError / axios Network Error) is not gameserver copy — use the fallback. */
+export function formatDialogueSubmitError(err: unknown, fallback: string): string {
+  if (err instanceof TypeError) return fallback;
+  if (err instanceof Error) {
+    if (isNetworkCollapseMessage(err.message)) return fallback;
+    return err.message;
+  }
+  return String(err ?? '');
+}
+
 /**
  * DialogueExchange component - Chat-style conversation interface
  *
@@ -29,6 +49,7 @@ const DialogueExchange: React.FC = () => {
   } = useFirstLogin();
 
   const [response, setResponse] = useState('');
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const [showTypingIndicator, setShowTypingIndicator] = useState(false);
   const dialogueHistoryRef = useRef<HTMLDivElement>(null);
 
@@ -54,11 +75,18 @@ const DialogueExchange: React.FC = () => {
     e.preventDefault();
 
     if (response.trim() && !isLoading && !dialogueOutcome) {
+      setSubmitError(null);
       try {
         await submitResponse(response);
         setResponse('');
       } catch (error) {
         console.error('Error submitting response:', error);
+        setSubmitError(
+          formatDialogueSubmitError(
+            error,
+            'Failed to send your response. Please try again.',
+          ),
+        );
       }
     }
   };
@@ -160,11 +188,19 @@ const DialogueExchange: React.FC = () => {
       {/* Input area (fixed at bottom of dialogue section) */}
       {!dialogueOutcome && (
         <form onSubmit={handleSubmit} className="dialogue-input-area">
+          {submitError && (
+            <div className="error-message" role="alert">
+              <p>{submitError}</p>
+            </div>
+          )}
           <textarea
             className="response-input"
             placeholder="Type your response to the guard..."
             value={response}
-            onChange={(e) => setResponse(e.target.value)}
+            onChange={(e) => {
+              setResponse(e.target.value);
+              if (submitError) setSubmitError(null);
+            }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();

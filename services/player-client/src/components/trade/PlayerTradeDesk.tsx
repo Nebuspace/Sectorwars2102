@@ -71,10 +71,23 @@ const STATUS_COPY: Record<string, string> = {
   OPEN: 'Open',
 };
 
-function formatTradeError(raw: unknown, fallback: string): string {
+const isTradeNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
+};
+
+export function formatTradeError(raw: unknown, fallback: string): string {
+  const mappedFallback = TRADE_REASON_COPY[fallback] || fallback;
+  if (raw instanceof TypeError) return mappedFallback;
   const msg = typeof raw === 'string' ? raw : (raw as any)?.message;
-  if (!msg || typeof msg !== 'string') return TRADE_REASON_COPY[fallback] || fallback;
+  if (!msg || typeof msg !== 'string') return mappedFallback;
   const key = msg.trim();
+  if (isTradeNetworkCollapseMessage(key)) return mappedFallback;
   if (TRADE_REASON_COPY[key]) return TRADE_REASON_COPY[key];
   // Throttle / antirmt reasons may be longer free-form — pass through if already prose.
   if (key.includes(' ') && !/^[a-z0-9_]+$/i.test(key)) return key;

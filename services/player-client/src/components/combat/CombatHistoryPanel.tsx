@@ -7,14 +7,43 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   combatAPI,
   type CombatHistoryItem,
+  type CombatHistoryOpponent,
   type CombatHistoryResponse,
 } from '../../services/api';
+import PlayerNamePlate from '../common/PlayerNamePlate';
 import './combat-interface.css';
 
 const DEFAULT_LIMIT = 20;
 
+const COMBAT_HISTORY_LOAD_FALLBACK = 'Failed to load combat history';
+
+/** Transport collapse copy is not gameserver detail (LEG-3280 densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+/** Exported for TypeError/network honesty Vitest (LEG-3163 / LEG-3280). */
+export function formatCombatHistoryError(err: unknown, fallback: string): string {
+  if (err instanceof TypeError) return fallback;
+  if (err instanceof Error && err.message) {
+    if (isNetworkCollapseMessage(err.message)) return fallback;
+    return err.message;
+  }
+  return fallback;
+}
+
+function opponentLabel(opponent?: CombatHistoryOpponent): string {
+  if (!opponent) return '—';
+  return opponent.name || opponent.displayName || '—';
+}
+
 function counterpartLabel(item: CombatHistoryItem): string {
-  if (item.opponent?.name) return item.opponent.name;
+  if (item.opponent) return opponentLabel(item.opponent);
   if (item.target?.name) return item.target.name;
   if (item.target?.type) return item.target.type;
   return '—';
@@ -37,7 +66,7 @@ export const CombatHistoryPanel: React.FC = () => {
         setOffset(nextOffset);
       } catch (e) {
         setData(null);
-        setError(e instanceof Error ? e.message : 'Failed to load combat history');
+        setError(formatCombatHistoryError(e, COMBAT_HISTORY_LOAD_FALLBACK));
       } finally {
         setLoading(false);
       }
@@ -93,7 +122,18 @@ export const CombatHistoryPanel: React.FC = () => {
               <span className="ch-type">{item.combat_type}</span>
               <span className="ch-role">{item.role}</span>
               <span className="ch-result">{item.result ?? '—'}</span>
-              <span className="ch-foe">{counterpartLabel(item)}</span>
+              <span className="ch-foe">
+                {item.opponent ? (
+                  <PlayerNamePlate
+                    name={opponentLabel(item.opponent)}
+                    size="sm"
+                    pinnedMedalId={item.opponent.pinned_medal_id}
+                    medalCount={item.opponent.medal_count}
+                  />
+                ) : (
+                  counterpartLabel(item)
+                )}
+              </span>
               <span className="ch-sector">
                 {item.sector_id != null ? `Sec ${item.sector_id}` : '—'}
               </span>

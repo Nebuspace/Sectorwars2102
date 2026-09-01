@@ -79,4 +79,22 @@ describe('PlayerAssetManager scope honesty (LEG-1207)', () => {
     expect(alert).not.toBe('Failed to fetch');
     expect(alert).not.toMatch(/^Failed to load player assets$/);
   });
+
+  it('collapses axios-shaped Network Error to gameserver-unreachable fallback (LEG-3313)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
+
+    render(
+      <PlayerAssetManager player={player} onClose={() => {}} onUpdate={() => {}} />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Gameserver unreachable|network error loading player assets/i);
+    expect(alert).not.toBe('Network Error');
+    expect(alert).not.toContain('Network Error');
+    expect(alert).not.toMatch(/^Failed to load player assets$/);
+  });
 });

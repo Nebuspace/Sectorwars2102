@@ -77,6 +77,66 @@ const mockLoad = (events = [sampleEvent]) => {
   });
 };
 
+describe('EventManagement Network Error densify (LEG-3504)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    toastSuccess.mockReset();
+    toastError.mockReset();
+    toastInfo.mockReset();
+    toastWarning.mockReset();
+    confirmMock.mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('collapses axios-shaped Network Error on primary events load', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/events/templates')) {
+        return { data: [] };
+      }
+      if (url.includes('/events/')) {
+        throw new Error('Network Error');
+      }
+      return { data: {} };
+    });
+
+    render(<EventManagement />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to fetch event data/i)).toBeTruthy();
+    });
+    const text = screen.getByText(/Failed to fetch event data/i).textContent ?? '';
+    expect(text).toMatch(/Failed to fetch event data/i);
+    expect(text).not.toBe('Network Error');
+    expect(text).not.toContain('Network Error');
+  });
+
+  it('collapses axios-shaped Network Error on stats load when events list succeeds', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/events/templates')) {
+        return { data: [] };
+      }
+      if (url.includes('/events/stats')) {
+        throw new Error('Network Error');
+      }
+      if (url.includes('/events/')) {
+        return { data: { events: [sampleEvent], total_pages: 1 } };
+      }
+      return { data: {} };
+    });
+
+    render(<EventManagement />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to fetch event data/i)).toBeTruthy();
+    });
+    const text = screen.getByText(/Failed to fetch event data/i).textContent ?? '';
+    expect(text).toMatch(/Failed to fetch event data/i);
+    expect(text).not.toBe('Network Error');
+    expect(text).not.toContain('Network Error');
+  });
+});
+
 describe('EventManagement scope errors (LEG-967)', () => {
   beforeEach(() => {
     vi.mocked(api.get).mockReset();
@@ -316,6 +376,34 @@ describe('EventManagement mutation scope errors (LEG-2597)', () => {
       expect.stringMatching(/rate limit/i),
     );
     expect(toastError).not.toHaveBeenCalledWith('Error creating event');
+  });
+
+  it('surfaces honest fallback on create POST TypeError/network collapse (LEG-2977)', async () => {
+    const user = userEvent.setup();
+    mockLoad();
+    vi.mocked(api.post).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<EventManagement />);
+    await waitFor(() => expect(screen.getByText('Test Event')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: 'Create Event' }));
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Create New Event' })).toBeTruthy();
+    });
+    await user.click(screen.getByRole('button', { name: 'Create Event' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/events/',
+        expect.any(Object),
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(
+      expect.stringMatching(/Error creating event/i),
+    );
+    const msg = String(toastError.mock.calls.map((call) => call[0]).join('\n'));
+    expect(msg).not.toMatch(/Failed to fetch/i);
+    expect(msg).not.toMatch(/TypeError/i);
   });
 
   it('surfaces formatAdminApiError on cancel 403', async () => {

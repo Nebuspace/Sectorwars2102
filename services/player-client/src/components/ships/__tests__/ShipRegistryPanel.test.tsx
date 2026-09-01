@@ -62,6 +62,20 @@ describe('formatShipRegistryActionError', () => {
       'Registry action failed'
     );
   });
+
+  it('falls back on TypeError network collapse without leaking Failed to fetch', () => {
+    const text = formatShipRegistryActionError(new TypeError('Failed to fetch'));
+    expect(text).toMatch(/Registry action failed/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('formatShipRegistryActionError falls back on axios Network Error / Failed to fetch (LEG-3341)', () => {
+    expect(formatShipRegistryActionError(new Error('Network Error'))).toBe('Registry action failed');
+    expect(formatShipRegistryActionError(new Error('Failed to fetch'))).toBe('Registry action failed');
+    expect(formatShipRegistryActionError(new Error('Network Error'))).not.toBe('Network Error');
+    expect(formatShipRegistryActionError(new Error('ship not registered'))).toBe('ship not registered');
+  });
 });
 
 describe('ShipRegistryPanel', () => {
@@ -161,5 +175,23 @@ describe('ShipRegistryPanel', () => {
 
     const feedback = container.querySelector('[data-testid="ship-registry-feedback"]');
     expect(feedback?.textContent).toBe('Hull already claimed. [ERR_ALREADY_CLAIMED]');
+  });
+
+  it('report TypeError surfaces Registry action failed without Failed to fetch / TypeError', async () => {
+    reportStolen.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+
+    await act(async () => {
+      root.render(<ShipRegistryPanel shipId="ship-9" shipName="Rusty" portId="port-1" />);
+    });
+
+    await act(async () => {
+      (container.querySelector('[data-testid="ship-registry-report-stolen"]') as HTMLButtonElement).click();
+    });
+
+    const feedback = container.querySelector('[data-testid="ship-registry-feedback"]');
+    const text = feedback?.textContent ?? '';
+    expect(text).toMatch(/Registry action failed/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
   });
 });

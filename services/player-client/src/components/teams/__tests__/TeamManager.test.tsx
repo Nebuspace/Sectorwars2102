@@ -271,6 +271,32 @@ describe('TeamManager', () => {
     );
   });
 
+  it('formatTeamManagerLoadError falls back on TypeError network collapse', () => {
+    const text = formatTeamManagerLoadError(new TypeError('Failed to fetch'));
+    expect(text).toBe('Failed to load team data');
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('formatTeamManagerMutationError falls back on TypeError network collapse', () => {
+    const text = formatTeamManagerMutationError(
+      new TypeError('Failed to fetch'),
+      'Failed to create team',
+    );
+    expect(text).toBe('Failed to create team');
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('surfaces honest load fallback when getTeam rejects with TypeError', async () => {
+    mockGetTeam.mockRejectedValue(new TypeError('Failed to fetch'));
+    await mount();
+
+    expect(container.querySelector('.load-error')).not.toBeNull();
+    expect(container.textContent).toContain('Failed to load team data');
+    expect(container.textContent).not.toMatch(/Failed to fetch/i);
+    expect(container.textContent).not.toMatch(/TypeError/i);
+  });
 
   it('surfaces honest 404 load copy when getTeam rejects with bare status', async () => {
     mockGetTeam.mockRejectedValue(
@@ -447,6 +473,12 @@ describe('TeamManager', () => {
     });
 
     it('renders pinned medal pin and count for a non-self roster row from API fields', async () => {
+      mockMedalsGetMe.mockResolvedValue({
+        earned: [],
+        available: [{ key: 'star_bronze', name: 'Bronze Star', icon: '🥉' }],
+        pinned_medal_id: null,
+        total_earned: 0,
+      });
       mockGetMembers.mockResolvedValue([
         rawMember({
           player_id: 'p2',
@@ -463,7 +495,8 @@ describe('TeamManager', () => {
       const plate = container.querySelector('.member-item [data-testid="player-name-plate"]') as HTMLElement;
       expect(plate).not.toBeNull();
       expect(plate.getAttribute('data-pinned-medal')).toBe('star_bronze');
-      expect(plate.querySelector('[data-testid="player-name-plate-medal"]')?.textContent).toBe('🏅');
+      expect(plate.getAttribute('title')).toBe('Bronze Star');
+      expect(plate.querySelector('[data-testid="player-name-plate-medal"]')?.textContent).toBe('🥉');
       expect(plate.querySelector('[data-testid="player-name-plate-count"]')?.textContent).toBe('5');
     });
 

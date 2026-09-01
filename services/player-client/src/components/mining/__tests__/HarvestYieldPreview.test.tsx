@@ -12,7 +12,27 @@ vi.mock('../../../services/api', () => ({
   },
 }));
 
-import HarvestYieldPreview from '../HarvestYieldPreview';
+import HarvestYieldPreview, { harvestGateMessage } from '../HarvestYieldPreview';
+
+describe('harvestGateMessage TypeError densify (LEG-3094)', () => {
+  it('falls back on TypeError network collapse', () => {
+    const text = harvestGateMessage(new TypeError('Failed to fetch'));
+    expect(text).toMatch(/Yield preview failed/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('falls back on axios Network Error / Failed to fetch non-TypeError (LEG-3306)', () => {
+    expect(harvestGateMessage(new Error('Network Error'))).toMatch(/Yield preview failed/i);
+    expect(harvestGateMessage(new Error('Failed to fetch'))).toMatch(/Yield preview failed/i);
+    expect(harvestGateMessage(new Error('   '))).toMatch(/Yield preview failed/i);
+    expect(harvestGateMessage(new Error('Network Error'))).not.toMatch(/Network Error/i);
+  });
+
+  it('preserves known gate reason codes', () => {
+    expect(harvestGateMessage('no_mining_laser')).toContain('No mining laser equipped');
+  });
+});
 
 describe('HarvestYieldPreview', () => {
   let container: HTMLElement;
@@ -120,5 +140,27 @@ describe('HarvestYieldPreview', () => {
       message: 'No mining laser equipped — fit one at a TradeDock to extract ore.',
       reasonKey: 'no_mining_laser',
     });
+  });
+
+  it('surfaces honest fallback when preview rejects with TypeError', async () => {
+    mockPreview.mockRejectedValue(new TypeError('Failed to fetch'));
+    await act(async () => {
+      root.render(<HarvestYieldPreview shipId="ship-9" />);
+    });
+    await flush();
+    const alert = container.querySelector('[role="alert"]');
+    expect(alert?.textContent).toMatch(/Yield preview failed/i);
+    expect(alert?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(alert?.textContent).not.toMatch(/TypeError/i);
+  });
+
+  it('does not crash on a fully malformed (empty object) preview response', async () => {
+    mockPreview.mockResolvedValue({});
+    await act(async () => {
+      root.render(<HarvestYieldPreview shipId="ship-9" />);
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="harvest-yield-preview"]')).toBeTruthy();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
   });
 });

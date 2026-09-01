@@ -19,7 +19,7 @@ vi.mock('../apiClient', () => ({
 }));
 
 import apiClient from '../apiClient';
-import { centralBankAPI, citadelAPI, combatAPI, greyStatusAPI, miningAPI, navAPI, planetaryAPI, playerAPI, portOwnershipAPI, sectorAPI, shipRegistryAPI, tradeAPI } from '../api';
+import { centralBankAPI, citadelAPI, combatAPI, greyStatusAPI, miningAPI, navAPI, planetaryAPI, playerAPI, portOwnershipAPI, sectorAPI, shipRegistryAPI, stationSecurityAPI, tradeAPI } from '../api';
 
 const get = apiClient.get as ReturnType<typeof vi.fn>;
 const post = apiClient.post as ReturnType<typeof vi.fn>;
@@ -100,6 +100,66 @@ describe('apiRequest via trade/combat/grey wrappers', () => {
     });
     expect(get).toHaveBeenCalledWith(
       '/api/v1/combat/history?limit=10&offset=5',
+      jsonHeaders,
+    );
+  });
+
+  it('combatAPI.retreatFromSector POSTs sector flee (LEG-3107)', async () => {
+    post.mockResolvedValue({
+      data: {
+        success: true,
+        message: 'Escaped!',
+        newSectorId: 9,
+        turnsConsumed: 3,
+        turnsRemaining: 12,
+      },
+    });
+    await expect(combatAPI.retreatFromSector()).resolves.toEqual({
+      success: true,
+      message: 'Escaped!',
+      newSectorId: 9,
+      turnsConsumed: 3,
+      turnsRemaining: 12,
+    });
+    expect(post).toHaveBeenCalledWith('/api/v1/combat/retreat', undefined, jsonHeaders);
+  });
+
+  it('stationSecurityAPI upgrade/downgrade POST station routes (LEG-3106)', async () => {
+    post.mockResolvedValueOnce({
+      data: { message: 'up', station_id: 'st-1', upgrade_to: 'standard', cost: 200_000 },
+    });
+    await expect(stationSecurityAPI.upgradeSecurity('st-1')).resolves.toMatchObject({
+      upgrade_to: 'standard',
+    });
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/station-security/stations/st-1/upgrade',
+      undefined,
+      jsonHeaders,
+    );
+
+    post.mockResolvedValueOnce({
+      data: { message: 'down', station_id: 'st-1', downgrade_to: 'basic' },
+    });
+    await expect(stationSecurityAPI.downgradeSecurity('st-1')).resolves.toMatchObject({
+      downgrade_to: 'basic',
+    });
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/station-security/stations/st-1/downgrade',
+      undefined,
+      jsonHeaders,
+    );
+  });
+
+  it('stationSecurityAPI.getSecurityStatus GETs tier (LEG-3106)', async () => {
+    get.mockResolvedValue({
+      data: { station_id: 'st-1', tier: 'basic' },
+    });
+    await expect(stationSecurityAPI.getSecurityStatus('st-1')).resolves.toEqual({
+      station_id: 'st-1',
+      tier: 'basic',
+    });
+    expect(get).toHaveBeenCalledWith(
+      '/api/v1/station-security/stations/st-1',
       jsonHeaders,
     );
   });
@@ -204,6 +264,24 @@ describe('apiRequest via trade/combat/grey wrappers', () => {
     expect(post).toHaveBeenCalledWith(
       '/api/v1/ships/ship-2/request-pin-reset',
       JSON.stringify({ port_id: 'port-9', pin: 'NEWPIN1' }),
+      jsonHeaders,
+    );
+  });
+
+  it('shipRegistryAPI.salvageBreak POSTs with no body (LEG-3144)', async () => {
+    post.mockResolvedValue({
+      data: {
+        ship_id: 'ship-9',
+        started_at: '2026-08-31T00:00:00Z',
+        duration_seconds: 3600,
+        completes_at: '2026-08-31T01:00:00Z',
+      },
+    });
+    const out = await shipRegistryAPI.salvageBreak('ship-9');
+    expect(out.ship_id).toBe('ship-9');
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/ships/ship-9/salvage-break',
+      undefined,
       jsonHeaders,
     );
   });

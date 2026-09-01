@@ -20,17 +20,27 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const { mockGetGrid, mockPlace, mockDecommission } = vi.hoisted(() => ({
+const { mockGetGrid, mockPlace, mockDecommission, mockSurvey, mockClearPlot, mockClearHazard } = vi.hoisted(() => ({
   mockGetGrid: vi.fn(),
   mockPlace: vi.fn(),
   mockDecommission: vi.fn(),
+  mockSurvey: vi.fn(),
+  mockClearPlot: vi.fn(),
+  mockClearHazard: vi.fn(),
 }));
 
 vi.mock('../../../services/api', () => ({
-  gridAPI: { getGrid: mockGetGrid, place: mockPlace, decommission: mockDecommission },
+  gridAPI: {
+    getGrid: mockGetGrid,
+    place: mockPlace,
+    decommission: mockDecommission,
+    survey: mockSurvey,
+    clearPlot: mockClearPlot,
+    clearHazard: mockClearHazard,
+  },
 }));
 
-import GridManager from '../GridManager';
+import GridManager, { formatGridLoadError, formatGridActionError } from '../GridManager';
 import type { ComponentProps } from 'react';
 
 const catalogEntry = (overrides: Record<string, unknown> = {}) => ({
@@ -76,6 +86,9 @@ describe('GridManager', () => {
     mockGetGrid.mockResolvedValue(gridView());
     mockPlace.mockReset();
     mockDecommission.mockReset();
+    mockSurvey.mockReset();
+    mockClearPlot.mockReset();
+    mockClearHazard.mockReset();
     mockDecommission.mockResolvedValue({ refund_credits: 125 });
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -156,10 +169,10 @@ describe('GridManager', () => {
     expect(offGrid.disabled).toBe(true);
   });
 
-  it('clicking a hazard cell does not open the build popup', async () => {
+  it('clicking a hazard cell opens the terraform panel, not the build popup', async () => {
     mockGetGrid.mockResolvedValue(gridView({
       plots: [
-        { x: 0, y: 0, cleared: true, hazard: { kind: 'radiation' }, building_id: null },
+        { x: 0, y: 0, cleared: false, hazard: { kind: 'radiation' }, building_id: null },
         { x: 1, y: 0, cleared: true, hazard: null, building_id: null },
       ],
     }));
@@ -167,9 +180,10 @@ describe('GridManager', () => {
     const hazardCell = container.querySelector('.grid-cell.hazard') as HTMLButtonElement;
     await act(async () => { hazardCell.click(); });
     expect(container.querySelector('.grid-popup')).toBeNull();
+    expect(container.querySelector('.grid-terraform')?.textContent).toContain('hazard');
   });
 
-  it('clicking an uncleared cell does not open the build popup', async () => {
+  it('clicking an uncleared cell opens the terraform panel, not the build popup', async () => {
     mockGetGrid.mockResolvedValue(gridView({
       plots: [
         { x: 0, y: 0, cleared: false, hazard: null, building_id: null },
@@ -180,6 +194,21 @@ describe('GridManager', () => {
     const uncleared = container.querySelector('.grid-cell.uncleared') as HTMLButtonElement;
     await act(async () => { uncleared.click(); });
     expect(container.querySelector('.grid-popup')).toBeNull();
+    expect(container.querySelector('.grid-terraform')?.textContent).toContain('Clear land');
+  });
+
+  it('clicking a fogged cell opens the survey terraform panel', async () => {
+    mockGetGrid.mockResolvedValue(gridView({
+      plots: [
+        { x: 0, y: 0, cleared: true, fog: true, surveyed: false, hazard: null, building_id: null },
+        { x: 1, y: 0, cleared: true, hazard: null, building_id: null },
+      ],
+      researched: ['t.exploration.survey.1'],
+    }));
+    await mount();
+    const fogCell = container.querySelector('.grid-cell.fog') as HTMLButtonElement;
+    await act(async () => { fogCell.click(); });
+    expect(container.querySelector('.grid-terraform')?.textContent).toContain('Survey');
   });
 
   it('clicking an empty placeable cell opens the build popup targeting that plot', async () => {
@@ -392,5 +421,196 @@ describe('GridManager', () => {
       expect(container.querySelector('.grid-decommission')).toBeNull();
       expect(mockDecommission).not.toHaveBeenCalled();
     });
+  });
+
+  describe('terraform plot actions', () => {
+    it('surveys a fogged plot when research is unlocked, then refetches', async () => {
+      mockSurvey.mockResolvedValue({ success: true });
+      mockGetGrid.mockResolvedValue(gridView({
+        plots: [
+          { x: 0, y: 0, cleared: true, fog: true, surveyed: false, hazard: null, building_id: null },
+          { x: 1, y: 0, cleared: true, hazard: null, building_id: null },
+        ],
+        researched: ['t.exploration.survey.1'],
+      }));
+      await mount();
+      await act(async () => {
+        (container.querySelector('.grid-cell.fog') as HTMLButtonElement).click();
+      });
+      mockGetGrid.mockClear();
+      await act(async () => {
+        (container.querySelector('.terraform-btn') as HTMLButtonElement).click();
+      });
+      await flush();
+
+      expect(mockSurvey).toHaveBeenCalledWith('planet-1', 0, 0);
+      expect(container.querySelector('.grid-message')?.textContent).toContain('surveyed');
+      expect(mockGetGrid).toHaveBeenCalled();
+    });
+
+    it('disables survey when grid_survey research is missing', async () => {
+      mockGetGrid.mockResolvedValue(gridView({
+        plots: [
+          { x: 0, y: 0, cleared: true, fog: true, surveyed: false, hazard: null, building_id: null },
+          { x: 1, y: 0, cleared: true, hazard: null, building_id: null },
+        ],
+        researched: [],
+      }));
+      await mount();
+      await act(async () => {
+        (container.querySelector('.grid-cell.fog') as HTMLButtonElement).click();
+      });
+      const btn = container.querySelector('.terraform-btn') as HTMLButtonElement;
+      expect(btn.disabled).toBe(true);
+      expect(btn.title).toContain('Requires research');
+    });
+
+    it('clears uncleared land when plot_clear research is unlocked', async () => {
+      mockClearPlot.mockResolvedValue({ success: true });
+      mockGetGrid.mockResolvedValue(gridView({
+        plots: [
+          { x: 0, y: 0, cleared: false, hazard: null, building_id: null },
+          { x: 1, y: 0, cleared: true, hazard: null, building_id: null },
+        ],
+        researched: ['t.terraforming.plot_clear.1'],
+      }));
+      await mount();
+      await act(async () => {
+        (container.querySelector('.grid-cell.uncleared') as HTMLButtonElement).click();
+      });
+      await act(async () => {
+        (container.querySelector('.terraform-btn') as HTMLButtonElement).click();
+      });
+      await flush();
+
+      expect(mockClearPlot).toHaveBeenCalledWith('planet-1', 0, 0);
+      expect(container.querySelector('.grid-message')?.textContent).toContain('cleared');
+    });
+
+    it('clears a hazard when hazard_clear research is unlocked', async () => {
+      mockClearHazard.mockResolvedValue({ success: true });
+      mockGetGrid.mockResolvedValue(gridView({
+        plots: [
+          { x: 0, y: 0, cleared: false, hazard: { kind: 'toxin' }, building_id: null },
+          { x: 1, y: 0, cleared: true, hazard: null, building_id: null },
+        ],
+        researched: ['t.terraforming.hazard_clear.1'],
+      }));
+      await mount();
+      await act(async () => {
+        (container.querySelector('.grid-cell.hazard') as HTMLButtonElement).click();
+      });
+      await act(async () => {
+        (container.querySelector('.terraform-btn') as HTMLButtonElement).click();
+      });
+      await flush();
+
+      expect(mockClearHazard).toHaveBeenCalledWith('planet-1', 0, 0);
+      expect(container.querySelector('.grid-message')?.textContent).toContain('remediated');
+    });
+
+    it('surfaces a 403 research-gate error from the server honestly', async () => {
+      mockSurvey.mockRejectedValue(new Error("Research tool 'grid_survey' is not unlocked"));
+      mockGetGrid.mockResolvedValue(gridView({
+        plots: [
+          { x: 0, y: 0, cleared: true, fog: true, surveyed: false, hazard: null, building_id: null },
+          { x: 1, y: 0, cleared: true, hazard: null, building_id: null },
+        ],
+        researched: ['t.exploration.survey.1'],
+      }));
+      await mount();
+      await act(async () => {
+        (container.querySelector('.grid-cell.fog') as HTMLButtonElement).click();
+      });
+      await act(async () => {
+        (container.querySelector('.terraform-btn') as HTMLButtonElement).click();
+      });
+      await flush();
+
+      expect(container.querySelector('.grid-message.err')?.textContent).toContain(
+        "Research tool 'grid_survey' is not unlocked",
+      );
+    });
+  });
+});
+
+describe('GridManager TypeError densify (LEG-3263)', () => {
+  let container: HTMLElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    mockGetGrid.mockReset();
+    mockPlace.mockReset();
+    mockGetGrid.mockResolvedValue(gridView());
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  const mount = async () => {
+    await act(async () => {
+      root.render(<GridManager planetId="planet-1" playerCredits={1000} />);
+    });
+    await flush();
+  };
+
+  it('formatGridLoadError falls back on TypeError network collapse', () => {
+    const text = formatGridLoadError(new TypeError('Failed to fetch'));
+    expect(text).toBe('Failed to load planet grid');
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('formatGridActionError falls back on TypeError network collapse', () => {
+    const text = formatGridActionError(new TypeError('Failed to fetch'), 'Placement failed');
+    expect(text).toBe('Placement failed');
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('formatGridLoad/Action fall back on axios Network Error / Failed to fetch (LEG-3294)', () => {
+    expect(formatGridLoadError(new Error('Network Error'))).toBe('Failed to load planet grid');
+    expect(formatGridLoadError(new Error('Failed to fetch'))).toBe('Failed to load planet grid');
+    expect(formatGridLoadError(new Error('   '))).toBe('Failed to load planet grid');
+    expect(formatGridActionError(new Error('Network Error'), 'Placement failed')).toBe('Placement failed');
+    expect(formatGridActionError(new Error('plot occupied'), 'Placement failed')).toBe('plot occupied');
+  });
+
+  it('load TypeError surfaces fallback without Failed to fetch / TypeError in DOM', async () => {
+    mockGetGrid.mockRejectedValue(new TypeError('Failed to fetch'));
+    await mount();
+
+    const err = container.querySelector('.grid-error');
+    expect(err?.textContent).toContain('Failed to load planet grid');
+    expect(err?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(err?.textContent).not.toMatch(/TypeError/i);
+    expect(container.textContent).not.toMatch(/Failed to fetch/i);
+    expect(container.textContent).not.toMatch(/TypeError/i);
+  });
+
+  it('place TypeError surfaces fallback inside popup without Failed to fetch / TypeError in DOM', async () => {
+    mockPlace.mockRejectedValue(new TypeError('Failed to fetch'));
+    await mount();
+    await act(async () => {
+      (container.querySelector('.grid-cell.placeable') as HTMLButtonElement).click();
+    });
+    await act(async () => {
+      (container.querySelector('.catalog-item') as HTMLButtonElement).click();
+    });
+    await flush();
+
+    const err = container.querySelector('.grid-popup-error');
+    expect(err?.textContent).toContain('Placement failed');
+    expect(err?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(err?.textContent).not.toMatch(/TypeError/i);
+    expect(container.textContent).not.toMatch(/Failed to fetch/i);
+    expect(container.textContent).not.toMatch(/TypeError/i);
   });
 });

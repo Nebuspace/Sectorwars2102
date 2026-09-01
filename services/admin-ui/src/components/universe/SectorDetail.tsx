@@ -84,7 +84,9 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
 
   const noteLoadFailure = (err: unknown, fallback: string) => {
     const status = (err as { response?: { status?: number } })?.response?.status;
-    if (status === 403 || status === 429) {
+    // 403/429 honesty (LEG-2820) + TypeError/network collapse (LEG-3065).
+    // Keep expected 404 silent (port/planet may be absent).
+    if (status === 403 || status === 429 || status === undefined) {
       setLoadError(formatUniverseAdminError(err, fallback));
     }
   };

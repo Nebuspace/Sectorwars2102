@@ -109,7 +109,10 @@ async function apiRequest(
 /** LEG-372 / LEG-304 — player-scoped combat history list item (GS shape). */
 export interface CombatHistoryOpponent {
   id: string | null;
-  name: string;
+  name?: string;
+  displayName?: string;
+  pinned_medal_id?: string | null;
+  medal_count?: number | null;
 }
 
 export interface CombatHistoryTarget {
@@ -139,6 +142,16 @@ export interface CombatHistoryResponse {
   offset: number;
 }
 
+/** POST /combat/retreat — flee current sector to a connected warp (LEG-3107). */
+export interface SectorRetreatResponse {
+  success: boolean;
+  message: string;
+  newSectorId?: number | null;
+  escapeChance?: number | null;
+  turnsConsumed: number;
+  turnsRemaining: number;
+}
+
 // Combat APIs
 export const combatAPI = {
   engage: (targetType: 'ship' | 'planet' | 'port', targetId: string) =>
@@ -152,6 +165,10 @@ export const combatAPI = {
 
   retreat: (combatId: string) =>
     apiRequest(`/api/v1/combat/${combatId}/retreat`, { method: 'POST' }),
+
+  /** Sector flee — random connected warp; costs 3 turns (LEG-3107). */
+  retreatFromSector: (): Promise<SectorRetreatResponse> =>
+    apiRequest('/api/v1/combat/retreat', { method: 'POST' }),
 
   /** Paginated own-combat log (LEG-372). Server scopes to current player. */
   getHistory: (opts?: { limit?: number; offset?: number }): Promise<CombatHistoryResponse> => {
@@ -528,8 +545,51 @@ export const planetaryAPI = {
     }),
 };
 
+/** GET/POST /station-security/stations/{id} — security tier readout + owner upgrade/downgrade (LEG-3105/3106). */
+export interface StationSecurityStatus {
+  station_id: string;
+  tier: 'none' | 'basic' | 'standard' | 'premium' | string;
+  pending_upgrade_to?: string | null;
+  upgrade_completes_at?: string | null;
+  pending_downgrade?: boolean;
+  downgrade_completes_at?: string | null;
+  upkeep_collected?: number;
+}
+
+export interface StationSecurityUpgradeResponse {
+  message: string;
+  station_id: string;
+  current_tier: string;
+  upgrade_to: string;
+  cost: number;
+  completes_at: string;
+  credits?: number;
+}
+
+export interface StationSecurityDowngradeResponse {
+  message: string;
+  station_id: string;
+  current_tier: string;
+  downgrade_to: string;
+  cost: number;
+  completes_at: string;
+}
+
 /** Station-protection tractor lock (Guarantee #2) — player responses. */
 export const stationSecurityAPI = {
+  getSecurityStatus: (stationId: string): Promise<StationSecurityStatus> =>
+    apiRequest(`/api/v1/station-security/stations/${stationId}`),
+
+  upgradeSecurity: (stationId: string): Promise<StationSecurityUpgradeResponse> =>
+    apiRequest(`/api/v1/station-security/stations/${stationId}/upgrade`, {
+      method: 'POST',
+    }),
+
+  downgradeSecurity: (stationId: string): Promise<StationSecurityDowngradeResponse> =>
+    apiRequest(`/api/v1/station-security/stations/${stationId}/downgrade`, {
+      method: 'POST',
+    }),
+
   getTractorLock: (stationId: string): Promise<{
     locked: boolean;
     reason?: string;
@@ -1069,6 +1129,15 @@ export const shipRegistryAPI = {
       method: 'POST',
       body: JSON.stringify({ port_id: portId, pin }),
     }),
+
+  /** Force-entry on a drifting pin-locked hull (ship-registry.md Salvage break). */
+  salvageBreak: (shipId: string): Promise<{
+    ship_id: string;
+    started_at: string;
+    duration_seconds: number;
+    completes_at: string;
+  }> =>
+    apiRequest(`/api/v1/ships/${shipId}/salvage-break`, { method: 'POST' }),
 };
 
 // Ranking & Reputation APIs
@@ -1096,6 +1165,16 @@ export const medalsAPI = {
   /** Clear-on-view offline award queue (GET /api/v1/medals/unviewed). */
   getUnviewed: (): Promise<{ unviewed: string[] }> =>
     apiRequest('/api/v1/medals/unviewed'),
+
+  /** Set or clear the public pinned medal (PUT /api/v1/medals/me/pin — LEG-59). */
+  pinMe: (pinned_medal_id: string | null): Promise<{
+    pinned_medal_id: string | null;
+    medal_count: number;
+  }> =>
+    apiRequest('/api/v1/medals/me/pin', {
+      method: 'PUT',
+      body: JSON.stringify({ pinned_medal_id }),
+    }),
 };
 
 // Bounty APIs — place / getOnTarget / getAvailable tip-PRESENT; cancel binds
@@ -1261,6 +1340,27 @@ export const gridAPI = {
     apiRequest(`/api/v1/planets/${planetId}/grid/decommission`, {
       method: 'POST',
       body: JSON.stringify({ building_id: buildingId }),
+    }),
+
+  /** Reveal one fogged/unsurveyed plot. Requires Orbital Survey Suite (grid_survey). */
+  survey: (planetId: string, x: number, y: number) =>
+    apiRequest(`/api/v1/planets/${planetId}/grid/survey`, {
+      method: 'POST',
+      body: JSON.stringify({ x, y }),
+    }),
+
+  /** Clear uncleared non-hazard land. Requires Land Clearance (plot_clear). */
+  clearPlot: (planetId: string, x: number, y: number) =>
+    apiRequest(`/api/v1/planets/${planetId}/grid/clear-plot`, {
+      method: 'POST',
+      body: JSON.stringify({ x, y }),
+    }),
+
+  /** Remediate a hazard plot. Requires Hazard Remediation (hazard_clear). */
+  clearHazard: (planetId: string, x: number, y: number) =>
+    apiRequest(`/api/v1/planets/${planetId}/grid/clear-hazard`, {
+      method: 'POST',
+      body: JSON.stringify({ x, y }),
     }),
 };
 
@@ -2675,6 +2775,17 @@ export type AriaDataStream = {
   transparency_visible: boolean;
 };
 
+export type AriaPersonalStoreExport = {
+  player_id: string;
+  memories: AriaMemory[];
+  related_row_counts: Record<string, number>;
+};
+
+export type AriaPersonalStoreReset = {
+  status: string;
+  deleted: Record<string, number>;
+};
+
 export const ariaMemoryAPI = {
   getMemories: (opts?: { memoryType?: string; limit?: number }): Promise<AriaMemory[]> => {
     const params = new URLSearchParams();
@@ -2685,6 +2796,12 @@ export const ariaMemoryAPI = {
   },
   getDataIndex: (): Promise<AriaDataStream[]> =>
     apiRequest('/api/v1/ai/data-index'),
+  /** LEG-415 / LEG-3121 — owner JWT export of decrypted personal store. */
+  exportPersonalStore: (): Promise<AriaPersonalStoreExport> =>
+    apiRequest('/api/v1/ai/memories/dump'),
+  /** LEG-415 / LEG-3121 — owner JWT reset of personal ARIA tables. */
+  resetPersonalStore: (): Promise<AriaPersonalStoreReset> =>
+    apiRequest('/api/v1/ai/memories/reset', { method: 'POST' }),
 };
 
 /** LEG-1937 — docked ARIA market-intelligence GET (owner JWT; 403 if not docked / cannot trade). */

@@ -59,7 +59,7 @@ vi.mock('../RegionTradeDockPanel', () => ({
   ),
 }));
 
-import RegionOwnerControls from '../RegionOwnerControls';
+import RegionOwnerControls, { formatRegionOwnerProbeError } from '../RegionOwnerControls';
 
 // Two-microtask flush for the getMyRegion probe effect — established idiom
 // (see RegionTradeDockPanel.test.tsx).
@@ -247,6 +247,40 @@ describe('RegionOwnerControls', () => {
 
     expect(container.querySelector('.hud-region-governance-btn')).toBeNull();
     expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  describe('formatRegionOwnerProbeError Network Error densify (LEG-3386)', () => {
+    it('falls back on axios Network Error / Failed to fetch / whitespace', () => {
+      expect(formatRegionOwnerProbeError(new Error('Network Error'))).toBe(
+        'Region status unavailable — try again shortly.'
+      );
+      expect(formatRegionOwnerProbeError(new Error('Failed to fetch'))).toBe(
+        'Region status unavailable — try again shortly.'
+      );
+      expect(formatRegionOwnerProbeError(new Error('   '))).toBe(
+        'Region status unavailable — try again shortly.'
+      );
+      expect(formatRegionOwnerProbeError(new Error('Network Error'))).not.toMatch(/Network Error/i);
+      expect(formatRegionOwnerProbeError(new Error('Failed to fetch'))).not.toMatch(/Failed to fetch/i);
+    });
+
+    it('falls back on TypeError network collapse', () => {
+      const text = formatRegionOwnerProbeError(new TypeError('Failed to fetch'));
+      expect(text).toBe('Region status unavailable — try again shortly.');
+      expect(text).not.toMatch(/Failed to fetch/i);
+      expect(text).not.toMatch(/TypeError/i);
+    });
+
+    it('returns null for expected not-owner probe (message contains found)', () => {
+      expect(formatRegionOwnerProbeError(new Error('Not Found'))).toBeNull();
+      expect(formatRegionOwnerProbeError(new Error('No region found for this user'))).toBeNull();
+    });
+
+    it('surfaces fallback for genuine transient failures without raw transport text', () => {
+      expect(formatRegionOwnerProbeError(new Error('Internal Server Error'))).toBe(
+        'Region status unavailable — try again shortly.'
+      );
+    });
   });
 
   it('INVITE CONTROL / TRADEDOCK CONSTRUCTION open their portal panels', async () => {

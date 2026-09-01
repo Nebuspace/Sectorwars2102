@@ -15,7 +15,7 @@ vi.mock('../../../services/api', () => ({
   },
 }));
 
-import CombatHistoryPanel from '../CombatHistoryPanel';
+import CombatHistoryPanel, { formatCombatHistoryError } from '../CombatHistoryPanel';
 
 describe('CombatHistoryPanel', () => {
   let container: HTMLElement;
@@ -59,6 +59,28 @@ describe('CombatHistoryPanel', () => {
     });
     const err = container.querySelector('[data-testid="combat-history-error"]');
     expect(err?.textContent).toContain('API Error: 503');
+  });
+
+  it('load TypeError surfaces fallback without Failed to fetch / TypeError (LEG-3163)', async () => {
+    getHistory.mockRejectedValue(new TypeError('Failed to fetch'));
+    await act(async () => {
+      root.render(<CombatHistoryPanel />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const err = container.querySelector('[data-testid="combat-history-error"]');
+    expect(err?.textContent).toBe('Failed to load combat history');
+    expect(err?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(err?.textContent).not.toMatch(/TypeError/i);
+  });
+
+  it('formatCombatHistoryError densifies Network Error / Failed to fetch non-TypeError (LEG-3280)', () => {
+    const fallback = 'Failed to load combat history';
+    expect(formatCombatHistoryError(new Error('Network Error'), fallback)).toBe(fallback);
+    expect(formatCombatHistoryError(new Error('Failed to fetch'), fallback)).toBe(fallback);
+    expect(formatCombatHistoryError(new Error('   '), fallback)).toBe(fallback);
+    expect(formatCombatHistoryError(new Error('API Error: 503'), fallback)).toBe('API Error: 503');
   });
 
   it('Next bumps offset by limit (pagination + scoping assumptions)', async () => {
@@ -127,5 +149,44 @@ describe('CombatHistoryPanel', () => {
       expect(arg).not.toHaveProperty('player_id');
       expect(arg).not.toHaveProperty('playerId');
     }
+  });
+
+  it('renders opponent pinned medal via PlayerNamePlate (LEG-3234)', async () => {
+    getHistory.mockResolvedValue({
+      items: [
+        {
+          id: 'c1',
+          timestamp: '2026-08-17T12:00:00Z',
+          combat_type: 'ship_vs_ship',
+          role: 'attacker',
+          result: 'attacker_win',
+          sector_id: 7,
+          drones_lost: 0,
+          ship_destroyed: false,
+          opponent: {
+            id: 'p2',
+            displayName: 'Rival',
+            pinned_medal_id: 'bronze_cluster',
+            medal_count: 4,
+          },
+        },
+      ],
+      total: 1,
+      limit: 20,
+      offset: 0,
+    });
+
+    await act(async () => {
+      root.render(<CombatHistoryPanel />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const plate = container.querySelector('.ch-foe [data-testid="player-name-plate"]') as HTMLElement;
+    expect(plate).not.toBeNull();
+    expect(plate.getAttribute('data-pinned-medal')).toBe('bronze_cluster');
+    expect(plate.querySelector('[data-testid="player-name-plate-count"]')?.textContent).toBe('4');
+    expect(plate.textContent).toContain('Rival');
   });
 });

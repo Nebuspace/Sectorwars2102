@@ -41,11 +41,26 @@ const asRecord = (value: unknown): Record<string, unknown> | null =>
     : null;
 
 // api.ts's apiRequest() already normalizes FastAPI detail/message into
-// Error.message (see api.ts's apiRequest docstring) — just surface it.
-const errorMessage = (error: unknown, fallback: string): string => {
-  if (error instanceof Error && error.message) return error.message;
-  return fallback;
+// Error.message (see api.ts's apiRequest docstring) — surface it unless the
+// failure is a fetch TypeError / axios network collapse.
+/** Transport collapse copy is not gameserver detail (LEG-3284 densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
 };
+
+export function formatContractBoardVenueError(error: unknown, fallback: string): string {
+  if (error instanceof TypeError) return fallback;
+  if (error instanceof Error && error.message) {
+    if (isNetworkCollapseMessage(error.message)) return fallback;
+    return error.message;
+  }
+  return fallback;
+}
 
 // Countdown formatting against a ticking clock (house pattern, mirrors
 // PortOfficeVenue.fmtCountdown / ConstructionVenue — wall-clock ISO
@@ -260,7 +275,7 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
       setBoard(Array.isArray(data) ? (data as ContractDTO[]) : []);
       setBoardError(null);
     } catch (error) {
-      setBoardError(errorMessage(error, 'The contract board terminal is not responding. Please try again.'));
+      setBoardError(formatContractBoardVenueError(error, 'The contract board terminal is not responding. Please try again.'));
     } finally {
       setBoardLoading(false);
     }
@@ -277,7 +292,7 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
       });
       setMineError(null);
     } catch (error) {
-      setMineError(errorMessage(error, 'Could not open your contract ledger. Please try again.'));
+      setMineError(formatContractBoardVenueError(error, 'Could not open your contract ledger. Please try again.'));
     } finally {
       setMineLoading(false);
     }
@@ -290,7 +305,7 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
       setClaimable(Array.isArray(data) ? (data as ClaimableLockerDTO[]) : []);
       setClaimableError(null);
     } catch (error) {
-      setClaimableError(errorMessage(error, 'Could not reach the claimable-cargo ledger. Please try again.'));
+      setClaimableError(formatContractBoardVenueError(error, 'Could not reach the claimable-cargo ledger. Please try again.'));
     } finally {
       setClaimableLoading(false);
     }
@@ -316,7 +331,7 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
         return { posted: upsert(prev.posted), accepted: upsert(prev.accepted) };
       });
     } catch (error) {
-      setDetailError(errorMessage(error, 'Could not load contract detail.'));
+      setDetailError(formatContractBoardVenueError(error, 'Could not load contract detail.'));
     } finally {
       setDetailBusyId(null);
     }
@@ -380,7 +395,7 @@ const ContractBoardVenue: React.FC<ContractBoardVenueProps> = ({
       try {
         return await fn();
       } catch (error) {
-        setError(errorMessage(error, fallback));
+        setError(formatContractBoardVenueError(error, fallback));
         return null;
       } finally {
         setBusyAction(null);

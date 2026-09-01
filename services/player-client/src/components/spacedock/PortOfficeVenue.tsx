@@ -2,6 +2,7 @@ import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { useGame } from '../../contexts/GameContext';
 import { formatCredits } from '../../utils/formatters';
 import DeckPageTabs from '../cockpit/DeckPageTabs';
+import StationSecurityMonitoringPane from '../station/StationSecurityMonitoringPane';
 import './port-office-venue.css';
 
 // =====================================================================
@@ -42,9 +43,21 @@ const pickBool = (...candidates: unknown[]): boolean | null => {
   return null;
 };
 
+/** Transport collapse copy is not gameserver detail (LEG-3274 densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
 // Pull a readable message out of an axios error. FastAPI 422 validation
 // errors arrive as detail: [{loc, msg, type}, ...] — flatten the msg fields.
-const axiosErrorMessage = (error: unknown, fallback: string): string => {
+export function formatPortOfficeVenueError(error: unknown, fallback: string): string {
+  // Network collapse (fetch TypeError) is not gameserver copy.
+  if (error instanceof TypeError) return fallback;
   const e = asRecord(error);
   const response = asRecord(e?.response);
   const data = asRecord(response?.data);
@@ -59,10 +72,14 @@ const axiosErrorMessage = (error: unknown, fallback: string): string => {
       .filter((m): m is string => m !== null);
     if (msgs.length > 0) return msgs.join('; ');
   }
-  // Non-HTTP failures (e.g. 'Not authenticated' thrown by the context helpers)
-  if (!response && typeof e?.message === 'string' && e.message) return e.message;
+  // Non-HTTP failures (e.g. 'Not authenticated' thrown by the context helpers).
+  // Axios "Network Error" / empty transport is not operator copy (LEG-3274).
+  if (!response && typeof e?.message === 'string' && e.message) {
+    if (isNetworkCollapseMessage(e.message)) return fallback;
+    return e.message;
+  }
   return fallback;
-};
+}
 
 // Countdown formatting against a ticking clock (house pattern from
 // ConstructionVenue — wall-clock ISO deadlines arrive pre-scaled)
@@ -521,7 +538,7 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
       setListing(normalizeListing(data));
       setListingError(null);
     } catch (error) {
-      setListingError(axiosErrorMessage(error, 'The registry clerk is not answering. Please try again.'));
+      setListingError(formatPortOfficeVenueError(error, 'The registry clerk is not answering. Please try again.'));
     } finally {
       setListingLoading(false);
     }
@@ -535,7 +552,7 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
       setMyStation(findMyStation(data, stationId));
       setOwnerError(null);
     } catch (error) {
-      setOwnerError(axiosErrorMessage(error, 'Could not open your holdings ledger. Please try again.'));
+      setOwnerError(formatPortOfficeVenueError(error, 'Could not open your holdings ledger. Please try again.'));
     } finally {
       setOwnerLoading(false);
     }
@@ -549,7 +566,7 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
       setDefenseForm(normalizeDefensePolicy(data));
       setDefenseError(null);
     } catch (error) {
-      setDefenseError(axiosErrorMessage(error, 'Defense policy feed is down. Please try again.'));
+      setDefenseError(formatPortOfficeVenueError(error, 'Defense policy feed is down. Please try again.'));
     } finally {
       setDefenseLoading(false);
     }
@@ -563,7 +580,7 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
       setTakeover(normalizeTakeover(data));
       setTakeoverError(null);
     } catch (error) {
-      setTakeoverError(axiosErrorMessage(error, 'War-room intelligence feed is down. Please try again.'));
+      setTakeoverError(formatPortOfficeVenueError(error, 'War-room intelligence feed is down. Please try again.'));
     } finally {
       setTakeoverLoading(false);
     }
@@ -658,7 +675,7 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
     try {
       return await fn();
     } catch (error) {
-      setError(axiosErrorMessage(error, fallback));
+      setError(formatPortOfficeVenueError(error, fallback));
       return null;
     } finally {
       setBusyAction(null);
@@ -1567,6 +1584,8 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
             {busyAction === 'defense' ? 'Posting...' : 'Post Defense Policy'}
           </button>
         </div>
+
+        <StationSecurityMonitoringPane stationId={stationId} isOwner={isMine} />
 
         {/* Economic takeover defense — owner only (LEG-INI-35) */}
         <div className="po-section" data-testid="po-econ-defense">

@@ -100,6 +100,28 @@ describe('CentralNexusManager (LEG-212 shared api)', () => {
     });
   });
 
+  it('surfaces honest fallback on cluster load TypeError/network collapse (LEG-3004)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/nexus/clusters')) {
+        throw new TypeError('Failed to fetch');
+      }
+      if (String(url).includes('/nexus/status')) {
+        return { data: { exists: false, status: 'not_generated', total_sectors: 0, total_ports: 0, total_planets: 0 } };
+      }
+      return { data: {} };
+    });
+
+    render(<CentralNexusManager />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to load clusters/i)).toBeTruthy();
+    });
+
+    const text = screen.getByText(/Failed to load clusters/i).textContent ?? '';
+    expect(text).not.toMatch(/TypeError/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+  });
 
   it('surfaces scope denial on 403 stats load', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -215,5 +237,187 @@ describe('CentralNexusManager (LEG-212 shared api)', () => {
     await waitFor(() => {
       expect(screen.getByText(/rate limit/i)).toBeTruthy();
     });
+  });
+});
+
+describe('CentralNexusManager TypeError densify (LEG-3190)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('surfaces honest fallback on status load TypeError without raw transport text', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/nexus/status')) {
+        throw new TypeError('Failed to fetch');
+      }
+      if (String(url).includes('/nexus/clusters')) {
+        return { data: [] };
+      }
+      if (String(url).includes('/nexus/stats')) {
+        return {
+          data: {
+            total_sectors: 0,
+            total_ports: 0,
+            total_planets: 0,
+            total_warp_gates: 0,
+            active_players: null,
+            daily_traffic: null,
+            clusters: [],
+          },
+        };
+      }
+      return { data: {} };
+    });
+
+    render(<CentralNexusManager />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to load nexus status/i)).toBeTruthy();
+    });
+
+    const text = document.body.textContent ?? '';
+    expect(text).not.toMatch(/TypeError/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+  });
+
+  it('surfaces honest fallback on clusters load TypeError without raw transport text', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/nexus/clusters')) {
+        throw new TypeError('Failed to fetch');
+      }
+      if (String(url).includes('/nexus/status')) {
+        return {
+          data: {
+            exists: false,
+            status: 'not_generated',
+            total_sectors: 0,
+            total_ports: 0,
+            total_planets: 0,
+          },
+        };
+      }
+      return { data: {} };
+    });
+
+    render(<CentralNexusManager />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to load clusters/i)).toBeTruthy();
+    });
+
+    const text = document.body.textContent ?? '';
+    expect(text).not.toMatch(/TypeError/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+  });
+
+  it('surfaces honest fallback on stats load TypeError without raw transport text', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/nexus/stats')) {
+        throw new TypeError('Failed to fetch');
+      }
+      if (String(url).includes('/nexus/status')) {
+        return {
+          data: {
+            exists: false,
+            status: 'not_generated',
+            total_sectors: 0,
+            total_ports: 0,
+            total_planets: 0,
+          },
+        };
+      }
+      if (String(url).includes('/nexus/clusters')) {
+        return { data: [] };
+      }
+      return { data: {} };
+    });
+
+    render(<CentralNexusManager />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to load nexus stats/i)).toBeTruthy();
+    });
+
+    const text = document.body.textContent ?? '';
+    expect(text).not.toMatch(/TypeError/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+  });
+});
+
+describe('CentralNexusManager Network Error densify (LEG-3357)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('collapses axios-shaped Network Error on status load without raw transport text', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/nexus/status')) {
+        throw new Error('Network Error');
+      }
+      if (String(url).includes('/nexus/clusters')) {
+        return { data: [] };
+      }
+      if (String(url).includes('/nexus/stats')) {
+        return {
+          data: {
+            total_sectors: 0,
+            total_ports: 0,
+            total_planets: 0,
+            total_warp_gates: 0,
+            active_players: null,
+            daily_traffic: null,
+            clusters: [],
+          },
+        };
+      }
+      return { data: {} };
+    });
+
+    render(<CentralNexusManager />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to load nexus status/i)).toBeTruthy();
+    });
+
+    const text = document.body.textContent ?? '';
+    expect(text).not.toBe('Network Error');
+    expect(text).not.toContain('Network Error');
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('collapses axios-shaped Network Error on stats load without raw transport text', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/nexus/stats')) {
+        throw new Error('Network Error');
+      }
+      if (String(url).includes('/nexus/status')) {
+        return {
+          data: {
+            exists: false,
+            status: 'not_generated',
+            total_sectors: 0,
+            total_ports: 0,
+            total_planets: 0,
+          },
+        };
+      }
+      if (String(url).includes('/nexus/clusters')) {
+        return { data: [] };
+      }
+      return { data: {} };
+    });
+
+    render(<CentralNexusManager />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to load nexus stats/i)).toBeTruthy();
+    });
+
+    const text = document.body.textContent ?? '';
+    expect(text).not.toBe('Network Error');
+    expect(text).not.toContain('Network Error');
+    expect(text).not.toMatch(/TypeError/i);
   });
 });

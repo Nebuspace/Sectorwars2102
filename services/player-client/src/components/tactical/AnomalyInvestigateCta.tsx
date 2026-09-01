@@ -7,6 +7,34 @@ type Props = {
   anomalyInvestigated?: boolean;
 };
 
+const INVESTIGATE_FALLBACK = 'Investigation failed. Please try again.';
+
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+export function formatAnomalyInvestigateError(
+  err: unknown,
+  fallback = INVESTIGATE_FALLBACK,
+): string {
+  if (err instanceof TypeError) return fallback;
+  const responseDetail =
+    (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+  if (typeof responseDetail === 'string' && responseDetail) return responseDetail;
+  const message = (err as { message?: string })?.message;
+  if (typeof message === 'string' && message) {
+    if (isNetworkCollapseMessage(message)) return fallback;
+    return message;
+  }
+  return fallback;
+}
+
 /**
  * SectorType.ANOMALY investigate CTA (LEG-478). Distinct from formation
  * INVESTIGATE — POSTs /player/sectors/{id}/investigate-anomaly.
@@ -39,20 +67,22 @@ const AnomalyInvestigateCta: React.FC<Props> = ({
       ].filter(Boolean);
       setMessage(rewardBits.length ? rewardBits.join(' · ') : 'Anomaly investigated.');
     } catch (error: unknown) {
-      const err = error as { status?: number; response?: { status?: number; data?: { detail?: string } }; message?: string };
+      const err = error as {
+        status?: number;
+        response?: { status?: number; data?: { detail?: string } };
+        message?: string;
+      };
       const statusCode = err?.status ?? err?.response?.status;
-      const detail = err?.response?.data?.detail ?? err?.message;
       if (statusCode === 409) {
         setDone(true);
+        const detail = err?.response?.data?.detail ?? err?.message;
         setMessage(
           typeof detail === 'string' && detail
             ? detail
             : 'Anomaly has already been investigated.',
         );
       } else {
-        setMessage(
-          (typeof detail === 'string' && detail) || 'Investigation failed. Please try again.',
-        );
+        setMessage(formatAnomalyInvestigateError(error));
       }
     } finally {
       setBusy(false);

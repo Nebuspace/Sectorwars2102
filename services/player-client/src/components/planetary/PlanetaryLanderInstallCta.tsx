@@ -33,6 +33,30 @@ export function isPlanetaryLanderHullCompatible(
   return (PLANETARY_LANDER_COMPATIBLE_HULLS as readonly string[]).includes(norm);
 }
 
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+export function formatPlanetaryLanderInstallError(err: unknown): string {
+  const fallback = 'Planetary Lander install failed';
+  if (err instanceof TypeError) return fallback;
+  const responseDetail =
+    (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+  if (typeof responseDetail === 'string' && responseDetail) return responseDetail;
+  const message = (err as { message?: string })?.message;
+  if (typeof message === 'string' && message) {
+    if (isNetworkCollapseMessage(message)) return fallback;
+    return message;
+  }
+  return fallback;
+}
+
 export interface PlanetaryLanderInstallCtaProps {
   shipId?: string | null;
   shipType?: string | null;
@@ -111,13 +135,8 @@ const PlanetaryLanderInstallCta: React.FC<PlanetaryLanderInstallCtaProps> = ({
         message: result?.message,
       });
       void refreshEquipment();
-    } catch (err: any) {
-      const detail = err?.response?.data?.detail ?? err?.message;
-      setInstallError(
-        typeof detail === 'string' && detail
-          ? detail
-          : 'Planetary Lander install failed',
-      );
+    } catch (err: unknown) {
+      setInstallError(formatPlanetaryLanderInstallError(err));
     } finally {
       setIsInstalling(false);
     }

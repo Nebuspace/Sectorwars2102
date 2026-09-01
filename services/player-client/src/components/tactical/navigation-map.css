@@ -328,6 +328,17 @@
 }
 
 
+.node-threat-band {
+  font-family: var(--font-mono, monospace);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.node-threat-band.threat-clear { fill: #7dffb3; }
+.node-threat-band.threat-caution { fill: #ffd166; }
+.node-threat-band.threat-hostile { fill: #ff9f43; }
+.node-threat-band.threat-lethal { fill: #ff5a6a; }
+
 /* Accessibility */
 @media (prefers-reduced-motion: reduce) {
   .connection-line.current,

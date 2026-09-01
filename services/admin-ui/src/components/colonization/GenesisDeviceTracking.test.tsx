@@ -138,4 +138,20 @@ describe('GenesisDeviceTracking (LEG-150)', () => {
     expect(alert).not.toBe('Failed to fetch');
     expect(alert).not.toMatch(/Failed to load Genesis device data/i);
   });
+
+  it('collapses axios-shaped Network Error to gameserver-unreachable fallback (LEG-3348)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
+
+    render(<GenesisDeviceTracking />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Gameserver unreachable|network error fetching Genesis device/i);
+    expect(alert).not.toBe('Network Error');
+    expect(alert).not.toContain('Network Error');
+    expect(alert).not.toContain('Failed to fetch');
+  });
 });

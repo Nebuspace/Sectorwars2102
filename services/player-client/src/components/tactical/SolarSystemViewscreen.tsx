@@ -24,6 +24,39 @@ const VISTA_ENGINE_ON =
   import.meta.env.VITE_VISTA_ENGINE !== 'false' &&
   import.meta.env.VITE_VISTA_ENGINE !== '0';
 
+const RENAME_FAILED_FALLBACK = 'Rename failed';
+
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+/** Exported for TypeError/network honesty Vitest (LEG-3273 / LEG-3305). */
+export function formatPlanetRenameError(err: unknown): string {
+  if (err && typeof err === 'object') {
+    const detail = (err as { response?: { data?: { detail?: unknown } } }).response?.data?.detail;
+    if (typeof detail === 'string' && detail) return detail;
+  }
+  if (err instanceof TypeError) return RENAME_FAILED_FALLBACK;
+  if (err instanceof Error && err.message) {
+    if (isNetworkCollapseMessage(err.message)) return RENAME_FAILED_FALLBACK;
+    return err.message;
+  }
+  if (err && typeof err === 'object') {
+    const msg = (err as { message?: unknown }).message;
+    if (typeof msg === 'string' && msg) {
+      if (isNetworkCollapseMessage(msg)) return RENAME_FAILED_FALLBACK;
+      return msg;
+    }
+  }
+  return RENAME_FAILED_FALLBACK;
+}
+
 // ---------------------------------------------------------------------------
 // DEV-ONLY: VistaForceThrowDev — drives the boundary→legacy fallback path.
 //
@@ -7929,8 +7962,9 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
         .catch(() => {});
       setRenameOpen(false);
       setRenameDraft('');
-    } catch (e: any) {
-      setRenameError(e?.response?.data?.detail || e?.message || 'Rename failed');
+    } catch (e: unknown) {
+      // TypeError/network → stable fallback (LEG-3273); keep axios detail when present.
+      setRenameError(formatPlanetRenameError(e));
     } finally {
       setRenameBusy(false);
     }

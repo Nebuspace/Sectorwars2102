@@ -20,7 +20,7 @@ vi.mock('../../../services/api', () => ({
   },
 }));
 
-import SolarSalvagePage from '../pages/SolarSalvagePage';
+import SolarSalvagePage, { formatSalvageError } from '../pages/SolarSalvagePage';
 
 const WRECK: SectorWreck = {
   id: 'wreck-1',
@@ -124,6 +124,30 @@ describe('SolarSalvagePage', () => {
     await click(container.querySelector('.solar-salvage-btn')!);
 
     expect(container.querySelector('.solar-salvage-msg.err')?.textContent).toBe('Wreck not found');
+    expect(onSalvaged).toHaveBeenCalled();
+  });
+
+  it('formatSalvageError falls back on axios Network Error / Failed to fetch (LEG-3303)', () => {
+    expect(formatSalvageError(new Error('Network Error'))).toBe('Salvage failed');
+    expect(formatSalvageError(new Error('Failed to fetch'))).toBe('Salvage failed');
+    expect(formatSalvageError(new Error('   '))).toBe('Salvage failed');
+    expect(formatSalvageError(new Error('wreck locked'))).toBe('wreck locked');
+  });
+
+  it('salvage TypeError surfaces Salvage failed without Failed to fetch / TypeError (LEG-3260)', async () => {
+    expect(formatSalvageError(new TypeError('Failed to fetch'))).toBe('Salvage failed');
+    expect(formatSalvageError(new TypeError('Failed to fetch'))).not.toMatch(/Failed to fetch/i);
+
+    mockSalvageWreck.mockRejectedValue(new TypeError('Failed to fetch'));
+    const onSalvaged = await mount([WRECK]);
+
+    await click(container.querySelector('.solar-salvage-wreck-row')!);
+    await click(container.querySelector('.solar-salvage-btn')!);
+
+    const msg = container.querySelector('.solar-salvage-msg.err');
+    expect(msg?.textContent).toBe('Salvage failed');
+    expect(msg?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(msg?.textContent).not.toMatch(/TypeError/i);
     expect(onSalvaged).toHaveBeenCalled();
   });
 

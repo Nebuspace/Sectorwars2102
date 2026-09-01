@@ -113,4 +113,63 @@ describe('SectorsManager (LEG-399)', () => {
 
     expect(screen.queryByText(/not implemented/i)).toBeNull();
   });
+
+  it('surfaces honest fallback on sectors load TypeError/network collapse (LEG-3031)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<SectorsManager />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Gameserver unreachable — network error fetching sectors/i);
+    expect(alert).not.toMatch(/TypeError/i);
+    expect(alert).not.toMatch(/Failed to fetch/i);
+  });
 });
+
+describe('SectorsManager axios Network Error densify (LEG-3392)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('collapses axios-shaped Network Error on load to honest fallback', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
+
+    render(<SectorsManager />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Gameserver unreachable — network error fetching sectors/i);
+    expect(alert).not.toBe('Network Error');
+    expect(alert).not.toContain('Network Error');
+  });
+
+  it('preserves scope detail on 403 load (not collapsed away)', async () => {
+    vi.mocked(api.get).mockRejectedValue(
+      Object.assign(axiosError(403), {
+        response: {
+          status: 403,
+          data: { detail: 'Missing scope admin.universe.view' },
+        },
+      }),
+    );
+
+    render(<SectorsManager />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(
+        /admin\.universe\.view|Missing scope/i,
+      );
+    });
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toContain('Missing scope admin.universe.view');
+  });
+});
+

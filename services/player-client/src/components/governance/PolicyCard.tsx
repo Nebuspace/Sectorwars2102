@@ -33,14 +33,34 @@ function httpStatus(err: unknown): number | undefined {
   return undefined;
 }
 
+/** True when err looks like gameserver detail (not bare API Error: N / TypeError noise). */
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
+};
+
+function hasPolicyVoteServerDetail(err: unknown, message: string | undefined): boolean {
+  // Network collapse (fetch TypeError / axios transport) is not gameserver copy — use the caller fallback.
+  if (err instanceof TypeError) return false;
+  if (typeof message === 'string' && isNetworkCollapseMessage(message)) return false;
+  return (
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim())
+  );
+}
+
 /** Surface GS cast-policy-vote detail (LEG-2944 Soft-ORDER). */
 export function formatPolicyVoteError(err: unknown): string {
   const status = httpStatus(err);
   const message = err instanceof Error ? err.message : undefined;
-  const hasServerDetail =
-    typeof message === 'string' &&
-    message.trim().length > 0 &&
-    !/^API Error: \d+$/.test(message.trim());
+  const hasServerDetail = hasPolicyVoteServerDetail(err, message);
 
   if (message && VOTE_ERROR_COPY[message]) return VOTE_ERROR_COPY[message];
 

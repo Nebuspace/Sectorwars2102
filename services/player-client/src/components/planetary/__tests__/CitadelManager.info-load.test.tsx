@@ -74,4 +74,32 @@ describe('CitadelManager — info load refusal', () => {
       'Failed to load citadel info',
     );
   });
+
+  it('formatCitadelLoadError falls back on TypeError network collapse (LEG-3026)', () => {
+    const text = formatCitadelLoadError(new TypeError('Failed to fetch'));
+    expect(text).toMatch(/Failed to load citadel info/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('surfaces honest load fallback when getInfo rejects with TypeError (LEG-3026)', async () => {
+    getInfo.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await act(async () => {
+      root.render(<CitadelManager planetId="planet-1" playerCredits={100_000} />);
+    });
+    await act(async () => {
+      await flush();
+      await flush();
+    });
+
+    await vi.waitFor(() => {
+      expect(container.querySelector('.citadel-error')?.textContent).toMatch(
+        /Failed to load citadel info/i,
+      );
+    });
+    const text = container.querySelector('.citadel-error')?.textContent ?? '';
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
 });

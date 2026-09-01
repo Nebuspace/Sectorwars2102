@@ -104,7 +104,11 @@ vi.mock('../../../trade/PlayerTradeDesk', () => ({
   ),
 }));
 
-import TacticalTargetPage, { type TacticalContact } from '../TacticalTargetPage';
+import TacticalTargetPage, {
+  formatTacticalTargetEngageError,
+  formatTacticalTargetHailError,
+  type TacticalContact,
+} from '../TacticalTargetPage';
 
 let container: HTMLDivElement;
 let root: Root;
@@ -157,6 +161,25 @@ const teardown = () => {
     root.unmount();
   });
   container.remove();
+};
+
+const engageableContacts = (): TacticalContact[] => [
+  { id: 'c1', ship_id: '1001', username: 'Foe', reputation_tier: 'Villain', player_id: 'u1' },
+];
+
+const openEngage = (contacts: TacticalContact[]) => {
+  useWindshieldFlightMock.mockReturnValue({
+    contactPositions: new Map([[String(contacts[0].ship_id), { xPct: 0, yPct: 50 }]]),
+    shipPos: { xPct: 0, yPct: 50 },
+    engageRangeEm: 100,
+    approach: approachMock,
+  });
+  render(<TacticalTargetPage contacts={contacts} />);
+  const name = container.querySelector('.target-contact-name') as HTMLElement;
+  act(() => {
+    name.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+  return container.querySelector('[data-testid="menu-item-engage"]') as HTMLButtonElement;
 };
 
 describe('TacticalTargetPage', () => {
@@ -445,25 +468,6 @@ describe('TacticalTargetPage', () => {
     teardown();
   });
 
-  const engageableContacts = (): TacticalContact[] => [
-    { id: 'c1', ship_id: '1001', username: 'Foe', reputation_tier: 'Villain', player_id: 'u1' },
-  ];
-
-  const openEngage = (contacts: TacticalContact[]) => {
-    useWindshieldFlightMock.mockReturnValue({
-      contactPositions: new Map([[String(contacts[0].ship_id), { xPct: 0, yPct: 50 }]]),
-      shipPos: { xPct: 0, yPct: 50 },
-      engageRangeEm: 100,
-      approach: approachMock,
-    });
-    render(<TacticalTargetPage contacts={contacts} />);
-    const name = container.querySelector('.target-contact-name') as HTMLElement;
-    act(() => {
-      name.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
-    return container.querySelector('[data-testid="menu-item-engage"]') as HTMLButtonElement;
-  };
-
   it('rejects engage with a validation error and never calls the combat API', async () => {
     const contacts = engageableContacts();
     contacts[0].ship_id = 'not-a-valid-id!!';
@@ -554,6 +558,81 @@ describe('TacticalTargetPage', () => {
     });
     await flush();
     expect(container.querySelector('.target-result-msg.err')?.textContent).toBe('network blip');
+    teardown();
+  });
+});
+
+describe('TacticalTargetPage TypeError densify (LEG-3261)', () => {
+  it('formatTacticalTargetHailError falls back on TypeError network collapse', () => {
+    const text = formatTacticalTargetHailError(new TypeError('Failed to fetch'));
+    expect(text).toBe('TRANSMISSION FAILED');
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('formatTacticalTargetHail/Engage fall back on axios Network Error (LEG-3304)', () => {
+    expect(formatTacticalTargetHailError(new Error('Network Error'))).toBe('TRANSMISSION FAILED');
+    expect(formatTacticalTargetHailError(new Error('Failed to fetch'))).toBe('TRANSMISSION FAILED');
+    expect(formatTacticalTargetHailError(new Error('   '))).toBe('TRANSMISSION FAILED');
+    expect(formatTacticalTargetEngageError(new Error('Network Error'))).toBe('Combat system error — try again.');
+    expect(formatTacticalTargetEngageError(new Error('Failed to fetch'))).toBe('Combat system error — try again.');
+    expect(formatTacticalTargetEngageError(new Error('hostile lock'))).toBe('hostile lock');
+  });
+
+  it('formatTacticalTargetEngageError falls back on TypeError network collapse', () => {
+    const text = formatTacticalTargetEngageError(new TypeError('Failed to fetch'));
+    expect(text).toBe('Combat system error — try again.');
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('hail TypeError surfaces TRANSMISSION FAILED without Failed to fetch / TypeError in DOM', async () => {
+    sendPlayerMessageMock.mockRejectedValue(new TypeError('Failed to fetch'));
+    const contacts: TacticalContact[] = [{ id: 'c1', player_id: 'u1', username: 'Pen Pal' }];
+    render(<TacticalTargetPage contacts={contacts} />);
+    const name = container.querySelector('.target-contact-name') as HTMLElement;
+    act(() => {
+      name.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    act(() => {
+      (container.querySelector('[data-testid="menu-item-hail"]') as HTMLButtonElement).dispatchEvent(
+        new MouseEvent('click', { bubbles: true }),
+      );
+    });
+    const input = container.querySelector('[data-testid="hail-input"]') as HTMLInputElement;
+    act(() => {
+      setInputValue(input, 'ahoy');
+    });
+    await act(async () => {
+      (container.querySelector('[data-testid="hail-send"]') as HTMLButtonElement).dispatchEvent(
+        new MouseEvent('click', { bubbles: true }),
+      );
+    });
+    await flush();
+
+    const err = container.querySelector('[data-testid="hail-error"]');
+    expect(err?.textContent).toBe('TRANSMISSION FAILED');
+    expect(err?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(err?.textContent).not.toMatch(/TypeError/i);
+    expect(container.textContent).not.toMatch(/Failed to fetch/i);
+    expect(container.textContent).not.toMatch(/TypeError/i);
+    teardown();
+  });
+
+  it('engage TypeError surfaces combat fallback without Failed to fetch / TypeError in DOM', async () => {
+    combatEngageMock.mockRejectedValue(new TypeError('Failed to fetch'));
+    const engageBtn = openEngage(engageableContacts());
+    await act(async () => {
+      engageBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    const msg = container.querySelector('.target-result-msg.err');
+    expect(msg?.textContent).toBe('Combat system error — try again.');
+    expect(msg?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(msg?.textContent).not.toMatch(/TypeError/i);
+    expect(container.textContent).not.toMatch(/Failed to fetch/i);
+    expect(container.textContent).not.toMatch(/TypeError/i);
     teardown();
   });
 });

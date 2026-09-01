@@ -44,14 +44,33 @@ function httpStatus(err: unknown): number | undefined {
   return undefined;
 }
 
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+/** True when err looks like gameserver detail (not bare API Error: N / TypeError noise). */
+function hasLeaderboardServerDetail(err: unknown, message: string | undefined): boolean {
+  // Network collapse (fetch TypeError / axios transport) is not gameserver copy.
+  if (err instanceof TypeError) return false;
+  if (typeof message === 'string' && isNetworkCollapseMessage(message)) return false;
+  return (
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim())
+  );
+}
+
 /** apiRequest throws Error with `.status`; surface gameserver detail on leaderboard load. */
 export function formatLeaderboardLoadError(err: unknown): string {
   const status = httpStatus(err);
   const message = err instanceof Error ? err.message : undefined;
-  const hasServerDetail =
-    typeof message === 'string' &&
-    message.trim().length > 0 &&
-    !/^API Error: \d+$/.test(message.trim());
+  const hasServerDetail = hasLeaderboardServerDetail(err, message);
 
   if (status === 400) {
     if (hasServerDetail) return message!;

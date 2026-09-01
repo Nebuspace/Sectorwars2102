@@ -37,6 +37,30 @@ export function isEcmSuiteHullCompatible(
   return (ECM_SUITE_COMPATIBLE_HULLS as readonly string[]).includes(norm);
 }
 
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+export function formatEcmSuiteInstallError(err: unknown): string {
+  const fallback = 'ECM Suite install failed';
+  if (err instanceof TypeError) return fallback;
+  const responseDetail =
+    (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+  if (typeof responseDetail === 'string' && responseDetail) return responseDetail;
+  const message = (err as { message?: string })?.message;
+  if (typeof message === 'string' && message) {
+    if (isNetworkCollapseMessage(message)) return fallback;
+    return message;
+  }
+  return fallback;
+}
+
 export interface EcmSuiteInstallCtaProps {
   shipId?: string | null;
   shipType?: string | null;
@@ -113,13 +137,8 @@ const EcmSuiteInstallCta: React.FC<EcmSuiteInstallCtaProps> = ({
         message: result?.message,
       });
       void refreshEquipment();
-    } catch (err: any) {
-      const detail = err?.response?.data?.detail ?? err?.message;
-      setInstallError(
-        typeof detail === 'string' && detail
-          ? detail
-          : 'ECM Suite install failed',
-      );
+    } catch (err: unknown) {
+      setInstallError(formatEcmSuiteInstallError(err));
     } finally {
       setIsInstalling(false);
     }

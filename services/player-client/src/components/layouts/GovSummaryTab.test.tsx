@@ -173,6 +173,48 @@ describe('GovSummaryTab', () => {
     expect(formatGovSummaryLoadError(err)).toBe('Region not found.');
   });
 
+  it('formatGovSummaryLoadError falls back on TypeError network collapse (LEG-3091)', () => {
+    const text = formatGovSummaryLoadError(new TypeError('Failed to fetch'));
+    expect(text).toMatch(/Failed to load governance data/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('surfaces honest load fallback when getMyMembership rejects with TypeError', async () => {
+    mockCurrentSector = { region_id: 'region-1' };
+    mockGetMyMembership.mockRejectedValue(new TypeError('Failed to fetch'));
+    await mount();
+
+    const errorEl = container.querySelector('.sb-gov-error');
+    expect(errorEl?.textContent).toMatch(/Failed to load governance data/i);
+    expect(errorEl?.textContent).not.toMatch(/Failed to fetch/i);
+    expect(errorEl?.textContent).not.toMatch(/TypeError/i);
+    expect(errorEl?.getAttribute('role')).toBe('alert');
+  });
+
+  it('does not crash on a fully malformed (empty object) membership response', async () => {
+    mockCurrentSector = { region_id: 'region-1' };
+    mockGetMyMembership.mockResolvedValue({});
+
+    await expect(mount()).resolves.not.toThrow();
+
+    expect(container.querySelector('.sb-gov-error')).toBeNull();
+    expect(container.textContent).toContain('Not Yet a Citizen');
+    expect(mockListElections).not.toHaveBeenCalled();
+  });
+
+  it('does not crash when listElections returns a malformed (empty object) payload', async () => {
+    mockCurrentSector = { region_id: 'region-1' };
+    mockGetMyMembership.mockResolvedValue(MEMBER_RESPONSE);
+    mockListElections.mockResolvedValue({});
+
+    await expect(mount()).resolves.not.toThrow();
+
+    expect(container.querySelector('.sb-gov-error')).toBeNull();
+    expect(container.textContent).toContain('Regional Governance');
+    expect(container.textContent).toContain('None scheduled');
+  });
+
   it('shows a status/aria-live loading state before the fetch resolves', async () => {
     mockCurrentSector = { region_id: 'region-1' };
     let resolveFn: (v: unknown) => void = () => {};

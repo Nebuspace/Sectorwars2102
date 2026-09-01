@@ -32,16 +32,35 @@ interface CitizenshipBadgeProps {
  * not yet a stored citizen, a Claim button POSTs /citizenship/colony-claim.
  */
 
+/** Transport collapse copy is not gameserver detail (LEG-3405 densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
 /** Normalize GS/API detail from apiRequest Error.message, axios-shaped response, or object detail. */
 function citizenshipClaimServerDetail(err: unknown): string | undefined {
+  // Network collapse (fetch TypeError) is not gameserver copy.
+  if (err instanceof TypeError) return undefined;
+
   if (err && typeof err === 'object') {
     const rawDetail =
       (err as { response?: { data?: { detail?: unknown } } }).response?.data?.detail ??
       (err as { data?: { detail?: unknown } }).data?.detail;
-    if (typeof rawDetail === 'string' && rawDetail.trim()) return rawDetail.trim();
+    if (typeof rawDetail === 'string' && rawDetail.trim()) {
+      const trimmed = rawDetail.trim();
+      if (!isNetworkCollapseMessage(trimmed)) return trimmed;
+    }
     if (rawDetail && typeof rawDetail === 'object' && !Array.isArray(rawDetail)) {
       const nested = (rawDetail as { message?: unknown }).message;
-      if (typeof nested === 'string' && nested.trim()) return nested.trim();
+      if (typeof nested === 'string' && nested.trim()) {
+        const trimmed = nested.trim();
+        if (!isNetworkCollapseMessage(trimmed)) return trimmed;
+      }
       try {
         return JSON.stringify(rawDetail);
       } catch {
@@ -53,7 +72,8 @@ function citizenshipClaimServerDetail(err: unknown): string | undefined {
   if (
     typeof message === 'string' &&
     message.trim().length > 0 &&
-    !/^API Error: \d+$/.test(message.trim())
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNetworkCollapseMessage(message)
   ) {
     return message.trim();
   }

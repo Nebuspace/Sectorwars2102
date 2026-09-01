@@ -14,6 +14,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 const mockGetStatus = vi.fn();
 const mockClearFine = vi.fn();
 const mockGetCatalog = vi.fn();
+const mockGetThreat = vi.fn();
 vi.mock('../../../services/api', () => ({
   greyStatusAPI: {
     getStatus: (...a: unknown[]) => mockGetStatus(...a),
@@ -21,6 +22,9 @@ vi.mock('../../../services/api', () => ({
   },
   armoryAPI: {
     getCatalog: (...a: unknown[]) => mockGetCatalog(...a),
+  },
+  navAPI: {
+    getThreat: (...a: unknown[]) => mockGetThreat(...a),
   },
 }));
 
@@ -45,6 +49,8 @@ describe('TacticalThreatPage', () => {
     mockGetStatus.mockReset();
     mockClearFine.mockReset();
     mockGetCatalog.mockReset();
+    mockGetThreat.mockReset();
+    mockGetThreat.mockResolvedValue([]);
     mockGetCatalog.mockResolvedValue({ loadout: { mines: 3, limpet_mines: 2 } });
     mockDeployMines.mockReset();
     mockUpdatePlayerCredits.mockReset();
@@ -117,28 +123,34 @@ describe('TacticalThreatPage', () => {
   });
 
   it('a failed grey-status load is announced as role=alert (assertive)', async () => {
-    mockGetStatus.mockRejectedValue(new Error('Failed to load law status'));
+    mockGetStatus.mockRejectedValue(new TypeError('Failed to fetch'));
     await mount();
 
     const warnline = container.querySelector('.threat-warnline')!;
-    expect(warnline.textContent).toBe('Failed to load law status');
+    expect(warnline.textContent).toMatch(/check your connection/i);
+    expect(warnline.textContent).not.toMatch(/Failed to fetch/i);
     expect(warnline.getAttribute('role')).toBe('alert');
   });
 
   it('the LOADING… transient state is announced as role=status', async () => {
     let resolveStatus: (v: any) => void;
+    let resolveThreat: (v: any) => void;
     mockGetStatus.mockImplementation(() => new Promise((resolve) => { resolveStatus = resolve; }));
+    mockGetThreat.mockImplementation(() => new Promise((resolve) => { resolveThreat = resolve; }));
 
     await act(async () => {
       root.render(<TacticalThreatPage />);
     });
     await flush();
 
-    const loading = container.querySelector('.empty-state')!;
-    expect(loading.textContent).toBe('LOADING…');
-    expect(loading.getAttribute('role')).toBe('status');
+    const loadingStates = Array.from(container.querySelectorAll('.empty-state'));
+    expect(loadingStates.some((el) => el.textContent === 'LOADING…')).toBe(true);
+    loadingStates
+      .filter((el) => el.textContent === 'LOADING…')
+      .forEach((el) => expect(el.getAttribute('role')).toBe('status'));
 
     await act(async () => {
+      resolveThreat([]);
       resolveStatus({ isGrey: false, kind: null, greyUntil: null, remainingSeconds: 0, clearFineCredits: null });
     });
   });
@@ -184,6 +196,20 @@ describe('TacticalThreatPage', () => {
     expect(msg.getAttribute('role')).toBe('status');
   });
 
+  it('LAY mine-deploy TypeError densifies to connection fallback (LEG-3323)', async () => {
+    mockDeployMines.mockRejectedValue(new TypeError('Failed to fetch'));
+    await mount();
+
+    const btn = container.querySelector('[data-testid="threat-lay-mines"]')!;
+    await click(btn);
+
+    const msg = container.querySelector('.threat-msg')!;
+    expect(msg.textContent).toMatch(/check your connection/i);
+    expect(msg.textContent).not.toMatch(/Failed to fetch/i);
+    expect(msg.textContent).not.toMatch(/TypeError/i);
+    expect(msg.classList.contains('ok')).toBe(false);
+  });
+
   it('LAY limpet sends limpet_mine when that type is selected', async () => {
     mockDeployMines.mockResolvedValue({ message: 'ok' });
     await mount();
@@ -224,9 +250,11 @@ describe('TacticalThreatPage', () => {
     await mount();
     const titles = Array.from(container.querySelectorAll('.threat-section-title'));
     expect(titles.map((t) => t.textContent?.trim().replace(/\s+/g, ' '))).toEqual([
+      'NAV THREAT ROLLUP',
       'LAW STATUS',
       'MINES ABOARD armored 3 · limpet 2',
       'LIMPET TRACKER',
+      'SECTOR RETREAT',
       'HAZARD READOUT',
     ]);
     titles.forEach((t) => {

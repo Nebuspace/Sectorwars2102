@@ -286,6 +286,6 @@ describe('FirstLoginContext completeFirstLogin -- already-completed recovery', (
     });
 
     expect(result).toBeUndefined();
-    expect(captured?.error).toBe('Failed to check first login status.');
+    expect(captured?.error).toBe('network down');
   });
 });

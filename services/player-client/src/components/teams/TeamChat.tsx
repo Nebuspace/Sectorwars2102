@@ -11,6 +11,28 @@ interface TeamChatProps {
   members: TeamMember[];
 }
 
+const SEND_FAILED_FALLBACK = 'Failed to send message.';
+
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
+};
+
+/** Exported for TypeError/network honesty Vitest (LEG-3256 / LEG-3268). */
+export function formatTeamChatSendError(err: unknown): string {
+  if (err instanceof TypeError) return SEND_FAILED_FALLBACK;
+  if (err instanceof Error && err.message) {
+    if (isNetworkCollapseMessage(err.message)) return SEND_FAILED_FALLBACK;
+    return err.message;
+  }
+  return SEND_FAILED_FALLBACK;
+}
+
 export const TeamChat: React.FC<TeamChatProps> = ({ teamId, playerId, members }) => {
   const [messages, setMessages] = useState<TeamMessageApiResponse[]>([]);
   const [newMessage, setNewMessage] = useState('');
@@ -58,7 +80,7 @@ export const TeamChat: React.FC<TeamChatProps> = ({ teamId, playerId, members })
       setNewMessage('');
       await loadMessages();
     } catch (error) {
-      setSendError(error instanceof Error ? error.message : 'Failed to send message.');
+      setSendError(formatTeamChatSendError(error));
     } finally {
       setSending(false);
     }

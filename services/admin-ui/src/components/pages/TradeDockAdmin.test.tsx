@@ -315,6 +315,61 @@ describe('TradeDockAdmin', () => {
     });
   });
 
+  it('surfaces honest fallback on force-cancel TypeError/network collapse (LEG-2974)', async () => {
+    await openReservationDetail();
+    vi.mocked(api.post).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    fireEvent.click(screen.getByLabelText('Force-cancel reservation r1'));
+    fireEvent.click(
+      await screen.findByRole('button', { name: /Confirm\? · ₡100,000 refund/ })
+    );
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/construction/reservations/r1/force-cancel'
+      );
+    });
+    const msg = String(toastError.mock.calls.map((call) => call[0]).join('\n'));
+    expect(msg).toMatch(/Force-cancel failed/i);
+    expect(msg).not.toMatch(/Failed to fetch/i);
+    expect(msg).not.toMatch(/TypeError/i);
+  });
+
+  it('collapses axios-shaped Network Error to TradeDock list load fallback (LEG-3358)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
+    render(<TradeDockAdmin />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Failed to load TradeDocks/i);
+    expect(alert).not.toBe('Network Error');
+    expect(alert).not.toContain('Network Error');
+    expect(alert).not.toMatch(/TypeError/i);
+  });
+
+  it('collapses axios-shaped Network Error to force-cancel fallback (LEG-3358)', async () => {
+    await openReservationDetail();
+    vi.mocked(api.post).mockRejectedValue(new Error('Network Error'));
+
+    fireEvent.click(screen.getByLabelText('Force-cancel reservation r1'));
+    fireEvent.click(
+      await screen.findByRole('button', { name: /Confirm\? · ₡100,000 refund/ })
+    );
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/construction/reservations/r1/force-cancel'
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/Force-cancel failed/i));
+    const msg = String(toastError.mock.calls.map((call) => call[0]).join('\n'));
+    expect(msg).not.toBe('Network Error');
+    expect(msg).not.toContain('Network Error');
+    expect(msg).not.toMatch(/TypeError/i);
+  });
+
   it('list load 403 surfaces formatAdminApiError scope helper (not generic Failed to load)', async () => {
     vi.mocked(api.get).mockRejectedValue({
       response: { status: 403, data: {} },

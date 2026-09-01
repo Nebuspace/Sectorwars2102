@@ -8,6 +8,7 @@ import ContactActionMenu, { type ContactActionMenuItem } from '../ContactActionM
 import HailComposeDialog from '../HailComposeDialog';
 import PlayerTradeDesk from '../../trade/PlayerTradeDesk';
 import PlayerNamePlate from '../../common/PlayerNamePlate';
+import SalvageBreakCta, { isSalvageBreakEligibleContact } from '../../ships/SalvageBreakCta';
 import { repBucket, type RepBucket } from '../contactClassification';
 import { distancePx, REFERENCE_BAND } from '../WindshieldTableau';
 
@@ -161,6 +162,39 @@ interface TacticalTargetPageProps {
   onSelectContact?: (contact: TacticalContact | null) => void;
 }
 
+const HAIL_FAILED_FALLBACK = 'TRANSMISSION FAILED';
+const ENGAGE_FAILED_FALLBACK = 'Combat system error — try again.';
+
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+/** Exported for TypeError/network honesty Vitest (LEG-3261 / LEG-3304). */
+export function formatTacticalTargetHailError(err: unknown): string {
+  if (err instanceof TypeError) return HAIL_FAILED_FALLBACK;
+  if (err instanceof Error && err.message) {
+    if (isNetworkCollapseMessage(err.message)) return HAIL_FAILED_FALLBACK;
+    return err.message;
+  }
+  return HAIL_FAILED_FALLBACK;
+}
+
+/** Exported for TypeError/network honesty Vitest (LEG-3261 / LEG-3304). */
+export function formatTacticalTargetEngageError(err: unknown): string {
+  if (err instanceof TypeError) return ENGAGE_FAILED_FALLBACK;
+  if (err instanceof Error && err.message) {
+    if (isNetworkCollapseMessage(err.message)) return ENGAGE_FAILED_FALLBACK;
+    return err.message;
+  }
+  return ENGAGE_FAILED_FALLBACK;
+}
+
 const BUCKET_COLOR: Record<RepBucket, string> = {
   red: '#FF5A6A',
   gray: '#9AA6B5',
@@ -207,7 +241,7 @@ const resultHeadline = (status: any, selfId?: string): string => {
 };
 
 const TacticalTargetPage: React.FC<TacticalTargetPageProps> = ({ contacts, selectedShipId, onSelectContact }) => {
-  const { playerState, refreshPlayerState, sendPlayerMessage } = useGame();
+  const { playerState, currentSector, refreshPlayerState, sendPlayerMessage } = useGame();
   const flight = useWindshieldFlight();
 
   const [engagingKey, setEngagingKey] = useState<string | null>(null);
@@ -246,8 +280,8 @@ const TacticalTargetPage: React.FC<TacticalTargetPageProps> = ({ contacts, selec
       setHailResult({ key, ok: true, text: 'TRANSMITTED' });
       setHailKey(null);
       setHailText('');
-    } catch (e: any) {
-      setHailResult({ key, ok: false, text: e?.message || 'TRANSMISSION FAILED' });
+    } catch (e: unknown) {
+      setHailResult({ key, ok: false, text: formatTacticalTargetHailError(e) });
     } finally {
       setHailBusy(false);
     }
@@ -292,8 +326,8 @@ const TacticalTargetPage: React.FC<TacticalTargetPageProps> = ({ contacts, selec
       } else {
         setEngageResult({ key, ok: false, text: response?.message || 'Failed to initiate combat' });
       }
-    } catch (e: any) {
-      setEngageResult({ key, ok: false, text: e?.message || 'Combat system error — try again.' });
+    } catch (e: unknown) {
+      setEngageResult({ key, ok: false, text: formatTacticalTargetEngageError(e) });
     } finally {
       setEngagingKey(null);
     }
@@ -336,11 +370,17 @@ const TacticalTargetPage: React.FC<TacticalTargetPageProps> = ({ contacts, selec
         const canApproach = !!contact.ship_id && !inEngageRange;
         const canHail = !contact.is_npc && !!contact.player_id;
         const canTrade = canHail;
+        const inOpenSpace = !!playerState && !playerState.is_docked && !playerState.is_landed;
+        const salvageBreakInProgress = (currentSector?.salvage_breaks ?? []).find(
+          (row) => row.ship_id && contact.ship_id && String(row.ship_id) === String(contact.ship_id),
+        );
+        const canSalvageBreak =
+          inOpenSpace && isSalvageBreakEligibleContact(contact, playerState?.id) && !salvageBreakInProgress;
         // Trigger-gating (WO-TACTICAL-POPUP, extended Part B): the menu
         // opens whenever it has ANYTHING to show -- a shipless, unhailable
         // contact (e.g. a comms-only presence with no ship in this sector)
         // still correctly gets no trigger, same as before this WO.
-        const menuHasItems = canEngage || canApproach || canHail || canTrade;
+        const menuHasItems = canEngage || canApproach || canHail || canTrade || canSalvageBreak;
         // Reticle-select stays its own, ship_id-gated concern -- separate
         // from whether the menu has anything to offer.
         const canSelect = !!onSelectContact && !!contact.ship_id;
@@ -417,6 +457,20 @@ const TacticalTargetPage: React.FC<TacticalTargetPageProps> = ({ contacts, selec
             },
           });
         }
+        if (canSalvageBreak && contact.ship_id) {
+          menuItems.push({
+            key: 'salvage-break',
+            label: 'SALVAGE BREAK ▸',
+            variant: 'engage',
+            title: 'Force entry on a drifting pin-locked hull — you must stay in-sector.',
+            onSelect: () => {
+              closeMenu();
+            },
+          });
+        }
+
+        const showSalvageBreakCta =
+          contact.ship_id && (canSalvageBreak || salvageBreakInProgress);
 
         return (
           <div key={key} className="target-contact-row" role="listitem">
@@ -506,6 +560,15 @@ const TacticalTargetPage: React.FC<TacticalTargetPageProps> = ({ contacts, selec
               <div className={`target-result-msg ${hailResult.ok ? 'ok' : 'err'}`} role="status" aria-live="polite">
                 {hailResult.text}
               </div>
+            )}
+            {showSalvageBreakCta && contact.ship_id && (
+              <SalvageBreakCta
+                shipId={String(contact.ship_id)}
+                shipName={contactDisplayName(contact)}
+                inProgress={salvageBreakInProgress ?? null}
+                disabled={!inOpenSpace}
+                onDone={() => { void refreshPlayerState(); }}
+              />
             )}
           </div>
         );

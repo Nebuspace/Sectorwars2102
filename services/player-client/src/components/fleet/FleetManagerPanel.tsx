@@ -170,8 +170,27 @@ type Busy =
   | 'simulate'
   | null;
 
-const errMsg = (e: unknown): string =>
-  e instanceof Error ? e.message : 'Fleet request failed';
+/** Transport collapse copy is not gameserver detail (LEG-3279 densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+export function formatFleetManagerError(
+  e: unknown,
+  fallback = 'Fleet request failed',
+): string {
+  if (e instanceof TypeError) return fallback;
+  if (e instanceof Error) {
+    if (isNetworkCollapseMessage(e.message)) return fallback;
+    return e.message;
+  }
+  return fallback;
+}
 
 const isUuid = (value: string): boolean =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
@@ -287,7 +306,7 @@ export const FleetManagerPanel: React.FC = () => {
       setFleets(next);
       setSelectedId((prev) => (prev && next.some((f) => f.id === prev) ? prev : null));
     } catch (e) {
-      setError(errMsg(e));
+      setError(formatFleetManagerError(e));
     } finally {
       setBusy(null);
     }
@@ -299,7 +318,7 @@ export const FleetManagerPanel: React.FC = () => {
       const rows = (await fleetAPI.getFleetMembers(fleetId)) as FleetMemberRow[];
       setMembers(Array.isArray(rows) ? rows : []);
     } catch (e) {
-      setError(errMsg(e));
+      setError(formatFleetManagerError(e));
       setMembers([]);
     }
   }, []);
@@ -386,7 +405,7 @@ export const FleetManagerPanel: React.FC = () => {
     try {
       await fn();
     } catch (e) {
-      setError(errMsg(e));
+      setError(formatFleetManagerError(e));
     } finally {
       setBusy(null);
     }

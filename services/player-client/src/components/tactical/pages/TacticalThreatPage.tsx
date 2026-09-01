@@ -1,8 +1,32 @@
 import React from 'react';
 import { useGame } from '../../../contexts/GameContext';
-import { greyStatusAPI, armoryAPI, type ArmoryMineItem, type GreyStatus } from '../../../services/api';
+import { greyStatusAPI, armoryAPI, type ArmoryMineItem, type GreyStatus, type NavThreatBand } from '../../../services/api';
 import { formatCredits } from '../../../utils/formatters';
 import LimpetTrackerReadout from '../LimpetTrackerReadout';
+import SectorRetreatControl from '../SectorRetreatControl';
+import { useNavThreatRollup } from '../useNavThreatRollup';
+import { NAV_THREAT_BAND_CLASS } from '../navThreat';
+
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+/** Exported for TypeError densify tests (LEG-3146 / LEG-3302). */
+export function formatTacticalThreatError(err: unknown, fallback: string): string {
+  if (err instanceof TypeError) return fallback;
+  const message = err instanceof Error ? err.message : undefined;
+  if (typeof message === 'string' && message.trim() && !/^API Error: \d+$/.test(message.trim())) {
+    if (isNetworkCollapseMessage(message)) return fallback;
+    return message.trim();
+  }
+  return fallback;
+}
 
 /**
  * TacticalThreatPage — TACTICAL monitor's THREAT page (WO-UI2-DECK-
@@ -37,6 +61,8 @@ const formatCountdown = (totalSeconds: number): string => {
 
 const TacticalThreatPage: React.FC = () => {
   const { currentSector, playerState, deployMines, updatePlayerCredits } = useGame();
+  const threatRollup = useNavThreatRollup();
+  const [expandedSector, setExpandedSector] = React.useState<number | null>(null);
   const [mineQty, setMineQty] = React.useState(1);
   const [mineItem, setMineItem] = React.useState<ArmoryMineItem>('armored_mine');
   const [limpetCarried, setLimpetCarried] = React.useState(0);
@@ -59,9 +85,9 @@ const TacticalThreatPage: React.FC = () => {
         setGreyStatus(status);
         setGreyError(null);
       })
-      .catch((e: any) => {
+      .catch((e: unknown) => {
         setGreyStatus(null);
-        setGreyError(e?.message || 'Failed to load law status');
+        setGreyError(formatTacticalThreatError(e, 'Law status unavailable — check your connection.'));
       });
   }, []);
 
@@ -119,8 +145,11 @@ const TacticalThreatPage: React.FC = () => {
       } else {
         setGreyMsg({ ok: false, text: result.message || 'Unable to clear fine' });
       }
-    } catch (e: any) {
-      setGreyMsg({ ok: false, text: e?.message || 'Failed to clear fine' });
+    } catch (e: unknown) {
+      setGreyMsg({
+        ok: false,
+        text: formatTacticalThreatError(e, 'Unable to clear fine — check your connection.'),
+      });
     } finally {
       setGreyBusy(false);
     }
@@ -138,8 +167,11 @@ const TacticalThreatPage: React.FC = () => {
       if (mineItem === 'limpet_mine') {
         setLimpetCarried((n) => Math.max(0, n - qty));
       }
-    } catch (e: any) {
-      setMineMsg({ ok: false, text: e?.response?.data?.detail || 'Mine deployment failed' });
+    } catch (e: unknown) {
+      setMineMsg({
+        ok: false,
+        text: formatTacticalThreatError(e, 'Mine deployment failed — check your connection.'),
+      });
     } finally {
       setMineBusy(false);
     }
@@ -154,9 +186,53 @@ const TacticalThreatPage: React.FC = () => {
   }
 
   const hazard = currentSector ? currentSector.hazard_level : null;
+  const threatRows = Object.values(threatRollup.map).sort((a, b) => a.sector_id - b.sector_id);
+
+  const renderBand = (band: NavThreatBand) => (
+    <span className={`nav-threat-band ${NAV_THREAT_BAND_CLASS[band]}`}>{band}</span>
+  );
 
   return (
     <>
+      <div className="threat-section">
+        <div className="threat-section-title" role="heading" aria-level={3}>NAV THREAT ROLLUP</div>
+        {threatRollup.loading ? (
+          <div className="empty-state" role="status">LOADING…</div>
+        ) : threatRollup.error ? (
+          <div className="threat-warnline" role="alert">{threatRollup.error}</div>
+        ) : threatRows.length === 0 ? (
+          <div className="empty-state" role="status">No charted threat data</div>
+        ) : (
+          <ul className="nav-threat-rollup-list">
+            {threatRows.map((row) => (
+              <li key={row.sector_id} className="nav-threat-rollup-row">
+                <button
+                  type="button"
+                  className="nav-threat-rollup-toggle"
+                  aria-expanded={expandedSector === row.sector_id}
+                  onClick={() =>
+                    setExpandedSector((cur) => (cur === row.sector_id ? null : row.sector_id))
+                  }
+                >
+                  <span>SECTOR {row.sector_id}</span>
+                  {renderBand(row.band)}
+                  <span className="nav-threat-score">{row.score}</span>
+                </button>
+                {expandedSector === row.sector_id && row.contributors?.length > 0 && (
+                  <ul className="nav-threat-contributors">
+                    {row.contributors.map((c) => (
+                      <li key={`${row.sector_id}-${c.input}`}>
+                        {c.input}: {c.points}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
       <div className="threat-section">
         <div className="threat-section-title" role="heading" aria-level={3}>LAW STATUS</div>
         {greyError ? (
@@ -242,6 +318,8 @@ const TacticalThreatPage: React.FC = () => {
       </div>
 
       <LimpetTrackerReadout />
+
+      <SectorRetreatControl />
 
       <div className="threat-section">
         <div className="threat-section-title" role="heading" aria-level={3}>HAZARD READOUT</div>

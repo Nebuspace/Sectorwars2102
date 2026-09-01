@@ -235,4 +235,117 @@ describe('BountyPlaceCancel', () => {
   it('formatBountyCancelError falls back when detail absent', () => {
     expect(formatBountyCancelError(new Error('API Error: 400'))).toBe('Failed to cancel bounty');
   });
+
+  it('falls back on TypeError network collapse (LEG-3056)', () => {
+    const text = formatBountyInspectLoadError(new TypeError('Failed to fetch'));
+    expect(text).toMatch(/Failed to load bounties on target/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('formatBountyInspect/Place/Cancel fall back on axios Network Error / Failed to fetch (LEG-3381)', () => {
+    expect(formatBountyInspectLoadError(new Error('Network Error'))).toBe(
+      'Failed to load bounties on target',
+    );
+    expect(formatBountyInspectLoadError(new Error('Failed to fetch'))).toBe(
+      'Failed to load bounties on target',
+    );
+    expect(formatBountyInspectLoadError(new Error('Network Error'))).not.toBe('Network Error');
+
+    expect(formatBountyPlaceError(new Error('Network Error'))).toBe('Failed to place bounty');
+    expect(formatBountyPlaceError(new Error('Failed to fetch'))).toBe('Failed to place bounty');
+    expect(formatBountyPlaceError(new Error('Network Error'))).not.toMatch(/Network Error/i);
+
+    expect(formatBountyCancelError(new Error('Network Error'))).toBe('Failed to cancel bounty');
+    expect(formatBountyCancelError(new Error('Failed to fetch'))).toBe('Failed to cancel bounty');
+    expect(formatBountyCancelError(new Error('Network Error'))).not.toMatch(/Network Error/i);
+  });
+
+  it('surfaces honest fallback when inspect rejects with axios Network Error (LEG-3381)', async () => {
+    getOnTarget.mockRejectedValue(new Error('Network Error'));
+
+    await act(async () => {
+      root.render(<BountyPlaceCancel />);
+    });
+
+    const target = container.querySelector(
+      '[data-testid="bounty-place-target"]',
+    ) as HTMLInputElement;
+    await act(async () => {
+      setInputValue(target, 't1');
+    });
+    await act(async () => {
+      (container.querySelector('[data-testid="bounty-inspect-submit"]') as HTMLButtonElement).click();
+      await flush();
+    });
+
+    const alert = container.querySelector('[data-testid="bounty-place-cancel-error"]');
+    expect(alert?.textContent).toMatch(/Failed to load bounties on target/i);
+    expect(alert?.textContent).not.toMatch(/Network Error/i);
+    expect(alert?.textContent).not.toMatch(/Failed to fetch/i);
+  });
+
+  it('surfaces honest fallback when place rejects with axios Network Error (LEG-3381)', async () => {
+    place.mockRejectedValue(new Error('Network Error'));
+
+    await act(async () => {
+      root.render(<BountyPlaceCancel />);
+    });
+
+    const target = container.querySelector(
+      '[data-testid="bounty-place-target"]',
+    ) as HTMLInputElement;
+    await act(async () => {
+      setInputValue(target, 't1');
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="bounty-place-form"]')!.dispatchEvent(
+        new Event('submit', { bubbles: true, cancelable: true }),
+      );
+      await flush();
+    });
+
+    const alert = container.querySelector('[data-testid="bounty-place-cancel-error"]');
+    expect(alert?.textContent).toBe('Failed to place bounty');
+    expect(alert?.textContent).not.toMatch(/Network Error/i);
+    expect(alert?.textContent).not.toMatch(/Failed to fetch/i);
+  });
+
+  it('surfaces honest fallback when cancel rejects with axios Network Error (LEG-3381)', async () => {
+    getOnTarget.mockResolvedValue({
+      success: true,
+      target_id: 't1',
+      target_name: 'Rogue',
+      total_value: 1000,
+      player_bounties: [
+        { id: 'b-mine', placed_by: 'placer-1', placed_by_name: 'Me', amount: 1000, type: 'player' },
+      ],
+      system_bounties: [],
+    });
+    cancel.mockRejectedValue(new Error('Network Error'));
+
+    await act(async () => {
+      root.render(<BountyPlaceCancel />);
+    });
+
+    const target = container.querySelector(
+      '[data-testid="bounty-place-target"]',
+    ) as HTMLInputElement;
+    await act(async () => {
+      setInputValue(target, 't1');
+    });
+    await act(async () => {
+      (container.querySelector('[data-testid="bounty-inspect-submit"]') as HTMLButtonElement).click();
+      await flush();
+    });
+    await act(async () => {
+      (container.querySelector('[data-testid="bounty-cancel-submit"]') as HTMLButtonElement).click();
+      await flush();
+    });
+
+    const alert = container.querySelector('[data-testid="bounty-place-cancel-error"]');
+    expect(alert?.textContent).toBe('Failed to cancel bounty');
+    expect(alert?.textContent).not.toMatch(/Network Error/i);
+    expect(alert?.textContent).not.toMatch(/Failed to fetch/i);
+  });
 });

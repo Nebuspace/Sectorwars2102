@@ -47,6 +47,7 @@ from src.models.faction import Faction, FactionType
 from src.models.player import Player
 from src.models.reputation import Reputation
 from src.services.faction_service import FACTION_RIVALRIES, apply_faction_rep_delta
+from src.services.multi_account_service import participation_weight
 
 logger = logging.getLogger(__name__)
 
@@ -514,6 +515,82 @@ EMERGENT_ACTIONS: Dict[str, EmergentAction] = {
             "whitelist warp gate (TF −5, FC +5, FA +5, SS +10; MG/AM/NS/PI 0)"
         ),
     ),
+    # LEG-3375 — Fringe Alliance: "Successfully evade a Federation contraband
+    # scan with cargo | +10 / evasion" (factions-and-teams.md FA table, line 153).
+    # Wired at contraband_service.scan_in_transit on the CLEAN transit path only
+    # (scanned=True, detected=False) — not sell-side, not patrol, not cooldown skip.
+    "CONTRABAND_TRANSIT_EVADE_FA": EmergentAction(
+        name="CONTRABAND_TRANSIT_EVADE_FA",
+        deltas=[FactionDelta(FactionType.OUTLAWS, 10)],
+        doc_source=(
+            "factions-and-teams.md FA: Successfully evade a Federation "
+            "contraband scan with cargo (+10 / evasion)"
+        ),
+    ),
+    # LEG-3377 — Fringe Alliance: "Survive a Suspect Status cycle (1+ hour) |
+    # +15 | one-shot per cycle" (factions-and-teams.md FA table, line 156).
+    # Wired at suspect_service.clear_expired_suspects when the scheduled cycle
+    # length (suspect_until − suspect_declared_at) is >= 1h; dedup ledger in
+    # player.settings prevents double-award within the same cycle anchor.
+    "SURVIVE_SUSPECT_CYCLE_FA": EmergentAction(
+        name="SURVIVE_SUSPECT_CYCLE_FA",
+        deltas=[FactionDelta(FactionType.OUTLAWS, 15)],
+        doc_source=(
+            "factions-and-teams.md FA: Survive a Suspect Status cycle "
+            "(1+ hour) (+15; one-shot per cycle)"
+        ),
+    ),
+    # LEG-3378 — Shadow Syndicate: "Survive a full Wanted Status cycle without
+    # impound | +10 | one-shot per Wanted cycle" (factions-and-teams.md SS
+    # table, line 167). Wired at wanted_service.clear_expired_wanted when the
+    # bust-timer window (wanted_until − wanted_declared_at) is >= WANTED_DURATION;
+    # dedup ledger in player.settings prevents double-award per cycle anchor.
+    "SURVIVE_WANTED_CYCLE_SS": EmergentAction(
+        name="SURVIVE_WANTED_CYCLE_SS",
+        deltas=[FactionDelta(FactionType.SYNDICATE, 10)],
+        doc_source=(
+            "factions-and-teams.md SS: Survive a full Wanted Status cycle "
+            "without impound (+10; one-shot per Wanted cycle)"
+        ),
+    ),
+    # LEG-3388 — Shadow Syndicate: "Fence a Cargo Wreck cargo at a Syndicate
+    # fence venue | +5 / 5,000 cr fenced" (factions-and-teams.md SS table,
+    # line 164). Per-block magnitude is +5 (not +1); wired via
+    # apply_trade_volume_rep on successful syndicate_fence_service.fence_cargo
+    # using GROSS market_value (not the 70% payout).
+    "FENCE_SYNDICATE_VOLUME_SS": EmergentAction(
+        name="FENCE_SYNDICATE_VOLUME_SS",
+        deltas=[FactionDelta(FactionType.SYNDICATE, 5)],
+        doc_source=(
+            "factions-and-teams.md SS: Fence a Cargo Wreck cargo at a "
+            "Syndicate fence venue (+5 / 5,000 cr fenced)"
+        ),
+    ),
+    # LEG-3389 — Shadow Syndicate: "Sell stolen-flagged commodity (origin =
+    # early-grace salvage) | +10 / transaction" (factions-and-teams.md SS
+    # table, line 165). Fence path already requires flagged_origin consumption;
+    # one-shot apply_emergent_action per successful fence_cargo transaction.
+    "STOLEN_FLAGGED_SALE_SS": EmergentAction(
+        name="STOLEN_FLAGGED_SALE_SS",
+        deltas=[FactionDelta(FactionType.SYNDICATE, 10)],
+        doc_source=(
+            "factions-and-teams.md SS: Sell stolen-flagged commodity "
+            "(origin = early-grace salvage) (+10 / transaction)"
+        ),
+    ),
+    # LEG-3395 — Fringe Alliance: "Black-market transaction at a
+    # Fringe-controlled port | +25 / transaction" (factions-and-teams.md FA
+    # table, line 152; black-market.md:153). Wired at contraband_service
+    # buy() and clean sell() when Station.faction_affiliation is Fringe
+    # Alliance — not on busts, not on non-Fringe BLACK_MARKET venues.
+    "BLACK_MARKET_TX_FA": EmergentAction(
+        name="BLACK_MARKET_TX_FA",
+        deltas=[FactionDelta(FactionType.OUTLAWS, 25)],
+        doc_source=(
+            "factions-and-teams.md FA: Black-market transaction at a "
+            "Fringe-controlled port (+25 / transaction)"
+        ),
+    ),
 }
 
 
@@ -821,14 +898,18 @@ class EmergentReputationService:
                     if pool_clamped:
                         award = remaining
 
+                    pw = participation_weight(self.db, player_id)
+                    award = int(round(award * pw))
+
                     if award <= 0:
                         # Event happened (cargo delivered / NPC killed) but the
-                        # rep delta drops to 0 (N-V1) or the cap left no room.
+                        # rep delta drops to 0 (N-V1), the cap left no room, or
+                        # participation_weight discounted it away (HARD → 0).
                         logger.info(
                             "Throttle: %s rep award for player %s faction %s "
-                            "clamped to 0 (cap=%s pool=%s; pool used %d/%d)",
+                            "clamped to 0 (cap=%s pool=%s pw=%s; pool used %d/%d)",
                             action, player_id, fcode, cap_clamped, pool_clamped,
-                            int(bucket["global_rep"]), GLOBAL_REP_POOL_PER_DAY,
+                            pw, int(bucket["global_rep"]), GLOBAL_REP_POOL_PER_DAY,
                         )
                         applied.append({
                             "faction": fd.faction.name,
@@ -837,8 +918,11 @@ class EmergentReputationService:
                             "applied": False,
                             "direct": True,
                             "throttled": (
-                                "global_pool" if pool_clamped else "combined_cap"
+                                "participation_weight"
+                                if pw == 0.0
+                                else ("global_pool" if pool_clamped else "combined_cap")
                             ),
+                            "participation_weight": pw,
                         })
                         continue
 
@@ -854,6 +938,7 @@ class EmergentReputationService:
                         "direct": True,
                         "cap_clamped": cap_clamped,
                         "pool_clamped": pool_clamped,
+                        "participation_weight": pw,
                     })
 
                     # 2) Rivalry cascade — fires on an actually-awarded

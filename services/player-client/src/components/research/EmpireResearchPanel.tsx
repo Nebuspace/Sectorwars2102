@@ -108,6 +108,40 @@ const kindBlurb = (kind: string): string =>
   KIND_BLURB[(kind || '').toLowerCase()] || 'A research directive on one of your worlds.';
 
 /** A short "perishes in 4h" string from an ISO expiry, or null when open-ended. */
+/** Exported for TypeError densify tests — initial cockpit load failure path. */
+export function formatEmpireResearchLoadError(err: unknown): string {
+  return formatEmpireResearchMutationError(err, 'Failed to load research cockpit');
+}
+
+/** Exported for TypeError densify tests — accept/unlock mutation catch paths. */
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+export function formatEmpireResearchMutationError(err: unknown, fallback: string): string {
+  if (err instanceof TypeError) return fallback;
+  if (err && typeof err === 'object') {
+    const resp = (err as { response?: { data?: unknown } }).response;
+    const data = resp?.data ?? (err as { data?: unknown }).data;
+    if (data && typeof data === 'object') {
+      const detail = (data as Record<string, unknown>).detail;
+      if (typeof detail === 'string' && detail) return detail;
+    }
+    const msg = (err as { message?: string }).message;
+    if (typeof msg === 'string' && msg) {
+      if (isNetworkCollapseMessage(msg)) return fallback;
+      return msg;
+    }
+  }
+  return fallback;
+}
+
 const expiresIn = (iso: string | null, nowMs: number): string | null => {
   if (!iso) return null;
   const end = Date.parse(iso);
@@ -149,7 +183,7 @@ const EmpireResearchPanel: React.FC = () => {
         setCockpit(cockpitRes.value as ResearchCockpit);
         setError(null);
       } else if (showSpinner) {
-        setError((cockpitRes.reason as any)?.message || 'Failed to load research cockpit');
+        setError(formatEmpireResearchLoadError(cockpitRes.reason));
       }
       if (offersRes.status === 'fulfilled') {
         const data = offersRes.value as OffersResponse;
@@ -196,9 +230,11 @@ const EmpireResearchPanel: React.FC = () => {
           text: `${kindLabel(offer.kind)} started${offer.planetName ? ` on ${offer.planetName}` : ''}.`,
         });
         await fetchAll(false);
-      } catch (err: any) {
-        // apiRequest surfaces the server's human message (402 credits / 4xx gate).
-        setActionMessage({ kind: 'err', text: err?.message || 'Could not start directive' });
+      } catch (err: unknown) {
+        setActionMessage({
+          kind: 'err',
+          text: formatEmpireResearchMutationError(err, 'Could not start directive'),
+        });
       } finally {
         setActionLoading(null);
       }
@@ -219,10 +255,11 @@ const EmpireResearchPanel: React.FC = () => {
         await researchCockpitAPI.unlockNode(node.id);
         setActionMessage({ kind: 'ok', text: `Unlocked ${node.name}.` });
         await fetchAll(false);
-      } catch (err: any) {
-        // apiRequest surfaces the server's human message (insufficient RP /
-        // unknown node / already unlocked / missing prereqs) verbatim.
-        setActionMessage({ kind: 'err', text: err?.message || 'Could not unlock tech node' });
+      } catch (err: unknown) {
+        setActionMessage({
+          kind: 'err',
+          text: formatEmpireResearchMutationError(err, 'Could not unlock tech node'),
+        });
       } finally {
         setNodeActionLoading(null);
       }

@@ -14,6 +14,28 @@ type NearestPayload = {
   reason?: string | null;
 };
 
+const NEAREST_AM_REFINERY_FALLBACK = 'Nearest AM refinery lookup failed';
+
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+/** Exported for TypeError/network honesty Vitest (LEG-3245 / LEG-3298). */
+export function formatNearestAmRefineryError(err: unknown, fallback = NEAREST_AM_REFINERY_FALLBACK): string {
+  if (err instanceof TypeError) return fallback;
+  if (err instanceof Error && err.message) {
+    if (isNetworkCollapseMessage(err.message)) return fallback;
+    return err.message;
+  }
+  return fallback;
+}
+
 const asRecord = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -34,10 +56,10 @@ export const NearestAmRefineryOverlay: React.FC = () => {
         setError(null);
         setPayload(asRecord(raw) as NearestPayload);
       })
-      .catch((err: { message?: string }) => {
+      .catch((err: unknown) => {
         if (cancelled) return;
         setPayload(null);
-        setError(err?.message || 'Nearest AM refinery lookup failed');
+        setError(formatNearestAmRefineryError(err));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);

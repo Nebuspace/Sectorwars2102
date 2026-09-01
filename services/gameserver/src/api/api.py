@@ -9,6 +9,7 @@ from src.api.routes.admin import router as admin_router
 from src.api.routes.admin_first_login import router as admin_first_login_router
 from src.api.routes.admin_enhanced import router as admin_enhanced_router
 from src.api.routes.admin_comprehensive import router as admin_comprehensive_router
+from src.api.routes.admin_players import router as admin_players_router
 from src.api.routes.player_combat import router as player_combat_router
 from src.api.routes.events import router as events_router
 from src.api.routes.websocket import router as websocket_router
@@ -82,6 +83,7 @@ from src.api.routes.black_market import router as black_market_router
 from src.api.routes.syndicate_fence import router as syndicate_fence_router
 from src.api.routes.resources import router as resources_router  # WO-ARCH-RES-1-KERNEL (router carries /resources prefix)
 from src.api.routes.pirate_ecosystem import router as pirate_ecosystem_router  # WO-PIRATE-ECO-1
+from src.api.routes.pirate_holdings import router as pirate_holdings_router  # LEG-1105
 from src.api.routes.contracts import router as contracts_router  # WO-ECON-CONTRACT-1-KERNEL
 from src.api.routes.admin_contract_disputes import router as admin_contract_disputes_router  # WO-CONTRACT-6
 from src.api.routes.admin_multi_account import router as admin_multi_account_router  # WO-PADMIN-multiacct-review
@@ -109,6 +111,7 @@ api_router.include_router(admin_router, prefix="/admin", tags=["admin"])
 api_router.include_router(admin_first_login_router, tags=["admin-first-login"])
 api_router.include_router(admin_enhanced_router, prefix="/admin", tags=["admin-enhanced"])
 api_router.include_router(admin_comprehensive_router, prefix="/admin", tags=["admin-comprehensive"])
+api_router.include_router(admin_players_router, prefix="/admin", tags=["admin-players"])
 # NOTE: the legacy combat.py / economy.py routers were deleted — they were
 # mounted before admin_combat.py / admin_economy.py and shadowed the working
 # /admin/combat/* and /admin/economy/* implementations with broken handlers.
@@ -231,6 +234,7 @@ api_router.include_router(resources_router, tags=["resources"])
 # target/cleansed-state snapshot (router carries its own /regions prefix →
 # GET /regions/{region_id}/pirate-ecosystem).
 api_router.include_router(pirate_ecosystem_router, tags=["pirate-ecosystem"])
+api_router.include_router(pirate_holdings_router, tags=["pirate-holdings"])
 # Trade contracts (WO-ECON-CONTRACT-1-KERNEL): board/mine/{id} reads +
 # accept/complete/abandon on NPC-issued cargo_delivery contracts (router
 # carries its own /contracts prefix). Player-issued posting, insurance,

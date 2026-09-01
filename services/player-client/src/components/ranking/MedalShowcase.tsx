@@ -18,6 +18,7 @@ interface Medal {
 interface MedalData {
   earned: Medal[];
   available: Medal[];
+  pinned_medal_id?: string | null;
 }
 
 const CATEGORY_ICONS: Record<string, string> = {
@@ -56,14 +57,33 @@ function httpStatus(err: unknown): number | undefined {
   return undefined;
 }
 
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+/** True when err looks like gameserver detail (not bare API Error: N / TypeError noise). */
+function hasMedalShowcaseServerDetail(err: unknown, message: string | undefined): boolean {
+  // Network collapse (fetch TypeError / axios transport) is not gameserver copy.
+  if (err instanceof TypeError) return false;
+  if (typeof message === 'string' && isNetworkCollapseMessage(message)) return false;
+  return (
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim())
+  );
+}
+
 /** apiRequest throws Error with `.status`; surface gameserver detail on initial medal load. */
 export function formatMedalShowcaseLoadError(err: unknown): string {
   const status = httpStatus(err);
   const message = err instanceof Error ? err.message : undefined;
-  const hasServerDetail =
-    typeof message === 'string' &&
-    message.trim().length > 0 &&
-    !/^API Error: \d+$/.test(message.trim());
+  const hasServerDetail = hasMedalShowcaseServerDetail(err, message);
 
   if (status === 404) {
     if (hasServerDetail) return message!;
@@ -74,6 +94,29 @@ export function formatMedalShowcaseLoadError(err: unknown): string {
   return 'Failed to load medals';
 }
 
+const PIN_FALLBACK = 'Failed to update pinned medal';
+
+/** True when message is bare transport collapse, not gameserver pin detail. */
+const isMedalPinNetworkCollapse = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+/** Exported for TypeError/network honesty Vitest (LEG-3275). */
+export function formatMedalShowcasePinError(err: unknown): string {
+  if (err instanceof TypeError) return PIN_FALLBACK;
+  const message = err instanceof Error ? err.message : undefined;
+  if (typeof message === 'string' && message.trim().length > 0) {
+    if (isMedalPinNetworkCollapse(message)) return PIN_FALLBACK;
+    return message;
+  }
+  return PIN_FALLBACK;
+}
+
 const MedalShowcase: React.FC = () => {
   const [medalData, setMedalData] = useState<MedalData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -81,6 +124,8 @@ const MedalShowcase: React.FC = () => {
   const [activeCategory, setActiveCategory] = useState('All');
   const [hoveredMedal, setHoveredMedal] = useState<Medal | null>(null);
   const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
+  const [pinError, setPinError] = useState<string | null>(null);
+  const [pinningKey, setPinningKey] = useState<string | null>(null);
 
   // Realtime: the WS context bumps medalAwardedSignal whenever a medal_awarded
   // frame arrives (medal_service.award_medal → send_medal_awarded). MedalShowcase
@@ -133,6 +178,24 @@ const MedalShowcase: React.FC = () => {
     setTooltipPos({ x: e.clientX + 12, y: e.clientY - 10 });
   };
 
+  const handlePinToggle = async (medal: Medal) => {
+    if (!medalData) return;
+    const isPinned = medalData.pinned_medal_id === medal.key;
+    const nextPin = isPinned ? null : medal.key;
+    setPinError(null);
+    setPinningKey(medal.key);
+    try {
+      const result = await medalsAPI.pinMe(nextPin);
+      setMedalData((prev) =>
+        prev ? { ...prev, pinned_medal_id: result.pinned_medal_id } : prev,
+      );
+    } catch (err: unknown) {
+      setPinError(formatMedalShowcasePinError(err));
+    } finally {
+      setPinningKey(null);
+    }
+  };
+
   if (loading) {
     return (
       <div className="medal-showcase medal-loading">
@@ -171,11 +234,20 @@ const MedalShowcase: React.FC = () => {
         ))}
       </div>
 
+      {pinError && (
+        <div className="medal-pin-error" role="alert">
+          {pinError}
+        </div>
+      )}
+
       <div className="medal-grid">
-        {filteredMedals.earned.map((medal) => (
+        {filteredMedals.earned.map((medal) => {
+          const isPinned = medalData.pinned_medal_id === medal.key;
+          const isPinning = pinningKey === medal.key;
+          return (
           <div
             key={medal.key}
-            className="medal-card earned"
+            className={`medal-card earned${isPinned ? ' pinned' : ''}`}
             onMouseEnter={(e) => handleMouseEnter(medal, e)}
             onMouseLeave={() => setHoveredMedal(null)}
           >
@@ -188,8 +260,22 @@ const MedalShowcase: React.FC = () => {
                 {new Date(medal.awarded_at).toLocaleDateString()}
               </span>
             )}
+            <button
+              type="button"
+              className={`medal-pin-btn${isPinned ? ' active' : ''}`}
+              aria-label={isPinned ? `Unpin ${medal.name}` : `Pin ${medal.name}`}
+              aria-pressed={isPinned}
+              disabled={isPinning}
+              onClick={(e) => {
+                e.stopPropagation();
+                void handlePinToggle(medal);
+              }}
+            >
+              {isPinning ? '…' : isPinned ? '📌' : '📍'}
+            </button>
           </div>
-        ))}
+          );
+        })}
         {filteredMedals.available.map((medal) => (
           <div
             key={medal.key}

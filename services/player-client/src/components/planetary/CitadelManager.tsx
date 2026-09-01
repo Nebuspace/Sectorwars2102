@@ -88,14 +88,28 @@ function httpStatus(err: unknown): number | undefined {
   return undefined;
 }
 
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
+};
+
 /** apiRequest throws Error with `.status`; surface gameserver detail on citadel load. */
 export function formatCitadelLoadError(err: unknown): string {
   const status = httpStatus(err);
   const message = err instanceof Error ? err.message : undefined;
+  // Network collapse (fetch TypeError / axios transport) is not gameserver copy — use the caller fallback.
   const hasServerDetail =
+    !(err instanceof TypeError) &&
     typeof message === 'string' &&
     message.trim().length > 0 &&
-    !/^API Error: \d+$/.test(message.trim());
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNetworkCollapseMessage(message);
 
   if (status === 403) {
     if (hasServerDetail) return message!;
@@ -163,19 +177,28 @@ function extractCitadelUpgradePayload(data: unknown): CitadelUpgradeErrorPayload
 }
 
 function serverUpgradeDetail(err: unknown): string | undefined {
+  // Network collapse (fetch TypeError / axios transport) is not gameserver copy.
+  if (err instanceof TypeError) return undefined;
   if (err && typeof err === 'object') {
     const data = (err as { data?: unknown }).data;
     if (data && typeof data === 'object') {
       const body = data as Record<string, unknown>;
-      if (typeof body.detail === 'string' && body.detail.trim()) return body.detail.trim();
-      if (typeof body.message === 'string' && body.message.trim()) return body.message.trim();
+      if (typeof body.detail === 'string' && body.detail.trim()) {
+        const trimmed = body.detail.trim();
+        if (!isNetworkCollapseMessage(trimmed)) return trimmed;
+      }
+      if (typeof body.message === 'string' && body.message.trim()) {
+        const trimmed = body.message.trim();
+        if (!isNetworkCollapseMessage(trimmed)) return trimmed;
+      }
     }
   }
   const message = err instanceof Error ? err.message : undefined;
   if (
     typeof message === 'string' &&
     message.trim().length > 0 &&
-    !/^API Error: \d+$/.test(message.trim())
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNetworkCollapseMessage(message)
   ) {
     return message.trim();
   }

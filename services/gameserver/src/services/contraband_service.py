@@ -271,19 +271,63 @@ class ContrabandService:
         """True iff the station is a BLACK_MARKET-type venue (brief §1.1)."""
         return station is not None and station.type == StationType.BLACK_MARKET
 
+    @staticmethod
+    def _is_fringe_controlled_port(station: Optional[Station]) -> bool:
+        """True iff ``Station.faction_affiliation`` is Fringe Alliance.
+
+        Same display-name resolver surface as TRADE_VOLUME_FA / docking gates
+        (invent=0 — do not invent alternate control signals).
+        """
+        if station is None:
+            return False
+        name = (getattr(station, "faction_affiliation", None) or "").strip()
+        return name == "Fringe Alliance"
+
+    def _maybe_award_black_market_tx_fa(
+        self, player: Player, station: Station
+    ) -> None:
+        """LEG-3395 — emergent FA +25 on BM txn at a Fringe-controlled port.
+
+        Non-fatal: never voids an otherwise-successful buy/sell.
+        """
+        if not self._is_fringe_controlled_port(station):
+            return
+        try:
+            from src.services.emergent_reputation_service import apply_emergent_action
+
+            apply_emergent_action(
+                self.db,
+                player,
+                "BLACK_MARKET_TX_FA",
+                {"sector_id": getattr(player, "current_sector_id", None)},
+            )
+        except Exception:
+            logger.warning(
+                "emergent BLACK_MARKET_TX_FA failed (non-fatal)",
+                exc_info=True,
+            )
+
     def _passes_rep_gate(self, player_id: uuid.UUID) -> bool:
-        """True iff the player's Fringe-Alliance (OUTLAWS) reputation is at least
+        """True iff effective Fringe-Alliance (OUTLAWS) standing is at least
         RECOGNIZED (brief §1.1 / [OPEN-1]).
 
-        The Reputation row keys on ``faction_id``, so resolve the OUTLAWS faction
-        first. A missing faction row (un-seeded roster) or a missing reputation
-        row both read as "below gate" — the conservative default: a player with no
-        Fringe standing is NOT vouched in.
+        Uses ``resolve_effective_faction_standing_value`` so a teamed player
+        consumes team AVERAGE (or configured) aggregate standing — same
+        interaction-gate resolver as dock/trade. Solo players still use
+        personal ``Reputation.current_value``. A missing OUTLAWS faction row
+        fails closed. Missing personal/team standing reads as value 0
+        (NEUTRAL) via the resolver — also below gate.
 
-        Tier comparison uses ``Reputation.numeric_level`` (an ordered −8..+8
-        scale) so the gate is a clean ordinal compare rather than a fragile
-        enum-identity check.
+        Tier compare: map continuous value through
+        ``FactionService._calculate_reputation_level`` (RECOGNIZED ≥ +50) then
+        ordinal-rank against ``GATE_MIN_LEVEL``. Detection ``rep_term`` stays on
+        the personal_reputation axis (ADR-0062) and is untouched here.
         """
+        from src.services.faction_service import (
+            FactionService,
+            resolve_effective_faction_standing_value,
+        )
+
         faction = (
             self.db.query(Faction)
             .filter(Faction.faction_type == GATE_FACTION)
@@ -297,18 +341,11 @@ class ContrabandService:
             )
             return False
 
-        reputation = (
-            self.db.query(Reputation)
-            .filter(
-                Reputation.player_id == player_id,
-                Reputation.faction_id == faction.id,
-            )
-            .first()
+        value, _source = resolve_effective_faction_standing_value(
+            self.db, player_id, faction.id
         )
-        if reputation is None:
-            return False
-
-        return self._level_rank(reputation.current_level) >= self._level_rank(GATE_MIN_LEVEL)
+        level = FactionService(self.db)._calculate_reputation_level(value)
+        return self._level_rank(level) >= self._level_rank(GATE_MIN_LEVEL)
 
     @staticmethod
     def _level_rank(level: ReputationLevel) -> int:
@@ -599,6 +636,9 @@ class ContrabandService:
         # update_reputation commits mid-txn, so it must NOT be used here).
         rep_deltas = self._apply_rep_deltas(player.id, meta, "black_market_buy")
 
+        # LEG-3395 — emergent FA +25 when the BM venue is Fringe-controlled.
+        self._maybe_award_black_market_tx_fa(player, station)
+
         self.db.flush()
 
         return {
@@ -732,6 +772,9 @@ class ContrabandService:
         # law even when undetected (the law watches the venue).
         rep_deltas = self._apply_rep_deltas(player.id, meta, "black_market_sell")
 
+        # LEG-3395 — emergent FA +25 when the BM venue is Fringe-controlled.
+        self._maybe_award_black_market_tx_fa(player, station)
+
         # Record the (flagged) sale on the ledger — is_illegal / illegal_commodity
         # are the additive MarketTransaction columns this WO added (mirrors buy()).
         self.db.add(MarketTransaction(
@@ -762,6 +805,40 @@ class ContrabandService:
             "detection_probability": round(p_detect, 4),
             "remaining_credits": player.credits,
             "rep_deltas": rep_deltas,
+        }
+
+    # ------------------------------------------------------------------
+    # Patrol scan (police-forces.md — contraband_scan_hit offense trigger)
+    # ------------------------------------------------------------------
+    def roll_patrol_contraband_scan(
+        self,
+        player: Player,
+        ship: Ship,
+    ) -> Dict[str, Any]:
+        """Read-only contraband roll when a player enters a patrolled sector.
+
+        Canon (police-forces.md:40,:179): passing patrol scans the hold;
+        ``P(detected) = 0.3 / max(1, ship.evasion / 10)``. A hit dispatches
+        police via ``route_engagement(..., offense_type="contraband_scan_hit")``
+        on the movement path — this method does NOT confiscate cargo or levy
+        fines (that is the customs/transit-scan path).
+        """
+        if ship is None:
+            return {"scanned": False, "detected": False, "reason": "no_ship"}
+        if self._worst_held_meta(self._cargo(ship).get("contents", {})) is None:
+            return {"scanned": False, "detected": False, "reason": "no_contraband"}
+
+        try:
+            evasion = float(getattr(ship, "evasion", 0) or 0)
+        except (TypeError, ValueError):
+            evasion = 0.0
+        p_detect = 0.3 / max(1.0, evasion / 10.0)
+        p_detect = self._clamp(p_detect, 0.0, 1.0)
+        detected = _RNG.random() < p_detect
+        return {
+            "scanned": True,
+            "detected": detected,
+            "probability": round(p_detect, 4),
         }
 
     # ------------------------------------------------------------------
@@ -914,6 +991,18 @@ class ContrabandService:
         # notoriety nudge — that is the reward for a completed SALE (brief §1.5);
         # merely surviving a customs check is not a black-market transaction, and
         # nudging here would let a player farm outlaw cred by pacing a border.
+        # Emergent FA +10 (LEG-3375 / factions-and-teams.md FA table): the scan
+        # happened and the smuggler got away — routed through apply_emergent_action
+        # (flush-only, never raises) inside this txn before the cooldown anchor
+        # commits.
+        from src.services.emergent_reputation_service import apply_emergent_action
+
+        apply_emergent_action(
+            self.db,
+            player,
+            "CONTRABAND_TRANSIT_EVADE_FA",
+            {"sector_id": destination_sector_id, "reason": "contraband_transit_scan"},
+        )
         self.db.flush()
         return {
             "scanned": True,

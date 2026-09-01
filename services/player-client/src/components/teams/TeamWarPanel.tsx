@@ -56,13 +56,28 @@ function httpStatus(err: unknown): number | undefined {
   return undefined;
 }
 
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isTeamWarNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
+};
+
 function serverDetail(err: unknown): string | undefined {
+  // Network collapse (fetch TypeError) is not gameserver copy.
+  if (err instanceof TypeError) return undefined;
+
   if (err && typeof err === 'object') {
     const rawDetail = (err as { response?: { data?: { detail?: unknown } } }).response?.data
       ?.detail;
     if (typeof rawDetail === 'string' && rawDetail.trim()) return rawDetail.trim();
   }
   const message = err instanceof Error ? err.message : undefined;
+  if (typeof message === 'string' && isTeamWarNetworkCollapseMessage(message)) return undefined;
   if (
     typeof message === 'string' &&
     message.trim().length > 0 &&

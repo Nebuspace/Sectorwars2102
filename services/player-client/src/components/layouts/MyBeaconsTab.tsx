@@ -31,13 +31,27 @@ import EmptyState from '../common/EmptyState';
 
 type RowBusy = 'read' | 'salvage' | 'recharge' | 'report' | null;
 
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isBeaconNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
+};
+
 function serverDetail(err: unknown): string | undefined {
+  // Network collapse (fetch TypeError) is not gameserver copy — use the caller fallback.
+  if (err instanceof TypeError) return undefined;
   if (err && typeof err === 'object') {
     const rawDetail = (err as { response?: { data?: { detail?: unknown } } }).response?.data
       ?.detail;
     if (typeof rawDetail === 'string' && rawDetail.trim()) return rawDetail.trim();
   }
   const message = err instanceof Error ? err.message : undefined;
+  if (typeof message === 'string' && isBeaconNetworkCollapseMessage(message)) return undefined;
   if (
     typeof message === 'string' &&
     message.trim().length > 0 &&
@@ -52,6 +66,12 @@ export function formatBeaconDeployError(err: unknown): string {
   const detail = serverDetail(err);
   if (detail) return detail;
   return 'Deploy failed';
+}
+
+export function formatBeaconLoadError(err: unknown): string {
+  const detail = serverDetail(err);
+  if (detail) return detail;
+  return 'Failed to load your beacons';
 }
 
 export function formatBeaconRowActionError(err: unknown): string {
@@ -90,9 +110,9 @@ const MyBeaconsTab: React.FC = () => {
         if (cancelled) return;
         setBeacons(res?.beacons || []);
       })
-      .catch(() => {
+      .catch((err) => {
         if (cancelled) return;
-        setError('Failed to load your beacons');
+        setError(formatBeaconLoadError(err));
       });
     return () => {
       cancelled = true;

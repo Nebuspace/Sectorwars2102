@@ -40,6 +40,33 @@ const RANGE_BANDS: { id: RangeBandId; label: string; range: string; tag?: string
   { id: 'extended', label: 'EXTENDED', range: '12–15' },
 ];
 
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
+};
+
+/**
+ * Surface gameserver axios detail on quantum drive failures; network collapse
+ * (fetch TypeError / axios Network Error) is not GS copy — use the stable
+ * fallback (LEG-3070 Soft-ORDER; LEG-3394 densify).
+ */
+export function formatQuantumDriveApiError(err: unknown, fallback: string): string {
+  // Network collapse (fetch TypeError / axios transport) is not gameserver copy.
+  if (err instanceof TypeError) return fallback;
+  const detail = (err as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
+  if (typeof detail === 'string' && detail.trim().length > 0) return detail;
+  const message =
+    err instanceof Error ? err.message : String((err as { message?: unknown })?.message ?? '');
+  if (isNetworkCollapseMessage(message)) return fallback;
+  return fallback;
+}
+
 // Resonance → how many of the 4 meter segments light up
 const RESONANCE_LEVELS: Record<QuantumScanResult['resonance'], number> = {
   silent: 1,
@@ -332,9 +359,11 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
         setQuantumScanResult({ origin_sector_id: firedFromSector, result });
       }
       if (!isMounted.current) return;
-    } catch (error: any) {
+    } catch (error: unknown) {
       if (!isMounted.current) return;
-      setScanError(error?.response?.data?.detail || 'Echo scan failed — drive sensors unresponsive');
+      setScanError(
+        formatQuantumDriveApiError(error, 'Echo scan failed — drive sensors unresponsive'),
+      );
     } finally {
       if (isMounted.current) setIsScanning(false);
     }
@@ -354,9 +383,11 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
       setJumpResult(result);
       setQuantumScanResult(null); // old echo telemetry is meaningless from a new sector
       setJumpPhase('outcome');
-    } catch (error: any) {
+    } catch (error: unknown) {
       if (!isMounted.current) return;
-      setJumpError(error?.response?.data?.detail || 'Quantum jump failed — drive aborted the translation');
+      setJumpError(
+        formatQuantumDriveApiError(error, 'Quantum jump failed — drive aborted the translation'),
+      );
       setJumpPhase('idle');
     }
   };
@@ -367,9 +398,9 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
     setRefineError(null);
     try {
       await refineQuantumCharge();
-    } catch (error: any) {
+    } catch (error: unknown) {
       if (!isMounted.current) return;
-      setRefineError(error?.response?.data?.detail || 'Charge refinement failed');
+      setRefineError(formatQuantumDriveApiError(error, 'Charge refinement failed'));
     } finally {
       if (isMounted.current) setIsRefining(false);
     }

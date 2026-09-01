@@ -43,6 +43,26 @@ const formatCountdown = (secondsLeft: number): string => {
   return `${m}:${r.toString().padStart(2, '0')}`;
 };
 
+/** TypeError (fetch network collapse) → fallback; preserve gameserver Error.message otherwise. */
+/** Transport collapse copy is not gameserver detail (LEG-3288 densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+export function formatSurveyExpeditionError(err: unknown, fallback: string): string {
+  if (err instanceof TypeError) return fallback;
+  if (err instanceof Error && err.message) {
+    if (isNetworkCollapseMessage(err.message)) return fallback;
+    return err.message;
+  }
+  return fallback;
+}
+
 const SurveyExpeditionPanel: React.FC<SurveyExpeditionPanelProps> = ({
   planetId,
   planetName,
@@ -53,6 +73,8 @@ const SurveyExpeditionPanel: React.FC<SurveyExpeditionPanelProps> = ({
   const [rerolled, setRerolled] = useState<Expedition | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
+  const [listRestoreChecked, setListRestoreChecked] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [settleOutcome, setSettleOutcome] = useState<SettleOutcome>(null);
   const [settling, setSettling] = useState(false);
@@ -72,11 +94,20 @@ const SurveyExpeditionPanel: React.FC<SurveyExpeditionPanelProps> = ({
             const bt = expeditionLaunchedAt(b) ?? '';
             return bt.localeCompare(at);
           });
-        if (!cancelled && forPlanet.length > 0) {
-          setCurrent(forPlanet[0]);
+        if (!cancelled) {
+          setListError(null);
+          if (forPlanet.length > 0) {
+            setCurrent(forPlanet[0]);
+          }
+          setListRestoreChecked(true);
         }
-      } catch {
-        // Non-fatal — the panel just starts from a clean dispatch state.
+      } catch (err) {
+        if (!cancelled) {
+          setListError(
+            formatSurveyExpeditionError(err, 'Could not restore your expedition status for this world.'),
+          );
+          setListRestoreChecked(true);
+        }
       }
     })();
     return () => {
@@ -124,8 +155,8 @@ const SurveyExpeditionPanel: React.FC<SurveyExpeditionPanelProps> = ({
       const expedition = await expeditionAPI.launch(planetId, shipId ?? undefined);
       setCurrent(expedition);
       setRerolled(null);
-    } catch (err: any) {
-      setError(err?.message || 'Failed to launch expedition');
+    } catch (err: unknown) {
+      setError(formatSurveyExpeditionError(err, 'Failed to launch expedition'));
     } finally {
       setLoading(false);
     }
@@ -138,8 +169,8 @@ const SurveyExpeditionPanel: React.FC<SurveyExpeditionPanelProps> = ({
       setError(null);
       const expedition = await expeditionAPI.reroll(current.id);
       setRerolled(expedition);
-    } catch (err: any) {
-      setError(err?.message || 'Failed to re-roll expedition');
+    } catch (err: unknown) {
+      setError(formatSurveyExpeditionError(err, 'Failed to re-roll expedition'));
     } finally {
       setLoading(false);
     }
@@ -163,13 +194,16 @@ const SurveyExpeditionPanel: React.FC<SurveyExpeditionPanelProps> = ({
       setError(null);
       await expeditionAPI.settle(planetId);
       setSettleOutcome({ kind: 'won' });
-    } catch (err: any) {
+    } catch (err: unknown) {
       // Any settle rejection is treated as a possible CAS-loss (someone else
       // settled first) rather than a generic error — the real distinguishing
       // signal from lane3's route is unknown at build time.
       setSettleOutcome({
         kind: 'lost',
-        message: err?.message || 'Another expedition settled this site first.',
+        message: formatSurveyExpeditionError(
+          err,
+          'Another expedition settled this site first.',
+        ),
       });
     } finally {
       setSettling(false);
@@ -187,6 +221,18 @@ const SurveyExpeditionPanel: React.FC<SurveyExpeditionPanelProps> = ({
         <div className="survey-dispatch-header">
           <h3>Ground Expedition</h3>
         </div>
+
+        {listError && (
+          <div className="survey-error" role="alert" data-testid="survey-list-error">
+            {listError}
+          </div>
+        )}
+
+        {listRestoreChecked && !listError && !current && (
+          <p className="survey-dispatch-empty" data-testid="survey-no-expedition">
+            No expedition in progress on this world.
+          </p>
+        )}
 
         {!current && (
           <button className="survey-btn survey-btn-primary" disabled={loading} onClick={handleLaunch}>

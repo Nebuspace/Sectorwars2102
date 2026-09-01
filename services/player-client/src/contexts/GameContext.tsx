@@ -67,6 +67,8 @@ export interface Sector {
   nebula_type?: string;
   quantum_field_strength?: number;
   color_hex?: string;
+  /** In-progress salvage breaks visible in-sector (LEG-333). */
+  salvage_breaks?: Array<{ ship_id: string; completes_at?: string; eta_hours?: number }>;
 }
 
 export interface Planet {
@@ -512,6 +514,112 @@ interface GameContextType {
 // other usage still goes through useGame() below.
 export const GameContext = createContext<GameContextType | undefined>(undefined);
 
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+function apiErrorPayload(err: unknown): { detail?: unknown; message?: unknown } | undefined {
+  if (!err || typeof err !== 'object') return undefined;
+  const payload = (err as { data?: unknown; response?: { data?: unknown } }).data
+    ?? (err as { response?: { data?: unknown } }).response?.data;
+  if (payload && typeof payload === 'object') {
+    return payload as { detail?: unknown; message?: unknown };
+  }
+  return undefined;
+}
+
+function formatGameContextTransportError(err: unknown, fallback: string): string {
+  if (err instanceof TypeError) return fallback;
+  const payload = apiErrorPayload(err);
+  const detail = payload?.detail;
+  if (typeof detail === 'string' && detail && !isNetworkCollapseMessage(detail)) {
+    return detail;
+  }
+  const payloadMessage = payload?.message;
+  if (typeof payloadMessage === 'string' && payloadMessage && !isNetworkCollapseMessage(payloadMessage)) {
+    return payloadMessage;
+  }
+  if (err instanceof Error && err.message) {
+    if (isNetworkCollapseMessage(err.message)) return fallback;
+    return err.message;
+  }
+  return fallback;
+}
+
+/** Exported for TypeError/network honesty Vitest (LEG-3265). */
+export function formatSetActiveShipError(err: unknown): string {
+  if (err instanceof TypeError) return 'Failed to set active ship';
+  return 'Failed to set active ship';
+}
+
+/** Exported for TypeError/network honesty Vitest (LEG-3265). */
+export function formatGetAvailableMovesError(err: unknown): string {
+  if (err instanceof TypeError) return 'Failed to get available moves';
+  return 'Failed to get available moves';
+}
+
+const isPlanetaryNetworkCollapse = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+/** Exported for planetary action TypeError/network honesty Vitest (LEG-3320). */
+export function formatPlanetaryActionError(err: unknown, fallback: string): string {
+  if (err instanceof TypeError) return fallback;
+  const any = err as {
+    response?: { data?: { detail?: string; message?: string } };
+    message?: string;
+  };
+  const detail = any.response?.data?.detail ?? any.response?.data?.message;
+  if (typeof detail === 'string' && detail.trim() && !isPlanetaryNetworkCollapse(detail)) {
+    return detail;
+  }
+  if (err instanceof Error && err.message) {
+    if (isPlanetaryNetworkCollapse(err.message)) return fallback;
+    return err.message;
+  }
+  return fallback;
+}
+
+/** Exported for TypeError/network honesty Vitest (LEG-3324). */
+export function formatRefreshPlayerStateError(err: unknown): string {
+  return formatGameContextTransportError(err, 'Failed to load player state');
+}
+
+/** Exported for TypeError/network honesty Vitest (LEG-3324). */
+export function formatMoveToSectorError(err: unknown): string {
+  return formatGameContextTransportError(err, 'Failed to move to sector');
+}
+
+/** Exported for TypeError/network honesty Vitest (LEG-3324). */
+export function formatScanLatentTunnelsError(err: unknown): string {
+  return formatGameContextTransportError(err, 'Failed to scan for latent tunnels');
+}
+
+/** Exported for TypeError/network honesty Vitest (LEG-3324). */
+export function formatDockAtStationError(err: unknown): string {
+  return formatGameContextTransportError(err, 'Failed to dock at port');
+}
+
+/** Exported for TypeError/network honesty Vitest (LEG-3324). */
+export function formatBuyResourceError(err: unknown): string {
+  return formatGameContextTransportError(err, 'Failed to buy resource');
+}
+
+/** Exported for TypeError/network honesty Vitest (LEG-3324). */
+export function formatSellResourceError(err: unknown): string {
+  return formatGameContextTransportError(err, 'Failed to sell resource');
+}
+
 export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const { user, isAuthenticated } = useAuth();
   const [isLoading, setIsLoading] = useState(false);
@@ -709,7 +817,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       } else if (payload?.detail) {
         setError(`Server error: ${payload.detail}`);
       } else if (error.message) {
-        setError(`Network error: ${error.message}`);
+        setError(formatRefreshPlayerStateError(error));
       } else {
         setError('Failed to load player state');
       }
@@ -767,7 +875,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       await loadShips();
     } catch (error) {
       console.error('Error setting active ship:', error);
-      setError('Failed to set active ship');
+      setError(formatSetActiveShipError(error));
     }
   };
   
@@ -794,7 +902,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       const msg =
         error?.code === 'ECONNABORTED'
           ? 'Move timed out — server busy. Try again.'
-          : (payload?.detail || payload?.message || error.message || 'Failed to move to sector');
+          : formatMoveToSectorError(error);
       setError(msg);
       throw error;
     }
@@ -811,7 +919,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       setAvailableMoves(data);
     } catch (error) {
       console.error('Error getting available moves:', error);
-      setError('Failed to get available moves');
+      setError(formatGetAvailableMovesError(error));
     }
   };
 
@@ -836,7 +944,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     } catch (error: any) {
       console.error('Error scanning for latent tunnels:', error);
       const payload = error.data ?? error.response?.data;
-      setError(payload?.detail || payload?.message || error.message || 'Failed to scan for latent tunnels');
+      setError(formatScanLatentTunnelsError(error));
       throw error;
     }
   };
@@ -903,7 +1011,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         return { full: true, ...payload };
       }
       console.error('Error docking at port:', error);
-      setError(payload?.message || error.message || 'Failed to dock at port');
+      setError(formatDockAtStationError(error));
       throw error;
     }
   };
@@ -1023,7 +1131,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       return data;
     } catch (error: any) {
       console.error('Error buying resource:', error);
-      setError((error.data ?? error.response?.data)?.message || error.message || 'Failed to buy resource');
+      setError(formatBuyResourceError(error));
       throw error;
     }
   };
@@ -1044,7 +1152,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       return data;
     } catch (error: any) {
       console.error('Error selling resource:', error);
-      setError((error.data ?? error.response?.data)?.message || error.message || 'Failed to sell resource');
+      setError(formatSellResourceError(error));
       throw error;
     }
   };
@@ -1075,7 +1183,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       // only unexpected failures should raise the global system alert.
       const status = error.response?.status;
       if (status !== 400 && status !== 403) {
-        setError(error.response?.data?.detail || error.response?.data?.message || 'Failed to claim planet');
+        setError(formatPlanetaryActionError(error, 'Failed to claim planet'));
       }
       throw error;
     }
@@ -1094,7 +1202,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       return data;
     } catch (error: any) {
       console.error('Error landing on planet:', error);
-      setError(error.response?.data?.detail || error.response?.data?.message || 'Failed to land on planet');
+      setError(formatPlanetaryActionError(error, 'Failed to land on planet'));
       throw error;
     }
   };
@@ -1111,7 +1219,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       return data;
     } catch (error: any) {
       console.error('Error leaving planet:', error);
-      setError(error.response?.data?.detail || error.response?.data?.message || 'Failed to leave planet');
+      setError(formatPlanetaryActionError(error, 'Failed to leave planet'));
       throw error;
     }
   };
@@ -1128,7 +1236,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       return data;
     } catch (error: any) {
       console.error('Error renaming planet:', error);
-      setError(error.response?.data?.detail || error.response?.data?.message || 'Failed to rename planet');
+      setError(formatPlanetaryActionError(error, 'Failed to rename planet'));
       throw error;
     }
   };
@@ -1185,7 +1293,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       return data;
     } catch (error: any) {
       console.error('Error updating planet defenses:', error);
-      setError(error.response?.data?.detail || 'Failed to update defenses');
+      setError(formatPlanetaryActionError(error, 'Failed to update defenses'));
       throw error;
     }
   };
@@ -1204,7 +1312,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       return data;
     } catch (error: any) {
       console.error('Error upgrading building:', error);
-      setError(error.response?.data?.detail || 'Failed to upgrade building');
+      setError(formatPlanetaryActionError(error, 'Failed to upgrade building'));
       throw error;
     }
   };
@@ -1229,7 +1337,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       // apiRequest attaches `.status` (axios `.response.status` for raw calls).
       const status = error.status ?? error.response?.status;
       if (status !== 400 && status !== 403) {
-        setError(error.response?.data?.detail || error.message || 'Failed to transfer colonists');
+        setError(formatPlanetaryActionError(error, 'Failed to transfer colonists'));
       }
       throw error;
     }

@@ -20,9 +20,12 @@ import PlanetPortPair from '../tactical/PlanetPortPair';
 import PlanetaryLanderInstallCta from '../planetary/PlanetaryLanderInstallCta';
 import NavigationMap from '../tactical/NavigationMap';
 import { chartToNavSectors } from '../tactical/navChartTransform';
+import { useNavThreatRollup } from '../tactical/useNavThreatRollup';
+import { NAV_THREAT_BAND_CLASS } from '../tactical/navThreat';
+import { formatColonyGrowthPerDay, formatColonyPhase } from '../planetary/colonyVitals';
 import Galaxy3DRenderer from '../galaxy/Galaxy3DRenderer';
 import AutopilotHud from '../hud/AutopilotHud';
-import QuantumDriveConsole from '../quantum/QuantumDriveConsole';
+import QuantumDriveConsole, { formatQuantumDriveApiError } from '../quantum/QuantumDriveConsole';
 import GatewrightPanel from '../gatewright/GatewrightPanel';
 import TacticalMonitor from '../tactical/TacticalMonitor';
 import SolarSalvagePage from '../tactical/pages/SolarSalvagePage';
@@ -33,6 +36,7 @@ import DeckPageTabs from '../cockpit/DeckPageTabs';
 import type { ProductionLine } from '../cockpit/ProductionPanel';
 import type { PerColonistRates, ProdRole } from '../cockpit/CoupledColonistSliders';
 import SafeVaultPanel from '../cockpit/SafeVaultPanel';
+import StationSecurityBanner from '../station/StationSecurityBanner';
 import BankPanel, { isStarportPrimeStation, shipCargoFree } from '../cockpit/BankPanel';
 import { miningAPI, navAPI, playerAPI, type NavChartResponse, sectorAPI, type SectorWreck } from '../../services/api';
 import NearestAmRefineryOverlay from '../mining/NearestAmRefineryOverlay';
@@ -194,6 +198,13 @@ interface QuantumRefineryStripProps {
   onRefine: () => Promise<{ quantum_charges: number; quantum_shards: number }>;
 }
 
+const QUANTUM_REFINERY_FAILED_FALLBACK = 'Charge refinement failed';
+
+/** Exported for TypeError/network honesty Vitest (LEG-3315). */
+export function formatQuantumRefineryError(err: unknown): string {
+  return formatQuantumDriveApiError(err, QUANTUM_REFINERY_FAILED_FALLBACK);
+}
+
 const QuantumRefineryStrip: React.FC<QuantumRefineryStripProps> = ({ status, onRefine }) => {
   const [isRefining, setIsRefining] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -211,8 +222,8 @@ const QuantumRefineryStrip: React.FC<QuantumRefineryStripProps> = ({ status, onR
     try {
       const result = await onRefine();
       setNotice(`Charge refined — ${result.quantum_charges} loaded, ${result.quantum_shards} shards remain.`);
-    } catch (e: any) {
-      setError(e?.response?.data?.detail || 'Charge refinement failed');
+    } catch (e: unknown) {
+      setError(formatQuantumRefineryError(e));
     } finally {
       setIsRefining(false);
     }
@@ -302,6 +313,50 @@ interface TerraformStatus {
 // Terraforming becomes unavailable once habitability reaches this score
 // (server enforces the same MIN_TARGET; mirrored here for the inline reason).
 const TERRAFORM_MAX_HABITABILITY = 90;
+
+const TERRAFORMING_START_FAILED_FALLBACK = 'Terraforming start failed';
+
+/** Exported for TypeError/network honesty Vitest (LEG-3272). */
+export function formatTerraformingStartError(err: unknown): string {
+  if (err instanceof TypeError) return TERRAFORMING_START_FAILED_FALLBACK;
+  if (err instanceof Error && err.message) return err.message;
+  if (err && typeof err === 'object') {
+    const msg = (err as { message?: unknown }).message;
+    if (typeof msg === 'string' && msg) return msg;
+  }
+  return TERRAFORMING_START_FAILED_FALLBACK;
+}
+
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isGameDashboardNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
+};
+
+/**
+ * Planetary-ops catch paths (opsNotice, transferNotice, allocError) — prefer
+ * structured axios detail; densify TypeError / Failed to fetch to fallback.
+ * Exported for TypeError densify Vitest (LEG-3331).
+ */
+export function formatGameDashboardOpsError(err: unknown, fallback: string): string {
+  const e = err as {
+    response?: { data?: { detail?: unknown; message?: unknown } };
+    message?: string;
+  };
+  const raw = e?.response?.data?.detail ?? e?.response?.data?.message;
+  if (typeof raw === 'string' && raw.trim()) return raw;
+  if (err instanceof TypeError) return fallback;
+  if (!e?.response && typeof e?.message === 'string') {
+    if (isGameDashboardNetworkCollapseMessage(e.message)) return fallback;
+    if (e.message.trim()) return e.message;
+  }
+  return fallback;
+}
 
 // Render an absolute estimatedCompletion (ISO) as a compact, human countdown
 // ("~3h 20m left" / "~12m left"). Falls back to null when the field is absent
@@ -395,8 +450,9 @@ const TerraformHeaderPanel: React.FC<{
       // START debited the ladder credit cost server-side; re-pull player
       // state so the cockpit credit readout reflects the spend immediately.
       try { await refreshPlayerState(); } catch { /* non-fatal */ }
-    } catch (e: any) {
-      setError(e?.message || 'Terraforming start failed');
+    } catch (e: unknown) {
+      // TypeError/network → stable fallback (LEG-3272); keep server Error.detail.
+      setError(formatTerraformingStartError(e));
     } finally {
       setConfirming(false);
       setBusy(false);
@@ -947,6 +1003,14 @@ const GameDashboardInner: React.FC = () => {
   // (Galaxy3DRenderer). Independent of navMode: only meaningful while
   // navMode==='chart' -- WO-UI2-CHART-MONITOR.
   const [navChartMode, setNavChartMode] = useState<'2d' | '3d'>('2d');
+  const navThreatRollup = useNavThreatRollup();
+  const navThreatBandBySector = useMemo(() => {
+    const out: Record<number, string> = {};
+    for (const [id, row] of Object.entries(navThreatRollup.map)) {
+      out[Number(id)] = row.band;
+    }
+    return out;
+  }, [navThreatRollup.map]);
 
   // SOLAR SYSTEM monitor mode (WO-UI2-DECK-RECONCILE, §05: [SYSTEM ·
   // SALVAGE · SIGNALS]; 4th page HAZARD added WO-UI-MAX-BATCH-1 human #21):
@@ -1581,11 +1645,10 @@ const GameDashboardInner: React.FC = () => {
         message: `Shield generator upgrade to L${gen?.toLevel ?? '?'}${gen?.name ? ` (${gen.name})` : ''} started — ${Number(result?.creditsCost || 0).toLocaleString()} credits spent, ready in ${hrs}h.`
       });
       setOpsRefresh(n => n + 1);
-    } catch (error: any) {
-      // Surface the server's 400 detail verbatim (e.g. exact credit shortfall)
+    } catch (error: unknown) {
       setOpsNotice({
         type: 'error',
-        message: error?.response?.data?.detail || 'Shield generator upgrade failed'
+        message: formatGameDashboardOpsError(error, 'Shield generator upgrade failed'),
       });
     } finally {
       setConfirmUpgrade(null);
@@ -1600,12 +1663,10 @@ const GameDashboardInner: React.FC = () => {
       const result = await upgradeCitadel(landedPlanet.id);
       setOpsNotice({ type: 'success', message: result?.message || 'Citadel upgrade started.' });
       setOpsRefresh(n => n + 1);
-    } catch (error: any) {
-      // 400 detail carries the real rule (defense prerequisites, credit or
-      // resource shortfalls, upgrade already running) — show it verbatim
+    } catch (error: unknown) {
       setOpsNotice({
         type: 'error',
-        message: error?.response?.data?.detail || 'Citadel upgrade failed'
+        message: formatGameDashboardOpsError(error, 'Citadel upgrade failed'),
       });
     } finally {
       setConfirmUpgrade(null);
@@ -1620,8 +1681,8 @@ const GameDashboardInner: React.FC = () => {
       const result = await cancelCitadelUpgrade(landedPlanet.id);
       setOpsNotice({ type: 'success', message: result?.message || 'Citadel upgrade cancelled.' });
       setOpsRefresh(n => n + 1);
-    } catch (error: any) {
-      setOpsNotice({ type: 'error', message: error?.response?.data?.detail || 'Cancel failed' });
+    } catch (error: unknown) {
+      setOpsNotice({ type: 'error', message: formatGameDashboardOpsError(error, 'Cancel failed') });
     } finally {
       setCancelArmed(false);
       setCancelBusy(false);
@@ -1635,8 +1696,8 @@ const GameDashboardInner: React.FC = () => {
       const result = await buildDefenseBuilding(landedPlanet.id, buildingType);
       setOpsNotice({ type: 'success', message: result?.message || 'Defense building constructed.' });
       setOpsRefresh(n => n + 1);
-    } catch (error: any) {
-      setOpsNotice({ type: 'error', message: error?.response?.data?.detail || 'Construction failed' });
+    } catch (error: unknown) {
+      setOpsNotice({ type: 'error', message: formatGameDashboardOpsError(error, 'Construction failed') });
     } finally {
       setBuildingBusy(null);
     }
@@ -1680,11 +1741,10 @@ const GameDashboardInner: React.FC = () => {
       setOpsNotice({ type: 'success', message: result?.message || 'Vault transaction complete.' });
       // depositToSafe/withdrawFromSafe already refreshPlayerState() internally
       // (the wallet-bounded credit max recomputes off that) — no extra fetch here.
-    } catch (error: any) {
-      // Show the server's gating message verbatim (capacity, balance, level)
+    } catch (error: unknown) {
       setOpsNotice({
         type: 'error',
-        message: error?.response?.data?.detail || 'Vault transaction failed'
+        message: formatGameDashboardOpsError(error, 'Vault transaction failed'),
       });
     } finally {
       setSafeBusy(false);
@@ -1715,8 +1775,11 @@ const GameDashboardInner: React.FC = () => {
           ? 'Auto-deposit enabled — production will be swept into the safe.'
           : 'Auto-deposit disabled.',
       });
-    } catch (error: any) {
-      setOpsNotice({ type: 'error', message: error?.response?.data?.detail || 'Could not change auto-deposit' });
+    } catch (error: unknown) {
+      setOpsNotice({
+        type: 'error',
+        message: formatGameDashboardOpsError(error, 'Could not change auto-deposit'),
+      });
     } finally {
       setAutoDepositBusy(false);
     }
@@ -1748,8 +1811,11 @@ const GameDashboardInner: React.FC = () => {
       const detail = await getPlanetDetails(landedPlanet.id).catch(() => null);
       if (detail) setLandedPlanetDetail(detail);
       setOpsNotice({ type: 'success', message: result?.message || 'Vault transaction complete.' });
-    } catch (error: any) {
-      setOpsNotice({ type: 'error', message: error?.response?.data?.detail || 'Vault transaction failed' });
+    } catch (error: unknown) {
+      setOpsNotice({
+        type: 'error',
+        message: formatGameDashboardOpsError(error, 'Vault transaction failed'),
+      });
     } finally {
       setCommodityBusy(null);
     }
@@ -1767,10 +1833,6 @@ const GameDashboardInner: React.FC = () => {
 
   // Stockpile → ship cargo (LEG-546). Distinct from Store→Safe. GS enforces
   // landed-on-planet, owner/team ACL, cargo space, and teammate tax skim.
-  const apiErrorDetail = (error: any, fallback: string): string => {
-    const detail = error?.response?.data?.detail ?? error?.message;
-    return typeof detail === 'string' && detail.trim() ? detail : fallback;
-  };
   const withdrawStockpileByGsKey = async (
     commodity: 'fuel_ore' | 'organics' | 'equipment',
     amount: number,
@@ -1784,8 +1846,11 @@ const GameDashboardInner: React.FC = () => {
       void refreshPlayerState();
       setOpsNotice({ type: 'success', message: result?.message || 'Stockpile loaded to cargo.' });
       setOpsRefresh((n) => n + 1);
-    } catch (error: any) {
-      setOpsNotice({ type: 'error', message: apiErrorDetail(error, 'Stockpile withdraw failed') });
+    } catch (error: unknown) {
+      setOpsNotice({
+        type: 'error',
+        message: formatGameDashboardOpsError(error, 'Stockpile withdraw failed'),
+      });
     } finally {
       setStockpileWithdrawBusy(null);
     }
@@ -1884,10 +1949,10 @@ const GameDashboardInner: React.FC = () => {
       // above doesn't cover). (WO-COCKPIT-UX A — refresh on own mutation.)
       setOpsRefresh((n) => n + 1);
       setTransferModal(null);
-    } catch (error: any) {
+    } catch (error: unknown) {
       setTransferNotice({
         type: 'error',
-        message: error?.response?.data?.detail || error?.response?.data?.message || 'Colonist transfer failed'
+        message: formatGameDashboardOpsError(error, 'Colonist transfer failed'),
       });
       setTransferModal(null);
     } finally {
@@ -2038,9 +2103,9 @@ const GameDashboardInner: React.FC = () => {
         // +N/day readouts come from the server's confirmed rates
         if (result?.productionRates) setAllocRates(result.productionRates);
         setAllocError(null);
-      } catch (error: any) {
+      } catch (error: unknown) {
         setAllocations(confirmedAllocations.current);
-        setAllocError(error?.response?.data?.detail || 'Allocation update failed');
+        setAllocError(formatGameDashboardOpsError(error, 'Allocation update failed'));
       } finally {
         setAllocSyncing(false);
       }
@@ -2299,12 +2364,11 @@ const GameDashboardInner: React.FC = () => {
       // Refresh the sector data to show the new name
       await exploreCurrentLocation();
       setOpsNotice({ type: 'success', message: `Planet registry updated — now designated "${newName}".` });
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Error renaming planet:', error);
-      // Inline notice, never a native alert (native dialogs freeze automation)
       setOpsNotice({
         type: 'error',
-        message: error?.response?.data?.detail || 'Failed to rename planet. Please try again.'
+        message: formatGameDashboardOpsError(error, 'Failed to rename planet. Please try again.'),
       });
     }
   };
@@ -2877,6 +2941,7 @@ const GameDashboardInner: React.FC = () => {
               <span className="station-face-bay-band-name" role="heading" aria-level={2}>
                 {isDockedAtSpaceDock ? '🚀' : '🏪'} DOCKED — {(dockedStation?.name || (isDockedAtSpaceDock ? 'SpaceDock' : 'Trading Station')).toUpperCase()}
               </span>
+              <StationSecurityBanner stationId={dockedStation?.id ?? playerState?.current_port_id} />
               <HudChip id="baystatus" className="top-right" pill={<>⚓ CLAMPED</>}>
                 <div className="hud-label">BAY STATUS</div>
                 <div className="hud-value hud-chip-name hud-chip-ok">CLAMPS ENGAGED</div>
@@ -3278,6 +3343,12 @@ const GameDashboardInner: React.FC = () => {
                           <span className="pvs-stat type">{currentPlanet?.type?.toUpperCase().replace('_', ' ') || 'UNKNOWN'}</span>
                           <span className="pvs-stat" title="Planet habitability"><span className="pvs-label">Habitability</span><span className="pvs-val">{habitability}%</span></span>
                           <span className="pvs-stat" title="Total residents living on this planet"><span className="pvs-label">Population</span><span className="pvs-val green">{population.toLocaleString()}</span></span>
+                          {isLandedPlanetMine && citadelInfo && (
+                            <span className="pvs-stat" title="Colony lifecycle phase (citadel level)"><span className="pvs-label">Phase</span><span className="pvs-val">{formatColonyPhase(citadelInfo.citadel_level)}</span></span>
+                          )}
+                          {isLandedPlanetMine && landedPlanetDetail?.productionRates && (
+                            <span className="pvs-stat" title="Daily colonist growth from production rates"><span className="pvs-label">Growth</span><span className="pvs-val green">{formatColonyGrowthPerDay(landedPlanetDetail.productionRates.colonists)}</span></span>
+                          )}
                           {isLandedPlanetMine && citadelInfo && (
                             <span className="pvs-stat" title="Protected credits in this colony's citadel safe"><span className="pvs-label">Safe</span><span className="pvs-val">{safeCredits.toLocaleString()} cr{safeCapacity > 0 ? ` / ${safeCapacity.toLocaleString()}` : ''}</span></span>
                           )}
@@ -3697,12 +3768,32 @@ const GameDashboardInner: React.FC = () => {
                       {/* Adjacent exits — 1 click = 1 hop (§05 COURSE). */}
                       <div className="nav-course-section">
                         <div className="nav-course-section-title">ADJACENT EXITS</div>
+                        {navThreatRollup.loading ? (
+                          <div className="empty-state" role="status">Loading threat bands…</div>
+                        ) : navThreatRollup.error ? (
+                          <div className="nav-threat-error" role="alert">{navThreatRollup.error}</div>
+                        ) : null}
+                        {currentSector?.sector_id != null && navThreatBandBySector[currentSector.sector_id] && (
+                          <div className="nav-course-threat-current" role="status">
+                            HERE —{' '}
+                            <span className={NAV_THREAT_BAND_CLASS[navThreatBandBySector[currentSector.sector_id] as keyof typeof NAV_THREAT_BAND_CLASS]}>
+                              {navThreatBandBySector[currentSector.sector_id]}
+                            </span>
+                          </div>
+                        )}
                         {adjacentExits.length === 0 ? (
                           <div className="empty-state">No charted exits</div>
                         ) : (
                           adjacentExits.map((exit) => (
                             <div key={exit.sector_id} className="nav-exit-row">
                               <span className="nav-exit-name">→ {exit.name}</span>
+                              {navThreatBandBySector[exit.sector_id] && (
+                                <span
+                                  className={`nav-exit-threat ${NAV_THREAT_BAND_CLASS[navThreatBandBySector[exit.sector_id] as keyof typeof NAV_THREAT_BAND_CLASS]}`}
+                                >
+                                  {navThreatBandBySector[exit.sector_id]}
+                                </span>
+                              )}
                               <span className="nav-exit-cost"><TurnsIcon /> {exit.turn_cost}</span>
                               <button
                                 type="button"
@@ -3866,6 +3957,7 @@ const GameDashboardInner: React.FC = () => {
                           course={autopilot.course?.hops ?? null}
                           currentHopIndex={autopilot.currentHopIndex}
                           oneWayEdges={oneWayEdges}
+                          threatBands={navThreatBandBySector}
                         />
                       )}
                     </>

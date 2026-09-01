@@ -61,6 +61,20 @@ describe('MultiAccountReview (LEG-1098 honesty banner)', () => {
       expect(document.body.textContent).toMatch(/rate limit/i);
     });
   });
+
+  it('surfaces honest fallback on cluster load TypeError/network collapse (LEG-3007)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<MultiAccountReview />);
+
+    await waitFor(() => {
+      expect(document.body.textContent).toMatch(/Failed to load clusters/i);
+    });
+
+    const text = document.body.textContent ?? '';
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
 });
 
 describe('MultiAccountReview scope errors (LEG-968)', () => {
@@ -236,5 +250,26 @@ describe('MultiAccountReview decide POST (LEG-2765)', () => {
     const decideError = screen.getByRole('alert');
     expect(decideError.textContent).toMatch(/rate limit/i);
     expect(decideError.textContent).not.toMatch(/^Failed to record decision$/);
+  });
+});
+
+describe('MultiAccountReview TypeError densify (LEG-3068)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+  });
+
+  it('surfaces honest fallback on clusters load network collapse', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<MultiAccountReview />);
+
+    await waitFor(() => {
+      expect(document.body.textContent).toMatch(/Failed to load clusters/i);
+    });
+
+    const text = document.body.textContent ?? '';
+    expect(text).toMatch(/Failed to load clusters/i);
+    expect(text).not.toMatch(/TypeError/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
   });
 });

@@ -42,13 +42,27 @@ const ROLE_META: Array<{ key: RoleKey; icon: string; label: string; cssClass: st
   { key: 'equipment', icon: resourceIcon('equipment'), label: 'Equipment Production', cssClass: 'equipment', color: resourceColor('equipment') },
 ];
 
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
+};
+
 /** Surface gameserver 400 detail on colonist allocate refusal (ownership / overflow). */
 export function formatColonistAllocateError(err: unknown): string {
   const message = err instanceof Error ? err.message : undefined;
+  // Network collapse (fetch TypeError / axios transport) is not gameserver copy — use the fallback.
   const hasServerDetail =
+    !(err instanceof TypeError) &&
     typeof message === 'string' &&
     message.trim().length > 0 &&
-    !/^API Error: \d+$/.test(message.trim());
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNetworkCollapseMessage(message);
 
   if (hasServerDetail) return message!;
   return 'Failed to update allocations';

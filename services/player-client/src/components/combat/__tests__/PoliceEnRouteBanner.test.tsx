@@ -156,4 +156,14 @@ describe('PoliceEnRouteBanner', () => {
     expect(container.querySelector('.police-en-route-banner')).not.toBeNull();
     expect(container.textContent).toContain('3 turns to arrival');
   });
+
+  it('load TypeError yields empty banner without Failed to fetch / TypeError in DOM (LEG-3258)', async () => {
+    listMine.mockRejectedValue(new TypeError('Failed to fetch'));
+    await render();
+
+    expect(container.querySelector('.police-en-route-banner')).toBeNull();
+    expect(container.textContent ?? '').not.toMatch(/Failed to fetch/i);
+    expect(container.textContent ?? '').not.toMatch(/TypeError/i);
+    expect(listMine).toHaveBeenCalled();
+  });
 });

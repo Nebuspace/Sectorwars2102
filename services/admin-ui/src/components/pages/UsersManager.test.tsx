@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import UsersManager from './UsersManager';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 
 vi.mock('../../utils/auth', () => ({
   api: {
@@ -177,6 +178,26 @@ describe('UsersManager mutation errors (LEG-2623)', () => {
     expect(screen.queryByText('Failed to update user')).toBeNull();
   });
 
+  it('surfaces honest fallback on update PUT TypeError/network collapse (LEG-2970)', async () => {
+    const user = userEvent.setup();
+    mockAdmin.users = [samplePlayer];
+    vi.mocked(api.put).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    renderUsers();
+    await waitFor(() => expect(screen.getByText('testplayer')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: /^Edit$/i }));
+    await user.click(screen.getByRole('button', { name: /Save Changes/i }));
+
+    await waitFor(() => {
+      expect(api.put).toHaveBeenCalled();
+    });
+    const text = screen.getByText(/Failed to update user/i).textContent ?? '';
+    expect(text).toMatch(/Failed to update user/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
   it('surfaces formatAdminApiError on delete DELETE 403', async () => {
     const user = userEvent.setup();
     mockAdmin.users = [samplePlayer];
@@ -269,5 +290,107 @@ describe('UsersManager mutation errors (LEG-2623)', () => {
     });
     expect(screen.getByText(/rate limit/i)).toBeTruthy();
     expect(screen.queryByText('Failed to reset password')).toBeNull();
+  });
+});
+
+describe('UsersManager axios Network Error densify (LEG-3374)', () => {
+  beforeEach(() => {
+    mockAdmin.users = [];
+    mockAdmin.isLoading = false;
+    mockAdmin.error = null;
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    mockAdmin.loadUsers.mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('collapses axios-shaped Network Error on load to honest fallback', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
+    mockAdmin.loadUsers.mockImplementation(async () => {
+      try {
+        await api.get('/api/v1/admin/users');
+      } catch (err) {
+        mockAdmin.error = formatAdminApiError(err, {
+          fallback: 'Failed to load user accounts',
+          scopeHint: 'admin user management scopes required',
+        });
+      }
+    });
+
+    const { rerender } = renderUsers();
+    await waitFor(() => expect(mockAdmin.loadUsers).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(api.get).toHaveBeenCalledWith('/api/v1/admin/users'),
+    );
+    rerender(
+      <MemoryRouter>
+        <UsersManager />
+      </MemoryRouter>,
+    );
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to load user accounts/i)).toBeTruthy();
+    });
+    const text = screen.getByText(/Failed to load user accounts/i).textContent ?? '';
+    expect(text).not.toMatch(/Network Error/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('collapses axios-shaped Network Error on create POST to scope-aware fallback', async () => {
+    vi.mocked(api.post).mockRejectedValue(new Error('Network Error'));
+
+    renderUsers();
+    fireEvent.click(screen.getByRole('button', { name: /^Create User$/i }));
+    fireEvent.change(screen.getByLabelText(/^Username$/i), {
+      target: { value: 'newplayer' },
+    });
+    const submit = screen.getByRole('dialog').querySelector('button[type="submit"]');
+    expect(submit).toBeTruthy();
+    fireEvent.click(submit!);
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to create user/i)).toBeTruthy();
+    });
+    const text = screen.getByText(/Failed to create user/i).textContent ?? '';
+    expect(text).not.toMatch(/Network Error/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('preserves real 403 detail strings on create (LEG-3374 regression guard)', async () => {
+    vi.mocked(api.post).mockRejectedValue(
+      axiosError(403, 'Missing scope admin.users.manage'),
+    );
+
+    renderUsers();
+    fireEvent.click(screen.getByRole('button', { name: /^Create User$/i }));
+    fireEvent.change(screen.getByLabelText(/^Username$/i), {
+      target: { value: 'newplayer' },
+    });
+    const submit = screen.getByRole('dialog').querySelector('button[type="submit"]');
+    fireEvent.click(submit!);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Missing scope admin\.users\.manage/i)).toBeTruthy();
+    });
+    expect(screen.queryByText(/Failed to create user/i)).toBeNull();
+  });
+
+  it('preserves real 429 rate-limit copy on create (LEG-3374 regression guard)', async () => {
+    vi.mocked(api.post).mockRejectedValue(axiosError(429));
+
+    renderUsers();
+    fireEvent.click(screen.getByRole('button', { name: /^Create User$/i }));
+    fireEvent.change(screen.getByLabelText(/^Username$/i), {
+      target: { value: 'newplayer' },
+    });
+    const submit = screen.getByRole('dialog').querySelector('button[type="submit"]');
+    fireEvent.click(submit!);
+
+    await waitFor(() => {
+      expect(screen.getByText(/rate limit/i)).toBeTruthy();
+    });
+    expect(screen.queryByText(/Failed to create user/i)).toBeNull();
   });
 });

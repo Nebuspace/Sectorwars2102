@@ -112,7 +112,19 @@ const STATION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-
 // straight through; translate the bare-status fallback into an honest,
 // codebase-accurate per-status message so a bare 402/403/404/409 is never
 // shown as a raw number.
-const friendlyError = (msg: string, fallback: string): string => {
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
+};
+
+/** Exported for TypeError/network honesty Vitest (LEG-3262). */
+export const friendlyError = (msg: string, fallback: string): string => {
+  if (isNetworkCollapseMessage(msg)) return fallback;
   const bare = /^API Error: (\d+)$/.exec(msg);
   if (bare) {
     switch (bare[1]) {
