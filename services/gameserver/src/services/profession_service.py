@@ -83,6 +83,30 @@ def profession_counts(db: Session, planet_id: UUID) -> Dict[ProfessionType, int]
     return out
 
 
+def _effective_active_count(row: ColonistProfession) -> int:
+    """NULL active_count = legacy implicit (all trained specialists active)."""
+    trained = int(row.count or 0)
+    if row.active_count is None:
+        return trained
+    return int(row.active_count)
+
+
+def active_profession_counts(db: Session, planet_id: UUID) -> Dict[ProfessionType, int]:
+    rows = (
+        db.query(ColonistProfession)
+        .filter(ColonistProfession.planet_id == planet_id)
+        .all()
+    )
+    out: Dict[ProfessionType, int] = {}
+    for row in rows:
+        try:
+            prof = ProfessionType(row.profession)
+        except ValueError:
+            continue
+        out[prof] = _effective_active_count(row)
+    return out
+
+
 def production_multipliers(counts: Dict[ProfessionType, int]) -> Dict[str, float]:
     """Stack multiplicative production/growth bonuses for planetary_service."""
     fuel = 1.0
@@ -423,6 +447,7 @@ class ProfessionService:
         self._assert_owner(planet, player_id)
         self.advance_queue(planet)
         counts = profession_counts(self.db, planet.id)
+        active_counts = active_profession_counts(self.db, planet.id)
         queue_rows = (
             self.db.query(ProfessionTrainingQueue)
             .filter(
@@ -441,6 +466,9 @@ class ProfessionService:
             "training_costs_per_100": training_costs_per_100_payload(),
             "professions": {
                 prof.value: counts.get(prof, 0) for prof in ProfessionType
+            },
+            "active_professions": {
+                prof.value: active_counts.get(prof, 0) for prof in ProfessionType
             },
             "training_queue": [
                 {
@@ -512,4 +540,59 @@ class ProfessionService:
             "training_days": days,
             "completes_at": completes_at.isoformat(),
             "message": "Training queued; provisional per-100 costs charged on queue.",
+        }
+
+    def assign_active(
+        self,
+        planet: Planet,
+        player_id: UUID,
+        profession: str,
+        active_count: int,
+    ) -> Dict[str, Any]:
+        if active_count < 0:
+            raise ValueError("invalid_active_count")
+        self._assert_owner(planet, player_id)
+        prof = _parse_profession(profession)
+        self.advance_queue(planet)
+        agg = (
+            self.db.query(ColonistProfession)
+            .filter(
+                ColonistProfession.planet_id == planet.id,
+                ColonistProfession.profession == prof.value,
+            )
+            .first()
+        )
+        trained = int(agg.count or 0) if agg is not None else 0
+        if active_count > trained:
+            raise ValueError("active_count_exceeds_trained")
+        previous = agg.active_count if agg is not None else None
+        if agg is None:
+            if active_count == 0:
+                return {
+                    "success": True,
+                    "changed": False,
+                    "profession": prof.value,
+                    "active_count": 0,
+                    "trained_count": 0,
+                    "message": "No trained specialists; active assignment unchanged.",
+                }
+            raise ValueError("active_count_exceeds_trained")
+        if previous == active_count:
+            return {
+                "success": True,
+                "changed": False,
+                "profession": prof.value,
+                "active_count": active_count,
+                "trained_count": trained,
+                "message": "Active assignment unchanged (idempotent).",
+            }
+        agg.active_count = active_count
+        self.db.flush()
+        return {
+            "success": True,
+            "changed": True,
+            "profession": prof.value,
+            "active_count": active_count,
+            "trained_count": trained,
+            "message": "Active profession assignment updated.",
         }
