@@ -152,6 +152,47 @@ describe('TranslationManagement scope errors (LEG-925)', () => {
   });
 });
 
+describe('TranslationManagement axios Network Error densify (LEG-3540)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    toastError.mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('collapses axios-shaped Network Error on languages load', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
+
+    render(<TranslationManagement />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to load languages/i)).toBeTruthy();
+    });
+
+    const text = screen.getByText(/Failed to load languages/i).textContent ?? '';
+    expect(text).not.toBe('Network Error');
+    expect(text).not.toContain('Network Error');
+  });
+
+  it('collapses axios-shaped Network Error on save-key POST', async () => {
+    const user = userEvent.setup();
+    mockSuccessfulLoad();
+    vi.mocked(api.post).mockRejectedValue(new Error('Network Error'));
+
+    await openSaveKeyFlow();
+    await user.click(screen.getByRole('button', { name: /^Save$/i }));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalled();
+    });
+
+    const msg = String(toastError.mock.calls.map((call) => call[0]).join('\n'));
+    expect(msg).toMatch(/Failed to save translation key/i);
+    expect(msg).not.toBe('Network Error');
+    expect(msg).not.toContain('Network Error');
+  });
+});
+
 describe('TranslationManagement save-key mutation errors (LEG-2626)', () => {
   beforeEach(() => {
     vi.mocked(api.get).mockReset();
