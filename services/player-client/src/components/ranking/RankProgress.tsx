@@ -44,7 +44,7 @@ function httpStatus(err: unknown): number | undefined {
 }
 
 /** Transport collapse copy is not gameserver detail (network-collapse densify). */
-const isNetworkCollapseMessage = (msg: string): boolean => {
+export const isNetworkCollapseMessage = (msg: string): boolean => {
   const trimmed = msg.trim();
   return (
     !trimmed ||
