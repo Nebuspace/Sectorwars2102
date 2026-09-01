@@ -312,9 +312,9 @@ async def get_colony_production(
             "timeRange": timeRange,
         }
 
-    except Exception as e:
-        logger.error(f"Error in get_colony_production: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch production data: {str(e)}")
+    except Exception:
+        logger.exception("Error in get_colony_production")
+        raise HTTPException(status_code=500, detail="Failed to fetch production data")
 
 # Genesis Device Tracking Endpoint
 
@@ -518,9 +518,9 @@ async def get_genesis_devices(
             "alerts": [a.dict() for a in alerts]
         }
 
-    except Exception as e:
-        logger.error(f"Error in get_genesis_devices: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch genesis device data: {str(e)}")
+    except Exception:
+        logger.exception("Error in get_genesis_devices")
+        raise HTTPException(status_code=500, detail="Failed to fetch genesis device data")
 
 # Planetary Management Endpoint
 
@@ -706,9 +706,9 @@ async def get_admin_colonization_planets(
             "terraformingProjects": [t.dict() for t in terraforming_projects]
         }
 
-    except Exception as e:
-        logger.error(f"Error in get_admin_planets: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch planetary data: {str(e)}")
+    except Exception:
+        logger.exception("Error in get_admin_planets")
+        raise HTTPException(status_code=500, detail="Failed to fetch planetary data")
 
 
 # Manual Production Tick Trigger
@@ -788,10 +788,10 @@ async def tick_planet_production(
                 db.rollback()
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         db.rollback()
-        logger.error(f"Error ticking production for planet {planet_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to tick planet production: {str(e)}")
+        logger.exception("Error ticking production for planet %s", planet_id)
+        raise HTTPException(status_code=500, detail="Failed to tick planet production")
 
     after = {
         "fuel": planet.fuel_ore or 0,
