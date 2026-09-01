@@ -41,6 +41,10 @@ vi.mock('../universe/PlanetDetail', () => ({
   default: () => null,
 }));
 
+vi.mock('../universe/PlaceGoldBubblePanel', () => ({
+  default: () => <div data-testid="place-gold-bubble-panel-stub" />,
+}));
+
 const sampleGalaxyState = {
   id: 'g1',
   name: 'Andromeda Prime',
