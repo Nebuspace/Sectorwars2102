@@ -958,6 +958,33 @@
   gap: 8px;
 }
 
+.cr-engineer-assignments {
+  margin: 8px 0 12px;
+  padding: 0;
+  list-style: none;
+}
+
+.cr-engineer-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 0.9em;
+}
+
+.cr-engineer-assign {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0;
+}
+
+.cr-engineer-assign select,
+.cr-engineer-assign input {
+  width: 100%;
+  max-width: 320px;
+}
+
 /* Refund rules in the cancel confirmation */
 .cr-refund-rules {
   margin: 12px 0;

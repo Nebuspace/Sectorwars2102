@@ -91,6 +91,32 @@ const habitabilityBand = (score: number): 'low' | 'mid' | 'high' =>
 const efficiencyBand = (eff: number): 'low' | 'mid' | 'high' =>
   eff < 50 ? 'low' : eff < 75 ? 'mid' : 'high';
 
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+/** Transport collapse copy is not gameserver detail (LEG-3602 densify). */
+export function formatPlanetLoadError(err: unknown): string {
+  if (err instanceof TypeError) return 'Failed to load planets';
+  if (err instanceof Error && isNetworkCollapseMessage(err.message)) return 'Failed to load planets';
+  return 'Failed to load planets';
+}
+
+/** Transport collapse copy is not gameserver detail (LEG-3602 densify). */
+export function formatPlanetCourseError(err: unknown): string {
+  if (err instanceof TypeError) return 'Failed to set course to colony';
+  if (err instanceof Error && isNetworkCollapseMessage(err.message)) {
+    return 'Failed to set course to colony';
+  }
+  if (err instanceof Error && err.message.trim()) return err.message;
+  return 'Failed to set course to colony';
+}
+
 const formatNumber = (num: number): string => {
   if (num >= 1_000_000) return `${(num / 1_000_000).toFixed(1)}M`;
   if (num >= 1_000) return `${(num / 1_000).toFixed(1)}K`;
@@ -229,7 +255,7 @@ export const PlanetManager: React.FC = () => {
       setPlanets(response.planets || []);
     } catch (err) {
       if (requestId !== loadRequestId.current) return;
-      setError('Failed to load planets');
+      setError(formatPlanetLoadError(err));
       console.error('Error loading planets:', err);
     } finally {
       if (requestId === loadRequestId.current) {
@@ -264,7 +290,7 @@ export const PlanetManager: React.FC = () => {
       await moveToSector(sectorId);
     } catch (err) {
       console.error('Error setting course:', err);
-      // moveToSector surfaces its own error into GameContext; nothing else to do.
+      setError(formatPlanetCourseError(err));
     } finally {
       setCoursePlanetId(null);
     }
