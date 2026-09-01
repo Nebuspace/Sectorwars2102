@@ -88,6 +88,7 @@ from src.api.routes.contracts import router as contracts_router  # WO-ECON-CONTR
 from src.api.routes.admin_contract_disputes import router as admin_contract_disputes_router  # WO-CONTRACT-6
 from src.api.routes.admin_multi_account import router as admin_multi_account_router  # WO-PADMIN-multiacct-review
 from src.api.routes.admin_scopes import router as admin_scopes_router  # RBAC Phase B grant/revoke
+from src.api.routes.admin_subscriptions import router as admin_subscriptions_router  # LEG-3611 GC grant/revoke
 from src.api.routes.beacons import router as beacons_router  # WO-P4-play-beacon-kernel
 from src.api.routes.storage import router as storage_router  # WO-STORE-DEPOSIT-FLOW
 from src.api.routes.intrasystem import router as intrasystem_router  # WO-ISP
@@ -109,6 +110,7 @@ api_router.include_router(auth_router, prefix="/auth", tags=["auth"])
 api_router.include_router(users_router, prefix="/users", tags=["users"])
 api_router.include_router(first_login_router, prefix="/first-login", tags=["first-login"])
 api_router.include_router(admin_router, prefix="/admin", tags=["admin"])
+api_router.include_router(admin_subscriptions_router, prefix="/admin", tags=["admin-subscriptions"])
 api_router.include_router(admin_formations_router, prefix="/admin", tags=["admin-formations"])
 api_router.include_router(admin_first_login_router, tags=["admin-first-login"])
 api_router.include_router(admin_enhanced_router, prefix="/admin", tags=["admin-enhanced"])
