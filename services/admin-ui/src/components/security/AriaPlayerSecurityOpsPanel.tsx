@@ -30,6 +30,24 @@ interface PlayerSecurityStatus {
   block_expires?: string | null;
 }
 
+interface AriaSecurityLogEntry {
+  id: string;
+  timestamp: string | null;
+  event_type: string;
+  severity: string;
+  description: string;
+}
+
+interface AriaSecurityLogPage {
+  items: AriaSecurityLogEntry[];
+  page: number;
+  limit: number;
+  total: number;
+  pages: number;
+}
+
+const LOG_PAGE_SIZE = 20;
+
 function ariaSecurityError(err: unknown, fallback: string): string {
   return formatAdminApiError(err, {
     fallback,
@@ -98,6 +116,36 @@ export const AriaPlayerSecurityOpsPanel: React.FC = () => {
   const [durationHours, setDurationHours] = useState('');
   const [actionReason, setActionReason] = useState('');
   const [acting, setActing] = useState(false);
+  const [logs, setLogs] = useState<AriaSecurityLogEntry[]>([]);
+  const [logPage, setLogPage] = useState(1);
+  const [logPages, setLogPages] = useState(0);
+  const [logTotal, setLogTotal] = useState(0);
+  const [logsLoading, setLogsLoading] = useState(false);
+  const [logError, setLogError] = useState<string | null>(null);
+
+  const loadLogs = useCallback(async (id: string, page: number) => {
+    setLogsLoading(true);
+    setLogError(null);
+    try {
+      const response = await api.get<AriaSecurityLogPage>(
+        `/api/v1/admin/security/player/${encodeURIComponent(id)}/logs?page=${page}&limit=${LOG_PAGE_SIZE}`,
+      );
+      const data = response.data;
+      setLogs(data.items ?? []);
+      setLogPage(data.page ?? page);
+      setLogPages(data.pages ?? 0);
+      setLogTotal(data.total ?? 0);
+    } catch (err: unknown) {
+      setLogs([]);
+      setLogPages(0);
+      setLogTotal(0);
+      setLogError(
+        ariaSecurityError(err, 'Failed to load ARIA security log history'),
+      );
+    } finally {
+      setLogsLoading(false);
+    }
+  }, []);
 
   const loadAssessment = useCallback(async (idOverride?: string) => {
     const id = (idOverride ?? playerId).trim();
@@ -108,6 +156,8 @@ export const AriaPlayerSecurityOpsPanel: React.FC = () => {
 
     setLoading(true);
     setLoadError(null);
+    setLogPage(1);
+    setLogError(null);
 
     const [riskResult, statusResult] = await Promise.allSettled([
       api.get<PlayerRiskAssessment>(`/api/v1/admin/security/player/${encodeURIComponent(id)}/risk`),
@@ -132,7 +182,15 @@ export const AriaPlayerSecurityOpsPanel: React.FC = () => {
 
     setLoadError(failures.length > 0 ? failures.join(' | ') : null);
     setLoading(false);
-  }, [playerId, toast]);
+
+    if (riskResult.status === 'fulfilled' || statusResult.status === 'fulfilled') {
+      await loadLogs(id, 1);
+    } else {
+      setLogs([]);
+      setLogPages(0);
+      setLogTotal(0);
+    }
+  }, [playerId, toast, loadLogs]);
 
   const handleAction = async () => {
     const id = playerId.trim();
@@ -190,8 +248,8 @@ export const AriaPlayerSecurityOpsPanel: React.FC = () => {
     >
       <h4>ARIA per-player security ops</h4>
       <p className="security-ops-note">
-        Review one player&apos;s ARIA risk and status, then block, unblock, or reset trust.
-        Requires <code>admin.aria.audit</code> — tip routes only.
+        Review one player&apos;s ARIA risk, status, and security log history, then block,
+        unblock, or reset trust. Requires <code>admin.aria.audit</code> — tip routes only.
       </p>
 
       <div className="security-ops-row">
@@ -298,6 +356,87 @@ export const AriaPlayerSecurityOpsPanel: React.FC = () => {
                 </div>
               </dl>
             </div>
+          )}
+        </div>
+      )}
+
+      {(risk || status || logs.length > 0 || logsLoading || logError) && (
+        <div
+          className="aria-security-log-section"
+          role="region"
+          aria-label="ARIA security log history"
+        >
+          <h5>ARIA security log history</h5>
+          {logError && (
+            <div role="alert" className="aria-security-log-error">
+              {logError}
+            </div>
+          )}
+          {logsLoading && <p className="aria-security-log-loading">Loading log history…</p>}
+          {!logsLoading && !logError && logs.length === 0 && (risk || status) && (
+            <p className="aria-security-log-empty">No ARIA security log entries for this player.</p>
+          )}
+          {!logsLoading && logs.length > 0 && (
+            <>
+              <table className="aria-security-log-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Timestamp</th>
+                    <th scope="col">Event type</th>
+                    <th scope="col">Severity</th>
+                    <th scope="col">Description</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {logs.map((entry) => (
+                    <tr key={entry.id}>
+                      <td>
+                        {entry.timestamp
+                          ? new Date(entry.timestamp).toLocaleString()
+                          : '—'}
+                      </td>
+                      <td>{entry.event_type}</td>
+                      <td>{entry.severity}</td>
+                      <td>{entry.description || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {logPages > 1 && (
+                <div className="aria-security-log-pagination">
+                  <button
+                    type="button"
+                    className="btn btn-outline"
+                    disabled={logPage <= 1 || logsLoading}
+                    onClick={() => {
+                      const id = playerId.trim();
+                      if (!id) return;
+                      void loadLogs(id, logPage - 1);
+                    }}
+                    aria-label="Previous ARIA security log page"
+                  >
+                    Previous
+                  </button>
+                  <span>
+                    Page {logPage} of {logPages}
+                    {logTotal > 0 ? ` (${logTotal} entries)` : ''}
+                  </span>
+                  <button
+                    type="button"
+                    className="btn btn-outline"
+                    disabled={logPage >= logPages || logsLoading}
+                    onClick={() => {
+                      const id = playerId.trim();
+                      if (!id) return;
+                      void loadLogs(id, logPage + 1);
+                    }}
+                    aria-label="Next ARIA security log page"
+                  >
+                    Next
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </div>
       )}

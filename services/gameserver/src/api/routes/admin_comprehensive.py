@@ -42,6 +42,7 @@ from src.models.faction import Faction
 from src.services.analytics_service import AnalyticsService
 from src.services.ai_security_service import get_security_service
 from src.services.faction_service import FactionService
+from src.models.aria_personal_intelligence import ARIASecurityLog
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -1776,6 +1777,85 @@ async def get_player_security_status(
     except Exception as e:
         logger.error(f"Error getting player security status: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get player security status: {str(e)}")
+
+
+def _describe_aria_security_log_event(event_data: Any) -> str:
+    """Human-readable summary for admin log review (LEG-3607)."""
+    if not event_data:
+        return ""
+    if isinstance(event_data, dict):
+        for key in ("message", "reason", "detail", "description"):
+            value = event_data.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    import json
+
+    text = json.dumps(event_data, separators=(",", ":"), default=str)
+    if len(text) > 200:
+        return f"{text[:197]}..."
+    return text
+
+
+@router.get("/security/player/{player_id}/logs", summary="List ARIA security logs for player")
+async def list_player_security_logs(
+    player_id: str,
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    current_admin: User = Depends(require_scope(ARIA_AUDIT)),
+    db: Session = Depends(get_db),
+):
+    """
+    Paginated ARIASecurityLog history for one player (UIADM-SECURITY-PLAYER-OPS).
+    """
+    try:
+        try:
+            player_uuid = uuid.UUID(player_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid player id: {player_id}") from exc
+
+        player_row = db.query(Player).filter(Player.id == player_uuid).first()
+        if player_row is None:
+            raise HTTPException(status_code=404, detail=f"Player {player_id} not found")
+
+        base = db.query(ARIASecurityLog).filter(ARIASecurityLog.player_id == player_uuid)
+        total = base.count()
+        offset = (page - 1) * limit
+        rows = (
+            base.order_by(ARIASecurityLog.created_at.desc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+        pages = (total + limit - 1) // limit if total else 0
+
+        items = [
+            {
+                "id": str(row.id),
+                "timestamp": row.created_at.isoformat() if row.created_at else None,
+                "event_type": row.event_type,
+                "severity": row.event_severity,
+                "description": _describe_aria_security_log_event(row.event_data),
+            }
+            for row in rows
+        ]
+
+        logger.info(
+            f"Admin {current_admin.username} listed {len(items)} ARIA security logs "
+            f"for player {player_id} (page {page})"
+        )
+        return {
+            "items": items,
+            "page": page,
+            "limit": limit,
+            "total": total,
+            "pages": pages,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing player security logs: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to list player security logs: {str(e)}")
 
 
 @router.post("/security/cleanup", summary="Clean up old security data")
