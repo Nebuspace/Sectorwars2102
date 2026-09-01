@@ -139,12 +139,12 @@ def space_engineer_repair_multiplier(db: Session, planet_id: UUID) -> float:
 
 
 def construction_engineer_count(db: Session, player_id: UUID) -> int:
-    """Space Engineers available to bias TradeDock construction-event RNG.
+    """Legacy pool-wide Space Engineer count (LEG-302 interim wire).
 
-    Interim wire (LEG-302): sums ``SPACE_ENGINEERS`` across all planets the
-    player owns via ``player_planets``, capped at
-    ``MAX_CONSTRUCTION_ENGINEERS_PER_PROJECT``. Per-project assignment and
-    daily wages remain follow-on slices (LEG-309 / canon TBD wage cells).
+    Superseded for construction-event RNG by
+    :func:`construction_service.assigned_construction_engineer_count`, which
+    reads per-project assignments (LEG-3599). Retained for callers that still
+    need the pool-wide interim sum.
     """
     planet_ids = (
         db.query(player_planets.c.planet_id)
@@ -155,6 +155,11 @@ def construction_engineer_count(db: Session, player_id: UUID) -> int:
     for (planet_id,) in planet_ids:
         total += profession_counts(db, planet_id).get(ProfessionType.SPACE_ENGINEERS, 0)
     return min(total, MAX_CONSTRUCTION_ENGINEERS_PER_PROJECT)
+
+
+def space_engineers_on_planet(db: Session, planet_id: UUID) -> int:
+    """Count of Space Engineers stationed on a planet."""
+    return profession_counts(db, planet_id).get(ProfessionType.SPACE_ENGINEERS, 0)
 
 
 def trade_specialist_credit_multiplier(db: Session, planet_id: UUID) -> float:

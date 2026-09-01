@@ -78,14 +78,15 @@ def test_roll_construction_events_uses_db_resolved_engineer_count(monkeypatch):
     res.pending_events = []
     res.events_last_rolled_at = anchor
     res.player_id = uuid4()
+    res.assigned_engineers = [{"planet_id": str(uuid4()), "count": 2}]
 
     seen = {}
 
-    def capture_count(_db, player_id):
-        seen["player_id"] = player_id
+    def capture_count(_db, reservation):
+        seen["reservation_id"] = reservation.id
         return 2
 
-    monkeypatch.setattr(ps, "construction_engineer_count", capture_count)
+    monkeypatch.setattr(cs, "assigned_construction_engineer_count", capture_count)
 
     fired = cs._roll_construction_events(
         res,
@@ -95,5 +96,5 @@ def test_roll_construction_events_uses_db_resolved_engineer_count(monkeypatch):
         db=object(),
     )
     assert fired == 1
-    assert seen["player_id"] == res.player_id
+    assert seen["reservation_id"] == res.id
     assert len(res.construction_events) == 1
