@@ -10,6 +10,27 @@ import apiClient from '../../services/apiClient';
 // each code is exchanged at most once across re-mounts/re-renders.
 const handledCodes = new Set<string>();
 
+const isOAuthNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
+};
+
+/** Transport collapse copy is not auth detail (LEG-3513 densify). */
+export function formatOAuthCallbackError(error: unknown): string {
+  const fallback = 'Authentication failed. Please try again.';
+  if (error instanceof TypeError) return fallback;
+  if (error instanceof Error && error.message) {
+    if (isOAuthNetworkCollapseMessage(error.message)) return fallback;
+    return error.message;
+  }
+  return fallback;
+}
+
 const OAuthCallback: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
@@ -101,7 +122,7 @@ const OAuthCallback: React.FC = () => {
         setTimeout(navigateWithToken, 1500);
       } catch (error) {
         console.error('OAuth callback error:', error);
-        setError('Authentication failed. Please try again.');
+        setError(formatOAuthCallbackError(error));
       }
     };
 

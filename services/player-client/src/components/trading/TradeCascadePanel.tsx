@@ -18,15 +18,26 @@ function httpStatus(err: unknown): number | undefined {
   return undefined;
 }
 
+const isTradeCascadeNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
+};
+
 /** Surface GS trade-cascade plan detail; hide bare API Error: N blobs (LEG-2957). */
 export function formatTradeCascadeError(err: unknown): string {
   const status = httpStatus(err);
   const message = err instanceof Error ? err.message : undefined;
-  // Network collapse (fetch TypeError) is not gameserver copy — use the fallback.
+  // Network collapse (fetch TypeError / axios Network Error) is not gameserver copy.
   const hasServerDetail =
     !(err instanceof TypeError) &&
     typeof message === 'string' &&
     message.trim().length > 0 &&
+    !isTradeCascadeNetworkCollapseMessage(message) &&
     !/^API Error: \d+$/.test(message.trim());
 
   if (status === 403) {

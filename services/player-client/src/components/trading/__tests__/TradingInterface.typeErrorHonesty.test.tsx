@@ -44,4 +44,22 @@ describe('TradingInterface TypeError densify (LEG-3134)', () => {
     expect(text).not.toMatch(/Failed to fetch/i);
     expect(text).not.toMatch(/TypeError/i);
   });
+
+  it('formatTradingExecuteError falls back on Error Network Error (LEG-3505)', () => {
+    const text = formatTradingExecuteError(new Error('Network Error'), 'ore');
+    expect(text).toBe('Failed to execute trade');
+    expect(text).not.toMatch(/Network Error/i);
+  });
+
+  it('formatTradingDockError falls back on Error Network Error (LEG-3505)', () => {
+    const text = formatTradingDockError(new Error('Network Error'));
+    expect(text).toBe('Failed to dock at station.');
+    expect(text).not.toMatch(/Network Error/i);
+  });
+
+  it('formatTradingBumpError falls back on Error Network Error (LEG-3505)', () => {
+    const text = formatTradingBumpError(new Error('Network Error'));
+    expect(text).toMatch(/Bump failed/i);
+    expect(text).not.toMatch(/Network Error/i);
+  });
 });

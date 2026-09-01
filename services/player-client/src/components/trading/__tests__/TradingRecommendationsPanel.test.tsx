@@ -35,6 +35,12 @@ describe('formatRecommendationsLoadError (LEG-3217)', () => {
       'Recommendations temporarily unavailable',
     );
   });
+
+  it('falls back on Error Network Error (LEG-3505)', () => {
+    const text = formatRecommendationsLoadError(new Error('Network Error'));
+    expect(text).toBe('Failed to load trading recommendations');
+    expect(text).not.toMatch(/Network Error/i);
+  });
 });
 
 describe('TradingRecommendationsPanel', () => {
