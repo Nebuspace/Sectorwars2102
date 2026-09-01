@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 /**
  * LEG-3238 Soft-ORDER — TradeCascadePanel DOM TypeError honesty.
+ * LEG-3558 Soft-ORDER — Network Error densify.
  */
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -78,5 +79,19 @@ describe('TradeCascadePanel TypeError honesty (LEG-3238)', () => {
     expect(alert?.textContent).toBe('Failed to plan trade cascade.');
     expect(container.textContent).not.toMatch(/Failed to fetch/i);
     expect(container.textContent).not.toMatch(/TypeError/i);
+  });
+
+  it('submit plan Network Error surfaces fallback alert without Network Error in DOM (LEG-3558)', async () => {
+    mockPlanTradeCascade.mockRejectedValue(new Error('Network Error'));
+
+    await act(async () => {
+      root.render(<TradeCascadePanel />);
+    });
+    await expandAndSubmit();
+
+    const alert = container.querySelector('.trade-cascade-error[role="alert"]');
+    expect(alert?.textContent).toBe('Failed to plan trade cascade.');
+    expect(container.textContent).not.toMatch(/Network Error/i);
+    expect(container.textContent).not.toMatch(/Failed to fetch/i);
   });
 });
