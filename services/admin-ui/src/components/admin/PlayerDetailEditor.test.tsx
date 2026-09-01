@@ -236,3 +236,68 @@ describe('PlayerDetailEditor (LEG-2721 formatAdminApiError)', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 });
+
+describe('PlayerDetailEditor axios Network Error densify (LEG-3508)', () => {
+  const onClose = vi.fn();
+  const onSave = vi.fn();
+
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.patch).mockReset();
+    onClose.mockReset();
+    onSave.mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('collapses axios-shaped Network Error on teams LIST to honest fallback', async () => {
+    mockMetaLoads({ teamsReject: new Error('Network Error') });
+
+    render(
+      <PlayerDetailEditor player={basePlayer} onClose={onClose} onSave={onSave} />,
+    );
+
+    await waitFor(() => {
+      expect(api.get).toHaveBeenCalledWith('/api/v1/admin/teams');
+    });
+
+    const alert = await screen.findByRole('alert');
+    const text = alert.textContent ?? '';
+    expect(text).toMatch(/Failed to load teams/i);
+    expect(text).not.toMatch(/Network Error/i);
+    expect(text).not.toMatch(/TypeError/i);
+    expect(screen.getByRole('option', { name: 'No Team' })).toBeTruthy();
+  });
+
+  it('collapses axios-shaped Network Error on player PATCH save to honest fallback', async () => {
+    mockMetaLoads();
+    vi.mocked(api.patch).mockRejectedValue(new Error('Network Error'));
+
+    render(
+      <PlayerDetailEditor player={basePlayer} onClose={onClose} onSave={onSave} />,
+    );
+
+    await waitFor(() => {
+      expect(api.get).toHaveBeenCalledWith('/api/v1/admin/teams');
+    });
+
+    fireEvent.change(screen.getByDisplayValue('TestUser'), {
+      target: { value: 'UpdatedName' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+
+    await waitFor(() => {
+      expect(api.patch).toHaveBeenCalledWith(
+        '/api/v1/admin/players/p1',
+        expect.objectContaining({ username: 'UpdatedName' }),
+      );
+    });
+
+    const alert = await screen.findByRole('alert');
+    const text = alert.textContent ?? '';
+    expect(text).toMatch(/Failed to update player/i);
+    expect(text).not.toMatch(/Network Error/i);
+    expect(text).not.toMatch(/TypeError/i);
+    expect(onSave).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+});
