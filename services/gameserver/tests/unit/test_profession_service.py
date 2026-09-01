@@ -558,3 +558,108 @@ def test_terraform_engineers_gate_passes_at_terraforming_lab_l3(monkeypatch):
     )
     assert result["success"] is True
     assert svc.training_eligibility(planet)[ProfessionType.TERRAFORM_ENGINEERS.value] is True
+
+
+def test_assign_active_non_owner_rejected():
+    owner = uuid4()
+    stranger = uuid4()
+    planet = _planet(owner)
+    prof_row = SimpleNamespace(
+        planet_id=planet.id,
+        profession=ProfessionType.TERRAFORM_ENGINEERS.value,
+        count=1000,
+        active_count=None,
+    )
+    svc = ProfessionService(_DBStub(professions=[prof_row]))
+    with pytest.raises(ValueError, match="not_owner"):
+        svc.assign_active(planet, stranger, ProfessionType.TERRAFORM_ENGINEERS.value, 500)
+
+
+def test_assign_active_unknown_profession():
+    owner = uuid4()
+    planet = _planet(owner)
+    svc = ProfessionService(_DBStub())
+    with pytest.raises(ValueError, match="unknown_profession:"):
+        svc.assign_active(planet, owner, "NOT_A_REAL_PROFESSION", 1)
+
+
+def test_assign_active_exceeds_trained():
+    owner = uuid4()
+    planet = _planet(owner)
+    prof_row = SimpleNamespace(
+        planet_id=planet.id,
+        profession=ProfessionType.TERRAFORM_ENGINEERS.value,
+        count=200,
+        active_count=None,
+    )
+    svc = ProfessionService(_DBStub(professions=[prof_row]))
+    with pytest.raises(ValueError, match="active_count_exceeds_trained"):
+        svc.assign_active(planet, owner, ProfessionType.TERRAFORM_ENGINEERS.value, 500)
+
+
+def test_assign_active_success_and_idempotent():
+    owner = uuid4()
+    planet = _planet(owner)
+    prof_row = SimpleNamespace(
+        planet_id=planet.id,
+        profession=ProfessionType.TERRAFORM_ENGINEERS.value,
+        count=2000,
+        active_count=None,
+    )
+    db = _DBStub(professions=[prof_row])
+    svc = ProfessionService(db)
+    result = svc.assign_active(
+        planet, owner, ProfessionType.TERRAFORM_ENGINEERS.value, 500
+    )
+    assert result["success"] is True
+    assert result["changed"] is True
+    assert result["active_count"] == 500
+    assert prof_row.active_count == 500
+
+    again = svc.assign_active(
+        planet, owner, ProfessionType.TERRAFORM_ENGINEERS.value, 500
+    )
+    assert again["changed"] is False
+    assert again["message"] == "Active assignment unchanged (idempotent)."
+
+
+def test_active_profession_counts_null_means_all_trained():
+    planet_id = uuid4()
+    prof_row = SimpleNamespace(
+        planet_id=planet_id,
+        profession=ProfessionType.TERRAFORM_ENGINEERS.value,
+        count=1500,
+        active_count=None,
+    )
+    db = _DBStub(professions=[prof_row])
+    counts = ps.active_profession_counts(db, planet_id)
+    assert counts[ProfessionType.TERRAFORM_ENGINEERS] == 1500
+
+
+def test_active_profession_counts_explicit_zero():
+    planet_id = uuid4()
+    prof_row = SimpleNamespace(
+        planet_id=planet_id,
+        profession=ProfessionType.TERRAFORM_ENGINEERS.value,
+        count=1500,
+        active_count=0,
+    )
+    db = _DBStub(professions=[prof_row])
+    counts = ps.active_profession_counts(db, planet_id)
+    assert counts[ProfessionType.TERRAFORM_ENGINEERS] == 0
+
+
+def test_get_state_includes_active_professions():
+    owner = uuid4()
+    planet = _planet(owner)
+    prof_row = SimpleNamespace(
+        planet_id=planet.id,
+        profession=ProfessionType.MINING_ENGINEERS.value,
+        count=100,
+        active_count=40,
+    )
+    db = _DBStub(professions=[prof_row], player=_player(owner))
+    svc = ProfessionService(db)
+    state = svc.get_state(planet, owner)
+    assert state["active_professions"][ProfessionType.MINING_ENGINEERS.value] == 40
+    assert state["professions"][ProfessionType.MINING_ENGINEERS.value] == 100
