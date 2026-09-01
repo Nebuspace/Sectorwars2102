@@ -107,8 +107,9 @@ async def create_audit_log(
                 "message": "Failed to create audit log"
             }
             
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Error in create_audit_log")
+        raise HTTPException(status_code=500, detail="Failed to create audit log")
 
 
 @router.get("/actions", response_model=AdminActionLogPageOut)
@@ -344,8 +345,9 @@ async def get_audit_logs(
             "pages": (total + limit - 1) // limit
         }
         
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Error in get_audit_logs")
+        raise HTTPException(status_code=500, detail="Failed to fetch audit logs")
 
 
 @router.get("/violations")
@@ -370,8 +372,9 @@ async def get_security_violations(
             "total": len(violations)
         }
         
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Error in get_security_violations")
+        raise HTTPException(status_code=500, detail="Failed to fetch security violations")
 
 
 @router.get("/users/{user_id}/activity")
@@ -393,5 +396,6 @@ async def get_user_activity_summary(
         
         return summary
         
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Error in get_user_activity_summary")
+        raise HTTPException(status_code=500, detail="Failed to fetch user activity summary")
