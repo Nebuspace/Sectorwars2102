@@ -22,4 +22,16 @@ describe('adminHttpError', () => {
       'Failed to load',
     );
   });
+
+  it('collapses TypeError to fallback without leaking transport text (LEG-3567)', () => {
+    expect(
+      adminHttpErrorMessage(new TypeError('Failed to fetch'), 'Failed to load admin statistics'),
+    ).toBe('Failed to load admin statistics');
+  });
+
+  it('collapses axios Network Error to fallback without leaking raw message (LEG-3567)', () => {
+    expect(
+      adminHttpErrorMessage(new Error('Network Error'), 'Failed to load admin statistics'),
+    ).toBe('Failed to load admin statistics');
+  });
 });
