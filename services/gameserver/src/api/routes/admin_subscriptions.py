@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -18,6 +19,8 @@ from src.services.galactic_citizen_admin_service import (
     manual_grant_galactic_citizen,
     manual_revoke_galactic_citizen,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["admin-subscriptions"])
 
@@ -66,43 +69,51 @@ async def grant_galactic_citizen(
     db: Session = Depends(get_db),
 ):
     """Manual GC grant (comp) — gated by admin.subscriptions.modify."""
-    with admin_action_attempt(
-        db,
-        actor=actor,
-        scope_used=SUBSCRIPTIONS_MODIFY,
-        action="galactic_citizen_grant",
-        target_type="player",
-        target_id=str(player_id),
-        payload={"reason": body.reason, "source": "admin_manual"},
-    ) as attempt:
-        player = db.query(Player).filter(Player.id == player_id).first()
-        if player is None:
-            raise HTTPException(status_code=404, detail="Player not found")
+    try:
+        with admin_action_attempt(
+            db,
+            actor=actor,
+            scope_used=SUBSCRIPTIONS_MODIFY,
+            action="galactic_citizen_grant",
+            target_type="player",
+            target_id=str(player_id),
+            payload={"reason": body.reason, "source": "admin_manual"},
+        ) as attempt:
+            player = db.query(Player).filter(Player.id == player_id).first()
+            if player is None:
+                raise HTTPException(status_code=404, detail="Player not found")
 
-        try:
-            outcome = manual_grant_galactic_citizen(
-                db, player, reason=body.reason
+            try:
+                outcome = manual_grant_galactic_citizen(
+                    db, player, reason=body.reason
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+            attempt.succeed(payload=outcome.details)
+            db.refresh(player)
+            if player.user_id:
+                user = db.query(User).filter(User.id == player.user_id).first()
+                if user is not None:
+                    player.user = user
+
+            message = (
+                "Galactic citizenship already active"
+                if outcome.already_in_target_state
+                else "Galactic citizenship granted"
             )
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-        attempt.succeed(payload=outcome.details)
-        db.refresh(player)
-        if player.user_id:
-            user = db.query(User).filter(User.id == player.user_id).first()
-            if user is not None:
-                player.user = user
-
-        message = (
-            "Galactic citizenship already active"
-            if outcome.already_in_target_state
-            else "Galactic citizenship granted"
-        )
-        return _response_from_player(
-            player,
-            changed=outcome.changed,
-            idempotent=outcome.already_in_target_state,
-            message=message,
+            return _response_from_player(
+                player,
+                changed=outcome.changed,
+                idempotent=outcome.already_in_target_state,
+                message=message,
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to grant galactic citizenship")
+        raise HTTPException(
+            status_code=500, detail="Failed to grant galactic citizenship"
         )
 
 
@@ -117,41 +128,49 @@ async def revoke_galactic_citizen(
     db: Session = Depends(get_db),
 ):
     """Manual GC revoke (clawback) — gated by admin.subscriptions.modify."""
-    with admin_action_attempt(
-        db,
-        actor=actor,
-        scope_used=SUBSCRIPTIONS_MODIFY,
-        action="galactic_citizen_revoke",
-        target_type="player",
-        target_id=str(player_id),
-        payload={"reason": body.reason, "source": "admin_manual"},
-    ) as attempt:
-        player = db.query(Player).filter(Player.id == player_id).first()
-        if player is None:
-            raise HTTPException(status_code=404, detail="Player not found")
+    try:
+        with admin_action_attempt(
+            db,
+            actor=actor,
+            scope_used=SUBSCRIPTIONS_MODIFY,
+            action="galactic_citizen_revoke",
+            target_type="player",
+            target_id=str(player_id),
+            payload={"reason": body.reason, "source": "admin_manual"},
+        ) as attempt:
+            player = db.query(Player).filter(Player.id == player_id).first()
+            if player is None:
+                raise HTTPException(status_code=404, detail="Player not found")
 
-        try:
-            outcome = manual_revoke_galactic_citizen(
-                db, player, reason=body.reason
+            try:
+                outcome = manual_revoke_galactic_citizen(
+                    db, player, reason=body.reason
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+            attempt.succeed(payload=outcome.details)
+            db.refresh(player)
+            if player.user_id:
+                user = db.query(User).filter(User.id == player.user_id).first()
+                if user is not None:
+                    player.user = user
+
+            message = (
+                "Galactic citizenship already absent"
+                if outcome.already_in_target_state
+                else "Galactic citizenship revoked"
             )
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-        attempt.succeed(payload=outcome.details)
-        db.refresh(player)
-        if player.user_id:
-            user = db.query(User).filter(User.id == player.user_id).first()
-            if user is not None:
-                player.user = user
-
-        message = (
-            "Galactic citizenship already absent"
-            if outcome.already_in_target_state
-            else "Galactic citizenship revoked"
-        )
-        return _response_from_player(
-            player,
-            changed=outcome.changed,
-            idempotent=outcome.already_in_target_state,
-            message=message,
+            return _response_from_player(
+                player,
+                changed=outcome.changed,
+                idempotent=outcome.already_in_target_state,
+                message=message,
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to revoke galactic citizenship")
+        raise HTTPException(
+            status_code=500, detail="Failed to revoke galactic citizenship"
         )
