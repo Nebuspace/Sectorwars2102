@@ -785,6 +785,7 @@ describe('MedalAdmin Network Error densify (LEG-3355)', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('medal-bulk-panel')).toBeTruthy();
+      expect(screen.getByLabelText('Bulk medal')).toBeTruthy();
     });
 
     fireEvent.change(screen.getByLabelText('Bulk medal'), {
@@ -796,6 +797,7 @@ describe('MedalAdmin Network Error densify (LEG-3355)', () => {
     fireEvent.click(screen.getByTestId('medal-bulk-dry-run'));
 
     await waitFor(() => {
+      expect(screen.getByTestId('medal-bulk-dry-run-summary')).toBeTruthy();
       expect(screen.getByTestId('medal-bulk-commit')).not.toBeDisabled();
     });
 
@@ -803,11 +805,11 @@ describe('MedalAdmin Network Error densify (LEG-3355)', () => {
 
     await waitFor(() => {
       expect(mockToastError).toHaveBeenCalled();
+      const msg = String(mockToastError.mock.calls.map((call) => call[0]).join('\n'));
+      expect(msg).toMatch(/Bulk commit failed/i);
+      expect(msg).not.toBe('Network Error');
+      expect(msg).not.toContain('Network Error');
+      expect(msg).not.toMatch(/TypeError/i);
     });
-    const msg = String(mockToastError.mock.calls.map((call) => call[0]).join('\n'));
-    expect(msg).toMatch(/Bulk commit failed/i);
-    expect(msg).not.toBe('Network Error');
-    expect(msg).not.toContain('Network Error');
-    expect(msg).not.toMatch(/TypeError/i);
   });
 });
