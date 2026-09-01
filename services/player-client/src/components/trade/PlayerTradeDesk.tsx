@@ -81,12 +81,39 @@ const isTradeNetworkCollapseMessage = (msg: string): boolean => {
   );
 };
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+const hasTradeServerDetail = (raw: unknown, message: string | undefined): boolean =>
+  !(raw instanceof TypeError) &&
+  typeof message === 'string' &&
+  message.trim().length > 0 &&
+  !isTradeNetworkCollapseMessage(message) &&
+  !/^API Error: \d+$/.test(message.trim());
+
 export function formatTradeError(raw: unknown, fallback: string): string {
   const mappedFallback = TRADE_REASON_COPY[fallback] || fallback;
   if (raw instanceof TypeError) return mappedFallback;
   const msg = typeof raw === 'string' ? raw : (raw as any)?.message;
   if (!msg || typeof msg !== 'string') return mappedFallback;
   const key = msg.trim();
+
+  const status = httpStatus(raw);
+  if (status === 403) {
+    if (hasTradeServerDetail(raw, msg)) {
+      if (TRADE_REASON_COPY[key]) return TRADE_REASON_COPY[key];
+      return key;
+    }
+    return 'Access denied — you cannot trade right now.';
+  }
+
   if (isTradeNetworkCollapseMessage(key)) return mappedFallback;
   if (TRADE_REASON_COPY[key]) return TRADE_REASON_COPY[key];
   // Throttle / antirmt reasons may be longer free-form — pass through if already prose.
