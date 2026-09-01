@@ -2,6 +2,7 @@
 Admin Economy Dashboard API routes
 """
 
+import logging
 from typing import Optional, List
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -20,6 +21,8 @@ from src.models.sector import Sector
 from src.models.player import Player
 from src.services.economy_analytics_service import EconomyAnalyticsService, InterventionError
 
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin/economy", tags=["admin-economy"])
 
@@ -141,10 +144,8 @@ async def get_market_data(
 
         return market_data
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to retrieve market data: {str(e)}"
-        )
+        logger.error("Failed to retrieve market data: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to retrieve market data")
 
 
 @router.get("/metrics", response_model=EconomicMetricsResponse)
@@ -246,10 +247,8 @@ async def get_economic_metrics(
                 economic_health_score=economic_health_score
             )
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to retrieve economic metrics: {str(e)}"
-        )
+        logger.error("Failed to retrieve economic metrics: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to retrieve economic metrics")
 
 
 @router.get("/price-alerts", response_model=list[PriceAlertResponse])
@@ -276,10 +275,8 @@ async def get_price_alerts(
         alerts = analytics_service.get_price_alerts(threshold_percent=threshold_percent)
         return [PriceAlertResponse(**alert) for alert in alerts]
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to retrieve price alerts: {str(e)}"
-        )
+        logger.error("Failed to retrieve price alerts: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to retrieve price alerts")
 
 
 @router.post("/intervention", response_model=InterventionResponse)
@@ -330,10 +327,8 @@ async def perform_market_intervention(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Market intervention failed: {str(e)}"
-        )
+        logger.error("Market intervention failed: %s", e)
+        raise HTTPException(status_code=500, detail="Market intervention failed")
 
 
 @router.get("/dashboard-summary")
@@ -387,10 +382,8 @@ async def get_dashboard_summary(
             "top_trading_ports": market_data['top_trading_ports'][:5]
         }
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to generate dashboard summary: {str(e)}"
-        )
+        logger.error("Failed to generate dashboard summary: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to generate dashboard summary")
 
 
 # ---------------------------------------------------------------------------
