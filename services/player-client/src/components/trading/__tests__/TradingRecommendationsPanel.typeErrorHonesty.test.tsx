@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 /**
  * LEG-3237 Soft-ORDER — TradingRecommendationsPanel DOM TypeError honesty.
+ * LEG-3565 Soft-ORDER — axios Network Error densify pin on honesty file.
  */
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -19,7 +20,17 @@ vi.mock('../../../services/aiTradingService', () => ({
   },
 }));
 
-import TradingRecommendationsPanel from '../TradingRecommendationsPanel';
+import TradingRecommendationsPanel, {
+  formatRecommendationsLoadError,
+} from '../TradingRecommendationsPanel';
+
+describe('TradingRecommendationsPanel Network Error densify (LEG-3565)', () => {
+  it('formatRecommendationsLoadError falls back on axios Network Error', () => {
+    const text = formatRecommendationsLoadError(new Error('Network Error'));
+    expect(text).toBe('Failed to load trading recommendations');
+    expect(text).not.toMatch(/Network Error/i);
+  });
+});
 
 describe('TradingRecommendationsPanel TypeError honesty (LEG-3237)', () => {
   let container: HTMLElement;

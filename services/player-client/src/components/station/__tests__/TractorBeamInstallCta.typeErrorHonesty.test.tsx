@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 /**
  * LEG-3088 Soft-ORDER — TractorBeamInstallCta TypeError densify.
+ * LEG-3562 Soft-ORDER — axios Network Error densify pin.
  */
 import { describe, it, expect } from 'vitest';
 import { formatTractorBeamInstallError } from '../TractorBeamInstallCta';
@@ -18,5 +19,22 @@ describe('TractorBeamInstallCta TypeError densify (LEG-3088)', () => {
       response: { data: { detail: 'Insufficient credits for tractor beam install.' } },
     };
     expect(formatTractorBeamInstallError(err)).toBe('Insufficient credits for tractor beam install.');
+  });
+});
+
+describe('TractorBeamInstallCta Network Error densify (LEG-3562)', () => {
+  it('falls back on axios Network Error / Failed to fetch non-TypeError', () => {
+    expect(formatTractorBeamInstallError(new Error('Network Error'))).toBe(
+      'Tractor Beam install failed',
+    );
+    expect(formatTractorBeamInstallError(new Error('Failed to fetch'))).toBe(
+      'Tractor Beam install failed',
+    );
+    expect(formatTractorBeamInstallError(new Error('Network Error'))).not.toMatch(
+      /Network Error/i,
+    );
+    expect(formatTractorBeamInstallError(new Error('Failed to fetch'))).not.toMatch(
+      /Failed to fetch/i,
+    );
   });
 });
