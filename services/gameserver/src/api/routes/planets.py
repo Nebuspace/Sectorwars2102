@@ -2625,6 +2625,11 @@ class ProfessionTrainRequest(BaseModel):
     trainee_count: int = Field(..., ge=1)
 
 
+class ProfessionAssignRequest(BaseModel):
+    profession: str = Field(..., min_length=1)
+    active_count: int = Field(..., ge=0)
+
+
 @router.get("/{planet_id}/professions")
 async def get_planet_professions(
     planet_id: str,
@@ -2693,6 +2698,47 @@ async def train_planet_profession(
             "insufficient_equipment": status.HTTP_400_BAD_REQUEST,
             "insufficient_organics": status.HTTP_400_BAD_REQUEST,
             "invalid_trainee_count": status.HTTP_400_BAD_REQUEST,
+        }
+        if code.startswith("unknown_profession:"):
+            raise HTTPException(status_code=400, detail=code)
+        raise HTTPException(status_code=status_map.get(code, 400), detail=code)
+    db.commit()
+    return result
+
+
+@router.post("/{planet_id}/professions/assign")
+async def assign_planet_profession(
+    planet_id: str,
+    body: ProfessionAssignRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Set active specialist headcount for a profession (owner-only)."""
+    from src.services.profession_service import ProfessionService
+
+    try:
+        pid = UUID(planet_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid planet ID format")
+
+    planet = db.query(Planet).filter(Planet.id == pid).with_for_update().first()
+    if planet is None:
+        raise HTTPException(status_code=404, detail="Planet not found")
+
+    svc = ProfessionService(db)
+    try:
+        result = svc.assign_active(
+            planet,
+            player.id,
+            body.profession,
+            body.active_count,
+        )
+    except ValueError as exc:
+        code = str(exc)
+        status_map = {
+            "not_owner": status.HTTP_403_FORBIDDEN,
+            "invalid_active_count": status.HTTP_400_BAD_REQUEST,
+            "active_count_exceeds_trained": status.HTTP_400_BAD_REQUEST,
         }
         if code.startswith("unknown_profession:"):
             raise HTTPException(status_code=400, detail=code)
