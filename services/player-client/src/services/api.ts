@@ -2886,6 +2886,44 @@ export const isTradeCascadeRefusal = (
   payload: TradeCascadeResponse,
 ): payload is TradeCascadeRefusal => 'error' in payload && typeof payload.error === 'string';
 
+export type ExplorationSuggestion = {
+  kind: 'repeat_visit' | 'expand' | 'risky';
+  sector_id: string;
+  sector_number?: number;
+  sector_name?: string;
+  visit_count?: number;
+  trade_opportunity_score?: number;
+  safety_rating?: number;
+  summary: string;
+};
+
+export type ExplorationSuggestionsResponse = {
+  suggestions: ExplorationSuggestion[];
+  empty_message?: string | null;
+};
+
+export type CombatAdviceResponse = {
+  has_history: boolean;
+  opponent_ship_type: string;
+  summary: string;
+  weapon_suggestion?: string | null;
+  encounters: number;
+  wins: number;
+  losses: number;
+};
+
+export const ariaExplorationAPI = {
+  getSuggestions: (): Promise<ExplorationSuggestionsResponse> =>
+    apiRequest('/api/v1/ai/exploration-suggestions'),
+};
+
+export const ariaCombatAdviceAPI = {
+  getAdvice: (opponentShipType: string): Promise<CombatAdviceResponse> => {
+    const params = new URLSearchParams({ opponent_ship_type: opponentShipType });
+    return apiRequest(`/api/v1/ai/combat-advice?${params.toString()}`);
+  },
+};
+
 export const ariaTradeCascadeAPI = {
   planTradeCascade: (body: TradeCascadeRequest): Promise<TradeCascadeResponse> =>
     apiRequest('/api/v1/ai/trade-cascade', {
