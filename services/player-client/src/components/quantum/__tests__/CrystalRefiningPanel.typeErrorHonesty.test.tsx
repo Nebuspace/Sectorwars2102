@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 /**
  * LEG-3161 Soft-ORDER — formatCrystalRefiningError TypeError densify.
+ * LEG-3547 Soft-ORDER — Network Error densify.
  */
 import { describe, it, expect } from 'vitest';
 import { formatCrystalRefiningError } from '../CrystalRefiningPanel';
@@ -11,6 +12,18 @@ describe('formatCrystalRefiningError (LEG-3161)', () => {
     expect(text).toBe('Crystal refine rejected.');
     expect(text).not.toMatch(/Failed to fetch/i);
     expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('falls back on axios Network Error / Failed to fetch (LEG-3547)', () => {
+    expect(formatCrystalRefiningError(new Error('Network Error'), 'Crystal refine rejected.')).toBe(
+      'Crystal refine rejected.',
+    );
+    expect(formatCrystalRefiningError(new Error('Failed to fetch'), 'Crystal refine rejected.')).toBe(
+      'Crystal refine rejected.',
+    );
+    expect(formatCrystalRefiningError(new Error('Network Error'), 'Crystal refine rejected.')).not.toMatch(
+      /Network Error/i,
+    );
   });
 
   it('preserves axios detail for non-TypeError errors', () => {

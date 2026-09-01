@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 /**
  * LEG-3138 Soft-ORDER — RefiningVenue / CrystalRefiningPanel TypeError densify.
+ * LEG-3556 Soft-ORDER — Network Error densify.
  */
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -41,6 +42,21 @@ describe('formatCrystalRefiningError TypeError densify (LEG-3138)', () => {
     expect(text).toBe('Crystal refine rejected.');
     expect(text).not.toMatch(/Failed to fetch/i);
     expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('falls back on axios Network Error / Failed to fetch (LEG-3556)', () => {
+    expect(formatCrystalRefiningError(new Error('Network Error'), 'Crystal refine rejected.')).toBe(
+      'Crystal refine rejected.',
+    );
+    expect(formatCrystalRefiningError(new Error('Failed to fetch'), 'Crystal refine rejected.')).toBe(
+      'Crystal refine rejected.',
+    );
+    expect(formatCrystalRefiningError(new Error('Network Error'), 'Crystal refine rejected.')).not.toMatch(
+      /Network Error/i,
+    );
+    expect(formatCrystalRefiningError(new Error('Failed to fetch'), 'Crystal refine rejected.')).not.toMatch(
+      /Failed to fetch/i,
+    );
   });
 
   it('preserves server detail for non-TypeError errors', () => {
@@ -92,5 +108,32 @@ describe('CrystalRefiningPanel refine TypeError densify (LEG-3138)', () => {
     expect(errorEl?.textContent).toBe('Crystal refine rejected.');
     expect(errorEl?.textContent).not.toMatch(/Failed to fetch/i);
     expect(errorEl?.textContent).not.toMatch(/TypeError/i);
+  });
+
+  it('crystal refine Network Error surfaces honest fallback without Network Error (LEG-3556)', async () => {
+    mockRefine.mockRejectedValue(new Error('Network Error'));
+
+    await act(async () => {
+      root.render(
+        <CrystalRefiningPanel shards={10} crystals={2} isDocked onBalancesChanged={vi.fn()} />,
+      );
+      await flush();
+    });
+
+    const btn = container.querySelector('[data-testid="refine-crystal-btn"]') as HTMLButtonElement;
+    await act(async () => {
+      btn.click();
+      await flush();
+      await flush();
+    });
+
+    await vi.waitFor(() => {
+      expect(mockRefine).toHaveBeenCalled();
+    });
+
+    const errorEl = container.querySelector('[data-testid="crystal-refine-error"]');
+    expect(errorEl?.textContent).toBe('Crystal refine rejected.');
+    expect(errorEl?.textContent).not.toMatch(/Network Error/i);
+    expect(errorEl?.textContent).not.toMatch(/Failed to fetch/i);
   });
 });

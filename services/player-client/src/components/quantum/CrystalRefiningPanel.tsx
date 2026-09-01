@@ -29,6 +29,17 @@ const formatCountdown = (ms: number): string => {
   return hours > 0 ? `${hours}:${mm}:${ss}` : `${mm}:${ss}`;
 };
 
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
+};
+
 /** RefiningVenue surfaces errors via this panel — exported for TypeError densify tests. */
 export function formatCrystalRefiningError(e: unknown, fallback: string): string {
   if (e instanceof TypeError) return fallback;
@@ -40,7 +51,10 @@ export function formatCrystalRefiningError(e: unknown, fallback: string): string
       if (typeof detail === 'string' && detail) return detail;
     }
     const msg = (e as { message?: string }).message;
-    if (typeof msg === 'string' && msg) return msg;
+    if (typeof msg === 'string' && msg) {
+      if (isNetworkCollapseMessage(msg)) return fallback;
+      return msg;
+    }
   }
   return fallback;
 }
