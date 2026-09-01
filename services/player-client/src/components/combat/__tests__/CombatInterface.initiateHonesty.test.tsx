@@ -37,4 +37,15 @@ describe('formatCombatInitiateError', () => {
     expect(text).not.toMatch(/Failed to fetch/i);
     expect(text).not.toMatch(/TypeError/i);
   });
+
+  it('falls back on axios Network Error / Failed to fetch non-TypeError (LEG-3573)', () => {
+    expect(formatCombatInitiateError(new Error('Network Error'))).toBe(
+      'Combat system error. Please try again.',
+    );
+    expect(formatCombatInitiateError(new Error('Failed to fetch'))).toBe(
+      'Combat system error. Please try again.',
+    );
+    expect(formatCombatInitiateError(new Error('Network Error'))).not.toMatch(/Network Error/i);
+    expect(formatCombatInitiateError(new Error('Failed to fetch'))).not.toMatch(/Failed to fetch/i);
+  });
 });
