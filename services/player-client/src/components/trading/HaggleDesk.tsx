@@ -81,8 +81,19 @@ interface TradeQuoteResult {
   total: number;
 }
 
+const isHaggleNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
+};
+
 export function formatHaggleError(e: unknown): string {
-  if (e instanceof TypeError) return 'The trader turned away.';
+  const fallback = 'The trader turned away.';
+  if (e instanceof TypeError) return fallback;
   if (e && typeof e === 'object') {
     const resp = (e as { response?: { data?: unknown } }).response;
     const data = resp?.data;
@@ -92,9 +103,12 @@ export function formatHaggleError(e: unknown): string {
       if (typeof rec.message === 'string' && rec.message) return rec.message;
     }
     const msg = (e as { message?: string }).message;
-    if (typeof msg === 'string' && msg) return msg;
+    if (typeof msg === 'string' && msg) {
+      if (isHaggleNetworkCollapseMessage(msg)) return fallback;
+      return msg;
+    }
   }
-  return 'The trader turned away.';
+  return fallback;
 }
 
 interface HaggleDeskProps {

@@ -137,3 +137,25 @@ describe('MarketPredictionInterface accuracy secondary honesty (LEG-1260)', () =
     expect(screen.getByRole('alert').textContent ?? '').toMatch(/rate limit/i);
   });
 });
+
+describe('MarketPredictionInterface axios Network Error densify (LEG-3512)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('collapses axios-shaped Network Error on predictions load', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
+
+    render(<MarketPredictionInterface />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Failed to load predictions/i);
+    expect(alert).not.toBe('Network Error');
+    expect(alert).not.toContain('Network Error');
+  });
+});

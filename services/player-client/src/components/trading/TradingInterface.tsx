@@ -98,34 +98,65 @@ interface DockFullInfo {
 
 const formatName = (name: string) => name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 
+const isTradingNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
+};
+
 /** Surface GS trade detail; hide fetch TypeError noise (LEG-3134). */
 export function formatTradingExecuteError(err: unknown, resourceType: string): string {
-  if (err instanceof TypeError) return 'Failed to execute trade';
-  const error = err as { response?: { data?: { detail?: string; message?: string } } };
+  const fallback = 'Failed to execute trade';
+  if (err instanceof TypeError) return fallback;
+  const error = err as {
+    response?: { data?: { detail?: string; message?: string } };
+    message?: string;
+  };
   const serverMessage: string = error.response?.data?.detail || error.response?.data?.message || '';
-  let content = serverMessage || 'Failed to execute trade';
-  if (serverMessage.includes('does not sell')) {
-    content = `This station doesn't sell ${formatName(resourceType)} — but it may buy it. Try the Sell Resources tab.`;
-  } else if (serverMessage.includes('does not buy')) {
-    content = `This station doesn't buy ${formatName(resourceType)} — but it may sell it. Try the Buy Resources tab.`;
+  if (serverMessage) {
+    let content = serverMessage;
+    if (serverMessage.includes('does not sell')) {
+      content = `This station doesn't sell ${formatName(resourceType)} — but it may buy it. Try the Sell Resources tab.`;
+    } else if (serverMessage.includes('does not buy')) {
+      content = `This station doesn't buy ${formatName(resourceType)} — but it may sell it. Try the Buy Resources tab.`;
+    }
+    return content;
   }
-  return content;
+  const rawMessage = error.message ?? (err instanceof Error ? err.message : '');
+  if (typeof rawMessage === 'string' && isTradingNetworkCollapseMessage(rawMessage)) return fallback;
+  return fallback;
 }
 
 export function formatTradingDockError(err: unknown): string {
-  if (err instanceof TypeError) return 'Failed to dock at station.';
-  const error = err as { response?: { data?: { detail?: string; message?: string } } };
-  return error.response?.data?.detail || error.response?.data?.message || 'Failed to dock at station.';
+  const fallback = 'Failed to dock at station.';
+  if (err instanceof TypeError) return fallback;
+  const error = err as {
+    response?: { data?: { detail?: string; message?: string } };
+    message?: string;
+  };
+  const serverMessage = error.response?.data?.detail || error.response?.data?.message;
+  if (serverMessage) return serverMessage;
+  const rawMessage = error.message ?? (err instanceof Error ? err.message : '');
+  if (typeof rawMessage === 'string' && isTradingNetworkCollapseMessage(rawMessage)) return fallback;
+  return fallback;
 }
 
 export function formatTradingBumpError(err: unknown): string {
-  if (err instanceof TypeError) return 'Bump failed — the slip may have already changed hands.';
-  const error = err as { response?: { data?: { detail?: string; message?: string } } };
-  return (
-    error.response?.data?.detail ||
-    error.response?.data?.message ||
-    'Bump failed — the slip may have already changed hands.'
-  );
+  const fallback = 'Bump failed — the slip may have already changed hands.';
+  if (err instanceof TypeError) return fallback;
+  const error = err as {
+    response?: { data?: { detail?: string; message?: string } };
+    message?: string;
+  };
+  const serverMessage = error.response?.data?.detail || error.response?.data?.message;
+  if (serverMessage) return serverMessage;
+  const rawMessage = error.message ?? (err instanceof Error ? err.message : '');
+  if (typeof rawMessage === 'string' && isTradingNetworkCollapseMessage(rawMessage)) return fallback;
+  return fallback;
 }
 
 // Mirrors PRICE_TREND_EPSILON in npc_scheduler_service.py (WO-ECON-MKT-

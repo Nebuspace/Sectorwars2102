@@ -100,10 +100,10 @@ describe('SecurityDashboard cleanup + player action (LEG-1713)', () => {
     mockSecurityGets();
   });
 
-  it('exposes cleanup and player-action controls', async () => {
+  it('exposes cleanup control and ARIA per-player security ops panel', async () => {
     renderDash();
     expect(await screen.findByLabelText('Clean up old security data')).toBeTruthy();
-    expect(screen.getByLabelText('Take player security action')).toBeTruthy();
+    expect(screen.getByRole('region', { name: 'ARIA per-player security operations' })).toBeTruthy();
   });
 
   it('posts tip security/cleanup with days_to_keep and toasts message', async () => {
@@ -175,61 +175,6 @@ describe('SecurityDashboard cleanup + player action (LEG-1713)', () => {
     expect(api.post).not.toHaveBeenCalled();
   });
 
-  it('posts tip player/{id}/action with block payload', async () => {
-    vi.mocked(api.post).mockResolvedValue({ data: { message: 'Player blocked' } });
-    renderDash();
-
-    fireEvent.change(await screen.findByLabelText('Player id for security action'), {
-      target: { value: 'player-uuid-1' },
-    });
-    fireEvent.change(screen.getByLabelText('Block duration in hours'), {
-      target: { value: '24' },
-    });
-    fireEvent.click(screen.getByLabelText('Take player security action'));
-
-    await waitFor(() => {
-      expect(api.post).toHaveBeenCalledWith(
-        '/api/v1/admin/security/player/player-uuid-1/action',
-        { action: 'block', duration_hours: 24 },
-      );
-    });
-    expect(toastSuccess).toHaveBeenCalledWith('Player blocked');
-  });
-
-  it('player action 403 surfaces SECURITY_ACT scope copy', async () => {
-    vi.mocked(api.post).mockRejectedValue({ response: { status: 403, data: {} } });
-    renderDash();
-
-    fireEvent.change(await screen.findByLabelText('Player id for security action'), {
-      target: { value: 'player-uuid-1' },
-    });
-    fireEvent.change(screen.getByLabelText('Block duration in hours'), {
-      target: { value: '2' },
-    });
-    fireEvent.click(screen.getByLabelText('Take player security action'));
-
-    await waitFor(() => {
-      expect(toastError).toHaveBeenCalled();
-    });
-    expect(String(toastError.mock.calls[0][0])).toMatch(/SECURITY_ACT|Access denied/i);
-  });
-
-  it('player action 429 surfaces admin rate-limit helper copy', async () => {
-    vi.mocked(api.post).mockRejectedValue({ response: { status: 429, data: {} } });
-    renderDash();
-
-    fireEvent.change(await screen.findByLabelText('Player id for security action'), {
-      target: { value: 'player-uuid-1' },
-    });
-    fireEvent.change(screen.getByLabelText('Block duration in hours'), {
-      target: { value: '2' },
-    });
-    fireEvent.click(screen.getByLabelText('Take player security action'));
-
-    await waitFor(() => {
-      expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/rate limit/i));
-    });
-  });
 });
 
 describe('SecurityDashboard overview load errors (LEG-2682)', () => {

@@ -173,3 +173,25 @@ describe('RankingLeaderboardPanel', () => {
     expect(msg).not.toMatch(/TypeError/i);
   });
 });
+
+describe('RankingLeaderboardPanel axios Network Error densify (LEG-3533)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('collapses axios-shaped Network Error on leaderboard load', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
+
+    render(<RankingLeaderboardPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/Failed to load leaderboard/i);
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Failed to load leaderboard/i);
+    expect(alert).not.toBe('Network Error');
+    expect(alert).not.toContain('Network Error');
+  });
+});

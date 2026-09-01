@@ -94,6 +94,7 @@ from src.api.routes.intrasystem import router as intrasystem_router  # WO-ISP
 from src.api.routes.admin_reports import router as admin_reports_router  # WO-PADMIN-analytics
 from src.api.routes.pending_engagements import router as pending_engagements_router  # LEG-480
 from src.api.routes.admin_re_engagement import router as admin_re_engagement_router  # LEG-332 / retention.md
+from src.api.routes.admin_formations import router as admin_formations_router  # LEG-52 place_gold_bubble
 from src.core.config import settings
 
 # Main API router - note that the version is now in the main API_V1_STR prefix
@@ -108,6 +109,7 @@ api_router.include_router(auth_router, prefix="/auth", tags=["auth"])
 api_router.include_router(users_router, prefix="/users", tags=["users"])
 api_router.include_router(first_login_router, prefix="/first-login", tags=["first-login"])
 api_router.include_router(admin_router, prefix="/admin", tags=["admin"])
+api_router.include_router(admin_formations_router, prefix="/admin", tags=["admin-formations"])
 api_router.include_router(admin_first_login_router, tags=["admin-first-login"])
 api_router.include_router(admin_enhanced_router, prefix="/admin", tags=["admin-enhanced"])
 api_router.include_router(admin_comprehensive_router, prefix="/admin", tags=["admin-comprehensive"])

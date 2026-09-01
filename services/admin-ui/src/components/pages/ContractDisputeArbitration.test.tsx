@@ -78,6 +78,53 @@ describe('ContractDisputeArbitration scope errors (LEG-968)', () => {
   });
 });
 
+describe('ContractDisputeArbitration axios Network Error densify (LEG-3540)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('collapses axios-shaped Network Error on disputes load', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
+
+    render(<ContractDisputeArbitration />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to load disputed contracts/i)).toBeTruthy();
+    });
+
+    const text = screen.getByText(/Failed to load disputed contracts/i).textContent ?? '';
+    expect(text).not.toBe('Network Error');
+    expect(text).not.toContain('Network Error');
+  });
+
+  it('collapses axios-shaped Network Error on resolve POST', async () => {
+    mockDisputesLoaded();
+    vi.mocked(api.post).mockRejectedValue(new Error('Network Error'));
+
+    await openRulingForm();
+    fireEvent.click(screen.getByRole('button', { name: 'Submit Ruling' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        `/api/v1/admin/contracts/${sampleDispute.id}/resolve-dispute`,
+        expect.objectContaining({ outcome: 'full_payout' }),
+      );
+    });
+
+    await waitFor(() => {
+      const resolveError = document.querySelector('.resolve-error');
+      expect(resolveError).toBeTruthy();
+      expect(resolveError?.textContent).toMatch(/Failed to resolve dispute/i);
+    });
+
+    const msg = document.querySelector('.resolve-error')?.textContent ?? '';
+    expect(msg).not.toBe('Network Error');
+    expect(msg).not.toContain('Network Error');
+  });
+});
+
 describe('ContractDisputeArbitration resolve mutation errors (LEG-2625)', () => {
   beforeEach(() => {
     vi.mocked(api.get).mockReset();
