@@ -42,7 +42,7 @@ const VENUE_PROPS = {
   onBack: vi.fn(),
 };
 
-function mockFetchReservationsReject(rejectWith: () => never | Promise<never>) {
+function mockFetchReservationsReject(rejectWith: () => unknown) {
   return vi.fn((url: string) => {
     if (url.includes('/construction/quotes')) {
       return Promise.resolve({ ok: true, json: async () => ({ quotes: [QUOTE] }) });
