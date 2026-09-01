@@ -8,7 +8,7 @@ import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import { useToast, useConfirm } from '../../contexts/ToastContext';
 import EconomyLeversPanel from './EconomyLeversPanel';
 import BountyAdminPanel from './BountyAdminPanel';
-import GalacticCitizenAdminPanel from './GalacticCitizenAdminPanel';
+import GalacticCitizenAdminPanel from '../admin/GalacticCitizenAdminPanel';
 import './economy-dashboard.css';
 
 interface MarketData {

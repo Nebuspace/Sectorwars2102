@@ -6,6 +6,7 @@ import BulkOperationPanel from '../admin/BulkOperationPanel';
 import PlayerAssetManager from '../admin/PlayerAssetManager';
 import EmergencyOperationsPanel from '../admin/EmergencyOperationsPanel';
 import PlayerBountyPanel from '../admin/PlayerBountyPanel';
+import GalacticCitizenAdminPanel from '../admin/GalacticCitizenAdminPanel';
 import RankingLeaderboardPanel from './RankingLeaderboardPanel';
 import ReEngagementQueuePanel, { ReEngagementSummary } from './ReEngagementQueuePanel';
 import { api } from '../../utils/auth';
@@ -904,6 +905,11 @@ const PlayerAnalytics: React.FC = () => {
                 <PlayerBountyPanel
                   targetId={state.selectedPlayer.id}
                   targetName={state.selectedPlayer.username}
+                />
+
+                <GalacticCitizenAdminPanel
+                  playerId={state.selectedPlayer.id}
+                  playerName={state.selectedPlayer.username}
                 />
               </div>
               
