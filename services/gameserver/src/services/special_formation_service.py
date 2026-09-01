@@ -36,20 +36,23 @@ unlock rule would be inventing canon. Visiting the sector is the discovery event
 
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Set
+from uuid import UUID
 
 from sqlalchemy.orm import Session
-from sqlalchemy import or_
+from sqlalchemy import and_, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.attributes import flag_modified
 
-from src.models.sector import Sector
+from src.models.sector import Sector, sector_warps
 from src.models.special_formation import (
     SpecialFormation,
     SpecialFormationType,
     PlayerFormationKnowledge,
     FormationRevealedVia,
 )
+from src.models.station import Station
+from src.models.region import Region
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +66,32 @@ class FormationNotDiscoveredError(Exception):
 class FormationAlreadyInvestigatedError(Exception):
     """Raised when a formation has already been investigated (the route maps this
     to 409 — investigation is a one-time event; the reward is not repeatable)."""
+
+
+class GoldBubblePlacementError(Exception):
+    """Operator Gold Bubble placement refused (LEG-52 / place_gold_bubble).
+
+    ``code`` is a stable machine token the admin route maps to HTTP status;
+    ``detail`` is the human-readable refusal.
+    """
+
+    def __init__(self, code: str, detail: str) -> None:
+        super().__init__(detail)
+        self.code = code
+        self.detail = detail
+
+
+# Canon default for GOLD_BUBBLE interior_size_min
+# (DATA_MODELS/special-formations.md + jsonb-schema.md).
+GOLD_BUBBLE_INTERIOR_SIZE_MIN = 100
+GOLD_BUBBLE_GATEWAY_COUNT_MIN = 1
+GOLD_BUBBLE_GATEWAY_COUNT_MAX = 3
+
+_BUBBLE_FAMILY = (
+    SpecialFormationType.BUBBLE,
+    SpecialFormationType.DEAD_END_BUBBLE,
+    SpecialFormationType.GOLD_BUBBLE,
+)
 
 
 # --- Investigation reward calibration ----------------------------------------
@@ -322,3 +351,280 @@ def investigate_formation(
         # False — magnitudes ratified in DECISIONS.md anomaly-investigate-reward.
         "reward_is_no_canon": INVESTIGATE_REWARD_NO_CANON,
     }
+
+
+# --- Operator Gold Bubble placement (LEG-52 / LEG-DEC-817) -------------------- #
+
+
+def _dedupe_preserve(ids: Sequence[UUID]) -> List[UUID]:
+    seen: Set[UUID] = set()
+    out: List[UUID] = []
+    for i in ids:
+        if i in seen:
+            continue
+        seen.add(i)
+        out.append(i)
+    return out
+
+
+def _assert_bubble_topology(
+    db: Session,
+    *,
+    interior: Set[UUID],
+    gateways: Set[UUID],
+) -> None:
+    """Bubble invariant (DATA_MODELS/special-formations.md): every directed
+    edge ``(u → v)`` with ``u`` interior must have ``v ∈ interior ∪ gateways``.
+    """
+    allowed = interior | gateways
+    if not interior:
+        return
+    rows = (
+        db.execute(
+            sector_warps.select().where(
+                sector_warps.c.source_sector_id.in_(list(interior))
+            )
+        )
+        .mappings()
+        .all()
+    )
+    for row in rows:
+        dest = row["destination_sector_id"]
+        if dest not in allowed:
+            raise GoldBubblePlacementError(
+                "topology_violation",
+                (
+                    f"Interior sector {row['source_sector_id']} has warp to "
+                    f"{dest} outside the Gold Bubble (not interior or gateway)."
+                ),
+            )
+
+
+def _isolate_gold_bubble_warps(
+    db: Session,
+    *,
+    interior: Set[UUID],
+    gateways: Set[UUID],
+) -> int:
+    """Phase B stamp: strip warps that break the Gold Bubble envelope.
+
+    1. Delete outbound warps from interior whose destination is outside
+       ``interior ∪ gateways``.
+    2. Delete inbound warps into interior whose source is outside
+       ``interior ∪ gateways`` (non-gateway exterior entries are backdoors;
+       operator placement must not leave accidental gaps).
+    """
+    allowed = interior | gateways
+    interior_list = list(interior)
+    deleted = 0
+
+    # Outbound leaks from interior.
+    outbound = (
+        db.execute(
+            sector_warps.select().where(
+                sector_warps.c.source_sector_id.in_(interior_list)
+            )
+        )
+        .mappings()
+        .all()
+    )
+    for row in outbound:
+        if row["destination_sector_id"] not in allowed:
+            db.execute(
+                sector_warps.delete().where(
+                    and_(
+                        sector_warps.c.source_sector_id
+                        == row["source_sector_id"],
+                        sector_warps.c.destination_sector_id
+                        == row["destination_sector_id"],
+                    )
+                )
+            )
+            deleted += 1
+
+    # Inbound from exterior (non-gateway) into interior.
+    inbound = (
+        db.execute(
+            sector_warps.select().where(
+                sector_warps.c.destination_sector_id.in_(interior_list)
+            )
+        )
+        .mappings()
+        .all()
+    )
+    for row in inbound:
+        src = row["source_sector_id"]
+        if src not in allowed:
+            db.execute(
+                sector_warps.delete().where(
+                    and_(
+                        sector_warps.c.source_sector_id == src,
+                        sector_warps.c.destination_sector_id
+                        == row["destination_sector_id"],
+                    )
+                )
+            )
+            deleted += 1
+
+    return deleted
+
+
+def place_gold_bubble(
+    db: Session,
+    *,
+    region_id: UUID,
+    gateway_sector_ids: Sequence[UUID],
+    interior_sector_ids: Sequence[UUID],
+    name: Optional[str] = None,
+    discovery_requirement: Optional[Dict[str, Any]] = None,
+    isolate_warps: bool = True,
+) -> SpecialFormation:
+    """Operator-only Gold Bubble stamp for a live region (LEG-52).
+
+    Canon: GOLD_BUBBLE is never in the random budget; operators place it by
+    hand via an admin endpoint (FEATURES/galaxy/special-formations.md,
+    SYSTEMS/special-formations-generation.md). Bang emits zero GOLD_BUBBLE
+    rows — this is the live-region path.
+
+    Does **not** invent graph shape: the operator supplies gateway + interior
+    sector UUIDs. Optional ``isolate_warps`` (default True) applies Phase B
+    envelope isolation against ``sector_warps``, then Phase C validates the
+    bubble topology invariant before the row is written.
+
+    Flush-only — the admin route's ``admin_action_attempt`` owns the commit.
+    """
+    gateways = _dedupe_preserve(list(gateway_sector_ids))
+    interior = _dedupe_preserve(list(interior_sector_ids))
+
+    gateway_count = len(gateways)
+    if not (
+        GOLD_BUBBLE_GATEWAY_COUNT_MIN
+        <= gateway_count
+        <= GOLD_BUBBLE_GATEWAY_COUNT_MAX
+    ):
+        raise GoldBubblePlacementError(
+            "invalid_gateway_count",
+            (
+                f"gateway_count must be in "
+                f"[{GOLD_BUBBLE_GATEWAY_COUNT_MIN}, "
+                f"{GOLD_BUBBLE_GATEWAY_COUNT_MAX}], got {gateway_count}."
+            ),
+        )
+
+    if len(interior) < GOLD_BUBBLE_INTERIOR_SIZE_MIN:
+        raise GoldBubblePlacementError(
+            "interior_too_small",
+            (
+                f"GOLD_BUBBLE requires interior_size >= "
+                f"{GOLD_BUBBLE_INTERIOR_SIZE_MIN}, got {len(interior)}."
+            ),
+        )
+
+    gateway_set = set(gateways)
+    interior_set = set(interior)
+    overlap = gateway_set & interior_set
+    if overlap:
+        raise GoldBubblePlacementError(
+            "gateway_interior_overlap",
+            (
+                "Gateway sectors must sit outside the interior "
+                f"(overlap: {sorted(str(x) for x in overlap)})."
+            ),
+        )
+
+    region = db.query(Region).filter(Region.id == region_id).first()
+    if region is None:
+        raise GoldBubblePlacementError("region_not_found", "Region not found.")
+
+    all_ids = list(gateway_set | interior_set)
+    sectors = (
+        db.query(Sector)
+        .filter(Sector.id.in_(all_ids), Sector.region_id == region_id)
+        .all()
+    )
+    found = {s.id for s in sectors}
+    missing = [i for i in all_ids if i not in found]
+    if missing:
+        raise GoldBubblePlacementError(
+            "sector_not_in_region",
+            (
+                "One or more sectors are missing or not in this region "
+                f"({len(missing)} id(s))."
+            ),
+        )
+
+    capitals = [s for s in sectors if s.id in interior_set and s.is_capital]
+    if capitals:
+        raise GoldBubblePlacementError(
+            "capital_in_interior",
+            "Capital sector may not sit inside a GOLD_BUBBLE interior.",
+        )
+
+    spacedocks = (
+        db.query(Station)
+        .filter(
+            Station.sector_id.in_(list(interior_set)),
+            Station.is_spacedock.is_(True),
+        )
+        .all()
+    )
+    if spacedocks:
+        raise GoldBubblePlacementError(
+            "spacedock_in_interior",
+            "SpaceDock sector may not sit inside a GOLD_BUBBLE interior.",
+        )
+
+    # Cross-formation overlap (bubble-family interiors + anchors).
+    existing = (
+        db.query(SpecialFormation)
+        .filter(
+            SpecialFormation.region_id == region_id,
+            SpecialFormation.type.in_(_BUBBLE_FAMILY),
+        )
+        .all()
+    )
+    claimed: Set[UUID] = set()
+    for f in existing:
+        claimed.add(f.anchor_sector_id)
+        for sid in f.interior_sector_ids or []:
+            claimed.add(sid)
+    collision = (gateway_set | interior_set) & claimed
+    if collision:
+        raise GoldBubblePlacementError(
+            "formation_overlap",
+            (
+                "Proposed Gold Bubble overlaps an existing bubble-family "
+                f"formation ({len(collision)} sector(s))."
+            ),
+        )
+
+    warps_deleted = 0
+    if isolate_warps:
+        warps_deleted = _isolate_gold_bubble_warps(
+            db, interior=interior_set, gateways=gateway_set
+        )
+    _assert_bubble_topology(db, interior=interior_set, gateways=gateway_set)
+
+    primary_anchor = gateways[0]
+    props: Dict[str, Any] = {
+        "gateway_count": gateway_count,
+        "interior_size_min": GOLD_BUBBLE_INTERIOR_SIZE_MIN,
+        "interior_size": len(interior),
+    }
+    if warps_deleted:
+        props["warps_isolated"] = warps_deleted
+
+    formation = SpecialFormation(
+        region_id=region_id,
+        type=SpecialFormationType.GOLD_BUBBLE,
+        name=name,
+        anchor_sector_id=primary_anchor,
+        interior_sector_ids=list(interior),
+        properties=props,
+        discovery_requirement=discovery_requirement,
+        is_discovered=False,
+        generation_seed=None,
+    )
+    db.add(formation)
+    db.flush()
+    return formation
