@@ -3,7 +3,7 @@ Message API endpoints for player communication
 """
 
 import logging
-from typing import Optional
+from typing import Optional, List, Dict
 from uuid import UUID
 from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
@@ -13,6 +13,7 @@ from src.core.database import get_db
 from src.auth.dependencies import get_current_player
 from src.models.player import Player
 from src.services.message_service import MessageService
+from src.services.notification_service import MessageDeliveryError
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ class MessageCreateRequest(BaseModel):
 class MessageResponse(BaseModel):
     message_id: str
     sent_at: str
+    delivery_warnings: Optional[List[Dict[str, str]]] = None
 
 
 @router.post("/send", response_model=MessageResponse)
@@ -59,7 +61,7 @@ async def send_message(
         MessageService.check_send_rate_limit(current_player.id)
 
         # Send the message
-        message = await MessageService.send_message(
+        message, delivery_warnings = await MessageService.send_message(
             db=db,
             sender_id=current_player.id,
             recipient_id=request.recipient_id,
@@ -72,7 +74,18 @@ async def send_message(
 
         return MessageResponse(
             message_id=str(message.id),
-            sent_at=message.sent_at.isoformat() if message.sent_at else ""
+            sent_at=message.sent_at.isoformat() if message.sent_at else "",
+            delivery_warnings=delivery_warnings or None,
+        )
+
+    except MessageDeliveryError as e:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": e.code,
+                "message": e.message,
+                "message_id": str(e.message_id),
+            },
         )
 
     except HTTPException:
