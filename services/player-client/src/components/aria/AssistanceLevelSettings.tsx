@@ -37,10 +37,21 @@ function httpStatus(err: unknown): number | undefined {
   return undefined;
 }
 
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
+};
+
 /**
  * Surface gameserver detail on ARIA profile load/update refusals; network
- * collapse (fetch TypeError) is not GS copy — use the stable fallback
- * (LEG-3071 Soft-ORDER).
+ * collapse (fetch TypeError / axios Network Error) is not GS copy — use the
+ * stable fallback (LEG-3071 Soft-ORDER; LEG-3557 Network Error densify).
  */
 export function formatAssistanceLevelError(
   err: unknown,
@@ -50,7 +61,7 @@ export function formatAssistanceLevelError(
     context === 'load'
       ? 'Failed to load ARIA assistance level'
       : 'Failed to update ARIA assistance level';
-  // Network collapse (fetch TypeError) is not gameserver copy — use the fallback.
+  // Network collapse (fetch TypeError / axios Network Error) is not gameserver copy.
   if (err instanceof TypeError) return fallback;
 
   const status = httpStatus(err);
@@ -58,7 +69,8 @@ export function formatAssistanceLevelError(
   const hasServerDetail =
     typeof message === 'string' &&
     message.trim().length > 0 &&
-    !/^API Error: \d+$/.test(message.trim());
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNetworkCollapseMessage(message);
 
   if (status === 403 || status === 429 || status === 500) {
     if (hasServerDetail) return message!;

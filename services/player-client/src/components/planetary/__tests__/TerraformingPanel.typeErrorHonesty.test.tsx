@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 /**
  * LEG-3077 Soft-ORDER — TerraformingPanel TypeError densify.
- * Status/start/cancel/confirm must not surface raw Failed to fetch / TypeError.
+ * LEG-3555 Soft-ORDER — Network Error densify.
+ * Status/start/cancel/confirm must not surface raw Failed to fetch / TypeError / Network Error.
  */
 import { describe, it, expect } from 'vitest';
 import {
@@ -38,6 +39,23 @@ describe('TerraformingPanel TypeError densify (LEG-3077)', () => {
     expect(text).toBe('Biome could not be confirmed yet.');
     expect(text).not.toMatch(/Failed to fetch/i);
     expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('falls back on axios Network Error / Failed to fetch (LEG-3555)', () => {
+    expect(formatTerraformingStatusError(new Error('Network Error'))).toBe(
+      'Failed to load terraforming status',
+    );
+    expect(formatTerraformingStartError(new Error('Network Error'))).toBe(
+      'Failed to start terraforming',
+    );
+    expect(formatTerraformingCancelError(new Error('Failed to fetch'))).toBe(
+      'Failed to cancel terraforming',
+    );
+    expect(formatTerraformingConfirmBiomeError(new Error('Network Error'))).toBe(
+      'Biome could not be confirmed yet.',
+    );
+    expect(formatTerraformingStatusError(new Error('Network Error'))).not.toMatch(/Network Error/i);
+    expect(formatTerraformingStartError(new Error('Failed to fetch'))).not.toMatch(/Failed to fetch/i);
   });
 
   it('preserves non-generic Error.message detail when not TypeError', () => {
