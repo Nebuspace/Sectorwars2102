@@ -152,3 +152,20 @@ def test_set_nickname_still_wins():
     assert result["messages_today"] == 1
     assert result["messages_this_week"] == 1
     assert result["flagged_messages"] == 0
+
+
+def test_stats_unexpected_is_opaque_500():
+    """LEG-3561 — stats catch must not echo raw Exception text."""
+    from fastapi import HTTPException
+
+    class _BoomDB:
+        def query(self, *args, **kwargs):
+            raise RuntimeError("secret-stats-query-should-not-leak")
+
+    try:
+        _run(get_message_statistics(admin=SimpleNamespace(), db=_BoomDB()))
+        assert False, "expected HTTPException"
+    except HTTPException as exc:
+        assert exc.status_code == 500
+        assert exc.detail == "Failed to load message statistics"
+        assert "secret-stats-query-should-not-leak" not in str(exc.detail)
