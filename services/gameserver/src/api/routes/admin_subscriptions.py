@@ -19,7 +19,7 @@ from src.services.galactic_citizen_admin_service import (
     manual_revoke_galactic_citizen,
 )
 
-router = APIRouter(prefix="/admin", tags=["admin-subscriptions"])
+router = APIRouter(tags=["admin-subscriptions"])
 
 
 class GcMutationRequest(BaseModel):
