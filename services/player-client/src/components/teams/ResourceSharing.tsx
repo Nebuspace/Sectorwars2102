@@ -45,9 +45,20 @@ const KIND_META: Record<string, { label: string; sign: '+' | '−' | '' }> = {
 
 type Operation = 'deposit' | 'withdraw' | 'transfer';
 
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
+};
+
 /** Normalize GS/API detail from apiRequest Error.message, axios-shaped response, or object detail. */
 function treasuryServerDetail(err: unknown): string | undefined {
-  // Network collapse (fetch TypeError) is not gameserver copy.
+  // Network collapse (fetch TypeError / axios Network Error) is not gameserver copy.
   if (err instanceof TypeError) return undefined;
 
   if (err && typeof err === 'object') {
@@ -69,7 +80,8 @@ function treasuryServerDetail(err: unknown): string | undefined {
   if (
     typeof message === 'string' &&
     message.trim().length > 0 &&
-    !/^API Error: \d+$/.test(message.trim())
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNetworkCollapseMessage(message)
   ) {
     return message.trim();
   }

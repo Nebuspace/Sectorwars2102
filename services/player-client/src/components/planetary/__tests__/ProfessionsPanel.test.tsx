@@ -332,3 +332,10 @@ describe('ProfessionsPanel', () => {
     expect(text).not.toMatch(/Failed to fetch/i);
     expect(text).not.toMatch(/TypeError/i);
   });
+
+  it('falls back on axios Network Error / Failed to fetch non-TypeError (LEG-3545)', () => {
+    expect(formatProfessionsLoadError(new Error('Network Error'))).toBe('Failed to load professions');
+    expect(formatProfessionsLoadError(new Error('Failed to fetch'))).toBe('Failed to load professions');
+    expect(formatProfessionsLoadError(new Error('Network Error'))).not.toMatch(/Network Error/i);
+    expect(formatProfessionsLoadError(new Error('Failed to fetch'))).not.toMatch(/Failed to fetch/i);
+  });
