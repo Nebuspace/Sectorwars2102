@@ -358,93 +358,98 @@ async def get_fleet_health_report(
     db: Session = Depends(get_db)
 ):
     """Get comprehensive fleet health report."""
+    try:
     
-    # Total ships
-    total_ships = db.query(func.count(Ship.id)).scalar()
+        # Total ships
+        total_ships = db.query(func.count(Ship.id)).scalar()
     
-    # Ships by status
-    status_counts = db.query(
-        Ship.status,
-        func.count(Ship.id)
-    ).group_by(Ship.status).all()
+        # Ships by status
+        status_counts = db.query(
+            Ship.status,
+            func.count(Ship.id)
+        ).group_by(Ship.status).all()
     
-    by_status = {status: count for status, count in status_counts}
+        by_status = {status: count for status, count in status_counts}
     
-    # Ships by condition (calculated from hull/maintenance percentage)
-    ships = db.query(Ship).all()
+        # Ships by condition (calculated from hull/maintenance percentage)
+        ships = db.query(Ship).all()
 
-    by_condition = {"excellent": 0, "good": 0, "fair": 0, "poor": 0, "critical": 0}
-    maintenance_needed = []
-    critical_issues = []
+        by_condition = {"excellent": 0, "good": 0, "fair": 0, "poor": 0, "critical": 0}
+        maintenance_needed = []
+        critical_issues = []
 
-    for ship in ships:
-        # Get JSONB data
-        combat = ship.combat or {}
-        maintenance = ship.maintenance or {}
+        for ship in ships:
+            # Get JSONB data
+            combat = ship.combat or {}
+            maintenance = ship.maintenance or {}
 
-        # Calculate hull percentage
-        hull = combat.get("hull", 0)
-        max_hull = combat.get("max_hull", 1)
-        hull_percent = (hull / max_hull * 100) if max_hull > 0 else 100
+            # Calculate hull percentage
+            hull = combat.get("hull", 0)
+            max_hull = combat.get("max_hull", 1)
+            hull_percent = (hull / max_hull * 100) if max_hull > 0 else 100
 
-        # Get condition from maintenance or use hull percentage
-        condition_percent = maintenance.get("condition", hull_percent)
+            # Get condition from maintenance or use hull percentage
+            condition_percent = maintenance.get("condition", hull_percent)
 
-        # Determine condition category
-        if condition_percent >= 90:
-            condition = "excellent"
-        elif condition_percent >= 70:
-            condition = "good"
-        elif condition_percent >= 50:
-            condition = "fair"
-        elif condition_percent >= 25:
-            condition = "poor"
-        else:
-            condition = "critical"
+            # Determine condition category
+            if condition_percent >= 90:
+                condition = "excellent"
+            elif condition_percent >= 70:
+                condition = "good"
+            elif condition_percent >= 50:
+                condition = "fair"
+            elif condition_percent >= 25:
+                condition = "poor"
+            else:
+                condition = "critical"
 
-        by_condition[condition] += 1
+            by_condition[condition] += 1
 
-        # Ships needing maintenance (< 70% condition)
-        if condition_percent < 70:
-            ship_info = {
-                "id": str(ship.id),
-                "name": ship.name,
-                "type": ship.type,
-                "owner": ship.owner.user.username if ship.owner else "Unassigned",
-                "sector": ship.sector.name if ship.sector else "Deep Space",
-                "condition_percent": round(condition_percent, 1),
-                "hull_percent": round(hull_percent, 1),
-                "status": ship.status
-            }
-            maintenance_needed.append(ship_info)
+            # Ships needing maintenance (< 70% condition)
+            if condition_percent < 70:
+                ship_info = {
+                    "id": str(ship.id),
+                    "name": ship.name,
+                    "type": ship.type,
+                    "owner": ship.owner.user.username if ship.owner else "Unassigned",
+                    "sector": ship.sector.name if ship.sector else "Deep Space",
+                    "condition_percent": round(condition_percent, 1),
+                    "hull_percent": round(hull_percent, 1),
+                    "status": ship.status
+                }
+                maintenance_needed.append(ship_info)
 
-        # Critical issues (< 25% condition or destroyed)
-        if condition_percent < 25 or ship.is_destroyed or ship.status == ShipStatus.DESTROYED.value:
-            critical_info = {
-                "id": str(ship.id),
-                "name": ship.name,
-                "type": ship.type,
-                "owner": ship.owner.user.username if ship.owner else "Unassigned",
-                "sector": ship.sector.name if ship.sector else "Deep Space",
-                "issue": "Destroyed" if ship.is_destroyed else "Critical damage",
-                "condition_percent": round(condition_percent, 1),
-                "hull_percent": round(hull_percent, 1),
-                "status": ship.status
-            }
-            critical_issues.append(critical_info)
+            # Critical issues (< 25% condition or destroyed)
+            if condition_percent < 25 or ship.is_destroyed or ship.status == ShipStatus.DESTROYED.value:
+                critical_info = {
+                    "id": str(ship.id),
+                    "name": ship.name,
+                    "type": ship.type,
+                    "owner": ship.owner.user.username if ship.owner else "Unassigned",
+                    "sector": ship.sector.name if ship.sector else "Deep Space",
+                    "issue": "Destroyed" if ship.is_destroyed else "Critical damage",
+                    "condition_percent": round(condition_percent, 1),
+                    "hull_percent": round(hull_percent, 1),
+                    "status": ship.status
+                }
+                critical_issues.append(critical_info)
 
-    # Sort lists by severity (lowest condition first)
-    maintenance_needed.sort(key=lambda x: x["condition_percent"])
-    critical_issues.sort(key=lambda x: x["condition_percent"])
+        # Sort lists by severity (lowest condition first)
+        maintenance_needed.sort(key=lambda x: x["condition_percent"])
+        critical_issues.sort(key=lambda x: x["condition_percent"])
     
-    return HealthReportResponse(
-        total_ships=total_ships,
-        by_status=by_status,
-        by_condition=by_condition,
-        maintenance_needed=maintenance_needed,
-        critical_issues=critical_issues
-    )
-
+        return HealthReportResponse(
+            total_ships=total_ships,
+            by_status=by_status,
+            by_condition=by_condition,
+            maintenance_needed=maintenance_needed,
+            critical_issues=critical_issues
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Error in get_fleet_health_report")
+        raise HTTPException(status_code=500, detail="Failed to fetch fleet health report")
 
 @router.post("/create", response_model=Dict[str, Any])
 async def create_ship(
@@ -453,144 +458,151 @@ async def create_ship(
     db: Session = Depends(get_db)
 ):
     """Create a new ship administratively."""
+    try:
 
-    with admin_action_attempt(
-        db,
-        actor=admin,
-        scope_used=SHIPS_MANAGE,
-        action="ship_create",
-        target_type="ship",
-        target_id="pending",
-        payload={
-            "name": request.name,
-            "type": request.type.value,
-            "owner_id": str(request.owner_id),
-            "sector_id": str(request.sector_id),
-        },
-    ) as attempt:
-        owner = db.query(Player).filter(Player.id == request.owner_id).first()
-        if not owner:
-            raise HTTPException(status_code=404, detail="Owner (player) not found")
-
-        sector = db.query(Sector).filter(Sector.id == request.sector_id).first()
-        if not sector:
-            raise HTTPException(status_code=404, detail="Sector not found")
-
-        ship_name = request.name
-        if not ship_name:
-            ship_count = db.query(func.count(Ship.id)).filter(
-                Ship.owner_id == request.owner_id,
-                Ship.type == request.type.value
-            ).scalar()
-            ship_name = f"{owner.user.username}'s {request.type.value.replace('_', ' ').title()} #{ship_count + 1}"
-
-        spec = db.query(ShipSpecification).filter(
-            ShipSpecification.type == request.type
-        ).first()
-
-        if not spec:
-            raise HTTPException(status_code=400, detail=f"No specification found for ship type {request.type.value}")
-
-        new_ship = Ship(
-            name=ship_name,
-            type=request.type,
-            owner_id=request.owner_id,
-            sector_id=request.sector_id,
-            base_speed=spec.speed,
-            current_speed=spec.speed,
-            turn_cost=spec.turn_cost,
-            warp_capable=spec.warp_compatible,
-            is_active=True,
-            status=ShipStatus.DOCKED,
-            maintenance={
-                "condition": 100.0,
-                "last_maintenance": datetime.utcnow().isoformat(),
-                "next_maintenance": None,
-                "repair_needed": False
-            },
-            cargo={},
-            combat={
-                "shields": spec.max_shields,
-                "max_shields": spec.max_shields,
-                "shield_recharge_rate": spec.shield_recharge_rate,
-                "hull": spec.hull_points,
-                "max_hull": spec.hull_points,
-                "evasion": spec.evasion,
-                "attack_rating": spec.attack_rating,
-                "defense_rating": spec.defense_rating
-            },
-            shield_resistance=(getattr(spec, 'shield_resistance', None) or 0.0),
-            armor_rating=(getattr(spec, 'armor_rating', None) or 0.0),
-            genesis_devices=0,
-            max_genesis_devices=spec.max_genesis_devices,
-            mines=0,
-            max_mines=spec.max_drones,
-            has_automated_maintenance=False,
-            has_cloaking=False,
-            upgrades=[],
-            insurance=None,
-            is_destroyed=False,
-            is_flagship=False,
-            purchase_value=spec.base_cost,
-            current_value=spec.base_cost
-        )
-
-        db.add(new_ship)
-        db.flush()
-
-        audit_service = AuditService(db)
-        audit_service.log_action(
-            user_id=admin.id,
-            action=AuditAction.CREATE,
-            resource_type="ship",
-            resource_id=str(new_ship.id),
-            details={
-                "name": ship_name,
-                "type": request.type.value,
-                "owner_id": str(request.owner_id),
-                "owner_name": owner.user.username,
-                "sector_id": str(request.sector_id),
-                "sector_name": sector.name
-            }
-        )
-
-        attempt.succeed(
+        with admin_action_attempt(
+            db,
+            actor=admin,
+            scope_used=SHIPS_MANAGE,
+            action="ship_create",
+            target_type="ship",
+            target_id="pending",
             payload={
-                "name": ship_name,
+                "name": request.name,
                 "type": request.type.value,
                 "owner_id": str(request.owner_id),
-                "owner_name": owner.user.username,
                 "sector_id": str(request.sector_id),
-                "sector_name": sector.name,
-                "ship_id": str(new_ship.id),
             },
-        )
+        ) as attempt:
+            owner = db.query(Player).filter(Player.id == request.owner_id).first()
+            if not owner:
+                raise HTTPException(status_code=404, detail="Owner (player) not found")
 
-    return {
-        "ship": {
-            "id": str(new_ship.id),
-            "name": new_ship.name,
-            "type": new_ship.type.value,
-            "status": new_ship.status.value,
-            "owner": {
-                "id": str(owner.id),
-                "name": owner.user.username
-            },
-            "sector": {
-                "id": str(sector.id),
-                "name": sector.name
-            },
-            "specs": {
-                "speed": spec.speed,
-                "max_cargo": spec.max_cargo,
-                "max_shields": spec.max_shields,
-                "hull_points": spec.hull_points,
-                "attack_rating": spec.attack_rating,
-                "defense_rating": spec.defense_rating,
-                "base_cost": spec.base_cost
-            },
-            "combat": new_ship.combat,
-            "maintenance": new_ship.maintenance,
-            "created_at": new_ship.created_at.isoformat()
+            sector = db.query(Sector).filter(Sector.id == request.sector_id).first()
+            if not sector:
+                raise HTTPException(status_code=404, detail="Sector not found")
+
+            ship_name = request.name
+            if not ship_name:
+                ship_count = db.query(func.count(Ship.id)).filter(
+                    Ship.owner_id == request.owner_id,
+                    Ship.type == request.type.value
+                ).scalar()
+                ship_name = f"{owner.user.username}'s {request.type.value.replace('_', ' ').title()} #{ship_count + 1}"
+
+            spec = db.query(ShipSpecification).filter(
+                ShipSpecification.type == request.type
+            ).first()
+
+            if not spec:
+                raise HTTPException(status_code=400, detail=f"No specification found for ship type {request.type.value}")
+
+            new_ship = Ship(
+                name=ship_name,
+                type=request.type,
+                owner_id=request.owner_id,
+                sector_id=request.sector_id,
+                base_speed=spec.speed,
+                current_speed=spec.speed,
+                turn_cost=spec.turn_cost,
+                warp_capable=spec.warp_compatible,
+                is_active=True,
+                status=ShipStatus.DOCKED,
+                maintenance={
+                    "condition": 100.0,
+                    "last_maintenance": datetime.utcnow().isoformat(),
+                    "next_maintenance": None,
+                    "repair_needed": False
+                },
+                cargo={},
+                combat={
+                    "shields": spec.max_shields,
+                    "max_shields": spec.max_shields,
+                    "shield_recharge_rate": spec.shield_recharge_rate,
+                    "hull": spec.hull_points,
+                    "max_hull": spec.hull_points,
+                    "evasion": spec.evasion,
+                    "attack_rating": spec.attack_rating,
+                    "defense_rating": spec.defense_rating
+                },
+                shield_resistance=(getattr(spec, 'shield_resistance', None) or 0.0),
+                armor_rating=(getattr(spec, 'armor_rating', None) or 0.0),
+                genesis_devices=0,
+                max_genesis_devices=spec.max_genesis_devices,
+                mines=0,
+                max_mines=spec.max_drones,
+                has_automated_maintenance=False,
+                has_cloaking=False,
+                upgrades=[],
+                insurance=None,
+                is_destroyed=False,
+                is_flagship=False,
+                purchase_value=spec.base_cost,
+                current_value=spec.base_cost
+            )
+
+            db.add(new_ship)
+            db.flush()
+
+            audit_service = AuditService(db)
+            audit_service.log_action(
+                user_id=admin.id,
+                action=AuditAction.CREATE,
+                resource_type="ship",
+                resource_id=str(new_ship.id),
+                details={
+                    "name": ship_name,
+                    "type": request.type.value,
+                    "owner_id": str(request.owner_id),
+                    "owner_name": owner.user.username,
+                    "sector_id": str(request.sector_id),
+                    "sector_name": sector.name
+                }
+            )
+
+            attempt.succeed(
+                payload={
+                    "name": ship_name,
+                    "type": request.type.value,
+                    "owner_id": str(request.owner_id),
+                    "owner_name": owner.user.username,
+                    "sector_id": str(request.sector_id),
+                    "sector_name": sector.name,
+                    "ship_id": str(new_ship.id),
+                },
+            )
+
+        return {
+            "ship": {
+                "id": str(new_ship.id),
+                "name": new_ship.name,
+                "type": new_ship.type.value,
+                "status": new_ship.status.value,
+                "owner": {
+                    "id": str(owner.id),
+                    "name": owner.user.username
+                },
+                "sector": {
+                    "id": str(sector.id),
+                    "name": sector.name
+                },
+                "specs": {
+                    "speed": spec.speed,
+                    "max_cargo": spec.max_cargo,
+                    "max_shields": spec.max_shields,
+                    "hull_points": spec.hull_points,
+                    "attack_rating": spec.attack_rating,
+                    "defense_rating": spec.defense_rating,
+                    "base_cost": spec.base_cost
+                },
+                "combat": new_ship.combat,
+                "maintenance": new_ship.maintenance,
+                "created_at": new_ship.created_at.isoformat()
+            }
         }
-    }
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Error in create_ship")
+        raise HTTPException(status_code=500, detail="Failed to create ship")
+
