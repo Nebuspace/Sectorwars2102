@@ -39,6 +39,7 @@ websocket service (WO-B7's lane) and adds no new broadcast primitive.
 """
 
 import logging
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
@@ -47,6 +48,35 @@ from src.models.message import Message
 from src.models.player import Player
 
 logger = logging.getLogger(__name__)
+
+
+class MessageDeliveryError(Exception):
+    """Live notification could not be delivered after the message was persisted.
+
+    Mapped by the messages route to a structured HTTP response (never a bare
+    500 with raw exception text). ``message_id`` is always set — the inbox row
+    already exists when this is raised.
+    """
+
+    def __init__(self, code: str, message: str, *, message_id: Any) -> None:
+        self.code = code
+        self.message = message
+        self.message_id = message_id
+        super().__init__(message)
+
+
+@dataclass
+class NotificationDispatchResult:
+    """Outcome of the live notification fan-out for one persisted message."""
+
+    live_dispatched: bool = False
+    warnings: List[Dict[str, str]] = field(default_factory=list)
+    error_code: Optional[str] = None
+    error_message: Optional[str] = None
+
+    @property
+    def failed(self) -> bool:
+        return self.error_code is not None
 
 
 # Canon delivery surfaces per priority. Every recognized priority includes
@@ -115,28 +145,43 @@ class NotificationService:
         message: Message,
         sender: Player,
         manager: Any,
-    ) -> None:
+    ) -> NotificationDispatchResult:
         """Fan a freshly-persisted message out to its recipient(s) by priority.
 
         `manager` is the EXISTING ConnectionManager instance (keyed by USER id);
-        we call only its public `send_personal_message` helper. Delivery
-        failures never raise — the message is already committed; a missed live
-        frame is a degraded-but-acceptable outcome (the recipient still sees it
-        in their inbox on next load).
+        we call only its public `send_personal_message` helper. Returns a
+        structured ``NotificationDispatchResult`` so ``MessageService.send_message``
+        can surface honest client-facing errors instead of opaque 500s. The
+        inbox row is already committed when this runs — callers decide whether
+        a failed live frame becomes an HTTP error or a success with warnings.
         """
+        result = NotificationDispatchResult()
         sender_is_admin = bool(getattr(getattr(sender, "user", None), "is_admin", False))
         delivery = delivery_surfaces_for(message.priority, sender_is_admin)
         from src.services.medal_service import count_earned_medals, public_medal_identity
 
-        medal_identity = public_medal_identity(
-            sender, medal_count=count_earned_medals(db, sender.id)
-        )
+        pinned_medal_id: Optional[str] = None
+        medal_count: Optional[int] = None
+        try:
+            medal_identity = public_medal_identity(
+                sender, medal_count=count_earned_medals(db, sender.id)
+            )
+            pinned_medal_id = medal_identity["pinned_medal_id"]
+            medal_count = medal_identity["medal_count"]
+        except Exception as medal_error:  # noqa: BLE001 — degrade, never 500 the send
+            logger.warning(
+                "Message %s: sender medal enrichment failed; dispatching without "
+                "medal fields: %s",
+                message.id,
+                medal_error,
+            )
+
         frame = NotificationService.build_frame(
             message,
             sender,
             delivery,
-            sender_pinned_medal_id=medal_identity["pinned_medal_id"],
-            sender_medal_count=medal_identity["medal_count"],
+            sender_pinned_medal_id=pinned_medal_id,
+            sender_medal_count=medal_count,
         )
 
         # `push` is parked infrastructure — be explicit in the log that the
@@ -148,6 +193,15 @@ class NotificationService:
                 "transport is not implemented (parked) — WS frame only.",
                 message.id, message.priority,
             )
+            result.warnings.append(
+                {
+                    "code": "push_transport_unavailable",
+                    "message": (
+                        "Offline push transport is not implemented; message was "
+                        "saved to inbox and live WebSocket notification was attempted."
+                    ),
+                }
+            )
 
         try:
             if message.recipient_id:
@@ -158,6 +212,7 @@ class NotificationService:
                 )
                 if recipient and recipient.user_id:
                     await manager.send_personal_message(str(recipient.user_id), frame)
+                    result.live_dispatched = True
                 else:
                     logger.warning(
                         "Message %s delivered to inbox but recipient %s has no "
@@ -187,13 +242,22 @@ class NotificationService:
                             "Team message %s: member %s has no user_id — skipped.",
                             message.id, member.id,
                         )
+                if dispatched:
+                    result.live_dispatched = True
                 logger.info(
                     "Team message %s (priority=%s) notification fanned out to %d "
                     "of %d members.",
                     message.id, message.priority, dispatched, len(team_members),
                 )
-        except Exception as notify_error:  # noqa: BLE001 — must not fail a committed send
+        except Exception as notify_error:  # noqa: BLE001 — structured, not raw 500
             logger.warning(
                 "Message %s delivered but live notification failed: %s",
                 message.id, notify_error,
             )
+            result.error_code = "live_notification_failed"
+            result.error_message = (
+                "Message was saved to inbox but the live notification could not "
+                "be delivered."
+            )
+
+        return result

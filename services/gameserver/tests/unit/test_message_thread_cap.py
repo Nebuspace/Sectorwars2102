@@ -22,13 +22,18 @@ from fastapi import HTTPException
 
 from src.services import message_service as ms
 from src.services.message_service import MessageService, THREAD_LIMIT_EXCEEDED, THREAD_MESSAGE_CAP
+from src.services.notification_service import NotificationDispatchResult
 
 
 @pytest.fixture(autouse=True)
 def _stub_notification(monkeypatch):
     """Isolate the thread-cap logic from NotificationService's own DB reads —
     delivery fan-out is a separate concern (notification_service.py)."""
-    monkeypatch.setattr(ms.MessageService, "_send_notification", AsyncMock())
+    monkeypatch.setattr(
+        ms.MessageService,
+        "_send_notification",
+        AsyncMock(return_value=NotificationDispatchResult()),
+    )
 
 
 def _first_mock(value):
@@ -88,7 +93,7 @@ async def test_explicit_thread_one_below_cap_allows_send():
         _first_mock(SimpleNamespace(id=recipient_id)),
         _count_mock(THREAD_MESSAGE_CAP - 1),
     )
-    msg = await MessageService.send_message(
+    msg, _warnings = await MessageService.send_message(
         db, sender_id=sender_id, recipient_id=recipient_id,
         content="hi", thread_id=thread_id,
     )
@@ -109,7 +114,7 @@ async def test_brand_new_thread_is_cap_exempt_and_skips_the_count_query():
         # No 3rd mock: if the cap check regressed into firing here anyway,
         # the exhausted side_effect raises StopIteration and fails loudly.
     )
-    msg = await MessageService.send_message(
+    msg, _warnings = await MessageService.send_message(
         db, sender_id=sender_id, recipient_id=recipient_id, content="hi",
     )
     db.add.assert_called_once_with(msg)
@@ -135,7 +140,7 @@ async def test_authorized_reply_inherits_thread_and_sends_under_cap():
         _first_mock(original),                                 # reply_to_id lookup
         _count_mock(3),                                        # comfortably under cap
     )
-    msg = await MessageService.send_message(
+    msg, _warnings = await MessageService.send_message(
         db, sender_id=sender_id, recipient_id=original_sender_id, content="reply",
         reply_to_id=reply_to_id,
     )
@@ -186,7 +191,7 @@ async def test_forged_reply_drops_link_and_starts_a_cap_exempt_fresh_thread():
         _first_mock(original),
         # No count mock: proves the cap check never fires for a dropped link.
     )
-    msg = await MessageService.send_message(
+    msg, _warnings = await MessageService.send_message(
         db, sender_id=sender_id, recipient_id=recipient_id, content="hi",
         reply_to_id=reply_to_id,
     )

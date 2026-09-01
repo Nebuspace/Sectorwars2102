@@ -26,7 +26,7 @@ import pytest
 from src.models.message import Message
 from src.models.player import Player
 from src.services import notification_service
-from src.services.notification_service import NotificationService, delivery_surfaces_for
+from src.services.notification_service import NotificationDispatchResult, NotificationService, delivery_surfaces_for
 
 
 @pytest.fixture(autouse=True)
@@ -231,7 +231,7 @@ class TestNotifyNewMessageDirect:
         db = _FakeDb(results={Player: [recipient]})
         manager = _FakeManager()
 
-        await NotificationService.notify_new_message(db, msg, sender, manager)
+        result = await NotificationService.notify_new_message(db, msg, sender, manager)
 
         assert len(manager.sent) == 1
         sent_user_id, frame = manager.sent[0]
@@ -289,6 +289,19 @@ class TestNotifyNewMessageDirect:
         assert frame["delivery"] == ["inbox", "toast", "push", "modal"]
 
     @pytest.mark.asyncio
+    async def test_high_priority_earns_push_transport_warning(self):
+        recipient = _player(user_id=uuid4())
+        sender = _player()
+        msg = _message(recipient_id=recipient.id, priority="high")
+        db = _FakeDb(results={Player: [recipient]})
+        manager = _FakeManager()
+
+        result = await NotificationService.notify_new_message(db, msg, sender, manager)
+
+        assert result.live_dispatched is True
+        assert any(w["code"] == "push_transport_unavailable" for w in result.warnings)
+
+    @pytest.mark.asyncio
     async def test_non_admin_sender_urgent_message_has_no_modal(self):
         recipient = _player(user_id=uuid4())
         sender = _player(user=_User(is_admin=False))
@@ -315,15 +328,43 @@ class TestNotifyNewMessageDirect:
         assert frame["delivery"] == ["inbox", "toast", "push"]
 
     @pytest.mark.asyncio
-    async def test_delivery_failure_is_swallowed_not_raised(self):
+    async def test_medal_enrichment_failure_degrades_without_error(self, monkeypatch):
+        recipient = _player(user_id=uuid4())
+        sender = _player()
+        msg = _message(recipient_id=recipient.id, priority="normal")
+        db = _FakeDb(results={Player: [recipient]})
+        manager = _FakeManager()
+
+        def _boom(_db, _player_id):
+            raise RuntimeError("secret-medal-db-should-not-500-send")
+
+        monkeypatch.setattr(
+            "src.services.medal_service.count_earned_medals",
+            _boom,
+        )
+
+        result = await NotificationService.notify_new_message(db, msg, sender, manager)
+
+        assert result.failed is False
+        assert result.live_dispatched is True
+        _, frame = manager.sent[0]
+        assert frame["sender_pinned_medal_id"] is None
+        assert frame["sender_medal_count"] is None
+
+    @pytest.mark.asyncio
+    async def test_delivery_failure_returns_structured_result_not_raised(self):
         recipient = _player(user_id=uuid4())
         sender = _player()
         msg = _message(recipient_id=recipient.id)
         db = _FakeDb(results={Player: [recipient]})
         manager = _FakeManager(raise_on=str(recipient.user_id))
 
-        # Must not raise.
-        await NotificationService.notify_new_message(db, msg, sender, manager)
+        result = await NotificationService.notify_new_message(db, msg, sender, manager)
+
+        assert result.failed is True
+        assert result.error_code == "live_notification_failed"
+        assert "saved to inbox" in result.error_message
+        assert manager.sent == []
 
 
 class TestNotifyNewMessageTeam:
@@ -352,7 +393,7 @@ class TestNotifyNewMessageTeam:
         db = _FakeDb(results={Player: [[addressable, unaddressable]]})
         manager = _FakeManager()
 
-        await NotificationService.notify_new_message(db, msg, sender, manager)
+        result = await NotificationService.notify_new_message(db, msg, sender, manager)
 
         assert len(manager.sent) == 1
         assert manager.sent[0][0] == str(addressable.user_id)
@@ -381,7 +422,7 @@ class TestNotifyNewMessageTeam:
         assert manager.sent == []
 
     @pytest.mark.asyncio
-    async def test_delivery_failure_mid_broadcast_is_swallowed_not_raised(self):
+    async def test_delivery_failure_mid_broadcast_returns_structured_result(self):
         team_id = uuid4()
         sender = _player()
         m1 = _player(user_id=uuid4())
@@ -389,8 +430,10 @@ class TestNotifyNewMessageTeam:
         db = _FakeDb(results={Player: [[m1]]})
         manager = _FakeManager(raise_on=str(m1.user_id))
 
-        # Must not raise.
-        await NotificationService.notify_new_message(db, msg, sender, manager)
+        result = await NotificationService.notify_new_message(db, msg, sender, manager)
+
+        assert result.failed is True
+        assert result.error_code == "live_notification_failed"
 
     @pytest.mark.asyncio
     async def test_recipient_id_takes_precedence_over_team_id(self):
@@ -400,7 +443,7 @@ class TestNotifyNewMessageTeam:
         db = _FakeDb(results={Player: [recipient]})
         manager = _FakeManager()
 
-        await NotificationService.notify_new_message(db, msg, sender, manager)
+        result = await NotificationService.notify_new_message(db, msg, sender, manager)
 
         assert len(manager.sent) == 1
         assert manager.sent[0][0] == str(recipient.user_id)
