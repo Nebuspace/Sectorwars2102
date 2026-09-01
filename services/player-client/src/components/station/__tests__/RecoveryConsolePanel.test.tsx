@@ -72,6 +72,12 @@ describe('formatRecoveryActionError', () => {
     expect(text).not.toMatch(/Failed to fetch/i);
     expect(text).not.toMatch(/TypeError/i);
   });
+
+  it('falls back on axios Network Error / Failed to fetch (LEG-3510)', () => {
+    expect(formatRecoveryActionError(new Error('Network Error'))).toBe('Recovery action failed');
+    expect(formatRecoveryActionError(new Error('Failed to fetch'))).toBe('Recovery action failed');
+    expect(formatRecoveryActionError(new Error('Network Error'))).not.toMatch(/Network Error/i);
+  });
 });
 
 describe('RecoveryConsolePanel', () => {
@@ -182,5 +188,73 @@ describe('RecoveryConsolePanel', () => {
 
     const feedback = container.querySelector('.recovery-console-feedback');
     expect(feedback?.textContent).toBe('Slipdrive requires a warp jumper module');
+  });
+
+  it('surfaces honest fallback when distress rejects with axios Network Error (LEG-3510)', async () => {
+    mockFireDistress.mockRejectedValueOnce(new Error('Network Error'));
+
+    await act(async () => {
+      root.render(<RecoveryConsolePanel />);
+      await flush();
+    });
+    await act(async () => {
+      (container.querySelector('[data-testid="recovery-console-open"]') as HTMLButtonElement).click();
+      await flush();
+    });
+    await act(async () => {
+      (container.querySelector('[data-testid="recovery-distress-fire"]') as HTMLButtonElement).click();
+      await flush();
+      await flush();
+    });
+
+    const feedback = container.querySelector('.recovery-console-feedback');
+    expect(feedback?.textContent).toMatch(/Recovery action failed/i);
+    expect(feedback?.textContent).not.toMatch(/Network Error/i);
+  });
+
+  it('surfaces honest fallback when slipdrive rejects with axios Network Error (LEG-3510)', async () => {
+    mockBegin.mockRejectedValueOnce(new Error('Network Error'));
+
+    await act(async () => {
+      root.render(<RecoveryConsolePanel />);
+      await flush();
+    });
+    await act(async () => {
+      (container.querySelector('[data-testid="recovery-console-open"]') as HTMLButtonElement).click();
+      await flush();
+    });
+    await act(async () => {
+      (container.querySelector('[data-testid="recovery-slipdrive-begin"]') as HTMLButtonElement).click();
+      await flush();
+      await flush();
+    });
+
+    const feedback = container.querySelector('.recovery-console-feedback');
+    expect(feedback?.textContent).toMatch(/Recovery action failed/i);
+    expect(feedback?.textContent).not.toMatch(/Network Error/i);
+  });
+
+  it('surfaces honest fallback when escape pod rejects with axios Network Error (LEG-3510)', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    mockEscape.mockRejectedValueOnce(new Error('Network Error'));
+
+    await act(async () => {
+      root.render(<RecoveryConsolePanel />);
+      await flush();
+    });
+    await act(async () => {
+      (container.querySelector('[data-testid="recovery-console-open"]') as HTMLButtonElement).click();
+      await flush();
+    });
+    await act(async () => {
+      (container.querySelector('[data-testid="recovery-escape-pod"]') as HTMLButtonElement).click();
+      await flush();
+      await flush();
+    });
+
+    const feedback = container.querySelector('.recovery-console-feedback');
+    expect(feedback?.textContent).toMatch(/Recovery action failed/i);
+    expect(feedback?.textContent).not.toMatch(/Network Error/i);
+    confirmSpy.mockRestore();
   });
 });

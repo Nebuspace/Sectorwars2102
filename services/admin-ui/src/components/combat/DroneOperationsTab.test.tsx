@@ -110,6 +110,16 @@ describe('DroneOperationsTab scope errors', () => {
     expect(text).not.toMatch(/Failed to fetch/i);
   });
 
+  it('collapses axios Network Error on drones list load to honest fallback (LEG-3515)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
+    render(<DroneOperationsTab />);
+    await waitFor(() => {
+      expect(document.body.textContent).toMatch(/Failed to load drone operations data/i);
+    });
+    const text = document.body.textContent ?? '';
+    expect(text).not.toMatch(/Network Error/i);
+  });
+
   it('reports all-reject 429 as admin rate-limit', async () => {
     vi.mocked(api.get).mockRejectedValue({ response: { status: 429 } });
     render(<DroneOperationsTab />);
@@ -279,6 +289,31 @@ describe('DroneOperationsTab POST mutations (LEG-2763)', () => {
     const msg = String(toastError.mock.calls[0][0]);
     expect(msg).toMatch(/COMBAT_INTERVENE/);
     expect(msg).not.toMatch(/Failed to force-recall drone\.$/);
+  });
+
+  it('force-recall POST axios Network Error toasts honest fallback, not raw transport (LEG-3515)', async () => {
+    mockHappyGets([
+      {
+        ...sampleDrone,
+        status: 'deployed',
+        deployed_at: '2026-01-01T12:00:00Z',
+      },
+    ]);
+    vi.mocked(api.post).mockRejectedValue(new Error('Network Error'));
+
+    render(<DroneOperationsTab />);
+    await waitFor(() => {
+      expect(screen.getByText('Scout Alpha')).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Force Recall' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith('/api/v1/admin/drones/drone-1/force-recall');
+      expect(toastError).toHaveBeenCalled();
+    });
+    const msg = String(toastError.mock.calls[0][0]);
+    expect(msg).toMatch(/Failed to force-recall drone/i);
+    expect(msg).not.toMatch(/Network Error/i);
   });
 
   it('force-recall POST 429 toasts admin rate-limit', async () => {
