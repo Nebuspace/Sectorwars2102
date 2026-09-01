@@ -9,6 +9,7 @@ Write: admin force-cancel reuses ``construction_service.cancel`` refund math
 
 from __future__ import annotations
 
+import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -22,6 +23,8 @@ from src.services import construction_service
 from src.services.admin_action_log_service import log_admin_action
 from src.services.construction_service import ConstructionError
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/admin/construction", tags=["admin-construction"])
 
 
@@ -31,7 +34,11 @@ async def list_tradedocks(
     db: Session = Depends(get_db),
 ):
     """List every station with a TradeDock shipyard (``tradedock_tier`` set)."""
-    return construction_service.admin_list_tradedocks(db)
+    try:
+        return construction_service.admin_list_tradedocks(db)
+    except Exception:
+        logger.exception("Error in list_tradedocks")
+        raise HTTPException(status_code=500, detail="Failed to list tradedocks")
 
 
 @router.get("/tradedocks/{station_id}")

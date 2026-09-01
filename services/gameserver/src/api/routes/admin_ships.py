@@ -95,7 +95,33 @@ async def get_ships(
     db: Session = Depends(get_db)
 ):
     """Get all ships with optional filters and pagination."""
-    
+    try:
+        return _get_ships_impl(
+            page=page,
+            limit=limit,
+            status=status,
+            type=type,
+            owner_id=owner_id,
+            sector_id=sector_id,
+            db=db,
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Error in get_ships")
+        raise HTTPException(status_code=500, detail="Failed to list ships")
+
+
+def _get_ships_impl(
+    *,
+    page: int,
+    limit: int,
+    status: Optional[str],
+    type: Optional[str],
+    owner_id: Optional[UUID],
+    sector_id: Optional[UUID],
+    db: Session,
+) -> ShipListResponse:
     # Build query - outer join with ShipSpecification to get cargo capacity
     # Use outerjoin in case ShipSpecification table is not populated
     query = db.query(Ship, ShipSpecification).outerjoin(
@@ -229,7 +255,27 @@ async def emergency_ship_action(
     db: Session = Depends(get_db)
 ):
     """Perform emergency action on a ship."""
+    try:
+        return _emergency_ship_action_impl(
+            ship_id=ship_id,
+            request=request,
+            admin=admin,
+            db=db,
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Error in emergency_ship_action")
+        raise HTTPException(status_code=500, detail="Failed to perform emergency ship action")
 
+
+def _emergency_ship_action_impl(
+    *,
+    ship_id: UUID,
+    request: EmergencyActionRequest,
+    admin: User,
+    db: Session,
+) -> EmergencyActionResponse:
     with admin_action_attempt(
         db,
         actor=admin,
