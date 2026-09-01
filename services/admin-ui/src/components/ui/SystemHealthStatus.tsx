@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import './system-health-status.css';
 
 interface ServerStatus {
@@ -84,8 +85,8 @@ const SystemHealthStatus: React.FC = () => {
   // REMOVED: Container health monitoring no longer available (Docker socket removed for security)
   const [isLoading, setIsLoading] = useState(true);
   const [isExpanded, setIsExpanded] = useState(false);
-  /** Operator-visible RBAC / rate-limit honesty (LEG-1233) — not console-only. */
-  const [authProbeError, setAuthProbeError] = useState<string | null>(null);
+  /** Operator-visible probe failures — RBAC, rate-limit, and transport (LEG-1233, LEG-3700). */
+  const [probeError, setProbeError] = useState<string | null>(null);
 
   const classifyProbeError = (error: unknown): string | null => {
     const status = (error as { response?: { status?: number } })?.response?.status;
@@ -96,6 +97,22 @@ const SystemHealthStatus: React.FC = () => {
       return 'Admin rate limit exceeded — wait a moment and try again.';
     }
     return null;
+  };
+
+  const recordProbeError = (error: unknown, fallback: string) => {
+    const authMsg = classifyProbeError(error);
+    if (authMsg) {
+      setProbeError((prev) => prev ?? authMsg);
+      return;
+    }
+    setProbeError(
+      (prev) =>
+        prev ??
+        formatAdminApiError(error, {
+          fallback,
+          scopeHint: 'system health probes require an admin view scope.',
+        }),
+    );
   };
 
   const checkServerStatus = async () => {
@@ -118,8 +135,10 @@ const SystemHealthStatus: React.FC = () => {
       });
     } catch (error) {
       console.error('Failed to check server status:', error);
-      const authMsg = classifyProbeError(error);
-      if (authMsg) setAuthProbeError(authMsg);
+      recordProbeError(
+        error,
+        'Gameserver unreachable — network error checking server status.',
+      );
       setServerStatus(prev => ({
         ...prev,
         status: 'offline',
@@ -134,8 +153,10 @@ const SystemHealthStatus: React.FC = () => {
       setAiHealth(data);
     } catch (error) {
       console.error('Failed to check AI health:', error);
-      const authMsg = classifyProbeError(error);
-      if (authMsg) setAuthProbeError(authMsg);
+      recordProbeError(
+        error,
+        'Gameserver unreachable — network error checking AI provider health.',
+      );
       setAiHealth(null);
     }
   };
@@ -146,8 +167,10 @@ const SystemHealthStatus: React.FC = () => {
       setDbHealth(data);
     } catch (error) {
       console.error('Failed to check database health:', error);
-      const authMsg = classifyProbeError(error);
-      if (authMsg) setAuthProbeError(authMsg);
+      recordProbeError(
+        error,
+        'Gameserver unreachable — network error checking database health.',
+      );
       setDbHealth(null);
     }
   };
@@ -156,7 +179,7 @@ const SystemHealthStatus: React.FC = () => {
 
   const checkAllStatus = async () => {
     setIsLoading(true);
-    setAuthProbeError(null);
+    setProbeError(null);
     await Promise.all([
       checkServerStatus(),
       checkAIHealth(),
@@ -282,9 +305,9 @@ const SystemHealthStatus: React.FC = () => {
       </div>
       
       <div className="system-health-content">
-        {authProbeError && (
+        {probeError && (
           <div className="alert error" role="alert" style={{ marginBottom: '8px' }}>
-            <span className="alert-message">{authProbeError}</span>
+            <span className="alert-message">{probeError}</span>
           </div>
         )}
         <div className="status-summary">

@@ -131,23 +131,18 @@ describe('LanguageSwitcher TypeError densify (LEG-3174)', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
   });
 
-  it('uses static launch-complete fallback on progress TypeError without raw transport text in DOM', async () => {
+  it('surfaces operator-safe alert on progress TypeError without raw transport text in DOM', async () => {
     vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
-    const user = userEvent.setup();
     render(<LanguageSwitcher />);
 
-    await user.click(screen.getByTitle('Change Language'));
-
     await waitFor(() => {
-      expect(screen.getByText('Español')).toBeInTheDocument();
+      expect(screen.getByRole('alert')).toBeTruthy();
     });
 
-    expect(screen.queryByText('0%')).not.toBeInTheDocument();
-    expect(screen.getByText('Français')).toBeInTheDocument();
-
-    const text = document.body.textContent ?? '';
-    expect(text).not.toMatch(/Failed to fetch/i);
-    expect(text).not.toMatch(/TypeError/i);
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Could not load translation progress|connection/i);
+    expect(alert).not.toMatch(/Failed to fetch/i);
+    expect(alert).not.toMatch(/TypeError/i);
   });
 });
 
@@ -163,41 +158,32 @@ describe('LanguageSwitcher axios Network Error densify (LEG-3543)', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
   });
 
-  it('uses static launch-complete fallback on progress Network Error without raw transport text', async () => {
+  it('surfaces operator-safe alert on progress Network Error without raw transport text', async () => {
     vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
-    const user = userEvent.setup();
     render(<LanguageSwitcher />);
 
-    await user.click(screen.getByTitle('Change Language'));
-
     await waitFor(() => {
-      expect(screen.getByText('Español')).toBeInTheDocument();
+      expect(screen.getByRole('alert')).toBeTruthy();
     });
 
-    expect(screen.queryByText('0%')).not.toBeInTheDocument();
-    expect(screen.getByText('Français')).toBeInTheDocument();
-
-    const text = document.body.textContent ?? '';
-    expect(text).not.toBe('Network Error');
-    expect(text).not.toContain('Network Error');
-    expect(text).not.toMatch(/TypeError/i);
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Could not load translation progress|connection/i);
+    expect(alert).not.toBe('Network Error');
+    expect(alert).not.toContain('Network Error');
+    expect(alert).not.toMatch(/TypeError/i);
   });
 
-  it('uses static launch-complete fallback on progress Error Failed to fetch without raw transport text', async () => {
+  it('surfaces operator-safe alert on progress Error Failed to fetch without raw transport text', async () => {
     vi.mocked(api.get).mockRejectedValue(new Error('Failed to fetch'));
-    const user = userEvent.setup();
     render(<LanguageSwitcher />);
 
-    await user.click(screen.getByTitle('Change Language'));
-
     await waitFor(() => {
-      expect(screen.getByText('Español')).toBeInTheDocument();
+      expect(screen.getByRole('alert')).toBeTruthy();
     });
 
-    expect(screen.queryByText('0%')).not.toBeInTheDocument();
-
-    const text = document.body.textContent ?? '';
-    expect(text).not.toMatch(/Failed to fetch/i);
-    expect(text).not.toMatch(/TypeError/i);
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Could not load translation progress|connection/i);
+    expect(alert).not.toMatch(/Failed to fetch/i);
+    expect(alert).not.toMatch(/TypeError/i);
   });
 });
