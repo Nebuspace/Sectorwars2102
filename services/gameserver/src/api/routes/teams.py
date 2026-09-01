@@ -765,7 +765,7 @@ async def send_team_message(
         raise HTTPException(status_code=403, detail="You are not a member of this team")
     
     # Send message
-    message = await MessageService.send_message(
+    message, _delivery_warnings = await MessageService.send_message(
         db=db,
         sender_id=player.id,
         team_id=team_id,
