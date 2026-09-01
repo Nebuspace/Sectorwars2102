@@ -184,3 +184,106 @@ describe('AriaPlayerSecurityOpsPanel (LEG-272)', () => {
     expect(String(toastError.mock.calls[0][0])).toMatch(/admin\.aria\.audit/i);
   });
 });
+
+/**
+ * LEG-3544 Soft-ORDER — TypeError / axios Network Error densify (invent=0).
+ * formatAdminApiError already on catch; assert raw transport never surfaces.
+ */
+describe('AriaPlayerSecurityOpsPanel Network Error densify (LEG-3544)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    toastSuccess.mockReset();
+    toastError.mockReset();
+    confirmMock.mockReset();
+    confirmMock.mockResolvedValue(true);
+  });
+
+  it('collapses axios-shaped Network Error on risk/status load', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
+
+    render(<AriaPlayerSecurityOpsPanel />);
+
+    fireEvent.change(screen.getByLabelText('Player id for ARIA security assessment'), {
+      target: { value: 'player-uuid-1' },
+    });
+    fireEvent.click(screen.getByLabelText('Load ARIA security assessment'));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Failed to load player (risk assessment|security status)/i);
+    expect(alert).not.toBe('Network Error');
+    expect(alert).not.toContain('Network Error');
+    expect(alert).not.toMatch(/TypeError/i);
+  });
+
+  it('collapses TypeError Failed to fetch on risk/status load', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<AriaPlayerSecurityOpsPanel />);
+
+    fireEvent.change(screen.getByLabelText('Player id for ARIA security assessment'), {
+      target: { value: 'player-uuid-1' },
+    });
+    fireEvent.click(screen.getByLabelText('Load ARIA security assessment'));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Failed to load player (risk assessment|security status)/i);
+    expect(alert).not.toMatch(/Failed to fetch/i);
+    expect(alert).not.toMatch(/TypeError/i);
+  });
+
+  it('collapses axios-shaped Network Error on action POST', async () => {
+    vi.mocked(api.post).mockRejectedValue(new Error('Network Error'));
+
+    render(<AriaPlayerSecurityOpsPanel />);
+
+    fireEvent.change(screen.getByLabelText('Player id for ARIA security assessment'), {
+      target: { value: 'player-uuid-1' },
+    });
+    fireEvent.change(screen.getByLabelText('Block duration in hours'), {
+      target: { value: '2' },
+    });
+    fireEvent.click(screen.getByLabelText('Take ARIA player security action'));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalled();
+    });
+
+    const msg = String(toastError.mock.calls[0][0]);
+    expect(msg).toMatch(/Failed to take player security action/i);
+    expect(msg).not.toBe('Network Error');
+    expect(msg).not.toContain('Network Error');
+    expect(msg).not.toMatch(/TypeError/i);
+  });
+
+  it('collapses TypeError Failed to fetch on action POST', async () => {
+    vi.mocked(api.post).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<AriaPlayerSecurityOpsPanel />);
+
+    fireEvent.change(screen.getByLabelText('Player id for ARIA security assessment'), {
+      target: { value: 'player-uuid-1' },
+    });
+    fireEvent.change(screen.getByLabelText('Block duration in hours'), {
+      target: { value: '2' },
+    });
+    fireEvent.click(screen.getByLabelText('Take ARIA player security action'));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalled();
+    });
+
+    const msg = String(toastError.mock.calls[0][0]);
+    expect(msg).toMatch(/Failed to take player security action/i);
+    expect(msg).not.toMatch(/Failed to fetch/i);
+    expect(msg).not.toMatch(/TypeError/i);
+  });
+});

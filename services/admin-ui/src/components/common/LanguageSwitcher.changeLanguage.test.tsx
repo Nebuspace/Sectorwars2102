@@ -88,3 +88,37 @@ describe('LanguageSwitcher changeLanguage error honesty (LEG-3236)', () => {
     expect(document.body.textContent ?? '').not.toMatch(/bundle load failed/i);
   });
 });
+
+/**
+ * LEG-3543 Soft-ORDER — changeLanguage axios-shaped Network Error densify (invent=0).
+ */
+describe('LanguageSwitcher changeLanguage Network Error densify (LEG-3543)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    mockChangeLanguage.mockReset();
+    vi.mocked(api.get).mockResolvedValue({ data: { overallCompletion: 100 } });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('shows recoverable copy on axios-shaped Network Error — no raw transport text', async () => {
+    mockChangeLanguage.mockRejectedValue(new Error('Network Error'));
+    const user = userEvent.setup();
+    render(<LanguageSwitcher />);
+
+    await user.click(screen.getByTitle('Change Language'));
+    await waitFor(() => {
+      expect(screen.getByText('Español')).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByText('Español'));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/Could not switch language/i);
+    });
+
+    const text = document.body.textContent ?? '';
+    expect(text).not.toBe('Network Error');
+    expect(text).not.toContain('Network Error');
+    expect(text).not.toMatch(/TypeError/i);
+  });
+});
