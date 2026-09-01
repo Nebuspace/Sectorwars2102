@@ -1918,9 +1918,14 @@ def create_region_funded_construction(
 # Per-project Space Engineer assignment (LEG-3599)
 # ---------------------------------------------------------------------------
 
+def _assigned_engineers_raw(reservation: ConstructionReservation) -> List[Any]:
+    """assigned_engineers JSONB list; tolerate pre-migration rows and test stubs."""
+    return getattr(reservation, "assigned_engineers", None) or []
+
+
 def _assigned_engineer_map(reservation: ConstructionReservation) -> Dict[str, int]:
     """Planet-id -> assigned count for one reservation."""
-    raw = reservation.assigned_engineers or []
+    raw = _assigned_engineers_raw(reservation)
     out: Dict[str, int] = {}
     for entry in raw:
         if not isinstance(entry, dict):
@@ -2132,7 +2137,7 @@ def status_payload(
         "credits_paid": reservation.credits_paid,
         "queue_bonus_credit": reservation.queue_bonus_credit,
         "priority_bumps_count": reservation.priority_bumps_count or 0,
-        "assigned_engineers": list(reservation.assigned_engineers or []),
+        "assigned_engineers": list(_assigned_engineers_raw(reservation)),
         "assigned_engineer_count": assigned_construction_engineer_count(db, reservation),
         "milestones": {
             name: {"amount": amounts[name], "paid": bool((reservation.milestones or {}).get(name))}
