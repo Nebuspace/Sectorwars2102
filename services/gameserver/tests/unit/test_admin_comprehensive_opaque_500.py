@@ -1,10 +1,11 @@
-"""LEG-3582 / LEG-3626 / LEG-3638 / LEG-3646 — admin_comprehensive HTTP 500 catches must not echo Exception text.
+"""LEG-3582 / LEG-3626 / LEG-3638 / LEG-3646 / LEG-3650 — admin_comprehensive HTTP 500 catches must not echo Exception text.
 
 Mirrors LEG-3570 admin_colonization / LEG-3569 claim_ship / LEG-3605 admin_economy opaque densify.
 Representative cluster: players/sectors/ports/planets/analytics/health/warp/teams.
 Security cluster (LEG-3626): risk/status/logs/action routes.
 Economy cluster (LEG-3638): analytics snapshot, port stock levels, AI trading admin routes.
 Ship/player mutation cluster (LEG-3646): create/update/delete/teleport ship, update player.
+Create-player mutation cluster (LEG-3650): create-from-user, create-bulk player routes.
 """
 
 from __future__ import annotations
@@ -24,6 +25,8 @@ from src.api.routes.admin_comprehensive import (
     ShipCreateRequest,
     ShipUpdateRequest,
     create_analytics_snapshot,
+    create_player_from_user,
+    create_players_from_all_users,
     create_ship,
     delete_ship,
     get_ai_models,
@@ -387,8 +390,41 @@ async def test_teleport_ship_unexpected_is_opaque_500():
     assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
 
 
+@pytest.mark.asyncio
+async def test_create_player_from_user_unexpected_is_opaque_500():
+    """LEG-3650 — create_player_from_user catch must not echo raw Exception text."""
+    with patch.object(ac, "admin_action_attempt", _noop_admin_action_attempt):
+        with pytest.raises(HTTPException) as excinfo:
+            await create_player_from_user(
+                user_id=_PLAYER_ID,
+                current_admin=SimpleNamespace(username="admin"),
+                db=_BoomDB(),
+            )
+
+    exc = excinfo.value
+    assert exc.status_code == 500
+    assert exc.detail == "Failed to create player"
+    assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
+
+
+@pytest.mark.asyncio
+async def test_create_players_from_all_users_unexpected_is_opaque_500():
+    """LEG-3650 — create_players_from_all_users catch must not echo raw Exception text."""
+    with patch.object(ac, "admin_action_attempt", _noop_admin_action_attempt):
+        with pytest.raises(HTTPException) as excinfo:
+            await create_players_from_all_users(
+                current_admin=SimpleNamespace(username="admin"),
+                db=_BoomDB(),
+            )
+
+    exc = excinfo.value
+    assert exc.status_code == 500
+    assert exc.detail == "Failed to create players"
+    assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
+
+
 def test_admin_comprehensive_ship_player_mutation_cluster_http500_opaque():
-    """LEG-3646 — static pin: ship/player mutation cluster 500 details stay opaque."""
+    """LEG-3646 / LEG-3650 — static pin: ship/player mutation cluster 500 details stay opaque."""
     src = Path(ac.__file__).read_text(encoding="utf-8")
     for stable in (
         'detail="Failed to update player"',
@@ -396,6 +432,8 @@ def test_admin_comprehensive_ship_player_mutation_cluster_http500_opaque():
         'detail="Failed to update ship"',
         'detail="Failed to delete ship"',
         'detail="Failed to teleport ship"',
+        'detail="Failed to create player"',
+        'detail="Failed to create players"',
     ):
         assert stable in src
     assert "Failed to update player: {str(e)}" not in src
@@ -403,3 +441,5 @@ def test_admin_comprehensive_ship_player_mutation_cluster_http500_opaque():
     assert "Failed to update ship: {str(e)}" not in src
     assert "Failed to delete ship: {str(e)}" not in src
     assert "Failed to teleport ship: {str(e)}" not in src
+    assert "Failed to create player: {str(e)}" not in src
+    assert "Failed to create players: {str(e)}" not in src
