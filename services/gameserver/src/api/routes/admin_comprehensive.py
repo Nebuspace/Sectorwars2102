@@ -390,11 +390,9 @@ async def get_players_comprehensive(
             "total_pages": (total_count + limit - 1) // limit
         }
         
-    except Exception as e:
-        logger.error(f"Error in get_players_comprehensive: {e}")
-        import traceback
-        logger.error(f"Full traceback: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch players: {str(e)}")
+    except Exception:
+        logger.exception("Error in get_players_comprehensive")
+        raise HTTPException(status_code=500, detail="Failed to fetch players")
 
 @router.put("/players/{player_id}", response_model=Dict[str, str])
 async def update_player(
@@ -1081,9 +1079,9 @@ async def get_sectors_comprehensive(
             "total_pages": (total_count + limit - 1) // limit
         }
         
-    except Exception as e:
-        logger.error(f"Error in get_sectors_comprehensive: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch sectors: {str(e)}")
+    except Exception:
+        logger.exception("Error in get_sectors_comprehensive")
+        raise HTTPException(status_code=500, detail="Failed to fetch sectors")
 
 # Station Management Endpoints
 
@@ -1187,9 +1185,9 @@ async def get_ports_comprehensive(
             "total_pages": (total_count + limit - 1) // limit
         }
         
-    except Exception as e:
-        logger.error(f"Error in get_ports_comprehensive: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch ports: {str(e)}")
+    except Exception:
+        logger.exception("Error in get_ports_comprehensive")
+        raise HTTPException(status_code=500, detail="Failed to fetch ports")
 
 # Planet Management Endpoints
 
@@ -1275,9 +1273,9 @@ async def get_planets_comprehensive(
             "total_pages": (total_count + limit - 1) // limit
         }
         
-    except Exception as e:
-        logger.error(f"Error in get_planets_comprehensive: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch planets: {str(e)}")
+    except Exception:
+        logger.exception("Error in get_planets_comprehensive")
+        raise HTTPException(status_code=500, detail="Failed to fetch planets")
 
 # Analytics and Monitoring Endpoints
 
@@ -1344,9 +1342,9 @@ async def get_analytics_dashboard(
             }
         )
         
-    except Exception as e:
-        logger.error(f"Error in get_analytics_dashboard: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch analytics: {str(e)}")
+    except Exception:
+        logger.exception("Error in get_analytics_dashboard")
+        raise HTTPException(status_code=500, detail="Failed to fetch analytics")
 
 @router.get("/system/health", response_model=SystemHealthResponse)
 async def get_system_health(
@@ -1374,9 +1372,9 @@ async def get_system_health(
             last_checked=datetime.utcnow()
         )
         
-    except Exception as e:
-        logger.error(f"Error in get_system_health: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get system health: {str(e)}")
+    except Exception:
+        logger.exception("Error in get_system_health")
+        raise HTTPException(status_code=500, detail="Failed to get system health")
 
 # Warp Tunnel Management Endpoints
 
@@ -1473,9 +1471,9 @@ async def get_warp_tunnels_comprehensive(
             "total_pages": (total_count + limit - 1) // limit
         }
         
-    except Exception as e:
-        logger.error(f"Error in get_warp_tunnels_comprehensive: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch warp tunnels: {str(e)}")
+    except Exception:
+        logger.exception("Error in get_warp_tunnels_comprehensive")
+        raise HTTPException(status_code=500, detail="Failed to fetch warp tunnels")
 
 # Team Management Endpoints
 
@@ -1528,9 +1526,9 @@ async def get_teams_comprehensive(
             "total_pages": (total_count + limit - 1) // limit
         }
         
-    except Exception as e:
-        logger.error(f"Error in get_teams_comprehensive: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch teams: {str(e)}")
+    except Exception:
+        logger.exception("Error in get_teams_comprehensive")
+        raise HTTPException(status_code=500, detail="Failed to fetch teams")
 
 # Analytics Endpoints
 
@@ -1578,9 +1576,9 @@ async def get_real_time_analytics(
             "timestamp": datetime.utcnow().isoformat()
         }
 
-    except Exception as e:
-        logger.error(f"Error fetching real-time analytics: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch analytics: {str(e)}")
+    except Exception:
+        logger.exception("Error fetching real-time analytics")
+        raise HTTPException(status_code=500, detail="Failed to fetch analytics")
 
 
 @router.post("/analytics/snapshot", response_model=Dict[str, Any])
