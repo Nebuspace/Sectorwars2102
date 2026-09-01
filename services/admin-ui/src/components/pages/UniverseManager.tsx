@@ -4,6 +4,7 @@ import { useAdmin } from '../../contexts/AdminContext';
 import SectorDetail from '../universe/SectorDetail';
 import PortDetail from '../universe/StationDetail';  
 import PlanetDetail from '../universe/PlanetDetail';
+import PlaceGoldBubblePanel from '../universe/PlaceGoldBubblePanel';
 import './universe-manager.css';
 
 interface ViewState {
@@ -191,6 +192,9 @@ const UniverseManager: React.FC = () => {
               </table>
             </div>
           </div>
+
+          {/* LEG-184 — operator Gold Bubble hand-placement (LEG-52 place_gold_bubble). */}
+          <PlaceGoldBubblePanel regions={regions} />
         </div>
       ) : (
         <div className="no-galaxy">
