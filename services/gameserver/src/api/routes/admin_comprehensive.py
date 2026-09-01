@@ -981,9 +981,7 @@ async def create_player_from_user(
             raise
         except Exception as e:
             logger.error(f"Error creating player for user {user_id}: {e}")
-            raise HTTPException(
-                status_code=500, detail=f"Failed to create player: {str(e)}"
-            ) from e
+            raise HTTPException(status_code=500, detail="Failed to create player") from e
 
 
 @router.post("/players/create-bulk", response_model=Dict[str, Any])
@@ -1035,9 +1033,7 @@ async def create_players_from_all_users(
             raise
         except Exception as e:
             logger.error(f"Error creating players from users: {e}")
-            raise HTTPException(
-                status_code=500, detail=f"Failed to create players: {str(e)}"
-            ) from e
+            raise HTTPException(status_code=500, detail="Failed to create players") from e
 
 # Universe Management Endpoints
 
