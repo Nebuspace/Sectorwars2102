@@ -14,6 +14,16 @@ function httpStatus(err: unknown): number | undefined {
   return undefined;
 }
 
+const isRecommendationsNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
+};
+
 /** Surface GS recommendation detail; network collapse uses stable fallback (LEG-3217). */
 export function formatRecommendationsLoadError(err: unknown): string {
   const fallback = 'Failed to load trading recommendations';
@@ -24,6 +34,7 @@ export function formatRecommendationsLoadError(err: unknown): string {
   const hasServerDetail =
     typeof message === 'string' &&
     message.trim().length > 0 &&
+    !isRecommendationsNetworkCollapseMessage(message) &&
     !/^Failed to fetch recommendations:/i.test(message.trim()) &&
     !/^API Error: \d+$/.test(message.trim());
 
