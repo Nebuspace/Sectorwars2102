@@ -2,8 +2,7 @@
 Colonist profession kernel (LEG-2253 / FEATURES/planets/professions.md).
 
 Training durations and numeric bonus multipliers are canon-backed. Training
-*purchase/charge* remains DECISION-NEEDED — queueing never deducts credits or
-stockpile commodities until those TBD cells are ruled.
+costs use ADR-0093 item 35 provisional per-100 magnitudes (LEG-DEC-804).
 """
 
 from __future__ import annotations
@@ -17,10 +16,13 @@ from sqlalchemy.orm import Session
 from src.core.game_time import scaled_deadline
 from src.models.colonist_profession import (
     ColonistProfession,
+    PROFESSION_TRAINING_COST_PER_100,
     PROFESSION_TRAINING_DAYS,
     ProfessionType,
+    TrainingCostPer100,
 )
 from src.models.planet import Planet, player_planets
+from src.models.player import Player
 from src.models.station import Station
 from src.models.profession_training_queue import (
     ProfessionTrainingQueue,
@@ -50,6 +52,10 @@ DEFENSE_COORDINATOR_MULTIPLIER = 1.30
 TERRAFORM_ENGINEER_RATE_PER_1K = 0.5  # habitability / month per 1k engineers
 TERRAFORM_ENGINEER_MONTHLY_CAP = 5.0  # at 10k engineers
 SPACE_ENGINEER_REPAIR_MULTIPLIER = 1.25  # professions.md L32
+# tradedock-shipyard.md §Space Engineer profession integration — up to three
+# engineers per active construction project (per-project assignment API is a
+# follow-on; this cap applies to the interim pool-wide count wire).
+MAX_CONSTRUCTION_ENGINEERS_PER_PROJECT = 3
 TRADE_SPECIALIST_CREDIT_MULTIPLIER = 1.25  # professions.md L57
 MINING_ENGINEER_ORE_MULTIPLIER = 1.30  # professions.md L34; mining.md step 5 (ore)
 
@@ -130,6 +136,25 @@ def space_engineer_repair_multiplier(db: Session, planet_id: UUID) -> float:
     if counts.get(ProfessionType.SPACE_ENGINEERS, 0) > 0:
         return SPACE_ENGINEER_REPAIR_MULTIPLIER
     return 1.0
+
+
+def construction_engineer_count(db: Session, player_id: UUID) -> int:
+    """Space Engineers available to bias TradeDock construction-event RNG.
+
+    Interim wire (LEG-302): sums ``SPACE_ENGINEERS`` across all planets the
+    player owns via ``player_planets``, capped at
+    ``MAX_CONSTRUCTION_ENGINEERS_PER_PROJECT``. Per-project assignment and
+    daily wages remain follow-on slices (LEG-309 / canon TBD wage cells).
+    """
+    planet_ids = (
+        db.query(player_planets.c.planet_id)
+        .filter(player_planets.c.player_id == player_id)
+        .all()
+    )
+    total = 0
+    for (planet_id,) in planet_ids:
+        total += profession_counts(db, planet_id).get(ProfessionType.SPACE_ENGINEERS, 0)
+    return min(total, MAX_CONSTRUCTION_ENGINEERS_PER_PROJECT)
 
 
 def trade_specialist_credit_multiplier(db: Session, planet_id: UUID) -> float:
@@ -239,6 +264,18 @@ def terraform_engineer_bonus_for_tick(engineer_count: int, tick_period_hours: fl
     return monthly * (tick_period_hours / hours_per_month)
 
 
+def training_cost_for(prof: ProfessionType, trainee_count: int) -> TrainingCostPer100:
+    """Scale provisional per-100 recipe to ``trainee_count`` colonists."""
+    return PROFESSION_TRAINING_COST_PER_100[prof].scale(trainee_count)
+
+
+def training_costs_per_100_payload() -> Dict[str, Dict[str, int]]:
+    return {
+        prof.value: PROFESSION_TRAINING_COST_PER_100[prof].as_dict()
+        for prof in ProfessionType
+    }
+
+
 class ProfessionService:
     def __init__(self, db: Session):
         self.db = db
@@ -304,6 +341,36 @@ class ProfessionService:
                 out[prof.value] = citadel_ok
         return out
 
+    def _load_player_for_update(self, player_id: UUID) -> Player:
+        player = (
+            self.db.query(Player)
+            .filter(Player.id == player_id)
+            .with_for_update()
+            .first()
+        )
+        if player is None:
+            raise ValueError("player_not_found")
+        return player
+
+    def _apply_training_charge(
+        self,
+        planet: Planet,
+        player: Player,
+        cost: TrainingCostPer100,
+    ) -> None:
+        credits = int(player.credits or 0)
+        if credits < cost.credits:
+            raise ValueError("insufficient_credits")
+        equipment = int(planet.equipment or 0)
+        if equipment < cost.equipment:
+            raise ValueError("insufficient_equipment")
+        organics = int(planet.organics or 0)
+        if organics < cost.organics:
+            raise ValueError("insufficient_organics")
+        player.credits = credits - cost.credits
+        planet.equipment = equipment - cost.equipment
+        planet.organics = organics - cost.organics
+
     def advance_queue(self, planet: Planet, *, now: Optional[datetime] = None) -> bool:
         """Lazy-complete due training rows. Returns True if planet state changed."""
         now = now or datetime.now(UTC)
@@ -363,8 +430,10 @@ class ProfessionService:
         return {
             "planet_id": str(planet.id),
             "generic_colonists": planet.colonists or 0,
-            "cost_blocked": True,
-            "cost_block_reason": "DECISION-NEEDED: profession training costs/caps not yet ruled",
+            "cost_blocked": False,
+            "cost_basis": "provisional_per_100",
+            "cost_basis_ref": "ADR-0093 item 35 / LEG-DEC-804",
+            "training_costs_per_100": training_costs_per_100_payload(),
             "professions": {
                 prof.value: counts.get(prof, 0) for prof in ProfessionType
             },
@@ -405,6 +474,9 @@ class ProfessionService:
         self.advance_queue(planet, now=now)
         if (planet.colonists or 0) < trainee_count:
             raise ValueError("insufficient_generic_colonists")
+        player = self._load_player_for_update(player_id)
+        cost = training_cost_for(prof, trainee_count)
+        self._apply_training_charge(planet, player, cost)
         now = now or datetime.now(UTC)
         days = PROFESSION_TRAINING_DAYS[prof]
         completes_at = scaled_deadline(days * 24.0, start=now)
@@ -421,15 +493,18 @@ class ProfessionService:
         self.db.flush()
         return {
             "success": True,
-            "cost_blocked": True,
-            "cost_charged": False,
+            "cost_blocked": False,
+            "cost_charged": True,
+            "cost": cost.as_dict(),
+            "credits_remaining": player.credits,
+            "planet_stockpile": {
+                "equipment": planet.equipment or 0,
+                "organics": planet.organics or 0,
+            },
             "queue_id": str(row.id),
             "profession": prof.value,
             "trainee_count": trainee_count,
             "training_days": days,
             "completes_at": completes_at.isoformat(),
-            "message": (
-                "Training queued without charge — profession cost magnitudes remain "
-                "DECISION-NEEDED (LEG-DEC-484 / D#501)."
-            ),
+            "message": "Training queued; provisional per-100 costs charged on queue.",
         }

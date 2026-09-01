@@ -600,6 +600,8 @@ def _roll_construction_events(
     station: Station,
     now: datetime,
     rng: Optional[_random_module.Random] = None,
+    *,
+    db: Optional[Session] = None,
 ) -> int:
     """Catch the construction-event RNG up to `now`, once per elapsed
     canonical project-day (tradedock-shipyard.md §Construction events).
@@ -613,10 +615,17 @@ def _roll_construction_events(
     same as the operating-cost engine, so no day is ever double-rolled or
     silently skipped.
 
-    Baseline engineer_count=0 (Space Engineer assignment is a separate,
-    unbuilt slice — canon's engineer-biasing terms are inert at 0 until it
-    ships). Caller holds the station lock and owns the commit.
+    When ``db`` is provided, resolves ``engineer_count`` from the reservation
+    owner's pooled Space Engineers (``profession_service.construction_engineer_count``).
+    Caller holds the station lock and owns the commit.
     """
+    if db is not None and getattr(reservation, "player_id", None) is not None:
+        from src.services.profession_service import construction_engineer_count
+
+        engineer_count = construction_engineer_count(db, reservation.player_id)
+    else:
+        engineer_count = 0
+
     anchor = getattr(reservation, "events_last_rolled_at", None)
     if anchor is None:
         reservation.events_last_rolled_at = now
@@ -636,7 +645,7 @@ def _roll_construction_events(
 
     fired = 0
     for _ in range(capped):
-        event = roll_construction_event(reservation, engineer_count=0, rng=rng)
+        event = roll_construction_event(reservation, engineer_count=engineer_count, rng=rng)
         if event is not None:
             apply_construction_event(reservation, event, station, now=now)
             flag_modified(reservation, "construction_events")
@@ -1019,7 +1028,7 @@ def _advance_station(db: Session, station: Station, now: datetime) -> None:
     #     an unmet milestone/resource gate, does not accrue project-days).
     for res in reservations:
         if res.state in PHASE_ORDER and res.phase_deadline is not None:
-            _roll_construction_events(res, station, now)
+            _roll_construction_events(res, station, now, db=db)
 
     # 3. Rent forfeitures: 3 consecutive canonical days unpaid loses the
     #    build (resources and payments stay banked; the slip frees).

@@ -2662,7 +2662,7 @@ async def train_planet_profession(
     player: Player = Depends(get_current_player),
     db: Session = Depends(get_db),
 ):
-    """Queue profession training without charging TBD costs (DECISION-NEEDED)."""
+    """Queue profession training; charges provisional per-100 costs on queue."""
     from src.services.profession_service import ProfessionService
 
     try:
@@ -2689,6 +2689,9 @@ async def train_planet_profession(
             "citadel_level_too_low": status.HTTP_400_BAD_REQUEST,
             "research_lab_level_too_low": status.HTTP_400_BAD_REQUEST,
             "insufficient_generic_colonists": status.HTTP_400_BAD_REQUEST,
+            "insufficient_credits": status.HTTP_400_BAD_REQUEST,
+            "insufficient_equipment": status.HTTP_400_BAD_REQUEST,
+            "insufficient_organics": status.HTTP_400_BAD_REQUEST,
             "invalid_trainee_count": status.HTTP_400_BAD_REQUEST,
         }
         if code.startswith("unknown_profession:"):
