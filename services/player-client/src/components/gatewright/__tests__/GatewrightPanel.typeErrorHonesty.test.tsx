@@ -124,4 +124,29 @@ describe('GatewrightPanel TypeError honesty (LEG-3191)', () => {
     expect(container.textContent).not.toMatch(/Failed to fetch/i);
     expect(container.textContent).not.toMatch(/TypeError/i);
   });
+
+  it('listMine axios Network Error surfaces guild fallback without raw transport (LEG-3518)', async () => {
+    mockListMine.mockRejectedValue(new Error('Network Error'));
+    mockListSector.mockResolvedValue({ gates: [], beacons: [] });
+
+    await mount();
+
+    const strip = container.querySelector('.gw-validation-strip');
+    expect(strip?.textContent).toBe('Guild registry unreachable. Try again.');
+    expect(container.textContent).not.toMatch(/Network Error/i);
+  });
+
+  it('listSector axios Network Error surfaces sector scan fallback without raw transport (LEG-3518)', async () => {
+    mockListMine.mockResolvedValue({ projects: [] });
+    mockListSector.mockRejectedValue(new Error('Network Error'));
+
+    await mount();
+
+    const strips = container.querySelectorAll('.gw-validation-strip');
+    const sectorStrip = Array.from(strips).find((el) =>
+      el.textContent?.includes('Sector gate scan failed'),
+    );
+    expect(sectorStrip?.textContent).toBe('Sector gate scan failed. Try again.');
+    expect(container.textContent).not.toMatch(/Network Error/i);
+  });
 });
