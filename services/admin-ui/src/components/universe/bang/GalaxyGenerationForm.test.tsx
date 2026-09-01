@@ -109,4 +109,21 @@ describe('GalaxyGenerationForm (LEG-1253)', () => {
     expect(text).not.toMatch(/TypeError/i);
     expect(text).not.toMatch(/previewFailed/i);
   });
+
+  it('surfaces honest fallback on preview axios Network Error (LEG-3568)', async () => {
+    vi.mocked(previewBangConfig).mockRejectedValue(new Error('Network Error'));
+    const user = userEvent.setup();
+    render(<GalaxyGenerationForm />);
+
+    await user.click(screen.getByRole('button', { name: /preview/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Preview failed/i)).toBeTruthy();
+    });
+    const text = screen.getByText(/Preview failed/i).textContent ?? '';
+    expect(text).not.toBe('Network Error');
+    expect(text).not.toContain('Network Error');
+    expect(text).not.toMatch(/TypeError/i);
+    expect(text).not.toMatch(/previewFailed/i);
+  });
 });

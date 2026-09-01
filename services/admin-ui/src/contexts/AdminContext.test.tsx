@@ -291,6 +291,27 @@ describe('AdminContext / AdminProvider', () => {
     expect(screen.getByTestId('error').textContent).not.toMatch(/TypeError/i);
   });
 
+  it('surfaces honest fallback on loadAdminStats axios Network Error (LEG-3566)', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
+    vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
+    const user = userEvent.setup();
+
+    render(
+      <AdminProvider>
+        <Probe />
+      </AdminProvider>
+    );
+
+    await user.click(screen.getByText('load-stats'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error')).toHaveTextContent('Failed to load admin statistics'),
+    );
+    const text = screen.getByTestId('error').textContent ?? '';
+    expect(text).not.toBe('Network Error');
+    expect(text).not.toContain('Network Error');
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
   it('surfaces loadUsers 429 as admin rate-limit (LEG-1254)', async () => {
     mockUseAuth.mockReturnValue({ user: { id: '1', is_admin: true }, token: 'tok' });
     vi.mocked(api.get).mockRejectedValue(httpErr(429));
