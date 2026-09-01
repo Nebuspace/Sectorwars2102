@@ -157,11 +157,14 @@ describe('PoliceEnRouteBanner', () => {
     expect(container.textContent).toContain('3 turns to arrival');
   });
 
-  it('load TypeError yields empty banner without Failed to fetch / TypeError in DOM (LEG-3258)', async () => {
+  it('load TypeError surfaces honest role=alert fallback (LEG-3713)', async () => {
     listMine.mockRejectedValue(new TypeError('Failed to fetch'));
     await render();
 
-    expect(container.querySelector('.police-en-route-banner')).toBeNull();
+    const banner = container.querySelector('.police-en-route-banner');
+    expect(banner).not.toBeNull();
+    expect(banner!.getAttribute('role')).toBe('alert');
+    expect(banner!.textContent).toContain('Failed to load law enforcement status');
     expect(container.textContent ?? '').not.toMatch(/Failed to fetch/i);
     expect(container.textContent ?? '').not.toMatch(/TypeError/i);
     expect(listMine).toHaveBeenCalled();

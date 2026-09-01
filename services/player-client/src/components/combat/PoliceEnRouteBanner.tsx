@@ -7,6 +7,29 @@ import pendingEngagementApi, {
 import { formatPoliceEnRouteMessage } from './formatPoliceEnRouteMessage';
 import './police-en-route-banner.css';
 
+const POLICE_EN_ROUTE_LOAD_FALLBACK = 'Failed to load law enforcement status';
+
+/** Transport collapse copy is not gameserver detail (LEG-3713 densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
+};
+
+/** Exported for TypeError/network honesty Vitest (LEG-3713). */
+export function formatPoliceEnRouteLoadError(err: unknown): string {
+  if (err instanceof TypeError) return POLICE_EN_ROUTE_LOAD_FALLBACK;
+  if (err instanceof Error && err.message) {
+    if (isNetworkCollapseMessage(err.message)) return POLICE_EN_ROUTE_LOAD_FALLBACK;
+    return err.message;
+  }
+  return POLICE_EN_ROUTE_LOAD_FALLBACK;
+}
+
 function engagementKey(summary: PendingEngagementSummary, index: number): string {
   return summary.id || `idx-${index}`;
 }
@@ -27,6 +50,7 @@ const PoliceEnRouteBanner: React.FC = () => {
   const { playerState } = useGame();
 
   const [items, setItems] = useState<PendingEngagementSummary[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [dismissedKeys, setDismissedKeys] = useState<Set<string>>(new Set());
   const seenPoliceSignal = useRef(0);
   const seenNpcCombatSignal = useRef(0);
@@ -42,11 +66,13 @@ const PoliceEnRouteBanner: React.FC = () => {
       .then((list) => {
         if (!cancelled) {
           setItems(list);
+          setLoadError(null);
         }
       })
-      .catch(() => {
+      .catch((err) => {
         if (!cancelled) {
           setItems([]);
+          setLoadError(formatPoliceEnRouteLoadError(err));
         }
       });
 
@@ -111,7 +137,17 @@ const PoliceEnRouteBanner: React.FC = () => {
     null;
 
   if (!active) {
-    return null;
+    if (!loadError) {
+      return null;
+    }
+    return (
+      <div className="police-en-route-banner police-en-route-banner--error" role="alert">
+        <div>
+          <div className="police-en-route-banner-label">Law enforcement en route</div>
+          <div className="police-en-route-banner-message">{loadError}</div>
+        </div>
+      </div>
+    );
   }
 
   const { row, key } = active;
