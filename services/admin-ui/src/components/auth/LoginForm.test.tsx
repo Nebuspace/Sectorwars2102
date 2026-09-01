@@ -97,3 +97,27 @@ describe('LoginForm', () => {
     expect(alert).not.toMatch(/TypeError/i);
   });
 });
+
+describe('LoginForm axios Network Error densify (LEG-3511)', () => {
+  beforeEach(() => {
+    mockLogin.mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('collapses axios-shaped Network Error on login to honest fallback', async () => {
+    const user = userEvent.setup();
+    mockLogin.mockRejectedValue(new Error('Network Error'));
+    render(<LoginForm />);
+
+    await user.type(screen.getByLabelText('Username'), 'admin');
+    await user.type(screen.getByLabelText('Password'), 'hunter2');
+    await user.click(screen.getByRole('button', { name: /^login$/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Login failed/i)).toBeInTheDocument();
+    });
+
+    const alert = screen.getByText(/Login failed/i).textContent ?? '';
+    expect(alert).not.toMatch(/Network Error/i);
+  });
+});
