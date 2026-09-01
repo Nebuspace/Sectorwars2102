@@ -9,15 +9,27 @@ interface GenesisDeploymentProps {
   onClose?: () => void;
 }
 
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
+};
+
 /** Surface GS genesis quote 400 detail (`detail=str(e)`), else stable fallback. */
 export function formatGenesisQuotesLoadError(err: unknown): string {
   const message = err instanceof Error ? err.message : undefined;
-  // Network collapse (fetch TypeError) is not gameserver copy — use the fallback.
+  // Network collapse (fetch TypeError / axios transport) is not gameserver copy — use the fallback.
   const hasServerDetail =
     !(err instanceof TypeError) &&
     typeof message === 'string' &&
     message.trim().length > 0 &&
-    !/^API Error: \d+$/.test(message.trim());
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNetworkCollapseMessage(message);
 
   if (hasServerDetail) return message!;
   return 'Failed to load genesis pricing';
@@ -26,12 +38,13 @@ export function formatGenesisQuotesLoadError(err: unknown): string {
 /** Pre-deploy price re-verify failure (LEG-2933 Soft-ORDER). */
 export function formatGenesisVerifyError(err: unknown): string {
   const message = err instanceof Error ? err.message : undefined;
-  // Network collapse (fetch TypeError) is not gameserver copy — use the fallback.
+  // Network collapse (fetch TypeError / axios transport) is not gameserver copy — use the fallback.
   const hasServerDetail =
     !(err instanceof TypeError) &&
     typeof message === 'string' &&
     message.trim().length > 0 &&
-    !/^API Error: \d+$/.test(message.trim());
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNetworkCollapseMessage(message);
 
   if (hasServerDetail) return message!;
   return 'Failed to verify genesis pricing';
@@ -40,12 +53,13 @@ export function formatGenesisVerifyError(err: unknown): string {
 /** deployGenesis POST failure (LEG-2933 Soft-ORDER). */
 export function formatGenesisDeployError(err: unknown): string {
   const message = err instanceof Error ? err.message : undefined;
-  // Network collapse (fetch TypeError) is not gameserver copy — use the fallback.
+  // Network collapse (fetch TypeError / axios transport) is not gameserver copy — use the fallback.
   const hasServerDetail =
     !(err instanceof TypeError) &&
     typeof message === 'string' &&
     message.trim().length > 0 &&
-    !/^API Error: \d+$/.test(message.trim());
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNetworkCollapseMessage(message);
 
   if (hasServerDetail) return message!;
   return 'Failed to deploy Genesis Device';
