@@ -171,6 +171,35 @@ describe('SystemHealthStatus TypeError densify (LEG-3175)', () => {
     expect(text).not.toMatch(/TypeError/i);
   });
 
+  it('shows honest database collapse on database poll TypeError without raw transport text (LEG-3506)', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/status/database')) {
+        throw new TypeError('Failed to fetch');
+      }
+      if (String(url).includes('/status/ai/providers')) {
+        return {
+          data: {
+            status: 'healthy',
+            providers: {},
+            summary: { healthy: 2, configured: 2, total: 2 },
+            response_time: 3,
+            last_check: '2026-01-01T00:00:00Z',
+          },
+        };
+      }
+      return { data: { active_connections: 2, admin_connections: 1 } };
+    });
+
+    render(<SystemHealthStatus />);
+
+    await waitFor(() => expect(screen.getByText(/Online/)).toBeInTheDocument());
+    expect(screen.getByText(/Disconnected/)).toBeInTheDocument();
+
+    const text = document.body.textContent ?? '';
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
   it('shows offline on axios-shaped Network Error without leaking raw transport text (LEG-3312)', async () => {
     vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
 
