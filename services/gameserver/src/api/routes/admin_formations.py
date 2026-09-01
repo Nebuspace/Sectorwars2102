@@ -142,7 +142,7 @@ async def place_gold_bubble_route(
             logger.error("place_gold_bubble failed for region %s: %s", region_id, e)
             raise HTTPException(
                 status_code=500,
-                detail=f"Failed to place Gold Bubble: {e}",
+                detail="Failed to place Gold Bubble",
             ) from e
 
 
