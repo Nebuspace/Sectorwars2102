@@ -247,6 +247,7 @@ api_router.include_router(contracts_router, tags=["contracts"])
 api_router.include_router(admin_contract_disputes_router, tags=["admin-contract-disputes"])
 api_router.include_router(admin_multi_account_router, tags=["admin-multi-account"])  # WO-PADMIN-multiacct-review
 api_router.include_router(admin_scopes_router, tags=["admin-scopes"])  # RBAC Phase B grant/revoke
+api_router.include_router(admin_subscriptions_router, tags=["admin-subscriptions"])  # LEG-3611 GC grant/revoke
 # Message beacons (WO-P4-play-beacon-kernel): deploy/read/salvage a
 # physical "message in a bottle" in a sector (router carries its own
 # /beacons prefix).
