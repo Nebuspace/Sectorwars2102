@@ -226,6 +226,25 @@ const fmtCountdown = (iso: string, nowMs: number): { text: string; expired: bool
   return { text, expired: false, urgent };
 };
 
+/** Transport collapse copy is not gameserver detail (LEG-3500 densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+export function formatConstructionQuotesLoadError(error: unknown, fallback: string): string {
+  if (error instanceof TypeError) return fallback;
+  if (error instanceof Error && error.message) {
+    if (isNetworkCollapseMessage(error.message)) return fallback;
+    return error.message;
+  }
+  return fallback;
+}
+
 // Pull a readable error from a {message|detail} 400 body
 const readError = async (response: Response, fallback: string): Promise<string> => {
   const data: unknown = await response.json().catch(() => null);
@@ -590,7 +609,9 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
       }
     } catch (error) {
       console.error('Construction quotes error:', error);
-      setQuotesError('Connection error. Please try again.');
+      setQuotesError(
+        formatConstructionQuotesLoadError(error, 'Connection error. Please try again.'),
+      );
     } finally {
       setQuotesLoading(false);
     }
