@@ -16,6 +16,11 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
   );
 };
 
+const looksLikeTransportLeak = (msg: string): boolean =>
+  /typeerror/i.test(msg) ||
+  /\b(at\s+)?\S+\.(tsx?|jsx?):\d+/i.test(msg) ||
+  /unexpected token|json|syntaxerror/i.test(msg);
+
 /** Collapses fetch TypeError / network noise; preserves structured API detail (LEG-3321). */
 export function formatRegisterError(err: unknown): string {
   if (err instanceof TypeError) {
@@ -29,7 +34,7 @@ export function formatRegisterError(err: unknown): string {
     }
   }
   const raw = err instanceof Error ? err.message : String(err ?? '');
-  if (isNetworkCollapseMessage(raw)) {
+  if (isNetworkCollapseMessage(raw) || looksLikeTransportLeak(raw)) {
     return REGISTER_NETWORK_FALLBACK;
   }
   if (raw.trim()) return raw;
