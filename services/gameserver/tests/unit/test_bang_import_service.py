@@ -311,6 +311,79 @@ class TestNpcRosters:
 
 
 # ---------------------------------------------------------------------------
+# LEG-3541 — Universe.config.density round-trip (Bang LEG-1179 P95 cap)
+# invent=0 Soft densify: assert persistence that already exists; do not invent
+# a product write of bang config.density into Galaxy.density JSON.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestUniverseConfigDensityRoundTrip:
+    """Bang ``Universe.config.density`` (P95 course-length) must survive translate.
+
+    Persistence tip path is ``Galaxy.bang_snapshot.regions.<rt>.universe.config``
+    (full Universe blob). ``Galaxy.density`` remains the gameserver worldgen
+    defaults JSON (station/planet/one_way/resource_distribution) — invent=0
+    forbids remapping bang's scalar P95 into that object.
+    """
+
+    def test_config_density_round_trips_via_bang_snapshot(
+        self,
+        service: BangImportService,
+        parsed_terran_space: ParsedUniverse,
+        parsed_player_owned: ParsedUniverse,
+        parsed_central_nexus: ParsedUniverse,
+    ) -> None:
+        plan = service.translate(
+            {
+                "terran_space": parsed_terran_space,
+                "player_owned": parsed_player_owned,
+                "central_nexus": parsed_central_nexus,
+            },
+            region_metadata={"galaxy_name": "Density RT"},
+        )
+        for region_type, parsed in (
+            ("terran_space", parsed_terran_space),
+            ("player_owned", parsed_player_owned),
+            ("central_nexus", parsed_central_nexus),
+        ):
+            raw_config = parsed.raw["config"]
+            assert "density" in raw_config
+            snapshot_universe = plan.bang_snapshot["regions"][region_type]["universe"]
+            assert snapshot_universe["config"] == raw_config
+            assert snapshot_universe["config"]["density"] == raw_config["density"]
+            # Fixtures pin LEG-1179 default density=20; refuse silent field invent.
+            assert snapshot_universe["config"]["density"] == 20
+            assert set(snapshot_universe["config"].keys()) == set(raw_config.keys())
+
+    def test_galaxy_density_default_schema_excludes_bang_p95_field(self) -> None:
+        """Column default for Galaxy.density must stay worldgen-shaped (invent=0).
+
+        Bang's scalar ``config.density`` must not appear as a top-level key on
+        the gameserver ``Galaxy.density`` JSON default — that would invent a
+        field merge the Soft-ORDER forbids.
+        """
+        from src.models.galaxy import Galaxy
+
+        density_default = Galaxy.__table__.c.density.default.arg
+        assert callable(density_default) is False
+        assert isinstance(density_default, dict)
+        assert set(density_default.keys()) == {
+            "station_density",
+            "planet_density",
+            "one_way_warp_percentage",
+            "resource_distribution",
+        }
+        assert "density" not in density_default  # bang P95 key must not land here
+        assert set(density_default["resource_distribution"].keys()) == {
+            "ore",
+            "organics",
+            "equipment",
+            "luxury_goods",
+        }
+
+
+# ---------------------------------------------------------------------------
 # Q4 — Planet.owner_id is the bang UUID directly
 # ---------------------------------------------------------------------------
 
