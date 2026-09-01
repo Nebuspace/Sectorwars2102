@@ -256,115 +256,100 @@ async def emergency_ship_action(
 ):
     """Perform emergency action on a ship."""
     try:
-        return _emergency_ship_action_impl(
-            ship_id=ship_id,
-            request=request,
-            admin=admin,
-            db=db,
-        )
+        with admin_action_attempt(
+            db,
+            actor=admin,
+            scope_used=SHIPS_MANAGE,
+            action="ship_emergency",
+            target_type="ship",
+            target_id=str(ship_id),
+            payload={"action": request.action.value},
+        ) as attempt:
+            ship = db.query(Ship).filter(Ship.id == ship_id).first()
+            if not ship:
+                raise HTTPException(status_code=404, detail="Ship not found")
+
+            old_status = ship.status
+            old_sector = ship.sector_id
+            message = ""
+
+            if request.action == EmergencyAction.REPAIR:
+                combat = ship.combat or {}
+                combat["hull"] = combat.get("max_hull", 100)
+                combat["shields"] = combat.get("max_shields", 100)
+                ship.combat = combat
+                flag_modified(ship, "combat")
+
+                maintenance = ship.maintenance or {}
+                maintenance["condition"] = 100.0
+                maintenance["last_maintenance"] = datetime.utcnow().isoformat()
+                maintenance["repair_needed"] = False
+                ship.maintenance = maintenance
+                flag_modified(ship, "maintenance")
+
+                ship.status = ShipStatus.DOCKED.value
+                ship.is_active = True
+                ship.is_destroyed = False
+                message = f"Ship {ship.name} fully repaired"
+
+            elif request.action == EmergencyAction.REFUEL:
+                maintenance = ship.maintenance or {}
+                maintenance["condition"] = 100.0
+                ship.maintenance = maintenance
+                flag_modified(ship, "maintenance")
+
+                ship.status = ShipStatus.DOCKED.value
+                ship.is_active = True
+                message = f"Ship {ship.name} refueled"
+
+            elif request.action == EmergencyAction.TELEPORT:
+                if not request.target_sector_id:
+                    raise HTTPException(status_code=400, detail="target_sector_id required for teleport")
+
+                target_sector = db.query(Sector).filter(Sector.id == request.target_sector_id).first()
+                if not target_sector:
+                    raise HTTPException(status_code=404, detail="Target sector not found")
+
+                ship.sector_id = request.target_sector_id
+                ship.status = ShipStatus.IN_SPACE.value
+                message = f"Ship {ship.name} teleported to {target_sector.name}"
+
+            audit_service = AuditService(db)
+            audit_service.log_action(
+                user_id=admin.id,
+                action=AuditAction.UPDATE,
+                resource_type="ship",
+                resource_id=str(ship_id),
+                details={
+                    "emergency_action": request.action.value,
+                    "old_status": old_status,
+                    "new_status": ship.status,
+                    "old_sector": str(old_sector) if old_sector else None,
+                    "new_sector": str(ship.sector_id) if ship.sector_id else None,
+                    "target_sector": str(request.target_sector_id) if request.target_sector_id else None
+                }
+            )
+
+            attempt.succeed(
+                payload={
+                    "action": request.action.value,
+                    "old_status": old_status,
+                    "new_status": ship.status,
+                },
+            )
+
+            return EmergencyActionResponse(
+                success=True,
+                ship_id=ship_id,
+                action=request.action.value,
+                new_status=ship.status,
+                message=message
+            )
     except HTTPException:
         raise
     except Exception:
         logger.exception("Error in emergency_ship_action")
         raise HTTPException(status_code=500, detail="Failed to perform emergency ship action")
-
-
-def _emergency_ship_action_impl(
-    *,
-    ship_id: UUID,
-    request: EmergencyActionRequest,
-    admin: User,
-    db: Session,
-) -> EmergencyActionResponse:
-    with admin_action_attempt(
-        db,
-        actor=admin,
-        scope_used=SHIPS_MANAGE,
-        action="ship_emergency",
-        target_type="ship",
-        target_id=str(ship_id),
-        payload={"action": request.action.value},
-    ) as attempt:
-        ship = db.query(Ship).filter(Ship.id == ship_id).first()
-        if not ship:
-            raise HTTPException(status_code=404, detail="Ship not found")
-
-        old_status = ship.status
-        old_sector = ship.sector_id
-        message = ""
-
-        if request.action == EmergencyAction.REPAIR:
-            combat = ship.combat or {}
-            combat["hull"] = combat.get("max_hull", 100)
-            combat["shields"] = combat.get("max_shields", 100)
-            ship.combat = combat
-            flag_modified(ship, "combat")
-
-            maintenance = ship.maintenance or {}
-            maintenance["condition"] = 100.0
-            maintenance["last_maintenance"] = datetime.utcnow().isoformat()
-            maintenance["repair_needed"] = False
-            ship.maintenance = maintenance
-            flag_modified(ship, "maintenance")
-
-            ship.status = ShipStatus.DOCKED.value
-            ship.is_active = True
-            ship.is_destroyed = False
-            message = f"Ship {ship.name} fully repaired"
-
-        elif request.action == EmergencyAction.REFUEL:
-            maintenance = ship.maintenance or {}
-            maintenance["condition"] = 100.0
-            ship.maintenance = maintenance
-            flag_modified(ship, "maintenance")
-
-            ship.status = ShipStatus.DOCKED.value
-            ship.is_active = True
-            message = f"Ship {ship.name} refueled"
-
-        elif request.action == EmergencyAction.TELEPORT:
-            if not request.target_sector_id:
-                raise HTTPException(status_code=400, detail="target_sector_id required for teleport")
-
-            target_sector = db.query(Sector).filter(Sector.id == request.target_sector_id).first()
-            if not target_sector:
-                raise HTTPException(status_code=404, detail="Target sector not found")
-
-            ship.sector_id = request.target_sector_id
-            ship.status = ShipStatus.IN_SPACE.value
-            message = f"Ship {ship.name} teleported to {target_sector.name}"
-
-        audit_service = AuditService(db)
-        audit_service.log_action(
-            user_id=admin.id,
-            action=AuditAction.UPDATE,
-            resource_type="ship",
-            resource_id=str(ship_id),
-            details={
-                "emergency_action": request.action.value,
-                "old_status": old_status,
-                "new_status": ship.status,
-                "old_sector": str(old_sector) if old_sector else None,
-                "new_sector": str(ship.sector_id) if ship.sector_id else None,
-                "target_sector": str(request.target_sector_id) if request.target_sector_id else None
-            }
-        )
-
-        attempt.succeed(
-            payload={
-                "action": request.action.value,
-                "old_status": old_status,
-                "new_status": ship.status,
-            },
-        )
-
-    return EmergencyActionResponse(
-        success=True,
-        ship_id=ship_id,
-        action=request.action.value,
-        new_status=ship.status,
-        message=message
-    )
 
 
 @router.get("/health-report", response_model=HealthReportResponse)
