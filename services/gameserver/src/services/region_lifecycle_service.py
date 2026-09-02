@@ -22,13 +22,15 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any, Dict, Optional
 
-from sqlalchemy import exists, or_, update
+from sqlalchemy import exists, or_, select, text, update
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from src.models.pirate_holding import PirateHolding
 from src.models.planet import Planet
 from src.models.player import Player
 from src.models.region import Region, RegionStatus, RegionType
+from src.models.takeover_intent import TakeoverIntent, TakeoverIntentStatus
 from src.models.sector import Sector
 from src.models.ship import Ship
 from src.models.station import Station
@@ -38,9 +40,19 @@ from src.services.region_termination_cascade_service import (
     dispatch_station_termination,
     process_planet_termination,
 )
+from src.services.paypal_service import paypal_service
+from src.services.scheduler._common import region_lock_key
 from src.services.warp_gate_service import cascade_region_gate_teardown
 
 logger = logging.getLogger(__name__)
+
+# Region GC-subscription takeover (LEG-3764 / SYSTEMS/region-lifecycle.md).
+ERR_REGION_NOT_AVAILABLE_FOR_TAKEOVER = "ERR_REGION_NOT_AVAILABLE_FOR_TAKEOVER"
+ERR_GALACTIC_CITIZEN_REQUIRED = "ERR_GALACTIC_CITIZEN_REQUIRED"
+ERR_ONE_REGION_PER_OWNER = "ERR_ONE_REGION_PER_OWNER"
+ERR_REGION_NOT_FOUND = "ERR_REGION_NOT_FOUND"
+ERR_TAKEOVER_INTENT_PENDING = "ERR_TAKEOVER_INTENT_PENDING"
+TAKEOVER_PAYPAL_FLOW_HOURS = 1
 
 # ADR-0054 X-D1 -- suspended-region stakeholder-ingress error contract
 # (region-lifecycle.md's "The rule keeps stakeholders connected to their
@@ -382,4 +394,109 @@ def admin_execute_region_termination(
         "planetsProcessed": len(planets),
         "stationCascade": station_result,
         "_outbox": outbox,
+    }
+
+
+def _serialize_takeover_intent(intent: TakeoverIntent) -> Dict[str, Any]:
+    """JSON-safe TakeoverIntent payload for the route response."""
+    return {
+        "id": str(intent.id),
+        "region_id": str(intent.region_id),
+        "caller_user_id": str(intent.caller_user_id),
+        "approval_url": intent.approval_url,
+        "status": intent.status,
+        "created_at": intent.created_at.isoformat() if intent.created_at else None,
+        "expires_at": intent.expires_at.isoformat() if intent.expires_at else None,
+        "completed_at": intent.completed_at.isoformat() if intent.completed_at else None,
+    }
+
+
+async def execute_takeover(
+    db: AsyncSession,
+    *,
+    region_id: uuid.UUID,
+    caller_user_id: uuid.UUID,
+    return_url: str,
+    cancel_url: str,
+) -> Dict[str, Any]:
+    """Initiate region GC-subscription takeover for a suspended/grace region.
+
+    Canon: SYSTEMS/region-lifecycle.md § Takeover endpoint (LEG-3764 slice 2).
+    Serializes concurrent claims via per-region advisory lock + ``SELECT FOR
+    UPDATE`` on the ``Region`` row before recording a ``TakeoverIntent``.
+    PayPal activation / ownership commit is a later webhook slice.
+    """
+    now = datetime.now(UTC)
+
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(:key)"),
+        {"key": region_lock_key(region_id)},
+    )
+
+    region_result = await db.execute(
+        select(Region).where(Region.id == region_id).with_for_update()
+    )
+    region = region_result.scalar_one_or_none()
+    if region is None:
+        return {"ok": False, "code": ERR_REGION_NOT_FOUND}
+
+    if region.status not in (RegionStatus.SUSPENDED.value, RegionStatus.GRACE.value):
+        return {"ok": False, "code": ERR_REGION_NOT_AVAILABLE_FOR_TAKEOVER}
+
+    player_result = await db.execute(
+        select(Player).where(Player.user_id == caller_user_id)
+    )
+    player = player_result.scalar_one_or_none()
+    if player is None or not player.is_galactic_citizen:
+        return {"ok": False, "code": ERR_GALACTIC_CITIZEN_REQUIRED}
+
+    owned_region_result = await db.execute(
+        select(Region.id).where(Region.owner_id == caller_user_id).limit(1)
+    )
+    if owned_region_result.scalar_one_or_none() is not None:
+        return {"ok": False, "code": ERR_ONE_REGION_PER_OWNER}
+
+    pending_result = await db.execute(
+        select(TakeoverIntent.id).where(
+            TakeoverIntent.region_id == region_id,
+            TakeoverIntent.caller_user_id == caller_user_id,
+            TakeoverIntent.status == TakeoverIntentStatus.PENDING.value,
+            TakeoverIntent.expires_at > now,
+        ).limit(1)
+    )
+    if pending_result.scalar_one_or_none() is not None:
+        return {"ok": False, "code": ERR_TAKEOVER_INTENT_PENDING}
+
+    paypal_result = await paypal_service.create_regional_ownership_subscription(
+        user_id=str(caller_user_id),
+        region_name=region.name,
+        return_url=return_url,
+        cancel_url=cancel_url,
+    )
+    approval_url = next(
+        (link["href"] for link in paypal_result.get("links", []) if link.get("rel") == "approve"),
+        None,
+    )
+    if not approval_url:
+        logger.error(
+            "PayPal regional subscription for region %s missing approval link",
+            region.name,
+        )
+        return {"ok": False, "code": "ERR_PAYPAL_APPROVAL_URL_MISSING"}
+
+    intent = TakeoverIntent(
+        region_id=region_id,
+        caller_user_id=caller_user_id,
+        approval_url=approval_url,
+        status=TakeoverIntentStatus.PENDING.value,
+        expires_at=now + timedelta(hours=TAKEOVER_PAYPAL_FLOW_HOURS),
+    )
+    db.add(intent)
+    await db.flush()
+
+    return {
+        "ok": True,
+        "intent": intent,
+        "takeover_intent": _serialize_takeover_intent(intent),
+        "subscription_id": paypal_result.get("id"),
     }
