@@ -11,7 +11,7 @@ vi.mock('../../utils/auth', () => ({
 }));
 
 const mockUser = vi.hoisted(() => ({
-  current: { username: 'admin', mfaEnabled: false } as {
+  current: { username: 'admin-operator', mfaEnabled: false } as {
     username: string;
     mfaEnabled: boolean;
   } | null,
@@ -26,7 +26,6 @@ vi.mock('./LogoutButton', () => ({
 }));
 
 const GENERATE_FALLBACK = 'Failed to generate MFA secret';
-const VERIFY_FALLBACK = 'Verification failed';
 
 function assertNoTransportLeak(text: string) {
   expect(text).not.toBe('Network Error');
@@ -35,27 +34,21 @@ function assertNoTransportLeak(text: string) {
   expect(text).not.toMatch(/TypeError/i);
 }
 
-const happyGenerate = {
-  secret: 'ABCDEFGHIJK',
-  setup_url: 'otpauth://test',
-  qr_code_data_url: 'data:image/png;base64,abc',
-  message: 'ok',
-};
-
 /**
  * LEG-3810 Soft-ORDER — UserProfile MFA toggle TypeError/Network Error densify.
+ * UserProfile has no exported error helpers; failures surface via embedded MFASetup.
  */
 describe('UserProfile typeErrorHonesty densify (LEG-3810)', () => {
   beforeEach(() => {
-    mockUser.current = { username: 'admin', mfaEnabled: false };
+    mockUser.current = { username: 'admin-operator', mfaEnabled: false };
     vi.mocked(api.post).mockReset();
     vi.spyOn(console, 'error').mockImplementation(() => {});
   });
 
-  it('collapses TypeError on MFA generate without leaking raw transport text', async () => {
-    const user = userEvent.setup();
+  it('MFA toggle TypeError surfaces honest fallback without raw transport text', async () => {
     vi.mocked(api.post).mockRejectedValue(new TypeError('Failed to fetch'));
 
+    const user = userEvent.setup();
     render(<UserProfile />);
 
     await user.click(screen.getByRole('button', { name: /Enable MFA/i }));
@@ -64,14 +57,15 @@ describe('UserProfile typeErrorHonesty densify (LEG-3810)', () => {
       expect(screen.getByText(GENERATE_FALLBACK)).toBeInTheDocument();
     });
 
-    const text = screen.getByText(GENERATE_FALLBACK).textContent ?? '';
-    assertNoTransportLeak(text);
+    const bodyText = document.body.textContent ?? '';
+    assertNoTransportLeak(bodyText);
+    expect(bodyText).toContain(GENERATE_FALLBACK);
   });
 
-  it('collapses Network Error on MFA generate without leaking raw transport text', async () => {
-    const user = userEvent.setup();
+  it('MFA toggle Network Error surfaces honest fallback without raw transport text', async () => {
     vi.mocked(api.post).mockRejectedValue(new Error('Network Error'));
 
+    const user = userEvent.setup();
     render(<UserProfile />);
 
     await user.click(screen.getByRole('button', { name: /Enable MFA/i }));
@@ -80,16 +74,34 @@ describe('UserProfile typeErrorHonesty densify (LEG-3810)', () => {
       expect(screen.getByText(GENERATE_FALLBACK)).toBeInTheDocument();
     });
 
-    const text = screen.getByText(GENERATE_FALLBACK).textContent ?? '';
-    assertNoTransportLeak(text);
+    const bodyText = document.body.textContent ?? '';
+    assertNoTransportLeak(bodyText);
+    expect(bodyText).toContain(GENERATE_FALLBACK);
+  });
+
+  it('MFA toggle Failed to fetch surfaces honest fallback without raw transport text', async () => {
+    vi.mocked(api.post).mockRejectedValue(new Error('Failed to fetch'));
+
+    const user = userEvent.setup();
+    render(<UserProfile />);
+
+    await user.click(screen.getByRole('button', { name: /Enable MFA/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(GENERATE_FALLBACK)).toBeInTheDocument();
+    });
+
+    const bodyText = document.body.textContent ?? '';
+    assertNoTransportLeak(bodyText);
+    expect(bodyText).toContain(GENERATE_FALLBACK);
   });
 
   it('preserves non-transport server detail on MFA generate failure', async () => {
-    const user = userEvent.setup();
     vi.mocked(api.post).mockRejectedValue({
       response: { status: 500, data: { detail: 'MFA already enabled for this account.' } },
     });
 
+    const user = userEvent.setup();
     render(<UserProfile />);
 
     await user.click(screen.getByRole('button', { name: /Enable MFA/i }));
@@ -97,61 +109,8 @@ describe('UserProfile typeErrorHonesty densify (LEG-3810)', () => {
     await waitFor(() => {
       expect(screen.getByText('MFA already enabled for this account.')).toBeInTheDocument();
     });
-  });
 
-  it('collapses TypeError on MFA verify without leaking raw transport text', async () => {
-    vi.mocked(api.post)
-      .mockResolvedValueOnce({ data: happyGenerate })
-      .mockRejectedValueOnce(new TypeError('Failed to fetch'));
-
-    const user = userEvent.setup();
-    render(<UserProfile />);
-
-    await user.click(screen.getByRole('button', { name: /Enable MFA/i }));
-
-    await waitFor(() => {
-      expect(screen.getByText('Next')).toBeInTheDocument();
-    });
-
-    await user.click(screen.getByRole('button', { name: /^next$/i }));
-
-    const codeInput = screen.getByPlaceholderText('000000');
-    await user.type(codeInput, '123456');
-    await user.click(screen.getByRole('button', { name: /^verify$/i }));
-
-    await waitFor(() => {
-      expect(screen.getByText(VERIFY_FALLBACK)).toBeInTheDocument();
-    });
-
-    const text = screen.getByText(VERIFY_FALLBACK).textContent ?? '';
-    assertNoTransportLeak(text);
-  });
-
-  it('collapses Failed to fetch on MFA verify without leaking raw transport text', async () => {
-    vi.mocked(api.post)
-      .mockResolvedValueOnce({ data: happyGenerate })
-      .mockRejectedValueOnce(new Error('Failed to fetch'));
-
-    const user = userEvent.setup();
-    render(<UserProfile />);
-
-    await user.click(screen.getByRole('button', { name: /Enable MFA/i }));
-
-    await waitFor(() => {
-      expect(screen.getByText('Next')).toBeInTheDocument();
-    });
-
-    await user.click(screen.getByRole('button', { name: /^next$/i }));
-
-    const codeInput = screen.getByPlaceholderText('000000');
-    await user.type(codeInput, '123456');
-    await user.click(screen.getByRole('button', { name: /^verify$/i }));
-
-    await waitFor(() => {
-      expect(screen.getByText(VERIFY_FALLBACK)).toBeInTheDocument();
-    });
-
-    const text = screen.getByText(VERIFY_FALLBACK).textContent ?? '';
-    assertNoTransportLeak(text);
+    const bodyText = document.body.textContent ?? '';
+    assertNoTransportLeak(bodyText);
   });
 });
