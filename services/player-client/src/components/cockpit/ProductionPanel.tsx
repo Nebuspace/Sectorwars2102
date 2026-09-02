@@ -63,6 +63,12 @@ export interface ProductionPanelProps {
   lines: ProductionLine[];
   /** Commodities the server flagged as overflowing at the last tick. */
   overflowResources: string[];
+  /** Last-tick food deficit from the planet DTO; absent when the colony is fed. */
+  starvationWarning?: {
+    food_deficit?: number;
+    colonists_lost?: number;
+    at?: string;
+  } | null;
   /** Open the Colony Specialization modal. */
   onOpenSpecialization: () => void;
   /** Current per-role colonist head-counts (optimistic). */
@@ -144,6 +150,7 @@ const RollingStock: React.FC<{ value: number }> = ({ value }) => {
 const ProductionPanel: React.FC<ProductionPanelProps> = ({
   lines,
   overflowResources,
+  starvationWarning = null,
   onOpenSpecialization,
   allocations,
   productionRates,
@@ -279,6 +286,15 @@ const ProductionPanel: React.FC<ProductionPanelProps> = ({
       {overflowResources.length > 0 && (
         <div className="cp-prod-overflow" role="alert">
           ⚠️ Storage full: {overflowResources.join(', ')} — output above the cap is wasted.
+        </div>
+      )}
+      {starvationWarning &&
+        typeof starvationWarning === 'object' &&
+        (Number(starvationWarning.colonists_lost ?? 0) > 0 ||
+          Number(starvationWarning.food_deficit ?? 0) > 0) && (
+        <div className="cp-prod-starvation" role="alert" data-testid="starvation-warning">
+          ⚠️ Food deficit: {Number(starvationWarning.food_deficit ?? 0).toLocaleString()} organics
+          short, {Number(starvationWarning.colonists_lost ?? 0).toLocaleString()} colonists lost.
         </div>
       )}
     </div>

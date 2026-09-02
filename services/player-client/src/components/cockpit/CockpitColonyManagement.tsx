@@ -94,6 +94,12 @@ export interface CockpitColonyManagementProps {
   productionLines: ProductionLine[];
   /** Commodities the server flagged as overflowing last tick. */
   overflowResources: string[];
+  /** Last-tick food deficit event from the planet DTO; null when healthy. */
+  starvationWarning?: {
+    food_deficit?: number;
+    colonists_lost?: number;
+    at?: string;
+  } | null;
   /** Current per-role colonist head-counts (optimistic). */
   allocations: RoleAllocation;
   /** Server-confirmed per-day production rates per role. */
@@ -162,6 +168,7 @@ const CockpitColonyManagement: React.FC<CockpitColonyManagementProps> = ({
   underSiege,
   productionLines,
   overflowResources,
+  starvationWarning = null,
   allocations,
   productionRates,
   perColonistRates,
@@ -418,6 +425,7 @@ const CockpitColonyManagement: React.FC<CockpitColonyManagementProps> = ({
           <ProductionPanel
             lines={productionLinesWithUpgrades}
             overflowResources={overflowResources}
+            starvationWarning={starvationWarning}
             onOpenSpecialization={() => setShowSpecialization(true)}
             allocations={allocations}
             productionRates={productionRates}

@@ -3,6 +3,22 @@ import { gameAPI } from '../../services/api';
 import type { Planet } from '../../types/planetary';
 import EmptyState from '../common/EmptyState';
 
+const getHabitabilityScore = (planet: Planet): number | null => {
+  const score = planet.habitability?.score;
+  return typeof score === 'number' ? Math.max(0, Math.min(100, score)) : null;
+};
+
+const formatTerraformingReadout = (planet: Planet): string | null => {
+  const tf = planet.terraforming;
+  if (!tf || tf.active !== true) return null;
+  const target = typeof tf.target === 'number' ? tf.target : null;
+  const progress = typeof tf.progress === 'number' ? tf.progress : null;
+  if (target === null && progress === null) return 'Terraforming';
+  const targetPart = target !== null ? `→ ${target}%` : '→ —';
+  const progressPart = progress !== null ? ` (${progress.toFixed(0)}%)` : '';
+  return `Terraform ${targetPart}${progressPart}`;
+};
+
 const COLONIES_ROSTER_LOAD_FALLBACK = 'Failed to load colonies';
 
 /** Transport collapse copy is not gameserver detail (LEG-3282 densify). */
@@ -79,16 +95,30 @@ const ColoniesRosterTab: React.FC = () => {
   return (
     <div className="sb-colonies-roster">
       <ul className="sb-colonies-list">
-        {planets.map((p) => (
+        {planets.map((p) => {
+          const hab = getHabitabilityScore(p);
+          const terraform = formatTerraformingReadout(p);
+          return (
           <li key={p.id} className="sb-colonies-row">
             <span className="sb-colonies-name">{p.name}</span>
             <span className="sb-colonies-sector">{p.sectorName}</span>
             <span className="sb-colonies-pop">
               {(p.colonists ?? 0).toLocaleString()} / {(p.maxColonists ?? 0).toLocaleString()}
             </span>
+            {hab !== null && (
+              <span className="sb-colonies-hab" title="Habitability score">
+                {hab}%
+              </span>
+            )}
+            {terraform && (
+              <span className="sb-colonies-terraform" title="Active terraforming project">
+                {terraform}
+              </span>
+            )}
             {p.underSiege && <span className="sb-colonies-siege">UNDER SIEGE</span>}
           </li>
-        ))}
+          );
+        })}
       </ul>
       <p className="sb-colonies-footer">Travel there to manage.</p>
     </div>
