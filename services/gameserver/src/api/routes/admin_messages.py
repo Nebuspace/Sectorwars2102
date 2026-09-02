@@ -17,6 +17,12 @@ from src.services.message_service import MessageService
 from src.models.message import Message
 from src.models.player import Player
 
+from src.utils.error_handling import route_internal_error
+
+ERR_ADMIN_MESSAGES_LIST_FAILED = "ERR_ADMIN_MESSAGES_LIST_FAILED"
+ERR_ADMIN_MESSAGES_MODERATE_FAILED = "ERR_ADMIN_MESSAGES_MODERATE_FAILED"
+ERR_ADMIN_MESSAGES_STATS_FAILED = "ERR_ADMIN_MESSAGES_STATS_FAILED"
+
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/messages", tags=["admin-messages"])
 
@@ -98,7 +104,10 @@ async def _list_admin_messages(
 
     except Exception:
         logger.exception("Failed to list admin messages")
-        raise HTTPException(status_code=500, detail="Failed to list admin messages")
+        raise route_internal_error(
+            ERR_ADMIN_MESSAGES_LIST_FAILED,
+            "Failed to list admin messages",
+        )
 
 
 @router.get("/flagged")
@@ -210,7 +219,10 @@ async def moderate_message(
         raise
     except Exception:
         logger.exception("Failed to moderate message")
-        raise HTTPException(status_code=500, detail="Failed to moderate message")
+        raise route_internal_error(
+            ERR_ADMIN_MESSAGES_MODERATE_FAILED,
+            "Failed to moderate message",
+        )
 
 
 @router.get("/stats")
@@ -275,4 +287,7 @@ async def get_message_statistics(
 
     except Exception:
         logger.exception("Failed to load message statistics")
-        raise HTTPException(status_code=500, detail="Failed to load message statistics")
+        raise route_internal_error(
+            ERR_ADMIN_MESSAGES_STATS_FAILED,
+            "Failed to load message statistics",
+        )

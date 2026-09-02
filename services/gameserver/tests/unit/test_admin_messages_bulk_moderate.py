@@ -118,7 +118,10 @@ def test_list_admin_messages_unexpected_is_opaque_500():
         assert False, "expected HTTPException"
     except HTTPException as exc:
         assert exc.status_code == 500
-        assert exc.detail == "Failed to list admin messages"
+        assert exc.detail == {
+            "error_code": "ERR_ADMIN_MESSAGES_LIST_FAILED",
+            "detail": "Failed to list admin messages",
+        }
         assert "secret-db-dsn-should-not-leak" not in str(exc.detail)
 
 
@@ -141,21 +144,28 @@ def test_moderate_message_unexpected_is_opaque_500():
             assert False, "expected HTTPException"
         except HTTPException as exc:
             assert exc.status_code == 500
-            assert exc.detail == "Failed to moderate message"
+            assert exc.detail == {
+                "error_code": "ERR_ADMIN_MESSAGES_MODERATE_FAILED",
+                "detail": "Failed to moderate message",
+            }
             assert "secret-moderation-stack" not in str(exc.detail)
 
 
 def test_admin_messages_http500_catches_have_no_detail_str_e():
-    """LEG-3561 — static pin: the three HTTP 500 catch paths stay opaque."""
+    """LEG-3561 / LEG-3879 — static pin: the three HTTP 500 catch paths stay opaque."""
     from pathlib import Path
 
     src = Path(am.__file__).read_text(encoding="utf-8")
-    for stable in (
-        'detail="Failed to list admin messages"',
-        'detail="Failed to moderate message"',
-        'detail="Failed to load message statistics"',
+    for code in (
+        "ERR_ADMIN_MESSAGES_LIST_FAILED",
+        "ERR_ADMIN_MESSAGES_MODERATE_FAILED",
+        "ERR_ADMIN_MESSAGES_STATS_FAILED",
     ):
-        assert stable in src
+        assert code in src
+    assert "route_internal_error" in src
+    assert 'detail="Failed to list admin messages"' not in src
+    assert 'detail="Failed to moderate message"' not in src
+    assert 'detail="Failed to load message statistics"' not in src
     # Outer HTTP 500 catches must not use detail=str(e); bulk per-id soft-fail
     # may still truncate Exception text into result rows (not an HTTP 500).
     assert src.count("raise HTTPException(status_code=500, detail=str(e))") == 0

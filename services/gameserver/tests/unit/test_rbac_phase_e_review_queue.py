@@ -56,7 +56,9 @@ class TestReviewQueueEndpointSource:
 
     def test_errors_are_generic(self):
         block = _extract_route_block(_AUDIT_SRC, '@router.get("/review-queue"')
-        assert 'detail="Failed to list review queue"' in block
+        assert "route_internal_error" in block
+        assert "ERR_AUDIT_LIST_REVIEW_QUEUE_FAILED" in block
+        assert 'detail="Failed to list review queue"' not in block
         assert "detail=str(e)" not in block
 
     def test_page_bounded(self):

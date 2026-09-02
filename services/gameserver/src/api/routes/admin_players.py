@@ -26,6 +26,10 @@ from src.models.user import User
 from src.services.admin_action_log_service import log_admin_action
 from src.services.faction_service import FactionService
 
+from src.utils.error_handling import route_internal_error
+
+ERR_ADMIN_PLAYERS_BULK_FAILED = "ERR_ADMIN_PLAYERS_BULK_FAILED"
+
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
@@ -299,4 +303,7 @@ async def bulk_player_operation(
         raise
     except Exception:
         logger.exception("Error in bulk_player_operation")
-        raise HTTPException(status_code=500, detail="Bulk player operation failed")
+        raise route_internal_error(
+            ERR_ADMIN_PLAYERS_BULK_FAILED,
+            "Bulk player operation failed",
+        )

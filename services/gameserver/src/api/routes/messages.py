@@ -15,6 +15,16 @@ from src.models.player import Player
 from src.services.message_service import MessageService
 from src.services.notification_service import MessageDeliveryError
 
+from src.utils.error_handling import route_internal_error
+
+ERR_MESSAGES_SEND_FAILED = "ERR_MESSAGES_SEND_FAILED"
+ERR_MESSAGES_INBOX_FAILED = "ERR_MESSAGES_INBOX_FAILED"
+ERR_MESSAGES_TEAM_FAILED = "ERR_MESSAGES_TEAM_FAILED"
+ERR_MESSAGES_MARK_READ_FAILED = "ERR_MESSAGES_MARK_READ_FAILED"
+ERR_MESSAGES_DELETE_FAILED = "ERR_MESSAGES_DELETE_FAILED"
+ERR_MESSAGES_CONVERSATIONS_FAILED = "ERR_MESSAGES_CONVERSATIONS_FAILED"
+ERR_MESSAGES_FLAG_FAILED = "ERR_MESSAGES_FLAG_FAILED"
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/messages", tags=["messages"])
@@ -94,7 +104,10 @@ async def send_message(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception:
         logger.exception("Failed to send message")
-        raise HTTPException(status_code=500, detail="Failed to send message")
+        raise route_internal_error(
+            ERR_MESSAGES_SEND_FAILED,
+            "Failed to send message",
+        )
 
 
 @router.get("/inbox")
@@ -120,7 +133,10 @@ async def get_inbox(
         raise
     except Exception:
         logger.exception("Failed to load inbox")
-        raise HTTPException(status_code=500, detail="Failed to load inbox")
+        raise route_internal_error(
+            ERR_MESSAGES_INBOX_FAILED,
+            "Failed to load inbox",
+        )
 
 
 @router.get("/team/{team_id}")
@@ -148,7 +164,10 @@ async def get_team_messages(
         raise HTTPException(status_code=403, detail=str(e))
     except Exception:
         logger.exception("Failed to load team messages")
-        raise HTTPException(status_code=500, detail="Failed to load team messages")
+        raise route_internal_error(
+            ERR_MESSAGES_TEAM_FAILED,
+            "Failed to load team messages",
+        )
 
 
 @router.put("/{message_id}/read")
@@ -174,7 +193,10 @@ async def mark_message_read(
         raise
     except Exception:
         logger.exception("Failed to mark message read")
-        raise HTTPException(status_code=500, detail="Failed to mark message as read")
+        raise route_internal_error(
+            ERR_MESSAGES_MARK_READ_FAILED,
+            "Failed to mark message as read",
+        )
 
 
 @router.delete("/{message_id}")
@@ -200,7 +222,10 @@ async def delete_message(
         raise
     except Exception:
         logger.exception("Failed to delete message")
-        raise HTTPException(status_code=500, detail="Failed to delete message")
+        raise route_internal_error(
+            ERR_MESSAGES_DELETE_FAILED,
+            "Failed to delete message",
+        )
 
 
 @router.get("/conversations")
@@ -224,7 +249,10 @@ async def get_conversations(
         raise
     except Exception:
         logger.exception("Failed to load conversations")
-        raise HTTPException(status_code=500, detail="Failed to load conversations")
+        raise route_internal_error(
+            ERR_MESSAGES_CONVERSATIONS_FAILED,
+            "Failed to load conversations",
+        )
 
 
 @router.post("/{message_id}/flag")
@@ -252,4 +280,7 @@ async def flag_message(
         raise
     except Exception:
         logger.exception("Failed to flag message")
-        raise HTTPException(status_code=500, detail="Failed to flag message")
+        raise route_internal_error(
+            ERR_MESSAGES_FLAG_FAILED,
+            "Failed to flag message",
+        )
