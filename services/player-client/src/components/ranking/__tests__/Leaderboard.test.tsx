@@ -248,6 +248,125 @@ describe('Leaderboard', () => {
     expect(container.querySelector('[data-testid="player-name-plate-count"]')).toBeNull();
   });
 
+  it('shows Wanted law status when is_wanted is true (LEG-4133)', async () => {
+    getPublicLeaderboard.mockResolvedValue({
+      category: 'rank_points',
+      total_players: 1,
+      player_position: 1,
+      entries: [
+        {
+          position: 1,
+          player_id: 'p-wanted',
+          nickname: 'Outlaw',
+          military_rank: 'Captain',
+          score: 900,
+          is_wanted: true,
+          is_suspect: true,
+        },
+      ],
+    });
+
+    await act(async () => {
+      root.render(<Leaderboard />);
+    });
+
+    const nick = container.querySelector('[data-testid="leaderboard-nickname-p-wanted"]');
+    const badge = container.querySelector('[data-testid="leaderboard-law-status-p-wanted"]');
+    expect(nick?.textContent).toBe('Outlaw');
+    expect(nick?.classList.contains('wanted')).toBe(true);
+    expect(badge?.textContent).toBe('Wanted');
+    expect(badge?.classList.contains('wanted')).toBe(true);
+    // Wanted overrides Suspect — no Suspect chip when both flags true.
+    expect(container.textContent).not.toMatch(/Suspect/);
+  });
+
+  it('shows Suspect law status when is_suspect is true and is_wanted is false (LEG-4133)', async () => {
+    getPublicLeaderboard.mockResolvedValue({
+      category: 'rank_points',
+      total_players: 1,
+      player_position: 1,
+      entries: [
+        {
+          position: 1,
+          player_id: 'p-suspect',
+          nickname: 'Sketchy',
+          military_rank: 'Ensign',
+          score: 100,
+          is_wanted: false,
+          is_suspect: true,
+        },
+      ],
+    });
+
+    await act(async () => {
+      root.render(<Leaderboard />);
+    });
+
+    const nick = container.querySelector('[data-testid="leaderboard-nickname-p-suspect"]');
+    const badge = container.querySelector('[data-testid="leaderboard-law-status-p-suspect"]');
+    expect(nick?.classList.contains('suspect')).toBe(true);
+    expect(badge?.textContent).toBe('Suspect');
+    expect(badge?.classList.contains('suspect')).toBe(true);
+  });
+
+  it('hides law status when is_wanted and is_suspect are false (LEG-4133)', async () => {
+    getPublicLeaderboard.mockResolvedValue({
+      category: 'rank_points',
+      total_players: 1,
+      player_position: 1,
+      entries: [
+        {
+          position: 1,
+          player_id: 'p-clean',
+          nickname: 'Citizen',
+          military_rank: 'Lieutenant',
+          score: 200,
+          is_wanted: false,
+          is_suspect: false,
+        },
+      ],
+    });
+
+    await act(async () => {
+      root.render(<Leaderboard />);
+    });
+
+    expect(container.querySelector('[data-testid="leaderboard-law-status-p-clean"]')).toBeNull();
+    const nick = container.querySelector('[data-testid="leaderboard-nickname-p-clean"]');
+    expect(nick?.textContent).toBe('Citizen');
+    expect(nick?.classList.contains('wanted')).toBe(false);
+    expect(nick?.classList.contains('suspect')).toBe(false);
+  });
+
+  it('Wanted overrides Suspect when both flags true on public leaderboard (LEG-4133)', async () => {
+    getPublicLeaderboard.mockResolvedValue({
+      category: 'combat',
+      total_players: 1,
+      player_position: 1,
+      entries: [
+        {
+          position: 1,
+          player_id: 'p-both',
+          nickname: 'DoubleFlag',
+          military_rank: 'Commander',
+          score: 50,
+          is_wanted: true,
+          is_suspect: true,
+        },
+      ],
+    });
+
+    await act(async () => {
+      root.render(<Leaderboard category="combat" />);
+    });
+
+    const badge = container.querySelector('[data-testid="leaderboard-law-status-p-both"]');
+    expect(badge?.textContent).toBe('Wanted');
+    expect(container.querySelector('.rank-username.wanted')?.textContent).toBe('DoubleFlag');
+    expect(container.querySelector('.rank-username.suspect')).toBeNull();
+    expect(container.textContent).not.toMatch(/Suspect/);
+  });
+
   it('formatLeaderboardLoadError falls back on TypeError network collapse (LEG-3016)', () => {
     const text = formatLeaderboardLoadError(new TypeError('Failed to fetch'));
     expect(text).toMatch(/Failed to load leaderboard/i);

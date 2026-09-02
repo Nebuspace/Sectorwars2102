@@ -61,7 +61,7 @@
   text-overflow: ellipsis;
 }
 
-/* Law status — tip GET /ranking/rank|progress is_wanted / is_suspect (LEG-4127 / LEG-4130). */
+/* Law status — tip GET /ranking/rank|progress|public leaderboard is_wanted / is_suspect (LEG-4127 / LEG-4130 / LEG-4133). */
 .rank-username {
   font-size: 0.8rem;
   font-weight: 600;
@@ -472,6 +472,18 @@
 }
 
 .col-pos { width: 40px; text-align: center; color: #888; }
+
+.leaderboard-nickname-cell {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+
+.leaderboard-nickname-cell .rank-law-status {
+  margin: 0;
+}
 
 .leaderboard-rank-cell {
   display: inline-flex;

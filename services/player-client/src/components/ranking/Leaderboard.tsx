@@ -14,6 +14,10 @@ interface LeaderboardEntry {
   rank_tier?: string;
   pinned_medal_id?: string | null;
   medal_count?: number | null;
+  /** Tip public GET /ranking/leaderboard — Federation Wanted standing (overrides Suspect). */
+  is_wanted?: boolean;
+  /** Tip public GET /ranking/leaderboard — temporary Suspect flag (weaker than Wanted). */
+  is_suspect?: boolean;
 }
 
 interface LeaderboardData {
@@ -165,6 +169,38 @@ const Leaderboard: React.FC<LeaderboardProps> = ({
     return entry.military_rank;
   };
 
+  /** Law chrome from tip public leaderboard — Wanted overrides Suspect (LEG-4133). */
+  const renderNicknameCell = (entry: LeaderboardEntry) => {
+    const isWanted = entry.is_wanted === true;
+    const isSuspect = !isWanted && entry.is_suspect === true;
+    const nicknameClass = [
+      'rank-username',
+      isWanted ? 'wanted' : '',
+      isSuspect ? 'suspect' : '',
+    ]
+      .filter(Boolean)
+      .join(' ');
+
+    return (
+      <span className="leaderboard-nickname-cell">
+        <span
+          className={nicknameClass}
+          data-testid={`leaderboard-nickname-${entry.player_id}`}
+        >
+          {entry.nickname}
+        </span>
+        {(isWanted || isSuspect) && (
+          <span
+            className={`rank-law-status ${isWanted ? 'wanted' : 'suspect'}`}
+            data-testid={`leaderboard-law-status-${entry.player_id}`}
+          >
+            {isWanted ? 'Wanted' : 'Suspect'}
+          </span>
+        )}
+      </span>
+    );
+  };
+
   return (
     <div className="leaderboard">
       <div className="leaderboard-header">
@@ -216,7 +252,7 @@ const Leaderboard: React.FC<LeaderboardProps> = ({
                   className={entry.player_id === currentPlayerId ? 'current-player' : ''}
                 >
                   <td className="col-pos">{entry.position}</td>
-                  <td className="col-name">{entry.nickname}</td>
+                  <td className="col-name">{renderNicknameCell(entry)}</td>
                   <td className="col-rank">{renderRankCell(entry)}</td>
                   <td className="col-medals">
                     <PlayerNamePlate
