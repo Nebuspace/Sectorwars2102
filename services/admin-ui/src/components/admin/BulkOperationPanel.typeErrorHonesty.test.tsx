@@ -10,6 +10,18 @@ vi.mock('../../utils/auth', () => ({
   },
 }));
 
+const axiosError = (status: number, detail?: string) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: detail ? { detail } : {} },
+  });
+
+function assertNoTransportLeak(text: string) {
+  expect(text).not.toBe('Network Error');
+  expect(text).not.toContain('Network Error');
+  expect(text).not.toMatch(/Failed to fetch/i);
+  expect(text).not.toMatch(/TypeError/i);
+}
+
 function makePlayer(id: string, username: string): PlayerModel {
   return {
     id,
@@ -102,5 +114,47 @@ describe('BulkOperationPanel typeErrorHonesty densify (LEG-3454)', () => {
     expect(alert).toMatch(/Bulk operation failed/i);
     expect(alert).not.toMatch(/Failed to fetch/i);
     expect(alert).not.toMatch(/TypeError/i);
+  });
+
+  it('surfaces 403 with bulk-op scope hint when POST is denied', async () => {
+    vi.mocked(api.post).mockRejectedValue(axiosError(403));
+
+    render(
+      <BulkOperationPanel
+        selectedPlayers={[makePlayer('p1', 'Alpha')]}
+        onClose={() => {}}
+        onComplete={() => {}}
+      />,
+    );
+    await submitCreditAdjust();
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Access denied|bulk player operations|ADJUST_CREDITS/i);
+    expect(alert).not.toMatch(/HTTP 403/i);
+    assertNoTransportLeak(alert);
+  });
+
+  it('surfaces 429 as admin rate-limit copy on bulk POST', async () => {
+    vi.mocked(api.post).mockRejectedValue(axiosError(429));
+
+    render(
+      <BulkOperationPanel
+        selectedPlayers={[makePlayer('p1', 'Alpha')]}
+        onClose={() => {}}
+        onComplete={() => {}}
+      />,
+    );
+    await submitCreditAdjust();
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/rate limit/i);
+    expect(alert).not.toMatch(/HTTP 429/i);
+    assertNoTransportLeak(alert);
   });
 });
