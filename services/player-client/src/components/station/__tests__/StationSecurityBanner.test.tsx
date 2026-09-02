@@ -19,6 +19,7 @@ vi.mock('../../../services/api', () => ({
 import StationSecurityBanner, {
   formatSecurityTierLabel,
   formatStationSecurityBanner,
+  STATION_SECURITY_BANNER_LOAD_FALLBACK,
 } from '../StationSecurityBanner';
 
 describe('formatSecurityTierLabel', () => {
@@ -106,7 +107,8 @@ describe('StationSecurityBanner', () => {
 
     const error = container.querySelector('[data-testid="station-security-banner-error"]');
     expect(error?.getAttribute('role')).toBe('alert');
-    expect(error?.textContent).toBe('API Error: 404');
+    // Soft-ORDER densify collapses bare "API Error: NNN" to player-safe fallback.
+    expect(error?.textContent).toBe(STATION_SECURITY_BANNER_LOAD_FALLBACK);
     expect(container.querySelector('[data-testid="station-security-banner"]')).toBeNull();
   });
 });
