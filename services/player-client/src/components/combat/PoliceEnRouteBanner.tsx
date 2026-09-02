@@ -21,12 +21,36 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
 };
 
 /** Exported for TypeError/network honesty Vitest (LEG-3713). */
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
 export function formatPoliceEnRouteLoadError(err: unknown): string {
   if (err instanceof TypeError) return POLICE_EN_ROUTE_LOAD_FALLBACK;
-  if (err instanceof Error && err.message) {
-    if (isNetworkCollapseMessage(err.message)) return POLICE_EN_ROUTE_LOAD_FALLBACK;
-    return err.message;
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNetworkCollapseMessage(message);
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission to load law enforcement status.';
   }
+
+  if (status === 429) {
+    return 'Law enforcement status rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (hasServerDetail) return message!;
   return POLICE_EN_ROUTE_LOAD_FALLBACK;
 }
 

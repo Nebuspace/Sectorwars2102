@@ -21,6 +21,16 @@ function httpStatus(err: unknown): number | undefined {
   return undefined;
 }
 
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
 /**
  * Surface gameserver detail when ARIA memory recall fails; network collapse
  * (fetch TypeError) is not GS copy — use the stable fallback (LEG-3072 Soft-ORDER).
@@ -34,7 +44,17 @@ export function formatAriaMemoryLoadError(err: unknown): string {
   const hasServerDetail =
     typeof message === 'string' &&
     message.trim().length > 0 &&
-    !/^API Error: \d+$/.test(message.trim());
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNetworkCollapseMessage(message);
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission to load ARIA memories.';
+  }
+
+  if (status === 429) {
+    return 'ARIA memory load rate limit exceeded — wait a moment and try again.';
+  }
 
   if (status === 503 || status === 500) {
     if (hasServerDetail) return message!;
@@ -45,23 +65,26 @@ export function formatAriaMemoryLoadError(err: unknown): string {
   return fallback;
 }
 
-/** Transport collapse copy is not gameserver detail (network-collapse densify). */
-const isNetworkCollapseMessage = (msg: string): boolean => {
-  const trimmed = msg.trim();
-  return (
-    !trimmed ||
-    /^failed to fetch$/i.test(trimmed) ||
-    /^network\s*error$/i.test(trimmed)
-  );
-};
-
 export function formatAriaMemoryActionError(err: unknown, fallback: string): string {
   if (err instanceof TypeError) return fallback;
+  const status = httpStatus(err);
   const message = err instanceof Error ? err.message : undefined;
-  if (typeof message === 'string' && message.trim().length > 0) {
-    if (isNetworkCollapseMessage(message)) return fallback;
-    return message;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNetworkCollapseMessage(message);
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission to perform this ARIA memory action.';
   }
+
+  if (status === 429) {
+    return 'ARIA memory action rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (hasServerDetail) return message!;
   return fallback;
 }
 

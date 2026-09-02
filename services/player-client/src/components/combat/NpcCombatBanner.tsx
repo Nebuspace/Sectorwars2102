@@ -20,12 +20,36 @@ const isNpcCombatNetworkCollapse = (msg: string): boolean => {
  * NpcCombatBanner is WS-driven (no REST load); this helper pins the densify
  * contract for any future REST prefetch or defensive error surfacing.
  */
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
 export function formatNpcCombatBannerError(err: unknown): string {
   if (err instanceof TypeError) return NPC_COMBAT_BANNER_LOAD_FALLBACK;
+  const status = httpStatus(err);
   const message = err instanceof Error ? err.message : undefined;
-  if (typeof message === 'string' && message.trim() && !isNpcCombatNetworkCollapse(message)) {
-    return message;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNpcCombatNetworkCollapse(message);
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission to load combat alerts.';
   }
+
+  if (status === 429) {
+    return 'Combat alert rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (hasServerDetail) return message!;
   return NPC_COMBAT_BANNER_LOAD_FALLBACK;
 }
 

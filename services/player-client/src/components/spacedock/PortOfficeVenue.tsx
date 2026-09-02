@@ -60,24 +60,46 @@ export function formatPortOfficeVenueError(error: unknown, fallback: string): st
   if (error instanceof TypeError) return fallback;
   const e = asRecord(error);
   const response = asRecord(e?.response);
+  const status =
+    (typeof e?.status === 'number' ? e.status : undefined) ??
+    (typeof response?.status === 'number' ? response.status : undefined);
   const data = asRecord(response?.data);
   const raw = data?.message ?? data?.detail;
-  if (typeof raw === 'string' && raw) return raw;
-  if (Array.isArray(raw)) {
+  let detailCopy: string | undefined;
+  if (typeof raw === 'string' && raw.trim()) detailCopy = raw.trim();
+  else if (Array.isArray(raw)) {
     const msgs = raw
       .map(item => {
         const rec = asRecord(item);
         return typeof rec?.msg === 'string' && rec.msg ? rec.msg : null;
       })
       .filter((m): m is string => m !== null);
-    if (msgs.length > 0) return msgs.join('; ');
+    if (msgs.length > 0) detailCopy = msgs.join('; ');
   }
+  const message = typeof e?.message === 'string' ? e.message : undefined;
+  const messageDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNetworkCollapseMessage(message)
+      ? message.trim()
+      : undefined;
+  const serverCopy = detailCopy ?? messageDetail;
+
+  if (status === 403) {
+    if (serverCopy) return serverCopy;
+    return 'You do not have permission to perform this port office action.';
+  }
+
+  if (status === 429) {
+    return 'Port office action rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (detailCopy) return detailCopy;
   // Non-HTTP failures (e.g. 'Not authenticated' thrown by the context helpers).
   // Axios "Network Error" / empty transport is not operator copy (LEG-3274).
-  if (!response && typeof e?.message === 'string' && e.message) {
-    if (isNetworkCollapseMessage(e.message)) return fallback;
-    return e.message;
-  }
+  if (!response && messageDetail) return messageDetail;
+  if (message && isNetworkCollapseMessage(message)) return fallback;
   return fallback;
 }
 

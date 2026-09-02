@@ -18,6 +18,12 @@ vi.mock('../../ships', () => ({
 
 const FALLBACK = SHIPYARD_CATALOG_LOAD_FALLBACK;
 
+
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
 describe('formatShipyardCatalogError TypeError densify (LEG-3772)', () => {
   it('falls back on TypeError network collapse', () => {
     const text = formatShipyardCatalogError(new TypeError('Failed to fetch'), FALLBACK);
@@ -107,5 +113,17 @@ describe('ShipyardVenue catalog load TypeError densify (LEG-3772)', () => {
       (container.querySelector('button.action-button') as HTMLButtonElement).click();
     });
     expect(fetchShipCatalog).toHaveBeenCalled();
+  });
+});
+
+describe('formatShipyardCatalogError 403/429 densify (LEG-4039)', () => {
+  it('surfaces 403/429 without raw status codes', () => {
+    expect(formatShipyardCatalogError(apiRequestError(403), FALLBACK)).toMatch(/permission/i);
+    expect(formatShipyardCatalogError(apiRequestError(403, 'catalog_denied'), FALLBACK)).toBe(
+      'catalog_denied',
+    );
+    expect(formatShipyardCatalogError(apiRequestError(429), FALLBACK)).toMatch(/rate limit/i);
+    expect(formatShipyardCatalogError(apiRequestError(429), FALLBACK)).not.toMatch(/\b429\b/);
+    expect(formatShipyardCatalogError(apiRequestError(403), FALLBACK)).not.toMatch(/TypeError/i);
   });
 });

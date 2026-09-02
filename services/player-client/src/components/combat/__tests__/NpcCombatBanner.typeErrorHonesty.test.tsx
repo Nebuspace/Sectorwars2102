@@ -42,6 +42,12 @@ import NpcCombatBanner, {
   NPC_COMBAT_BANNER_LOAD_FALLBACK,
 } from '../NpcCombatBanner';
 
+
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
 describe('formatNpcCombatBannerError (LEG-3753)', () => {
   it('falls back on TypeError network collapse', () => {
     const text = formatNpcCombatBannerError(new TypeError('Failed to fetch'));
@@ -116,5 +122,15 @@ describe('NpcCombatBanner WS surfaces transport honesty (LEG-3753)', () => {
     expect(payload.content).not.toMatch(/Network Error/i);
     expect(payload.content).not.toMatch(/Failed to fetch/i);
     expect(payload.title).not.toMatch(/TypeError/i);
+  });
+});
+
+describe('formatNpcCombatBannerError 403/429 densify (LEG-4032)', () => {
+  it('surfaces 403/429 without raw status codes', () => {
+    expect(formatNpcCombatBannerError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatNpcCombatBannerError(apiRequestError(403, 'alert_denied'))).toBe('alert_denied');
+    expect(formatNpcCombatBannerError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatNpcCombatBannerError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatNpcCombatBannerError(apiRequestError(403))).not.toMatch(/TypeError/i);
   });
 });

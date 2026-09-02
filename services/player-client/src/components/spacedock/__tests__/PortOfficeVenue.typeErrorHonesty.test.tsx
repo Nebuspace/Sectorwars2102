@@ -59,6 +59,12 @@ async function setInputValue(input: HTMLInputElement, value: string) {
   });
 }
 
+
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
 describe('formatPortOfficeVenueError TypeError densify (LEG-3133)', () => {
   it('falls back on TypeError network collapse', () => {
     const text = formatPortOfficeVenueError(
@@ -181,5 +187,16 @@ describe('PortOfficeVenue withdraw TypeError densify (LEG-3133)', () => {
     expect(withdrawAlert).toBeTruthy();
     expect(withdrawAlert?.textContent).not.toMatch(/Failed to fetch/i);
     expect(withdrawAlert?.textContent).not.toMatch(/TypeError/i);
+  });
+});
+
+describe('formatPortOfficeVenueError 403/429 densify (LEG-4038)', () => {
+  it('surfaces 403/429 without raw status codes', () => {
+    const fallback = 'Port office action failed.';
+    expect(formatPortOfficeVenueError(apiRequestError(403), fallback)).toMatch(/permission/i);
+    expect(formatPortOfficeVenueError(apiRequestError(403, 'port_denied'), fallback)).toBe('port_denied');
+    expect(formatPortOfficeVenueError(apiRequestError(429), fallback)).toMatch(/rate limit/i);
+    expect(formatPortOfficeVenueError(apiRequestError(429), fallback)).not.toMatch(/\b429\b/);
+    expect(formatPortOfficeVenueError(apiRequestError(403), fallback)).not.toMatch(/TypeError/i);
   });
 });

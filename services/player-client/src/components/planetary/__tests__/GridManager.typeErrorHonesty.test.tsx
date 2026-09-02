@@ -7,6 +7,12 @@ import { formatGridLoadError, formatGridActionError } from '../GridManager';
 
 const ACTION_FALLBACK = 'Grid action failed';
 
+
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
 describe('GridManager TypeError densify (LEG-3473)', () => {
   it('formatGridLoadError falls back on TypeError network collapse', () => {
     const text = formatGridLoadError(new TypeError('Failed to fetch'));
@@ -35,5 +41,17 @@ describe('GridManager TypeError densify (LEG-3473)', () => {
   it('preserves non-generic Error.message detail when not TypeError', () => {
     expect(formatGridLoadError(new Error('grid_offline'))).toBe('grid_offline');
     expect(formatGridActionError(new Error('plot_busy'), ACTION_FALLBACK)).toBe('plot_busy');
+  });
+});
+
+describe('formatGridLoadError / formatGridActionError 403/429 densify (LEG-4034)', () => {
+  it('surfaces 403/429 without raw status codes', () => {
+    expect(formatGridLoadError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatGridLoadError(apiRequestError(403, 'grid_denied'))).toBe('grid_denied');
+    expect(formatGridLoadError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatGridActionError(apiRequestError(403), ACTION_FALLBACK)).toMatch(/permission/i);
+    expect(formatGridActionError(apiRequestError(403, 'plot_denied'), ACTION_FALLBACK)).toBe('plot_denied');
+    expect(formatGridActionError(apiRequestError(429), ACTION_FALLBACK)).toMatch(/rate limit/i);
+    expect(formatGridActionError(apiRequestError(429), ACTION_FALLBACK)).not.toMatch(/\b429\b/);
   });
 });

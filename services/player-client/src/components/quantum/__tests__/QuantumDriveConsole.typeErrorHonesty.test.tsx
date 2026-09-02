@@ -12,6 +12,12 @@ const SCAN_FALLBACK = 'Echo scan failed — drive sensors unresponsive';
 const JUMP_FALLBACK = 'Quantum jump failed — drive aborted the translation';
 const REFINE_FALLBACK = 'Charge refinement failed';
 
+
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
 describe('formatQuantumDriveApiError (LEG-3070)', () => {
   it('falls back on TypeError network collapse for echo scan', () => {
     const text = formatQuantumDriveApiError(new TypeError('Failed to fetch'), SCAN_FALLBACK);
@@ -62,5 +68,17 @@ describe('formatQuantumDriveApiError Network Error densify (LEG-3394)', () => {
     expect(formatQuantumDriveApiError(err, REFINE_FALLBACK)).toBe(
       'Drive lattice desync — refine charge first',
     );
+  });
+});
+
+describe('formatQuantumDriveApiError 403/429 densify (LEG-4037)', () => {
+  it('surfaces 403/429 without raw status codes', () => {
+    expect(formatQuantumDriveApiError(apiRequestError(403), SCAN_FALLBACK)).toMatch(/permission/i);
+    expect(formatQuantumDriveApiError(apiRequestError(403, 'drive_denied'), SCAN_FALLBACK)).toBe(
+      'drive_denied',
+    );
+    expect(formatQuantumDriveApiError(apiRequestError(429), JUMP_FALLBACK)).toMatch(/rate limit/i);
+    expect(formatQuantumDriveApiError(apiRequestError(429), JUMP_FALLBACK)).not.toMatch(/\b429\b/);
+    expect(formatQuantumDriveApiError(apiRequestError(403), SCAN_FALLBACK)).not.toMatch(/TypeError/i);
   });
 });
