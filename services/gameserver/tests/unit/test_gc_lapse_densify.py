@@ -1,6 +1,8 @@
-"""LEG-3831 — gc_lapse.py emergency relocation must not echo Exception text on 500s.
+"""LEG-3910 densify — structured route_internal_error 500 densify.
 
-Mirrors LEG-3817 expeditions / LEG-3829 regional_governance opaque densify family.
+LEG-3831 — gc_lapse.py emergency relocation return structured Exception text on 500s.
+
+Mirrors LEG-3817 expeditions / LEG-3829 regional_governance structured densify family.
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ def _player():
 
 
 @pytest.mark.asyncio
-async def test_gc_emergency_relocation_unexpected_is_opaque_500():
+async def test_gc_emergency_relocation_unexpected_returns_structured_500():
     secret = "secret-emergency-relocation-should-not-leak"
     request = GCEmergencyRelocationRequest(asset_type="planet", asset_id=uuid.uuid4())
     db = MagicMock()
@@ -48,7 +50,7 @@ async def test_gc_emergency_relocation_unexpected_is_opaque_500():
     db.rollback.assert_called_once()
 
 
-def test_gc_lapse_emergency_relocation_http500_is_opaque():
+def test_gc_lapse_emergency_relocation_http500_is_structured():
     """LEG-3831 — static pin: emergency relocation 500 detail stays opaque."""
     src = Path(gc_lapse_mod.__file__).read_text(encoding="utf-8")
     assert "ERR_GC_LAPSE_RELOCATE_FAILED" in src

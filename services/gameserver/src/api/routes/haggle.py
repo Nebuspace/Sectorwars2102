@@ -14,6 +14,12 @@ posted price, still clamped to the commodity's [0.80, 1.20] × fair band.
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from src.utils.error_handling import route_internal_error
+
+ERR_HAGGLE_OPEN_FAILED = "ERR_HAGGLE_OPEN_FAILED"
+ERR_HAGGLE_OFFER_FAILED = "ERR_HAGGLE_OFFER_FAILED"
+ERR_HAGGLE_STATUS_FAILED = "ERR_HAGGLE_STATUS_FAILED"
+
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -83,7 +89,10 @@ async def open_haggle(
     except Exception:
         db.rollback()
         logger.error("haggle open failed", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to open haggle session")
+        raise route_internal_error(
+            ERR_HAGGLE_OPEN_FAILED,
+            "Failed to open haggle session",
+        )
 
 
 @router.post("/offer")
@@ -110,7 +119,10 @@ async def submit_offer(
     except Exception:
         db.rollback()
         logger.error("haggle offer failed", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to submit offer")
+        raise route_internal_error(
+            ERR_HAGGLE_OFFER_FAILED,
+            "Failed to submit offer",
+        )
 
 
 @router.get("/status")
@@ -129,4 +141,7 @@ async def haggle_status(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception:
         logger.error("haggle status failed", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to read haggle status")
+        raise route_internal_error(
+            ERR_HAGGLE_STATUS_FAILED,
+            "Failed to read haggle status",
+        )

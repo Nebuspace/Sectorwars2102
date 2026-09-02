@@ -6,6 +6,11 @@ import logging
 from typing import List, Optional
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
+from src.utils.error_handling import route_internal_error
+
+ERR_ADMIN_FIRST_LOGIN_LIST_FAILED = "ERR_ADMIN_FIRST_LOGIN_LIST_FAILED"
+ERR_ADMIN_FIRST_LOGIN_DETAIL_FAILED = "ERR_ADMIN_FIRST_LOGIN_DETAIL_FAILED"
+
 from sqlalchemy import desc
 from sqlalchemy.orm import Session, joinedload
 from pydantic import BaseModel
@@ -154,7 +159,10 @@ async def list_conversations(
         raise
     except Exception:
         logger.exception("Error in list_conversations")
-        raise HTTPException(status_code=500, detail="Failed to fetch conversations")
+        raise route_internal_error(
+            ERR_ADMIN_FIRST_LOGIN_LIST_FAILED,
+            "Failed to fetch conversations",
+        )
 
 
 @router.get("/conversations/{session_id}", response_model=ConversationDetail)
@@ -239,4 +247,7 @@ async def get_conversation_detail(
         raise
     except Exception:
         logger.exception("Error in get_conversation_detail")
-        raise HTTPException(status_code=500, detail="Failed to fetch conversation detail")
+        raise route_internal_error(
+            ERR_ADMIN_FIRST_LOGIN_DETAIL_FAILED,
+            "Failed to fetch conversation detail",
+        )

@@ -12,6 +12,12 @@ import logging
 from typing import List, Optional
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
+from src.utils.error_handling import route_internal_error
+
+ERR_FLEETS_CREATE_FAILED = "ERR_FLEETS_CREATE_FAILED"
+ERR_FLEETS_SIMULATE_ROUND_FAILED = "ERR_FLEETS_SIMULATE_ROUND_FAILED"
+ERR_FLEETS_INITIATE_BATTLE_FAILED = "ERR_FLEETS_INITIATE_BATTLE_FAILED"
+
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 
@@ -180,7 +186,10 @@ async def create_fleet(
         raise
     except Exception:
         logger.exception("Failed to create fleet")
-        raise HTTPException(status_code=500, detail="Failed to create fleet")
+        raise route_internal_error(
+            ERR_FLEETS_CREATE_FAILED,
+            "Failed to create fleet",
+        )
 
 
 @router.get("/", response_model=List[FleetResponse])
@@ -366,7 +375,10 @@ async def simulate_battle_round(
         raise
     except Exception:
         logger.exception("Failed to simulate battle round")
-        raise HTTPException(status_code=500, detail="Failed to simulate battle round")
+        raise route_internal_error(
+            ERR_FLEETS_SIMULATE_ROUND_FAILED,
+            "Failed to simulate battle round",
+        )
 
 
 # =============================================================================
@@ -697,7 +709,10 @@ async def initiate_battle(
         raise
     except Exception:
         logger.exception("Failed to initiate battle")
-        raise HTTPException(status_code=500, detail="Failed to initiate battle")
+        raise route_internal_error(
+            ERR_FLEETS_INITIATE_BATTLE_FAILED,
+            "Failed to initiate battle",
+        )
 
 
 @router.post("/{fleet_id}/resupply", response_model=ResupplyResponse)
