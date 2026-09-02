@@ -19,6 +19,16 @@ from src.services.admin_action_log_service import log_admin_action
 from src.models.admin_action_log import AdminActionLog
 from src.models.user import User
 
+from src.utils.error_handling import route_internal_error
+
+ERR_AUDIT_CREATE_FAILED = "ERR_AUDIT_CREATE_FAILED"
+ERR_AUDIT_LIST_ACTIONS_FAILED = "ERR_AUDIT_LIST_ACTIONS_FAILED"
+ERR_AUDIT_LIST_REVIEW_QUEUE_FAILED = "ERR_AUDIT_LIST_REVIEW_QUEUE_FAILED"
+ERR_AUDIT_MARK_REVIEWED_FAILED = "ERR_AUDIT_MARK_REVIEWED_FAILED"
+ERR_AUDIT_FETCH_LOGS_FAILED = "ERR_AUDIT_FETCH_LOGS_FAILED"
+ERR_AUDIT_SECURITY_VIOLATIONS_FAILED = "ERR_AUDIT_SECURITY_VIOLATIONS_FAILED"
+ERR_AUDIT_USER_ACTIVITY_FAILED = "ERR_AUDIT_USER_ACTIVITY_FAILED"
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin/audit", tags=["audit"])
@@ -109,7 +119,10 @@ async def create_audit_log(
             
     except Exception:
         logger.exception("Error in create_audit_log")
-        raise HTTPException(status_code=500, detail="Failed to create audit log")
+        raise route_internal_error(
+            ERR_AUDIT_CREATE_FAILED,
+            "Failed to create audit log",
+        )
 
 
 @router.get("/actions", response_model=AdminActionLogPageOut)
@@ -164,7 +177,10 @@ async def list_admin_actions(
         )
     except Exception as e:
         logger.error("list_admin_actions failed: %s", e)
-        raise HTTPException(status_code=500, detail="Failed to list admin actions")
+        raise route_internal_error(
+            ERR_AUDIT_LIST_ACTIONS_FAILED,
+            "Failed to list admin actions",
+        )
 
 
 @router.get("/review-queue", response_model=ReviewQueuePageOut)
@@ -214,7 +230,10 @@ async def list_review_queue(
         )
     except Exception as e:
         logger.error("list_review_queue failed: %s", e)
-        raise HTTPException(status_code=500, detail="Failed to list review queue")
+        raise route_internal_error(
+            ERR_AUDIT_LIST_REVIEW_QUEUE_FAILED,
+            "Failed to list review queue",
+        )
 
 
 @router.post("/actions/{action_id}/review", response_model=MarkReviewedOut)
@@ -281,7 +300,10 @@ async def mark_action_reviewed(
     except Exception as e:
         db.rollback()
         logger.error("mark_action_reviewed failed: %s", e)
-        raise HTTPException(status_code=500, detail="Failed to mark action reviewed")
+        raise route_internal_error(
+            ERR_AUDIT_MARK_REVIEWED_FAILED,
+            "Failed to mark action reviewed",
+        )
 
 
 @router.get("/logs")
@@ -347,7 +369,10 @@ async def get_audit_logs(
         
     except Exception:
         logger.exception("Error in get_audit_logs")
-        raise HTTPException(status_code=500, detail="Failed to fetch audit logs")
+        raise route_internal_error(
+            ERR_AUDIT_FETCH_LOGS_FAILED,
+            "Failed to fetch audit logs",
+        )
 
 
 @router.get("/violations")
@@ -374,7 +399,10 @@ async def get_security_violations(
         
     except Exception:
         logger.exception("Error in get_security_violations")
-        raise HTTPException(status_code=500, detail="Failed to fetch security violations")
+        raise route_internal_error(
+            ERR_AUDIT_SECURITY_VIOLATIONS_FAILED,
+            "Failed to fetch security violations",
+        )
 
 
 @router.get("/users/{user_id}/activity")
@@ -398,4 +426,7 @@ async def get_user_activity_summary(
         
     except Exception:
         logger.exception("Error in get_user_activity_summary")
-        raise HTTPException(status_code=500, detail="Failed to fetch user activity summary")
+        raise route_internal_error(
+            ERR_AUDIT_USER_ACTIVITY_FAILED,
+            "Failed to fetch user activity summary",
+        )

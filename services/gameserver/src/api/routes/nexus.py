@@ -22,6 +22,14 @@ from src.services.nexus_generation_service import nexus_generation_service
 
 import logging
 
+from src.utils.error_handling import route_internal_error
+
+ERR_NEXUS_GENERATE_FAILED = "ERR_NEXUS_GENERATE_FAILED"
+ERR_NEXUS_STATUS_FAILED = "ERR_NEXUS_STATUS_FAILED"
+ERR_NEXUS_STATISTICS_FAILED = "ERR_NEXUS_STATISTICS_FAILED"
+ERR_NEXUS_CLUSTERS_FAILED = "ERR_NEXUS_CLUSTERS_FAILED"
+ERR_NEXUS_CLUSTER_DETAILS_FAILED = "ERR_NEXUS_CLUSTER_DETAILS_FAILED"
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/nexus", tags=["Central Nexus"])
@@ -118,7 +126,10 @@ async def generate_central_nexus(
         raise
     except Exception as e:
         logger.error(f"Failed to start nexus generation: {e}")
-        raise HTTPException(status_code=500, detail="Failed to start generation")
+        raise route_internal_error(
+            ERR_NEXUS_GENERATE_FAILED,
+            "Failed to start generation",
+        )
 
 
 @router.get("/status")
@@ -171,7 +182,10 @@ async def get_nexus_status(
     
     except Exception as e:
         logger.error(f"Failed to get nexus status: {e}")
-        raise HTTPException(status_code=500, detail="Failed to get status")
+        raise route_internal_error(
+            ERR_NEXUS_STATUS_FAILED,
+            "Failed to get status",
+        )
 
 
 @router.get("/stats", response_model=NexusStatsResponse)
@@ -266,7 +280,10 @@ async def get_nexus_statistics(
         raise
     except Exception as e:
         logger.error(f"Failed to get nexus statistics: {e}")
-        raise HTTPException(status_code=500, detail="Failed to get statistics")
+        raise route_internal_error(
+            ERR_NEXUS_STATISTICS_FAILED,
+            "Failed to get statistics",
+        )
 
 
 @router.get("/clusters")
@@ -338,7 +355,10 @@ async def get_clusters_info(
         raise
     except Exception as e:
         logger.error(f"Failed to get clusters info: {e}")
-        raise HTTPException(status_code=500, detail="Failed to get clusters information")
+        raise route_internal_error(
+            ERR_NEXUS_CLUSTERS_FAILED,
+            "Failed to get clusters information",
+        )
 
 
 @router.get("/clusters/{cluster_id}")
@@ -433,7 +453,10 @@ async def get_cluster_details(
         raise
     except Exception as e:
         logger.error(f"Failed to get cluster details: {e}")
-        raise HTTPException(status_code=500, detail="Failed to get cluster details")
+        raise route_internal_error(
+            ERR_NEXUS_CLUSTER_DETAILS_FAILED,
+            "Failed to get cluster details",
+        )
 
 
 # ENDPOINT REMOVED: POST /districts/{district_type}/regenerate
