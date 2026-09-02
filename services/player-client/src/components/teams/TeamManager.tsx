@@ -14,6 +14,7 @@ import EmptyState from '../common/EmptyState';
 import LoadingState from '../common/LoadingState';
 import PlayerNamePlate from '../common/PlayerNamePlate';
 import { ResourceSharing } from './ResourceSharing';
+import ShareWarpKnowledgeControl from './ShareWarpKnowledgeControl';
 import { TeamChat } from './TeamChat';
 import { TeamWarPanel } from './TeamWarPanel';
 import './team-manager.css';
@@ -742,6 +743,8 @@ export const TeamManager: React.FC = () => {
                 </div>
               </div>
             </div>
+
+            <ShareWarpKnowledgeControl teamId={team.id} />
           </div>
         )}
 
