@@ -5,6 +5,12 @@
 import { describe, it, expect } from 'vitest';
 import { formatBuildingUpgradeError } from '../BuildingManager';
 
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
+
 describe('BuildingManager TypeError densify (LEG-3478)', () => {
   it('formatBuildingUpgradeError falls back on TypeError network collapse', () => {
     const text = formatBuildingUpgradeError(new TypeError('Failed to fetch'));
@@ -25,5 +31,21 @@ describe('BuildingManager TypeError densify (LEG-3478)', () => {
 
   it('preserves non-generic Error.message detail when not TypeError', () => {
     expect(formatBuildingUpgradeError(new Error('upgrade_in_progress'))).toBe('upgrade_in_progress');
+  });
+});
+
+describe('BuildingManager 403/429 densify (LEG-3985)', () => {
+  it('formatBuildingUpgradeError surfaces 403/429 without raw status codes', () => {
+    expect(formatBuildingUpgradeError(apiRequestError(403))).toBe(
+      'You do not have permission to upgrade this building.',
+    );
+    expect(formatBuildingUpgradeError(apiRequestError(429))).toBe(
+      'Building upgrade rate limit exceeded — wait a moment and try again.',
+    );
+    expect(formatBuildingUpgradeError(apiRequestError(403, 'building_upgrade_denied'))).toBe(
+      'building_upgrade_denied',
+    );
+    expect(formatBuildingUpgradeError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatBuildingUpgradeError(apiRequestError(403))).not.toMatch(/Network Error/i);
   });
 });

@@ -248,6 +248,11 @@ export function formatModuleGridActionError(err: unknown, fallback: string): str
   const message = err instanceof Error ? err.message : undefined;
   const hasServerDetail = hasModuleGridServerDetail(err, message);
 
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission to modify this ship\'s modules';
+  }
+
   if (status === 429) {
     if (hasServerDetail) return message!;
     return 'Too many module actions — please wait and try again';

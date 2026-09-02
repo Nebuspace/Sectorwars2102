@@ -10,6 +10,12 @@ import {
 
 const ACTION_FALLBACK = 'Module action failed';
 
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
+
 describe('ModuleGridInterface TypeError densify (LEG-3470)', () => {
   it('formatModuleGridLoadError falls back on TypeError network collapse', () => {
     const text = formatModuleGridLoadError(new TypeError('Failed to fetch'));
@@ -42,5 +48,28 @@ describe('ModuleGridInterface TypeError densify (LEG-3470)', () => {
   it('preserves non-generic Error.message detail when not TypeError', () => {
     expect(formatModuleGridLoadError(new Error('lattice_offline'))).toBe('lattice_offline');
     expect(formatModuleGridActionError(new Error('slot_busy'), ACTION_FALLBACK)).toBe('slot_busy');
+  });
+});
+
+describe('ModuleGridInterface 403/429 densify (LEG-3987)', () => {
+  it('formatModuleGridLoadError surfaces 403 without raw status codes', () => {
+    expect(formatModuleGridLoadError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatModuleGridLoadError(apiRequestError(403, 'module_view_denied'))).toBe(
+      'module_view_denied',
+    );
+    expect(formatModuleGridLoadError(apiRequestError(403))).not.toMatch(/TypeError/i);
+    expect(formatModuleGridLoadError(apiRequestError(403))).not.toMatch(/Network Error/i);
+  });
+
+  it('formatModuleGridActionError surfaces 403/429 without raw status codes', () => {
+    expect(formatModuleGridActionError(apiRequestError(403), ACTION_FALLBACK)).toMatch(/permission/i);
+    expect(formatModuleGridActionError(apiRequestError(403, 'install_denied'), ACTION_FALLBACK)).toBe(
+      'install_denied',
+    );
+    expect(formatModuleGridActionError(apiRequestError(429), ACTION_FALLBACK)).toMatch(/rate limit|too many/i);
+    expect(formatModuleGridActionError(apiRequestError(429), ACTION_FALLBACK)).not.toMatch(/\b429\b/);
+    expect(formatModuleGridActionError(apiRequestError(403), ACTION_FALLBACK)).not.toMatch(
+      /TypeError/i,
+    );
   });
 });
