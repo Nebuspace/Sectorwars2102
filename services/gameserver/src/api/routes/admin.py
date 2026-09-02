@@ -89,25 +89,29 @@ async def get_all_users(
     db: Session = Depends(get_db)
 ):
     """Get all users for admin panel (excludes soft-deleted accounts)"""
-    users = db.query(User).filter(User.deleted == False).all()
+    try:
+        users = db.query(User).filter(User.deleted == False).all()
 
-    # Map to response model
-    user_list = [
-        {
-            "id": str(user.id),
-            "username": user.username,
-            "email": user.email,
-            "deleted": user.deleted,
-            "is_active": user.is_active,
-            "is_admin": user.is_admin,
-            "created_at": user.created_at.isoformat(),
-            "last_login": user.last_login.isoformat() if user.last_login else None,
-            "verified": True  # Users are verified by default in this system
-        }
-        for user in users
-    ]
-    
-    return {"users": user_list}
+        # Map to response model
+        user_list = [
+            {
+                "id": str(user.id),
+                "username": user.username,
+                "email": user.email,
+                "deleted": user.deleted,
+                "is_active": user.is_active,
+                "is_admin": user.is_admin,
+                "created_at": user.created_at.isoformat(),
+                "last_login": user.last_login.isoformat() if user.last_login else None,
+                "verified": True  # Users are verified by default in this system
+            }
+            for user in users
+        ]
+
+        return {"users": user_list}
+    except Exception:
+        logger.exception("Failed to fetch users")
+        raise HTTPException(status_code=500, detail="Failed to fetch users")
 
 @router.get("/players", response_model=dict)
 async def get_all_players(
@@ -274,22 +278,26 @@ async def get_all_regions(
     db: Session = Depends(get_db)
 ):
     """Get all regions for admin panel"""
-    regions = db.query(Region).all()
+    try:
+        regions = db.query(Region).all()
 
-    region_list = [{
-        "id": str(region.id),
-        "name": region.name,
-        "display_name": region.display_name,
-        "region_type": region.region_type,
-        "total_sectors": region.total_sectors,
-        "status": region.status,
-        "subscription_tier": region.subscription_tier,
-        "starting_credits": region.starting_credits,
-        "governance_type": region.governance_type,
-        "tax_rate": float(region.tax_rate)
-    } for region in regions]
+        region_list = [{
+            "id": str(region.id),
+            "name": region.name,
+            "display_name": region.display_name,
+            "region_type": region.region_type,
+            "total_sectors": region.total_sectors,
+            "status": region.status,
+            "subscription_tier": region.subscription_tier,
+            "starting_credits": region.starting_credits,
+            "governance_type": region.governance_type,
+            "tax_rate": float(region.tax_rate)
+        } for region in regions]
 
-    return {"regions": region_list}
+        return {"regions": region_list}
+    except Exception:
+        logger.exception("Failed to fetch regions")
+        raise HTTPException(status_code=500, detail="Failed to fetch regions")
 
 
 class RegionTerminateRequest(BaseModel):

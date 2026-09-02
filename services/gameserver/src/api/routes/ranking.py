@@ -564,16 +564,22 @@ async def get_rankings_leaderboard(
     db: Session = Depends(get_db),
 ):
     """Get the top players ranked by military rank points. Admin only."""
-    ranking_service = RankingService(db)
-    entries = ranking_service.get_leaderboard(limit=limit)
+    try:
+        ranking_service = RankingService(db)
+        entries = ranking_service.get_leaderboard(limit=limit)
 
-    # Count total active players for context
-    total_players = db.query(Player).filter(Player.is_active == True).count()
+        # Count total active players for context
+        total_players = db.query(Player).filter(Player.is_active == True).count()
 
-    return LeaderboardResponse(
-        entries=[LeaderboardEntry(**e) for e in entries],
-        total_players=total_players,
-    )
+        return LeaderboardResponse(
+            entries=[LeaderboardEntry(**e) for e in entries],
+            total_players=total_players,
+        )
+    except Exception:
+        logger.exception("Failed to fetch rankings leaderboard")
+        raise HTTPException(
+            status_code=500, detail="Failed to fetch rankings leaderboard"
+        )
 
 
 # ------------------------------------------------------------------
