@@ -37,6 +37,20 @@ const sector = {
   controlling_faction: null,
 };
 
+const axiosError = (status: number) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: {} },
+  });
+
+function assertNoTransportLeak(text: string) {
+  expect(text).not.toBe('Network Error');
+  expect(text).not.toContain('Network Error');
+  expect(text).not.toMatch(/Failed to fetch/i);
+  expect(text).not.toMatch(/TypeError/i);
+  expect(text).not.toMatch(/^HTTP \d+$/);
+  expect(text).not.toContain('Request failed with status code');
+}
+
 function mockSuccessfulLoads() {
   vi.mocked(api.get).mockImplementation(async (url: string) => {
     if (url.endsWith('/port') || url.endsWith('/planet')) {
@@ -62,6 +76,7 @@ async function saveName(value: string) {
 
 /**
  * LEG-3482 Soft-ORDER — SectorDetail TypeError/Network Error honesty densify.
+ * LEG-3940 Soft-ORDER — HTTP 403/429 densify via formatUniverseAdminError.
  * Covers loadError alert + mutation toast paths via formatUniverseAdminError.
  */
 describe('SectorDetail typeErrorHonesty densify (LEG-3482)', () => {
@@ -191,5 +206,123 @@ describe('SectorDetail typeErrorHonesty densify (LEG-3482)', () => {
     expect(msg).toMatch(/Failed to update name/i);
     expect(msg).not.toMatch(/TypeError/i);
     expect(msg).not.toMatch(/Failed to fetch/i);
+  });
+
+  it('surfaces admin.universe.manage on port load 403 without transport leak', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.endsWith('/port')) {
+        throw axiosError(403);
+      }
+      if (url.endsWith('/ships')) {
+        return { data: { ships: [] } };
+      }
+      throw Object.assign(new Error('HTTP 404'), { response: { status: 404 } });
+    });
+
+    render(
+      <SectorDetail
+        sector={sector}
+        onBack={() => undefined}
+        onPortClick={() => undefined}
+        onPlanetClick={() => undefined}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Access denied/i);
+    expect(alert).toMatch(/admin\.universe\.manage/i);
+    expect(alert).not.toMatch(/\b403\b/);
+    expect(alert).not.toMatch(/HTTP 403/i);
+    assertNoTransportLeak(alert);
+  });
+
+  it('surfaces rate-limit on ships load 429 without transport leak', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.endsWith('/ships')) {
+        throw axiosError(429);
+      }
+      if (url.endsWith('/port') || url.endsWith('/planet')) {
+        throw Object.assign(new Error('HTTP 404'), { response: { status: 404 } });
+      }
+      throw Object.assign(new Error('HTTP 404'), { response: { status: 404 } });
+    });
+
+    render(
+      <SectorDetail
+        sector={sector}
+        onBack={() => undefined}
+        onPortClick={() => undefined}
+        onPlanetClick={() => undefined}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/rate limit/i);
+    expect(alert).not.toMatch(/\b429\b/);
+    expect(alert).not.toMatch(/HTTP 429/i);
+    assertNoTransportLeak(alert);
+  });
+
+  it('surfaces admin.universe.manage on name PUT 403 without transport leak', async () => {
+    mockSuccessfulLoads();
+    vi.mocked(api.put).mockRejectedValue(axiosError(403));
+
+    render(
+      <SectorDetail
+        sector={sector}
+        onBack={() => undefined}
+        onPortClick={() => undefined}
+        onPlanetClick={() => undefined}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Name:')).toBeTruthy();
+    });
+    await saveName('Forbidden Rename');
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalled();
+    });
+    const msg = String(toastError.mock.calls[0]?.[0] ?? '');
+    expect(msg).toMatch(/Access denied/i);
+    expect(msg).toMatch(/admin\.universe\.manage/i);
+    expect(msg).not.toMatch(/\b403\b/);
+    expect(msg).not.toMatch(/HTTP 403/i);
+    assertNoTransportLeak(msg);
+  });
+
+  it('surfaces rate-limit on name PUT 429 without transport leak', async () => {
+    mockSuccessfulLoads();
+    vi.mocked(api.put).mockRejectedValue(axiosError(429));
+
+    render(
+      <SectorDetail
+        sector={sector}
+        onBack={() => undefined}
+        onPortClick={() => undefined}
+        onPlanetClick={() => undefined}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Name:')).toBeTruthy();
+    });
+    await saveName('Rate Limited');
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalled();
+    });
+    const msg = String(toastError.mock.calls[0]?.[0] ?? '');
+    expect(msg).toMatch(/rate limit/i);
+    expect(msg).not.toMatch(/\b429\b/);
+    expect(msg).not.toMatch(/HTTP 429/i);
+    assertNoTransportLeak(msg);
   });
 });
