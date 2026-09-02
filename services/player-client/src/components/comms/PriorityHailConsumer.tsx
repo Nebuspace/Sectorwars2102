@@ -15,6 +15,16 @@ const UPLINK_TOAST_DEBOUNCE_MS = 2000;
 // (mount-scoped) newMessageSignal effect.
 const INBOX_REFRESH_DEBOUNCE_MS = 1500;
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
 /** Transport collapse copy is not gameserver detail (network-collapse densify). */
 const isNetworkCollapseMessage = (msg: string): boolean => {
   const trimmed = msg.trim();
@@ -26,14 +36,25 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
   );
 };
 
-/** Inbox refresh failures must not surface transport noise in toast/modal chrome (LEG-3762). */
+/** Inbox refresh failures must not surface transport noise in toast/modal chrome (LEG-3762 / LEG-4041). */
 export const formatInboxRefreshError = (err: unknown): string => {
+  const status = httpStatus(err);
   const message = err instanceof Error ? err.message : undefined;
   const hasServerDetail =
     !(err instanceof TypeError) &&
     typeof message === 'string' &&
     message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim()) &&
     !isNetworkCollapseMessage(message);
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission to refresh the inbox.';
+  }
+
+  if (status === 429) {
+    return 'Inbox refresh rate limit exceeded — wait a moment and try again.';
+  }
 
   if (hasServerDetail) return message!;
   return 'Inbox refresh failed';
