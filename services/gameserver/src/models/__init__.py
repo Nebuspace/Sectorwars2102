@@ -122,3 +122,4 @@ from src.models.storage_locker import (
 from src.models.admin_scope_grant import AdminScopeGrant
 from src.models.admin_action_log import AdminActionLog
 from src.models.player_central_bank import PlayerCentralBankAccount
+from src.models.player_npc_encounter import PlayerNpcEncounter

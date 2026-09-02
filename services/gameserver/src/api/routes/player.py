@@ -17,6 +17,7 @@ from src.services.ship_service import ShipService
 from src.services.bounty_service import BountyService
 from src.services import turn_service
 from src.services.ship_ownership_query import owned_ships_filter
+from src.services.player_npc_encounter_service import list_player_npc_encounters
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +94,18 @@ class RepairShipResponse(BaseModel):
     shields: float = 0
     max_hull: float = 0
     max_shields: float = 0
+
+class PlayerNpcEncounterResponse(BaseModel):
+    npc_character_id: str
+    npc_name: str
+    count: int
+    last_at: str | None = None
+    last_sector_id: int
+
+
+class PlayerNpcEncounterListResponse(BaseModel):
+    encounters: List[PlayerNpcEncounterResponse]
+
 
 class FormationResponse(BaseModel):
     """A special-formation present in (or anchored at) the sector. The
@@ -1106,4 +1119,16 @@ async def purchase_genesis_device(
         new_credits=player.credits,
         purchases_remaining=MAX_PURCHASES_PER_WEEK - (purchases_this_week + 1),
         weekly_limit=MAX_PURCHASES_PER_WEEK,
+    )
+
+
+@router.get("/npc-encounters", response_model=PlayerNpcEncounterListResponse)
+async def get_player_npc_encounters(
+    current_player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """LEG-3961: co-presence encounter history for the authenticated player."""
+    rows = list_player_npc_encounters(db, current_player.id)
+    return PlayerNpcEncounterListResponse(
+        encounters=[PlayerNpcEncounterResponse(**row) for row in rows]
     )

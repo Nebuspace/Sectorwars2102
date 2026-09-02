@@ -3354,7 +3354,27 @@ class MovementService:
                 # stacked onto this same arrival).
                 break
 
+        self._maybe_record_npc_copresence(player, sector_id)
         return encounters
+
+    def _maybe_record_npc_copresence(self, player: Player, sector_id: int) -> None:
+        """LEG-3961: persist benign player–NPC co-presence on sector arrival.
+
+        Never raises — a recording failure must not break an already-committed
+        move (same non-fatal contract as the other _check_for_encounters legs)."""
+        try:
+            from src.services.player_npc_encounter_service import (
+                record_npc_copresence_for_sector,
+            )
+
+            record_npc_copresence_for_sector(self.db, player.id, sector_id)
+        except Exception:
+            logger.exception(
+                "NPC co-presence recording failed for player %s in sector %s "
+                "(non-fatal — the move itself already committed)",
+                player.id,
+                sector_id,
+            )
 
     def _maybe_roll_patrol_contraband_scan(
         self, player: Player, sector: Sector,
