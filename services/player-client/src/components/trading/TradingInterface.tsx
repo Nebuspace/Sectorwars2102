@@ -108,9 +108,33 @@ const isTradingNetworkCollapseMessage = (msg: string): boolean => {
   );
 };
 
-/** Surface GS trade detail; hide fetch TypeError noise (LEG-3134). */
-export function formatTradingExecuteError(err: unknown, resourceType: string): string {
-  const fallback = 'Failed to execute trade';
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+function hasTradingServerDetail(err: unknown, message: string | undefined): boolean {
+  if (err instanceof TypeError) return false;
+  if (typeof message === 'string' && isTradingNetworkCollapseMessage(message)) return false;
+  return (
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim())
+  );
+}
+
+function formatTradingStatusError(
+  err: unknown,
+  fallback: string,
+  permissionCopy: string,
+  rateLimitCopy: string,
+  formatServerMessage?: (serverMessage: string) => string,
+): string {
   if (err instanceof TypeError) return fallback;
   const error = err as {
     response?: { data?: { detail?: string; message?: string } };
@@ -118,45 +142,62 @@ export function formatTradingExecuteError(err: unknown, resourceType: string): s
   };
   const serverMessage: string = error.response?.data?.detail || error.response?.data?.message || '';
   if (serverMessage) {
-    let content = serverMessage;
-    if (serverMessage.includes('does not sell')) {
-      content = `This station doesn't sell ${formatName(resourceType)} — but it may buy it. Try the Sell Resources tab.`;
-    } else if (serverMessage.includes('does not buy')) {
-      content = `This station doesn't buy ${formatName(resourceType)} — but it may sell it. Try the Buy Resources tab.`;
-    }
-    return content;
+    return formatServerMessage ? formatServerMessage(serverMessage) : serverMessage;
   }
+  const status = httpStatus(err);
   const rawMessage = error.message ?? (err instanceof Error ? err.message : '');
+  const hasServerDetail = hasTradingServerDetail(err, rawMessage);
+
+  if (status === 403) {
+    if (hasServerDetail) return rawMessage;
+    return permissionCopy;
+  }
+
+  if (status === 429) {
+    return rateLimitCopy;
+  }
+
   if (typeof rawMessage === 'string' && isTradingNetworkCollapseMessage(rawMessage)) return fallback;
+  if (hasServerDetail) return rawMessage;
   return fallback;
+}
+
+/** Surface GS trade detail; hide fetch TypeError noise (LEG-3134). */
+export function formatTradingExecuteError(err: unknown, resourceType: string): string {
+  const fallback = 'Failed to execute trade';
+  return formatTradingStatusError(
+    err,
+    fallback,
+    'You do not have permission to trade here.',
+    'Trade rate limit exceeded — wait a moment and try again.',
+    (serverMessage) => {
+      if (serverMessage.includes('does not sell')) {
+        return `This station doesn't sell ${formatName(resourceType)} — but it may buy it. Try the Sell Resources tab.`;
+      }
+      if (serverMessage.includes('does not buy')) {
+        return `This station doesn't buy ${formatName(resourceType)} — but it may sell it. Try the Buy Resources tab.`;
+      }
+      return serverMessage;
+    },
+  );
 }
 
 export function formatTradingDockError(err: unknown): string {
-  const fallback = 'Failed to dock at station.';
-  if (err instanceof TypeError) return fallback;
-  const error = err as {
-    response?: { data?: { detail?: string; message?: string } };
-    message?: string;
-  };
-  const serverMessage = error.response?.data?.detail || error.response?.data?.message;
-  if (serverMessage) return serverMessage;
-  const rawMessage = error.message ?? (err instanceof Error ? err.message : '');
-  if (typeof rawMessage === 'string' && isTradingNetworkCollapseMessage(rawMessage)) return fallback;
-  return fallback;
+  return formatTradingStatusError(
+    err,
+    'Failed to dock at station.',
+    'You do not have permission to dock here.',
+    'Dock rate limit exceeded — wait a moment and try again.',
+  );
 }
 
 export function formatTradingBumpError(err: unknown): string {
-  const fallback = 'Bump failed — the slip may have already changed hands.';
-  if (err instanceof TypeError) return fallback;
-  const error = err as {
-    response?: { data?: { detail?: string; message?: string } };
-    message?: string;
-  };
-  const serverMessage = error.response?.data?.detail || error.response?.data?.message;
-  if (serverMessage) return serverMessage;
-  const rawMessage = error.message ?? (err instanceof Error ? err.message : '');
-  if (typeof rawMessage === 'string' && isTradingNetworkCollapseMessage(rawMessage)) return fallback;
-  return fallback;
+  return formatTradingStatusError(
+    err,
+    'Bump failed — the slip may have already changed hands.',
+    'You do not have permission to bump this slip.',
+    'Bump rate limit exceeded — wait a moment and try again.',
+  );
 }
 
 // Mirrors PRICE_TREND_EPSILON in npc_scheduler_service.py (WO-ECON-MKT-

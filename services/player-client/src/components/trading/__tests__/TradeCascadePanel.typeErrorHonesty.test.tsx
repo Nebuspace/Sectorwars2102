@@ -29,7 +29,13 @@ vi.mock('../../../services/api', async (importOriginal) => {
   };
 });
 
-import TradeCascadePanel from '../TradeCascadePanel';
+import TradeCascadePanel, { formatTradeCascadeError } from '../TradeCascadePanel';
+
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
 
 describe('TradeCascadePanel TypeError honesty (LEG-3238)', () => {
   let container: HTMLElement;
@@ -93,5 +99,46 @@ describe('TradeCascadePanel TypeError honesty (LEG-3238)', () => {
     expect(alert?.textContent).toBe('Failed to plan trade cascade.');
     expect(container.textContent).not.toMatch(/Network Error/i);
     expect(container.textContent).not.toMatch(/Failed to fetch/i);
+  });
+
+  it('surfaces 403/429 status paths and preserves server detail (LEG-3951)', () => {
+    expect(formatTradeCascadeError(apiRequestError(403))).toBe(
+      'Access denied — you cannot plan a trade cascade right now.',
+    );
+    expect(formatTradeCascadeError(apiRequestError(429))).toBe(
+      'Trade cascade rate limit exceeded — wait a moment and try again.',
+    );
+    expect(formatTradeCascadeError(apiRequestError(403, 'cascade_denied'))).toBe('cascade_denied');
+    expect(formatTradeCascadeError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatTradeCascadeError(apiRequestError(403))).not.toMatch(/TypeError/i);
+  });
+
+  it('submit plan 403 surfaces access-denied copy without raw transport text in DOM (LEG-3951)', async () => {
+    mockPlanTradeCascade.mockRejectedValue(apiRequestError(403));
+
+    await act(async () => {
+      root.render(<TradeCascadePanel />);
+    });
+    await expandAndSubmit();
+
+    const alert = container.querySelector('.trade-cascade-error[role="alert"]');
+    expect(alert?.textContent).toMatch(/Access denied/i);
+    expect(container.textContent).not.toMatch(/\b403\b/);
+    expect(container.textContent).not.toMatch(/TypeError/i);
+    expect(container.textContent).not.toMatch(/Failed to fetch/i);
+  });
+
+  it('submit plan 429 surfaces rate-limit copy without raw transport text in DOM (LEG-3951)', async () => {
+    mockPlanTradeCascade.mockRejectedValue(apiRequestError(429));
+
+    await act(async () => {
+      root.render(<TradeCascadePanel />);
+    });
+    await expandAndSubmit();
+
+    const alert = container.querySelector('.trade-cascade-error[role="alert"]');
+    expect(alert?.textContent).toMatch(/Trade cascade rate limit exceeded/i);
+    expect(container.textContent).not.toMatch(/\b429\b/);
+    expect(container.textContent).not.toMatch(/Network Error/i);
   });
 });

@@ -39,24 +39,71 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
   );
 };
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+function hasRoutePlannerServerDetail(err: unknown, message: string | undefined): boolean {
+  if (err instanceof TypeError) return false;
+  if (typeof message === 'string' && isNetworkCollapseMessage(message)) return false;
+  return (
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim())
+  );
+}
+
+function formatRoutePlannerError(
+  err: unknown,
+  fallback: string,
+  permissionCopy: string,
+  rateLimitCopy: string,
+): string {
+  if (err instanceof TypeError) return fallback;
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail = hasRoutePlannerServerDetail(err, message);
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return permissionCopy;
+  }
+
+  if (status === 429) {
+    return rateLimitCopy;
+  }
+
+  if (err instanceof Error && message) {
+    if (isNetworkCollapseMessage(message)) return fallback;
+    return message;
+  }
+  return fallback;
+}
+
 /** Exported for TypeError/network honesty Vitest (LEG-3264 / LEG-3292). */
 export function formatRouteOptimizeError(err: unknown): string {
-  if (err instanceof TypeError) return OPTIMIZE_FAILED_FALLBACK;
-  if (err instanceof Error && err.message) {
-    if (isNetworkCollapseMessage(err.message)) return OPTIMIZE_FAILED_FALLBACK;
-    return err.message;
-  }
-  return OPTIMIZE_FAILED_FALLBACK;
+  return formatRoutePlannerError(
+    err,
+    OPTIMIZE_FAILED_FALLBACK,
+    'You do not have permission to optimize routes.',
+    'Route optimization rate limit exceeded — wait a moment and try again.',
+  );
 }
 
 /** Exported for TypeError/network honesty Vitest (LEG-3264 / LEG-3292). */
 export function formatRouteHistoryError(err: unknown): string {
-  if (err instanceof TypeError) return HISTORY_FAILED_FALLBACK;
-  if (err instanceof Error && err.message) {
-    if (isNetworkCollapseMessage(err.message)) return HISTORY_FAILED_FALLBACK;
-    return err.message;
-  }
-  return HISTORY_FAILED_FALLBACK;
+  return formatRoutePlannerError(
+    err,
+    HISTORY_FAILED_FALLBACK,
+    'You do not have permission to load route history.',
+    'Route history rate limit exceeded — wait a moment and try again.',
+  );
 }
 
 type DisplayedRoute =

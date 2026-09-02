@@ -73,6 +73,14 @@ describe('formatGovernanceLoadError Network Error densify (LEG-3603)', () => {
       'ERR_NOT_A_MEMBER',
     );
   });
+
+  it('surfaces 429 status path without raw status codes (LEG-3946)', () => {
+    expect(formatGovernanceLoadError(bareStatusError(429))).toBe(
+      'Governance lookup rate limit exceeded — wait a moment and try again.',
+    );
+    expect(formatGovernanceLoadError(bareStatusError(429))).not.toMatch(/\b429\b/);
+    expect(formatGovernanceLoadError(bareStatusError(429))).not.toMatch(/HTTP 429/i);
+  });
 });
 
 describe('GovernancePanel initial load Network Error densify (LEG-3603)', () => {
@@ -113,5 +121,47 @@ describe('GovernancePanel initial load Network Error densify (LEG-3603)', () => 
 
     expect(container.textContent).toMatch(/Failed to load regional governance/i);
     expect(container.textContent).not.toMatch(/Network Error/i);
+  });
+
+  it('listElections 403 surfaces member copy without raw transport text (LEG-3946)', async () => {
+    mockGetMyMembership.mockResolvedValue({ is_member: true, region_id: 'region-1' });
+    mockListElections.mockRejectedValue(apiRequestError(403));
+    mockListPolicies.mockResolvedValue([]);
+    mockListTreaties.mockResolvedValue([]);
+
+    await act(async () => {
+      root.render(<GovernancePanel />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toMatch(/You are not a member of this region/i);
+    expect(container.textContent).not.toMatch(/\b403\b/);
+    expect(container.textContent).not.toMatch(/TypeError/i);
+    expect(container.textContent).not.toMatch(/Network Error/i);
+  });
+
+  it('listPolicies 429 surfaces rate-limit copy without raw transport text (LEG-3946)', async () => {
+    mockGetMyMembership.mockResolvedValue({ is_member: true, region_id: 'region-1' });
+    mockListElections.mockResolvedValue([]);
+    mockListPolicies.mockRejectedValue(apiRequestError(429));
+    mockListTreaties.mockResolvedValue([]);
+
+    await act(async () => {
+      root.render(<GovernancePanel />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toMatch(/Governance lookup rate limit exceeded/i);
+    expect(container.textContent).not.toMatch(/\b429\b/);
+    expect(container.textContent).not.toMatch(/TypeError/i);
+    expect(container.textContent).not.toMatch(/Failed to fetch/i);
   });
 });

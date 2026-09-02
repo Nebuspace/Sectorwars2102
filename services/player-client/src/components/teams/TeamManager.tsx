@@ -118,6 +118,10 @@ export function formatTeamManagerLoadError(err: unknown): string {
     return 'You are not a member of this team.';
   }
 
+  if (status === 429) {
+    return 'Team lookup rate limit exceeded — wait a moment and try again.';
+  }
+
   if (status === 404) {
     if (hasServerDetail) return message!;
     return 'Team not found.';
