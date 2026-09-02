@@ -199,31 +199,6 @@ describe('ProductionPanel', () => {
     expect(onOpenSpecialization).toHaveBeenCalledTimes(1);
   });
 
-  it('surfaces starvation alert when the server stamped a food deficit', async () => {
-    await act(async () => {
-      root.render(
-        <ProductionPanel
-          {...defaultProps}
-          starvationWarning={{ food_deficit: 31, colonists_lost: 62, at: '2026-09-02T10:00:00Z' }}
-        />,
-      );
-    });
-
-    const alert = container.querySelector('[data-testid="starvation-warning"]');
-    expect(alert?.getAttribute('role')).toBe('alert');
-    expect(alert?.textContent).toContain('31');
-    expect(alert?.textContent).toContain('62');
-    expect(alert?.textContent).toMatch(/organics short/i);
-    expect(alert?.textContent).toMatch(/colonists lost/i);
-  });
-
-  it('shows no starvation banner when the field is absent', async () => {
-    await act(async () => {
-      root.render(<ProductionPanel {...defaultProps} starvationWarning={null} />);
-    });
-    expect(container.querySelector('[data-testid="starvation-warning"]')).toBeNull();
-  });
-
   it('shows days-until-full when capped with a positive rate estimate', async () => {
     await act(async () => {
       root.render(

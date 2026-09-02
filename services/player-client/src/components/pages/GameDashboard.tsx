@@ -1610,9 +1610,6 @@ const GameDashboardInner: React.FC = () => {
   const overflowResources: string[] = overflowWarning && typeof overflowWarning === 'object'
     ? Object.keys(overflowWarning.resources || {})
     : [];
-  // Authoritative last-tick starvation signal — absent/null means no banner
-  // (server clears stale markers on healthy ticks, same idiom as overflowWarning).
-  const starvationWarning = landedPlanetDetail?.starvationWarning ?? null;
   // Planetary-ops notice (upgrade/safe outcomes), auto-dismissed like the
   // colonist transfer notice
   const [opsNotice, setOpsNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
@@ -3777,7 +3774,6 @@ const GameDashboardInner: React.FC = () => {
                                 underSiege={!!(landedPlanet as any)?.under_siege || !!(landedPlanetDetail as any)?.underSiege}
                                 productionLines={landedPlanetDetail ? prodLines : []}
                                 overflowResources={overflowResources}
-                                starvationWarning={starvationWarning}
                                 allocations={allocations}
                                 productionRates={allocRates ?? landedPlanetDetail?.productionRates}
                                 perColonistRates={perColonistRates}

@@ -1,36 +1,5 @@
 // Planetary Management Types
 
-/** Server-stamped when the production tick wasted output at the storage cap. */
-export interface OverflowWarning {
-  resources: Partial<Record<'fuel' | 'organics' | 'equipment', number>>;
-  cap?: number;
-  at?: string;
-}
-
-/** Server-stamped when colonist food consumption exceeded organics on hand. */
-export interface StarvationWarning {
-  food_deficit: number;
-  colonists_lost: number;
-  at: string;
-}
-
-export interface PlanetHabitability {
-  score?: number;
-  effectiveMaxColonists?: number;
-  growthMultiplier?: number;
-  moraleBonus?: number;
-}
-
-/** Present on owned-planet DTO when terraforming_active is true; otherwise null/absent. */
-export interface PlanetTerraforming {
-  active?: boolean;
-  /** Target habitability score for the active project. */
-  target?: number;
-  /** 0–100 progress toward the target habitability. */
-  progress?: number;
-  startedAt?: string | null;
-}
-
 export interface Planet {
   id: string;
   name: string;
@@ -50,14 +19,6 @@ export interface Planet {
   formationStatus?: string | null;
   formationStartedAt?: string | null;
   formationCompleteAt?: string | null;
-  /** Owned-planets / detail DTO — habitability score bundle. */
-  habitability?: PlanetHabitability;
-  /** Active terraforming project telemetry; null when idle. */
-  terraforming?: PlanetTerraforming | null;
-  /** Last tick storage overflow (cleared when healthy). */
-  overflowWarning?: OverflowWarning | null;
-  /** Last tick food-deficit starvation event (cleared when healthy). */
-  starvationWarning?: StarvationWarning | null;
 }
 
 // Canonical 12-value set (matches gameserver's PlanetType enum and the vista
