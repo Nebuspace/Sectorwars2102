@@ -56,7 +56,7 @@ describe('PriorityHailConsumer — inbox refresh liveness', () => {
 
   beforeEach(() => {
     vi.useFakeTimers();
-    mockRefreshInbox.mockClear();
+    mockRefreshInbox.mockReset().mockResolvedValue(undefined);
     mockWsState = {
       notifications: [],
       removeNotification: vi.fn(),
