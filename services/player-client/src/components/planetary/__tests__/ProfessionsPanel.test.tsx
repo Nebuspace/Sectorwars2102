@@ -67,6 +67,9 @@ const { getPlanetProfessions, trainPlanetProfession, assignPlanetProfession, OWN
       TRADE_SPECIALISTS: true,
       INDUSTRIAL_MANAGERS: true,
     },
+    training_costs_per_100: undefined as
+      | Record<string, { credits: number; equipment?: number; organics?: number }>
+      | undefined,
   };
   return {
     OWNER_STATE: state,
