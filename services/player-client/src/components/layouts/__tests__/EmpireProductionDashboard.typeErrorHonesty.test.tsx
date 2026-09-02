@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 /**
  * LEG-3459 / LEG-3652 Soft-ORDER — EmpireProductionDashboard transport-error densify.
+ * LEG-4006 Soft-ORDER — 403/429 densify.
  */
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -21,6 +22,12 @@ import EmpireProductionDashboard, {
 } from '../EmpireProductionDashboard';
 
 const FALLBACK = 'Failed to load production data';
+
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -43,6 +50,21 @@ describe('EmpireProductionDashboard TypeError densify (LEG-3459)', () => {
   it('preserves non-generic Error.message detail when not TypeError', () => {
     expect(formatEmpireProductionLoadError(new Error('production_offline'), FALLBACK)).toBe(
       'production_offline',
+    );
+  });
+});
+
+describe('EmpireProductionDashboard 403/429 densify (LEG-4006)', () => {
+  it('formatEmpireProductionLoadError maps 403/429 without raw transport strings', () => {
+    expect(formatEmpireProductionLoadError(apiRequestError(403), FALLBACK)).toMatch(/permission/i);
+    expect(
+      formatEmpireProductionLoadError(apiRequestError(403, 'production_denied'), FALLBACK),
+    ).toBe('production_denied');
+    expect(formatEmpireProductionLoadError(apiRequestError(429), FALLBACK)).toMatch(/rate limit/i);
+    expect(formatEmpireProductionLoadError(apiRequestError(429), FALLBACK)).not.toMatch(/\b429\b/);
+    expect(formatEmpireProductionLoadError(apiRequestError(403), FALLBACK)).not.toMatch(/TypeError/i);
+    expect(formatEmpireProductionLoadError(apiRequestError(403), FALLBACK)).not.toMatch(
+      /Network Error/i,
     );
   });
 });

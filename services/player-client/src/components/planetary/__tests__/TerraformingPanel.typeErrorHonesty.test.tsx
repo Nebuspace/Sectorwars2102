@@ -2,6 +2,7 @@
 /**
  * LEG-3077 Soft-ORDER — TerraformingPanel TypeError densify.
  * LEG-3555 Soft-ORDER — Network Error densify.
+ * LEG-4007 Soft-ORDER — 403/429 densify.
  * Status/start/cancel/confirm must not surface raw Failed to fetch / TypeError / Network Error.
  */
 import { describe, it, expect } from 'vitest';
@@ -11,6 +12,12 @@ import {
   formatTerraformingCancelError,
   formatTerraformingConfirmBiomeError,
 } from '../TerraformingPanel';
+
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
 
 describe('TerraformingPanel TypeError densify (LEG-3077)', () => {
   it('formatTerraformingStatusError falls back on TypeError network collapse', () => {
@@ -61,5 +68,26 @@ describe('TerraformingPanel TypeError densify (LEG-3077)', () => {
   it('preserves non-generic Error.message detail when not TypeError', () => {
     expect(formatTerraformingStatusError(new Error('status_denied'))).toBe('status_denied');
     expect(formatTerraformingStartError(new Error('start_denied'))).toBe('start_denied');
+  });
+});
+
+describe('TerraformingPanel 403/429 densify (LEG-4007)', () => {
+  it('status/start/cancel/confirm map 403/429 without raw transport strings', () => {
+    expect(formatTerraformingStatusError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatTerraformingStatusError(apiRequestError(403, 'status_denied'))).toBe(
+      'status_denied',
+    );
+    expect(formatTerraformingStatusError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatTerraformingStatusError(apiRequestError(429))).not.toMatch(/\b429\b/);
+
+    expect(formatTerraformingStartError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatTerraformingStartError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatTerraformingCancelError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatTerraformingCancelError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatTerraformingConfirmBiomeError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatTerraformingConfirmBiomeError(apiRequestError(429))).toMatch(/rate limit/i);
+
+    expect(formatTerraformingStartError(apiRequestError(403))).not.toMatch(/TypeError/i);
+    expect(formatTerraformingCancelError(apiRequestError(403))).not.toMatch(/Network Error/i);
   });
 });

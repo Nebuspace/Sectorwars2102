@@ -71,6 +71,16 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
   );
 };
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
 function terraformingServerDetail(err: unknown): string | undefined {
   // Network collapse (fetch TypeError / axios Network Error) is not gameserver copy.
   if (err instanceof TypeError) return undefined;
@@ -87,20 +97,61 @@ function terraformingServerDetail(err: unknown): string | undefined {
   return undefined;
 }
 
+function formatTerraformingHttpError(
+  err: unknown,
+  permissionCopy: string,
+  rateLimitCopy: string,
+  fallback: string,
+): string {
+  const status = httpStatus(err);
+  const detail = terraformingServerDetail(err);
+
+  if (status === 403) {
+    if (detail) return detail;
+    return permissionCopy;
+  }
+
+  if (status === 429) {
+    return rateLimitCopy;
+  }
+
+  return detail ?? fallback;
+}
+
 export function formatTerraformingStatusError(err: unknown): string {
-  return terraformingServerDetail(err) ?? 'Failed to load terraforming status';
+  return formatTerraformingHttpError(
+    err,
+    'You do not have permission to view terraforming status.',
+    'Terraforming status rate limit exceeded — wait a moment and try again.',
+    'Failed to load terraforming status',
+  );
 }
 
 export function formatTerraformingStartError(err: unknown): string {
-  return terraformingServerDetail(err) ?? 'Failed to start terraforming';
+  return formatTerraformingHttpError(
+    err,
+    'You do not have permission to start terraforming.',
+    'Terraforming start rate limit exceeded — wait a moment and try again.',
+    'Failed to start terraforming',
+  );
 }
 
 export function formatTerraformingCancelError(err: unknown): string {
-  return terraformingServerDetail(err) ?? 'Failed to cancel terraforming';
+  return formatTerraformingHttpError(
+    err,
+    'You do not have permission to cancel terraforming.',
+    'Terraforming cancel rate limit exceeded — wait a moment and try again.',
+    'Failed to cancel terraforming',
+  );
 }
 
 export function formatTerraformingConfirmBiomeError(err: unknown): string {
-  return terraformingServerDetail(err) ?? 'Biome could not be confirmed yet.';
+  return formatTerraformingHttpError(
+    err,
+    'You do not have permission to confirm biome.',
+    'Biome confirm rate limit exceeded — wait a moment and try again.',
+    'Biome could not be confirmed yet.',
+  );
 }
 
 const terraformingAPI = {

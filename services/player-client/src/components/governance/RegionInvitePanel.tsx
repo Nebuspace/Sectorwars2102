@@ -95,11 +95,37 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
   );
 };
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
 export function formatRegionInviteError(err: unknown, fallback: string): string {
   // Network collapse (fetch TypeError / axios Network Error) is not gameserver copy.
   if (err instanceof TypeError) return fallback;
   const raw = err instanceof Error ? err.message : String(err ?? '');
   if (isNetworkCollapseMessage(raw)) return fallback;
+
+  const status = httpStatus(err);
+  const hasServerDetail =
+    raw.trim().length > 0 && !/^API Error: \d+$/.test(raw.trim());
+
+  if (status === 403) {
+    if (hasServerDetail) {
+      return mapInviteErrorMessage(raw, 'You do not have permission to manage region invites.');
+    }
+    return 'You do not have permission to manage region invites.';
+  }
+
+  if (status === 429) {
+    return 'Region invite rate limit exceeded — wait a moment and try again.';
+  }
+
   return mapInviteErrorMessage(raw, fallback);
 }
 

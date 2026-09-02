@@ -33,8 +33,36 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
   );
 };
 
-/** Exported for TypeError/network honesty Vitest (LEG-3173 / LEG-3283). */
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+/** Exported for TypeError/network honesty Vitest (LEG-3173 / LEG-3283 / LEG-4006). */
 export function formatEmpireProductionLoadError(err: unknown, fallback: string): string {
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    !(err instanceof TypeError) &&
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNetworkCollapseMessage(message);
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission to view empire production.';
+  }
+
+  if (status === 429) {
+    return 'Empire production rate limit exceeded — wait a moment and try again.';
+  }
+
   if (err instanceof TypeError) return fallback;
   if (err instanceof Error && err.message) {
     if (isNetworkCollapseMessage(err.message)) return fallback;
