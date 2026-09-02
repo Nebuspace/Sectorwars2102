@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useGame } from '../../contexts/GameContext';
-import { gameAPI } from '../../services/api';
+import { citadelAPI, gameAPI } from '../../services/api';
 import type { Planet, PlanetDefenses } from '../../types/planetary';
 import './defense-configuration.css';
 
@@ -102,6 +102,38 @@ export const DefenseConfiguration: React.FC<DefenseConfigurationProps> = ({
   // blocks Save rather than risk understating the real charge.
   const [unitPrices, setUnitPrices] = useState<DefensePricing | null>(null);
   const [pricingError, setPricingError] = useState<boolean>(false);
+  const [citadelBuildings, setCitadelBuildings] = useState<
+    Array<{ type: string; name: string; current_count: number; queued_count: number }>
+  >([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await citadelAPI.getAvailableBuildings(planet.id);
+        if (cancelled) return;
+        const rows = Array.isArray(res?.buildings) ? res.buildings : [];
+        setCitadelBuildings(
+          rows
+            .filter(
+              (b: { current_count?: number; queued_count?: number }) =>
+                (b.current_count ?? 0) > 0 || (b.queued_count ?? 0) > 0,
+            )
+            .map((b: { type?: string; name?: string; current_count?: number; queued_count?: number }) => ({
+              type: String(b.type ?? ''),
+              name: String(b.name ?? b.type ?? 'Building'),
+              current_count: b.current_count ?? 0,
+              queued_count: b.queued_count ?? 0,
+            })),
+        );
+      } catch {
+        if (!cancelled) setCitadelBuildings([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [planet.id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -325,6 +357,26 @@ export const DefenseConfiguration: React.FC<DefenseConfigurationProps> = ({
           <div className="success-message">
             <span className="success-icon">✅</span>
             {successMessage}
+          </div>
+        )}
+
+        {citadelBuildings.length > 0 && (
+          <div className="citadel-defense-buildings" data-testid="citadel-defense-buildings">
+            <h4>Citadel Defense Buildings</h4>
+            <p className="defense-description" style={{ marginTop: 0 }}>
+              Operational citadel structures from server state (distinct from turret and fighter purchases below).
+            </p>
+            <ul className="citadel-building-inventory">
+              {citadelBuildings.map((building) => (
+                <li key={building.type} data-testid={`citadel-building-${building.type}`}>
+                  <span className="building-name">{building.name}</span>
+                  <span className="building-count">
+                    {building.current_count} operational
+                    {building.queued_count > 0 ? ` · ${building.queued_count} queued` : ''}
+                  </span>
+                </li>
+              ))}
+            </ul>
           </div>
         )}
 

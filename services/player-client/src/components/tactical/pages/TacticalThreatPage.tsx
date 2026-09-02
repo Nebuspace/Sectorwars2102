@@ -3,6 +3,7 @@ import { useGame } from '../../../contexts/GameContext';
 import { greyStatusAPI, armoryAPI, type ArmoryMineItem, type GreyStatus, type NavThreatBand } from '../../../services/api';
 import { formatCredits } from '../../../utils/formatters';
 import LimpetTrackerReadout from '../LimpetTrackerReadout';
+import SectorDroneAttackControl from '../SectorDroneAttackControl';
 import SectorRetreatControl from '../SectorRetreatControl';
 import { useNavThreatRollup } from '../useNavThreatRollup';
 import { NAV_THREAT_BAND_CLASS } from '../navThreat';
@@ -318,6 +319,8 @@ const TacticalThreatPage: React.FC = () => {
       </div>
 
       <LimpetTrackerReadout />
+
+      <SectorDroneAttackControl />
 
       <SectorRetreatControl />
 
