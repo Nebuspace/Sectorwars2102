@@ -24,8 +24,24 @@ vi.mock('../../contexts/ToastContext', () => ({
 
 const playerId = '11111111-1111-4111-8111-111111111111';
 
+
+const axiosError = (status: number, detail?: string) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: detail ? { detail } : {} },
+  });
+
+function assertNoTransportLeak(text: string) {
+  expect(text).not.toBe('Network Error');
+  expect(text).not.toContain('Network Error');
+  expect(text).not.toMatch(/Failed to fetch/i);
+  expect(text).not.toMatch(/TypeError/i);
+  expect(text).not.toMatch(/^HTTP \d+$/);
+  expect(text).not.toContain('Request failed with status code');
+}
+
 /**
  * LEG-3630 Soft-ORDER — GalacticCitizenAdminPanel TypeError/Network Error densify.
+ * LEG-3881 Soft-ORDER — 429 HTTP honesty densify.
  */
 describe('GalacticCitizenAdminPanel typeErrorHonesty densify (LEG-3630)', () => {
   beforeEach(() => {
@@ -96,4 +112,19 @@ describe('GalacticCitizenAdminPanel typeErrorHonesty densify (LEG-3630)', () => 
     });
     expect(screen.getByRole('alert').textContent).toMatch(/admin\.subscriptions\.modify/i);
   });
+
+  it('surfaces 429 as admin rate-limit copy on revoke POST', async () => {
+    vi.mocked(api.post).mockRejectedValue(axiosError(429));
+    await submitRevoke();
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
+    });
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/rate limit/i);
+    expect(alert).not.toMatch(/\b429\b/);
+    expect(alert).not.toMatch(/HTTP 429/i);
+    assertNoTransportLeak(alert);
+  });
+
 });
