@@ -292,7 +292,8 @@ async def engage_combat(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid target ID format")
 
-    service = CombatService(db)
+    try:
+        service = CombatService(db)
 
         if request.targetType == "ship":
             ship = db.query(Ship).filter(Ship.id == target_id).first()
