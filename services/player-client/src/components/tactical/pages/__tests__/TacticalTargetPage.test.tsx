@@ -133,7 +133,7 @@ const render = (ui: React.ReactElement) => {
   });
 };
 
-const PLAYER_STATE = { id: 'player-self', current_sector_id: 'sec-1' };
+const PLAYER_STATE = { id: 'player-self', current_sector_id: 'sec-1', turns: 100 };
 
 beforeEach(() => {
   container = document.createElement('div');
@@ -344,7 +344,7 @@ describe('TacticalTargetPage', () => {
     teardown();
   });
 
-  it('tags a blue/clean-target ENGAGE item with the rep-cost warning tooltip', () => {
+  it('tags a blue/clean-target ENGAGE item with turn-cost preview and rep-cost warning tooltip', () => {
     useWindshieldFlightMock.mockReturnValue({
       contactPositions: new Map([['ship-1', { xPct: 0, yPct: 50 }]]),
       shipPos: { xPct: 0, yPct: 50 },
@@ -352,7 +352,7 @@ describe('TacticalTargetPage', () => {
       approach: approachMock,
     });
     const contacts: TacticalContact[] = [
-      { id: 'c1', ship_id: 'ship-1', username: 'Clean', reputation_tier: 'Neutral', player_id: 'u1' },
+      { id: 'c1', ship_id: 'ship-1', username: 'Clean', reputation_tier: 'Neutral', player_id: 'u1', attack_turn_cost: 8 },
     ];
     render(<TacticalTargetPage contacts={contacts} />);
     const name = container.querySelector('.target-contact-name') as HTMLElement;
@@ -360,7 +360,10 @@ describe('TacticalTargetPage', () => {
       name.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     const engageBtn = container.querySelector('[data-testid="menu-item-engage"]') as HTMLButtonElement;
-    expect(engageBtn.title).toBe('Engaging a clean target flags you as an outlaw: -100 rep + 1h grey');
+    const warning = 'Engaging a clean target flags you as an outlaw: -100 rep + 1h grey';
+    expect(engageBtn.title).toContain('Costs 8 turns');
+    expect(engageBtn.title).toContain('You have 100 turns');
+    expect(engageBtn.title).toContain(warning);
     teardown();
   });
 

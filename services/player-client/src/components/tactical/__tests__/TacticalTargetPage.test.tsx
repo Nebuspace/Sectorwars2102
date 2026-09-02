@@ -43,7 +43,8 @@ const mockSendPlayerMessage = vi.fn();
 const mockRefreshPlayerState = vi.fn();
 vi.mock('../../../contexts/GameContext', () => ({
   useGame: () => ({
-    playerState: { id: 'self-1' },
+    playerState: { id: 'self-1', turns: 480 },
+    currentSector: { salvage_breaks: [] },
     refreshPlayerState: mockRefreshPlayerState,
     sendPlayerMessage: (...a: unknown[]) => mockSendPlayerMessage(...a),
   }),
@@ -63,7 +64,7 @@ vi.mock('../../../contexts/AutopilotContext', () => ({
   useAutopilot: () => autopilotState,
 }));
 
-import TacticalTargetPage, { type TacticalContact } from '../pages/TacticalTargetPage';
+import TacticalTargetPage, { type TacticalContact, buildEngageTurnCostTitle } from '../pages/TacticalTargetPage';
 import { WindshieldFlightProvider, useWindshieldFlight } from '../../../contexts/WindshieldFlightContext';
 
 // Reference-band-relative near/far fixtures (WindshieldTableau.REFERENCE_BAND
@@ -300,27 +301,33 @@ describe('TacticalTargetPage', () => {
     expect(menu()?.querySelectorAll('.contact-action-menu-item').length).toBe(3);
   });
 
-  it('ENGAGE on an IN-RANGE BLUE/clean contact carries the rep-cost tooltip (title + aria-label) — v1 is a warning, not a hard block', async () => {
+  it('ENGAGE on an IN-RANGE BLUE/clean contact carries turn-cost preview and rep-cost tooltip (title + aria-label)', async () => {
     await mount([
-      { player_id: 'p1', ship_id: '1', username: 'Vega', reputation_tier: 'Lawful', personal_reputation: 40 },
+      { player_id: 'p1', ship_id: '1', username: 'Vega', reputation_tier: 'Lawful', personal_reputation: 40, attack_turn_cost: 12 },
     ]);
     await seedRange('1', true);
     await click(name());
     const engageBtn = menuItem('engage')!;
     expect(engageBtn).toBeTruthy();
     const warning = 'Engaging a clean target flags you as an outlaw: -100 rep + 1h grey';
-    expect(engageBtn.getAttribute('title')).toBe(warning);
+    expect(engageBtn.getAttribute('title')).toContain('Costs 12 turns');
+    expect(engageBtn.getAttribute('title')).toContain('You have 480 turns');
+    expect(engageBtn.getAttribute('title')).toContain(warning);
     expect(engageBtn.getAttribute('aria-label')).toContain(warning);
   });
 
-  it('ENGAGE on an IN-RANGE RED/hostile contact carries NO cost tooltip', async () => {
+  it('ENGAGE on an IN-RANGE RED/hostile contact shows turn-cost preview with server default when attack_turn_cost absent', async () => {
     await mount([
       { player_id: 'p1', ship_id: '1', username: 'Dredge', reputation_tier: 'Outlaw', personal_reputation: -300 },
     ]);
     await seedRange('1', true);
     await click(name());
     const engageBtn = menuItem('engage')!;
-    expect(engageBtn.getAttribute('title')).toBeFalsy();
+    expect(engageBtn.getAttribute('title')).toBe('Costs 2 turns · You have 480 turns');
+  });
+
+  it('buildEngageTurnCostTitle matches combat_service default turn cost when attack_turn_cost is null', () => {
+    expect(buildEngageTurnCostTitle({ attack_turn_cost: null }, 10, 'red')).toBe('Costs 2 turns · You have 10 turns');
   });
 
   it('the menu opens for EVERY ship-bearing contact, incl. a CLEAR NPC (APPROACH-only, no rep gate on the trigger itself)', async () => {

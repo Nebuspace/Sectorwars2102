@@ -135,6 +135,8 @@ export interface TacticalContact {
   /** Medal identity from players_present / enrich_presence_with_live_pose (medals.md §203). */
   pinned_medal_id?: string | null;
   medal_count?: number | null;
+  /** Defender ship turn cost from players_present (LEG-391); null → server default 2. */
+  attack_turn_cost?: number | null;
   /** WO-ISP: authoritative in-system pose/leg plan from the server — same
    *  shape ShipPresence.pose carries (SolarSystemViewscreen.tsx); the raw
    *  players_present row already carries this at runtime, just previously
@@ -213,6 +215,29 @@ const BUCKET_TAG: Record<RepBucket, string> = {
 // only, not a hard confirm-step; the server-side combat pipeline applies
 // the actual penalty.
 const CLEAN_TARGET_ENGAGE_WARNING = 'Engaging a clean target flags you as an outlaw: -100 rep + 1h grey';
+
+/** Server default when Ship.attack_turn_cost is null (combat_service.py). */
+const DEFAULT_ENGAGE_TURN_COST = 2;
+
+/** Turn-cost preview for ENGAGE menu tooltip (LEG-3960). */
+export function buildEngageTurnCostTitle(
+  contact: { attack_turn_cost?: number | null },
+  playerTurns: number | undefined,
+  repBucketValue: RepBucket,
+): string {
+  const cost = typeof contact.attack_turn_cost === 'number'
+    ? contact.attack_turn_cost
+    : DEFAULT_ENGAGE_TURN_COST;
+  const costLabel = `Costs ${cost} turn${cost === 1 ? '' : 's'}`;
+  const poolLabel = typeof playerTurns === 'number'
+    ? ` · You have ${playerTurns.toLocaleString()} turn${playerTurns === 1 ? '' : 's'}`
+    : '';
+  const turnPreview = `${costLabel}${poolLabel}`;
+  if (repBucketValue === 'blue') {
+    return `${turnPreview} · ${CLEAN_TARGET_ENGAGE_WARNING}`;
+  }
+  return turnPreview;
+}
 
 const contactDisplayName = (contact: TacticalContact): string =>
   contact.username || contact.name || 'UNKNOWN CONTACT';
@@ -438,9 +463,7 @@ const TacticalTargetPage: React.FC<TacticalTargetPageProps> = ({ contacts, selec
             key: 'engage',
             label: engaging ? '…' : 'ENGAGE ▸',
             variant: 'engage',
-            // Blue/clean-contact rep-cost warning (hub-affirmed exact
-            // wording) -- v1 is a tooltip only, not a hard confirm-step.
-            title: bucket === 'blue' ? CLEAN_TARGET_ENGAGE_WARNING : undefined,
+            title: buildEngageTurnCostTitle(contact, playerState?.turns, bucket),
             onSelect: () => {
               closeMenu();
               handleEngage(contact, key);
