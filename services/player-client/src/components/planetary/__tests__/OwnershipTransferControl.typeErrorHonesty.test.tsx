@@ -2,9 +2,16 @@
 /**
  * LEG-3090 Soft-ORDER — OwnershipTransferControl TypeError densify.
  * LEG-3546 Soft-ORDER — Network Error densify.
+ * LEG-4012 Soft-ORDER — 403/429 densify.
  */
 import { describe, it, expect } from 'vitest';
 import { formatOwnershipTransferError } from '../OwnershipTransferControl';
+
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
 
 describe('OwnershipTransferControl TypeError densify (LEG-3090)', () => {
   it('formatOwnershipTransferError falls back on TypeError network collapse', () => {
@@ -25,5 +32,22 @@ describe('OwnershipTransferControl TypeError densify (LEG-3090)', () => {
     expect(
       formatOwnershipTransferError(new Error('Current owner cannot afford the 5% transfer fee.')),
     ).toBe('Current owner cannot afford the 5% transfer fee.');
+  });
+});
+
+describe('OwnershipTransferControl 403/429 densify (LEG-4012)', () => {
+  it('formatOwnershipTransferError maps 403/429 without raw transport strings', () => {
+    expect(formatOwnershipTransferError(apiRequestError(403))).toBe(
+      'You do not have permission for this ownership transfer action.',
+    );
+    expect(
+      formatOwnershipTransferError(apiRequestError(403, 'Current owner cannot afford the 5% transfer fee.')),
+    ).toBe('Current owner cannot afford the 5% transfer fee.');
+    expect(formatOwnershipTransferError(apiRequestError(429))).toBe(
+      'Ownership-transfer rate limit exceeded — wait a moment and try again.',
+    );
+    expect(formatOwnershipTransferError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatOwnershipTransferError(apiRequestError(403))).not.toMatch(/TypeError/i);
+    expect(formatOwnershipTransferError(apiRequestError(403))).not.toMatch(/Network Error/i);
   });
 });

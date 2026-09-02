@@ -62,22 +62,64 @@ function serverDetail(err: unknown): string | undefined {
   return undefined;
 }
 
-export function formatBeaconDeployError(err: unknown): string {
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+function formatBeaconHttpError(
+  err: unknown,
+  fallback: string,
+  permissionCopy: string,
+  rateLimitCopy: string,
+): string {
+  const status = httpStatus(err);
   const detail = serverDetail(err);
+
+  if (status === 403) {
+    if (detail) return detail;
+    return permissionCopy;
+  }
+
+  if (status === 429) {
+    if (detail) return detail;
+    return rateLimitCopy;
+  }
+
   if (detail) return detail;
-  return 'Deploy failed';
+  return fallback;
+}
+
+export function formatBeaconDeployError(err: unknown): string {
+  return formatBeaconHttpError(
+    err,
+    'Deploy failed',
+    'You do not have permission to deploy a beacon here.',
+    'Beacon deploy rate limit exceeded — wait a moment and try again.',
+  );
 }
 
 export function formatBeaconLoadError(err: unknown): string {
-  const detail = serverDetail(err);
-  if (detail) return detail;
-  return 'Failed to load your beacons';
+  return formatBeaconHttpError(
+    err,
+    'Failed to load your beacons',
+    'Access denied — you cannot view your beacons right now.',
+    'Beacon lookup rate limit exceeded — wait a moment and try again.',
+  );
 }
 
 export function formatBeaconRowActionError(err: unknown): string {
-  const detail = serverDetail(err);
-  if (detail) return detail;
-  return 'Action failed';
+  return formatBeaconHttpError(
+    err,
+    'Action failed',
+    'You do not have permission for this beacon action.',
+    'Beacon action rate limit exceeded — wait a moment and try again.',
+  );
 }
 
 const formatState = (state: string): string => state.replace(/_/g, ' ');

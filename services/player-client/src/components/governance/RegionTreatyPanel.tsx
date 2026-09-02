@@ -47,12 +47,37 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
   );
 };
 
-/** TypeError / network collapse → fallback; ERR_* codes and gameserver messages preserved. */
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+/** TypeError / network collapse → fallback; 403/429 + ERR_* densify (LEG-4018). */
 export function formatRegionTreatyError(err: unknown, fallback: string): string {
   if (err instanceof TypeError) return fallback;
   const msg = err instanceof Error ? err.message : '';
   if (isNetworkCollapseMessage(msg)) return fallback;
+
+  const status = httpStatus(err);
   const mapped = mapTreatyErrCode(msg);
+  const hasServerDetail =
+    msg.trim().length > 0 && !/^API Error: \d+$/.test(msg.trim());
+
+  if (status === 403) {
+    if (mapped) return mapped;
+    if (hasServerDetail) return msg;
+    return 'You do not have permission to manage region treaties.';
+  }
+
+  if (status === 429) {
+    return 'Treaty action rate limit exceeded — wait a moment and try again.';
+  }
+
   if (mapped) return mapped;
   return msg || fallback;
 }
