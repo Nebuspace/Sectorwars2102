@@ -21,6 +21,20 @@ vi.mock('../../contexts/ToastContext', () => ({
   }),
 }));
 
+const axiosError = (status: number, detail?: string) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: detail ? { detail } : {} },
+  });
+
+function assertNoTransportLeak(text: string) {
+  expect(text).not.toBe('Network Error');
+  expect(text).not.toContain('Network Error');
+  expect(text).not.toMatch(/Failed to fetch/i);
+  expect(text).not.toMatch(/TypeError/i);
+  expect(text).not.toMatch(/^HTTP \d+$/);
+  expect(text).not.toContain('Request failed with status code');
+}
+
 async function loadTargetWithBounty() {
   vi.mocked(api.get).mockResolvedValue({
     data: {
@@ -63,6 +77,7 @@ async function confirmForceCancel() {
 
 /**
  * LEG-3666 Soft-ORDER — BountyAdminPanel TypeError/Network Error densify.
+ * LEG-3870 Soft-ORDER — 403/429 HTTP honesty densify.
  */
 describe('BountyAdminPanel typeErrorHonesty densify (LEG-3666)', () => {
   beforeEach(() => {
@@ -165,5 +180,55 @@ describe('BountyAdminPanel typeErrorHonesty densify (LEG-3666)', () => {
     expect(msg).toMatch(/Collapse failed/i);
     expect(msg).not.toMatch(/Failed to fetch/i);
     expect(msg).not.toMatch(/TypeError/i);
+  });
+
+  it('surfaces 403 with PLAYERS_VIEW scope hint when bounties GET is denied', async () => {
+    vi.mocked(api.get).mockRejectedValue(axiosError(403));
+
+    render(<BountyAdminPanel />);
+    fireEvent.change(screen.getByLabelText('Target player UUID'), { target: { value: 't1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Load' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Access denied|PLAYERS_VIEW/i);
+    expect(alert).not.toMatch(/\b403\b/);
+    expect(alert).not.toMatch(/HTTP 403/i);
+    assertNoTransportLeak(alert);
+  });
+
+  it('surfaces 429 as admin rate-limit copy on bounties GET', async () => {
+    vi.mocked(api.get).mockRejectedValue(axiosError(429));
+
+    render(<BountyAdminPanel />);
+    fireEvent.change(screen.getByLabelText('Target player UUID'), { target: { value: 't1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Load' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
+    });
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/rate limit/i);
+    expect(alert).not.toMatch(/\b429\b/);
+    expect(alert).not.toMatch(/HTTP 429/i);
+    assertNoTransportLeak(alert);
+  });
+
+  it('surfaces force-cancel POST 403 with formatAdminApiError-friendly copy', async () => {
+    await loadTargetWithBounty();
+    vi.mocked(api.post).mockRejectedValue(axiosError(403));
+
+    await confirmForceCancel();
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalled();
+    });
+    const msg = String(toastError.mock.calls.map((call) => call[0]).join('\n'));
+    expect(msg).toMatch(/Access denied|ECONOMY_INTERVENE/i);
+    expect(msg).not.toMatch(/\b403\b/);
+    expect(msg).not.toMatch(/HTTP 403/i);
+    assertNoTransportLeak(msg);
   });
 });

@@ -46,8 +46,23 @@ function assertNoTransportLeak() {
   expect(dom).not.toMatch(/Failed to fetch/i);
 }
 
+const axiosError = (status: number, detail?: string) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: detail ? { detail } : {} },
+  });
+
+function assertNoTransportLeakMsg(text: string) {
+  expect(text).not.toBe('Network Error');
+  expect(text).not.toContain('Network Error');
+  expect(text).not.toMatch(/Failed to fetch/i);
+  expect(text).not.toMatch(/TypeError/i);
+  expect(text).not.toMatch(/^HTTP \d+$/);
+  expect(text).not.toContain('Request failed with status code');
+}
+
 /**
  * LEG-3657 Soft-ORDER — EconomyLeversPanel TypeError/Network Error honesty densify.
+ * LEG-3862 Soft-ORDER — 403/429 HTTP honesty densify.
  */
 describe('EconomyLeversPanel typeErrorHonesty densify (LEG-3657)', () => {
   beforeEach(() => {
@@ -135,5 +150,60 @@ describe('EconomyLeversPanel typeErrorHonesty densify (LEG-3657)', () => {
     expect(msg).not.toMatch(/Failed to fetch/i);
     expect(msg).not.toMatch(/TypeError/i);
     assertNoTransportLeak();
+  });
+
+  it('surfaces 403 with ECONOMY_MANAGE scope hint when levers GET is denied', async () => {
+    vi.mocked(api.get).mockRejectedValue(axiosError(403));
+
+    render(<EconomyLeversPanel />);
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalled();
+    });
+    const msg = String(toastError.mock.calls[0][0]);
+    expect(msg).toMatch(/Access denied|ECONOMY_MANAGE/i);
+    expect(msg).not.toMatch(/\b403\b/);
+    expect(msg).not.toMatch(/HTTP 403/i);
+    assertNoTransportLeakMsg(msg);
+  });
+
+  it('surfaces 429 as admin rate-limit copy on levers GET', async () => {
+    vi.mocked(api.get).mockRejectedValue(axiosError(429));
+
+    render(<EconomyLeversPanel />);
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalled();
+    });
+    const msg = String(toastError.mock.calls[0][0]);
+    expect(msg).toMatch(/rate limit/i);
+    expect(msg).not.toMatch(/\b429\b/);
+    expect(msg).not.toMatch(/HTTP 429/i);
+    assertNoTransportLeakMsg(msg);
+  });
+
+  it('surfaces insurance PATCH 403 with formatAdminApiError-friendly copy', async () => {
+    vi.mocked(api.get).mockResolvedValue({ data: emptySnapshot });
+    vi.mocked(api.patch).mockRejectedValue(axiosError(403));
+
+    render(<EconomyLeversPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('BASIC insurance premium percent')).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByLabelText('BASIC insurance premium percent'), {
+      target: { value: '12' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save insurance levers' }));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalled();
+    });
+    const msg = String(toastError.mock.calls[0][0]);
+    expect(msg).toMatch(/Access denied|ECONOMY_MANAGE/i);
+    expect(msg).not.toMatch(/\b403\b/);
+    expect(msg).not.toMatch(/HTTP 403/i);
+    assertNoTransportLeakMsg(msg);
   });
 });

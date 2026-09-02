@@ -59,8 +59,23 @@ function alertText(): string {
   return document.querySelector('.alert-message')?.textContent ?? '';
 }
 
+const axiosError = (status: number, detail?: string) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: detail ? { detail } : {} },
+  });
+
+function assertNoTransportLeak(text: string) {
+  expect(text).not.toBe('Network Error');
+  expect(text).not.toContain('Network Error');
+  expect(text).not.toMatch(/Failed to fetch/i);
+  expect(text).not.toMatch(/TypeError/i);
+  expect(text).not.toMatch(/^HTTP \d+$/);
+  expect(text).not.toContain('Request failed with status code');
+}
+
 /**
  * LEG-3637 Soft-ORDER — CombatOverview TypeError/Network Error densify.
+ * LEG-3863 Soft-ORDER — 403/429 HTTP honesty densify.
  */
 describe('CombatOverview typeErrorHonesty densify (LEG-3637)', () => {
   beforeEach(() => {
@@ -176,5 +191,51 @@ describe('CombatOverview typeErrorHonesty densify (LEG-3637)', () => {
     expect(text).toMatch(/Combat statistics unavailable/i);
     expect(text).not.toMatch(/Failed to fetch/i);
     expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('surfaces 403 with friendly scope copy when combat live GET is denied', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/combat/live')) {
+        throw axiosError(403);
+      }
+      if (url.includes('dashboard-summary')) return { data: emptyStats };
+      if (url.includes('/combat/logs')) return { data: [] };
+      if (url.includes('/combat/disputes')) return { data: [] };
+      return { data: [] };
+    });
+
+    render(<CombatOverview />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Access denied|Combat feed/i)).toBeTruthy();
+    });
+    const text = alertText();
+    expect(text).toMatch(/Access denied|combat/i);
+    expect(text).not.toMatch(/\b403\b/);
+    expect(text).not.toMatch(/HTTP 403/i);
+    assertNoTransportLeak(text);
+  });
+
+  it('surfaces 429 as admin rate-limit copy on combat live GET', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/combat/live')) {
+        throw axiosError(429);
+      }
+      if (url.includes('dashboard-summary')) return { data: emptyStats };
+      if (url.includes('/combat/logs')) return { data: [] };
+      if (url.includes('/combat/disputes')) return { data: [] };
+      return { data: [] };
+    });
+
+    render(<CombatOverview />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/rate limit/i)).toBeTruthy();
+    });
+    const text = alertText();
+    expect(text).toMatch(/rate limit/i);
+    expect(text).not.toMatch(/\b429\b/);
+    expect(text).not.toMatch(/HTTP 429/i);
+    assertNoTransportLeak(text);
   });
 });

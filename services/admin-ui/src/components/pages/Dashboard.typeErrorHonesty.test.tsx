@@ -14,6 +14,20 @@ vi.mock('../ui/PageHeader', () => ({
   default: ({ title }: { title: string }) => <h1>{title}</h1>,
 }));
 
+const axiosError = (status: number, detail?: string) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: detail ? { detail } : {} },
+  });
+
+function assertNoTransportLeak(text: string) {
+  expect(text).not.toBe('Network Error');
+  expect(text).not.toContain('Network Error');
+  expect(text).not.toMatch(/Failed to fetch/i);
+  expect(text).not.toMatch(/TypeError/i);
+  expect(text).not.toMatch(/^HTTP \d+$/);
+  expect(text).not.toContain('Request failed with status code');
+}
+
 function mockSuccessfulDashboardGets(url: string) {
   if (url === '/api/v1/status/database/detailed') {
     return Promise.resolve({
@@ -59,6 +73,7 @@ function renderDashboard() {
 
 /**
  * LEG-3660 Soft-ORDER — Dashboard TypeError/Network Error densify.
+ * LEG-3859 Soft-ORDER — 403/429 HTTP honesty densify.
  */
 describe('Dashboard typeErrorHonesty densify (LEG-3660)', () => {
   beforeEach(() => {
@@ -138,5 +153,45 @@ describe('Dashboard typeErrorHonesty densify (LEG-3660)', () => {
     const text = screen.getByText(/Unable to load recent audit events/i).textContent ?? '';
     expect(text).not.toMatch(/Failed to fetch/i);
     expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('surfaces 403 with PLAYERS_VIEW scope hint when admin stats GET is denied', async () => {
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url === '/api/v1/admin/stats') {
+        return Promise.reject(axiosError(403));
+      }
+      return mockSuccessfulDashboardGets(url);
+    });
+
+    renderDashboard();
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/Access denied|PLAYERS_VIEW/i);
+    });
+    const text = screen.getByRole('alert').textContent ?? '';
+    expect(text).toMatch(/PLAYERS_VIEW|Access denied/i);
+    expect(text).not.toMatch(/\b403\b/);
+    expect(text).not.toMatch(/HTTP 403/i);
+    assertNoTransportLeak(text);
+  });
+
+  it('surfaces 429 as admin rate-limit copy on admin stats GET', async () => {
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url === '/api/v1/admin/stats') {
+        return Promise.reject(axiosError(429));
+      }
+      return mockSuccessfulDashboardGets(url);
+    });
+
+    renderDashboard();
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
+    });
+    const text = screen.getByRole('alert').textContent ?? '';
+    expect(text).toMatch(/rate limit/i);
+    expect(text).not.toMatch(/\b429\b/);
+    expect(text).not.toMatch(/HTTP 429/i);
+    assertNoTransportLeak(text);
   });
 });
