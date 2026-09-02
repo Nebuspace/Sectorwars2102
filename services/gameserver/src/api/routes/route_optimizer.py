@@ -21,6 +21,7 @@ from src.core.database import get_async_db
 from src.auth.dependencies import get_current_player
 from src.models.player import Player
 from src.models.route_optimization_run import RouteOptimizationRun
+from src.utils.error_handling import route_internal_error
 from src.services.route_optimizer import (
     RouteOptimizer,
     RouteObjective,
@@ -29,6 +30,9 @@ from src.services.route_optimizer import (
 
 router = APIRouter(prefix="/routes", tags=["routes"])
 logger = logging.getLogger(__name__)
+
+ERR_ROUTES_OPTIMIZE_FAILED = "ERR_ROUTES_OPTIMIZE_FAILED"
+ERR_ROUTES_HISTORY_FETCH_FAILED = "ERR_ROUTES_HISTORY_FETCH_FAILED"
 
 
 # ------------------------------------------------------------------
@@ -319,9 +323,9 @@ async def optimize_route(
         logger.error(
             f"Error optimizing route for player {current_player.id}: {e}"
         )
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to optimize route",
+        raise route_internal_error(
+            ERR_ROUTES_OPTIMIZE_FAILED,
+            "Failed to optimize route",
         )
 
 
@@ -376,7 +380,7 @@ async def get_route_history(
         logger.error(
             f"Error fetching route history for player {current_player.id}: {e}"
         )
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to retrieve route history",
+        raise route_internal_error(
+            ERR_ROUTES_HISTORY_FETCH_FAILED,
+            "Failed to retrieve route history",
         ) from e
