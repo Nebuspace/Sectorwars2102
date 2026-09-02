@@ -80,6 +80,24 @@ describe('formatAutopilotMovementError typeErrorHonesty (LEG-3786)', () => {
   });
 });
 
+describe('formatAutopilotMovementError 403/429 densify (LEG-4022)', () => {
+  const apiRequestError = (status: number, message?: string) => {
+    const err = new Error(message ?? `API Error: ${status}`);
+    (err as { status?: number }).status = status;
+    return err;
+  };
+
+  it('surfaces 403/429 without raw status codes', () => {
+    expect(formatAutopilotMovementError(apiRequestError(403), MOVE_FALLBACK)).toMatch(/permission/i);
+    expect(formatAutopilotMovementError(apiRequestError(403, 'move_denied'), MOVE_FALLBACK)).toBe(
+      'move_denied',
+    );
+    expect(formatAutopilotMovementError(apiRequestError(429), MOVE_FALLBACK)).toMatch(/rate limit/i);
+    expect(formatAutopilotMovementError(apiRequestError(429), MOVE_FALLBACK)).not.toMatch(/\b429\b/);
+    expect(formatAutopilotMovementError(apiRequestError(403), MOVE_FALLBACK)).not.toMatch(/TypeError/i);
+  });
+});
+
 describe('AutopilotContext plot/engage transport collapse (LEG-3786)', () => {
   let container: HTMLElement;
   let root: ReturnType<typeof createRoot>;

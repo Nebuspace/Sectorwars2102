@@ -207,6 +207,18 @@ function serverUpgradeDetail(err: unknown): string | undefined {
 
 /** POST /citadel/upgrade refusals — surface GS detail or structured building identity. */
 export function formatCitadelUpgradeError(err: unknown): string {
+  const status = httpStatus(err);
+  const earlyDetail = serverUpgradeDetail(err);
+
+  if (status === 403) {
+    if (earlyDetail) return earlyDetail;
+    return 'You do not have permission to upgrade this citadel.';
+  }
+
+  if (status === 429) {
+    return 'Citadel upgrade rate limit exceeded — wait a moment and try again.';
+  }
+
   const data = err && typeof err === 'object' ? (err as { data?: unknown }).data : undefined;
   const payload = extractCitadelUpgradePayload(data);
 
