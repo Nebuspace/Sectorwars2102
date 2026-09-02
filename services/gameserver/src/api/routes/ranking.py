@@ -184,6 +184,9 @@ class RankProgressResponse(BaseModel):
     is_max_rank: bool
     effective_max_turns: int
     aria_multiplier: float
+    # ADR-0004 law standing — same keys as RankInfoResponse / get_rank_info
+    is_suspect: bool = False
+    is_wanted: bool = False
     stats: dict
     requirements: List[RankRequirement]
 
@@ -551,6 +554,8 @@ async def get_rank_progress(
         is_max_rank=rank_info["is_max_rank"],
         effective_max_turns=rank_info["effective_max_turns"],
         aria_multiplier=rank_info["aria_multiplier"],
+        is_suspect=bool(rank_info.get("is_suspect", False)),
+        is_wanted=bool(rank_info.get("is_wanted", False)),
         stats=stats,
         requirements=requirements,
     )
