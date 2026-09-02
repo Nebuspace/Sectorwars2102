@@ -26,6 +26,7 @@ from src.models.ship import Ship
 from src.models.region_invite import RegionInvite
 from src.services.regional_governance_service import RegionalGovernanceService
 from src.services.policy_proposal_rules import validate_proposed_changes
+from src.utils.error_handling import route_internal_error
 from src.services import trading_service
 from src.services import construction_service
 from src.services.construction_service import ConstructionError
@@ -1384,7 +1385,7 @@ async def create_policy_proposal_for_member(
         policy_data=policy_data.model_dump(),
     )
     if new_policy is None:
-        raise HTTPException(status_code=500, detail="ERR_POLICY_CREATE_FAILED")
+        raise route_internal_error("ERR_POLICY_CREATE_FAILED", "Failed to create policy proposal")
 
     return {
         "message": "Policy proposal created successfully",

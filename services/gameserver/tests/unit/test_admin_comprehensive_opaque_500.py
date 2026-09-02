@@ -1,4 +1,4 @@
-"""LEG-3582 / LEG-3626 / LEG-3638 / LEG-3646 / LEG-3650 / LEG-3647 — admin_comprehensive HTTP 500 catches must not echo Exception text.
+"""LEG-3582 / LEG-3626 / LEG-3638 / LEG-3646 / LEG-3650 / LEG-3647 — admin_comprehensive HTTP 500 catches must not echo Exception text (LEG-3933–3938: structured route_internal_error).
 
 Mirrors LEG-3570 admin_colonization / LEG-3569 claim_ship / LEG-3605 admin_economy opaque densify.
 Representative cluster: players/sectors/ports/planets/analytics/health/warp/teams.
@@ -92,7 +92,10 @@ async def test_get_players_comprehensive_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to fetch players"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_COMP_PLAYERS_LIST_FAILED",
+        "detail": "Failed to fetch players",
+    }
     assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
 
 
@@ -111,7 +114,10 @@ async def test_get_player_risk_assessment_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to get player risk assessment"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_COMP_PLAYER_RISK_FAILED",
+        "detail": "Failed to get player risk assessment",
+    }
     assert secret not in str(exc.detail)
 
 
@@ -130,7 +136,10 @@ async def test_get_player_security_status_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to get player security status"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_COMP_PLAYER_SECURITY_STATUS_FAILED",
+        "detail": "Failed to get player security status",
+    }
     assert secret not in str(exc.detail)
 
 
@@ -150,7 +159,10 @@ async def test_list_player_security_logs_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to list player security logs"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_COMP_PLAYER_SECURITY_LOGS_FAILED",
+        "detail": "Failed to list player security logs",
+    }
     assert secret not in str(exc.detail)
 
 
@@ -174,7 +186,10 @@ async def test_take_security_action_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to take security action"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_COMP_SECURITY_ACTION_FAILED",
+        "detail": "Failed to take security action",
+    }
     assert secret not in str(exc.detail)
 
 
@@ -182,14 +197,14 @@ def test_admin_comprehensive_representative_cluster_http500_opaque():
     """LEG-3582 — static pin: representative GET cluster 500 details stay opaque."""
     src = Path(ac.__file__).read_text(encoding="utf-8")
     for stable in (
-        'detail="Failed to fetch players"',
-        'detail="Failed to fetch sectors"',
-        'detail="Failed to fetch ports"',
-        'detail="Failed to fetch planets"',
-        'detail="Failed to fetch analytics"',
-        'detail="Failed to get system health"',
-        'detail="Failed to fetch warp tunnels"',
-        'detail="Failed to fetch teams"',
+        '"Failed to fetch players"',
+        '"Failed to fetch sectors"',
+        '"Failed to fetch ports"',
+        '"Failed to fetch planets"',
+        '"Failed to fetch analytics"',
+        '"Failed to get system health"',
+        '"Failed to fetch warp tunnels"',
+        '"Failed to fetch teams"',
     ):
         assert stable in src
     assert "Failed to fetch players: {str(e)}" not in src
@@ -205,13 +220,13 @@ def test_admin_comprehensive_security_cluster_http500_opaque():
     """LEG-3626 — static pin: security cluster 500 details stay opaque."""
     src = Path(ac.__file__).read_text(encoding="utf-8")
     for stable in (
-        'detail="Failed to generate security report"',
-        'detail="Failed to get security alerts"',
-        'detail="Failed to get player risk assessment"',
-        'detail="Failed to get player security status"',
-        'detail="Failed to list player security logs"',
-        'detail="Failed to clean up security data"',
-        'detail="Failed to take security action"',
+        '"Failed to generate security report"',
+        '"Failed to get security alerts"',
+        '"Failed to get player risk assessment"',
+        '"Failed to get player security status"',
+        '"Failed to list player security logs"',
+        '"Failed to clean up security data"',
+        '"Failed to take security action"',
     ):
         assert stable in src
     assert "Failed to generate security report: {str(e)}" not in src
@@ -241,7 +256,10 @@ async def test_create_analytics_snapshot_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to create analytics snapshot"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_COMP_ANALYTICS_SNAPSHOT_FAILED",
+        "detail": "Failed to create analytics snapshot",
+    }
     assert secret not in str(exc.detail)
 
 
@@ -256,7 +274,10 @@ async def test_update_all_port_stock_levels_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to update port stock levels"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_COMP_PORT_STOCK_UPDATE_FAILED",
+        "detail": "Failed to update port stock levels",
+    }
     assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
 
 
@@ -274,7 +295,10 @@ async def test_get_ai_models_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to get AI models"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_COMP_AI_MODELS_FAILED",
+        "detail": "Failed to get AI models",
+    }
     assert secret not in str(exc.detail)
 
 
@@ -289,7 +313,10 @@ async def test_get_ai_player_profiles_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to get AI player profiles"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_COMP_AI_PLAYER_PROFILES_FAILED",
+        "detail": "Failed to get AI player profiles",
+    }
     assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
 
 
@@ -297,15 +324,15 @@ def test_admin_comprehensive_economy_cluster_http500_opaque():
     """LEG-3638 — static pin: economy cluster 500 details stay opaque."""
     src = Path(ac.__file__).read_text(encoding="utf-8")
     for stable in (
-        'detail="Failed to create analytics snapshot"',
-        'detail="Failed to update port stock levels"',
-        'detail="Failed to get AI models"',
-        'detail="Failed to get AI prediction accuracy"',
-        'detail="Failed to get AI player profiles"',
-        'detail="Failed to get AI system metrics"',
-        'detail="Failed to get AI predictions"',
-        'detail="Failed to get AI route optimization data"',
-        'detail="Failed to get AI behavior analytics"',
+        '"Failed to create analytics snapshot"',
+        '"Failed to update port stock levels"',
+        '"Failed to get AI models"',
+        '"Failed to get AI prediction accuracy"',
+        '"Failed to get AI player profiles"',
+        '"Failed to get AI system metrics"',
+        '"Failed to get AI predictions"',
+        '"Failed to get AI route optimization data"',
+        '"Failed to get AI behavior analytics"',
     ):
         assert stable in src
     assert "Failed to create analytics snapshot: {str(e)}" not in src
@@ -331,7 +358,10 @@ async def test_update_player_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to update player"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_COMP_PLAYER_UPDATE_FAILED",
+        "detail": "Failed to update player",
+    }
     assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
 
 
@@ -355,7 +385,10 @@ async def test_create_ship_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to create ship"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_COMP_SHIP_CREATE_FAILED",
+        "detail": "Failed to create ship",
+    }
     assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
 
 
@@ -373,7 +406,10 @@ async def test_update_ship_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to update ship"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_COMP_SHIP_UPDATE_FAILED",
+        "detail": "Failed to update ship",
+    }
     assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
 
 
@@ -390,7 +426,10 @@ async def test_delete_ship_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to delete ship"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_COMP_SHIP_DELETE_FAILED",
+        "detail": "Failed to delete ship",
+    }
     assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
 
 
@@ -408,7 +447,10 @@ async def test_teleport_ship_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to teleport ship"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_COMP_SHIP_TELEPORT_FAILED",
+        "detail": "Failed to teleport ship",
+    }
     assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
 
 
@@ -425,7 +467,10 @@ async def test_create_player_from_user_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to create player"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_COMP_PLAYER_CREATE_FAILED",
+        "detail": "Failed to create player",
+    }
     assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
 
 
@@ -441,7 +486,10 @@ async def test_create_players_from_all_users_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to create players"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_COMP_PLAYERS_BULK_CREATE_FAILED",
+        "detail": "Failed to create players",
+    }
     assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
 
 
@@ -449,13 +497,13 @@ def test_admin_comprehensive_ship_player_mutation_cluster_http500_opaque():
     """LEG-3646 / LEG-3650 — static pin: ship/player mutation cluster 500 details stay opaque."""
     src = Path(ac.__file__).read_text(encoding="utf-8")
     for stable in (
-        'detail="Failed to update player"',
-        'detail="Failed to create ship"',
-        'detail="Failed to update ship"',
-        'detail="Failed to delete ship"',
-        'detail="Failed to teleport ship"',
-        'detail="Failed to create player"',
-        'detail="Failed to create players"',
+        '"Failed to update player"',
+        '"Failed to create ship"',
+        '"Failed to update ship"',
+        '"Failed to delete ship"',
+        '"Failed to teleport ship"',
+        '"Failed to create player"',
+        '"Failed to create players"',
     ):
         assert stable in src
     assert "Failed to update player: {str(e)}" not in src
@@ -481,7 +529,10 @@ async def test_update_sector_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to update sector"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_COMP_SECTOR_UPDATE_FAILED",
+        "detail": "Failed to update sector",
+    }
     assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
 
 
@@ -501,7 +552,10 @@ async def test_create_planet_in_sector_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to create planet"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_COMP_PLANET_CREATE_FAILED",
+        "detail": "Failed to create planet",
+    }
     assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
 
 
@@ -519,7 +573,10 @@ async def test_update_planet_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to update planet"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_COMP_PLANET_UPDATE_FAILED",
+        "detail": "Failed to update planet",
+    }
     assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
 
 
@@ -536,7 +593,10 @@ async def test_delete_planet_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to delete planet"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_COMP_PLANET_DELETE_FAILED",
+        "detail": "Failed to delete planet",
+    }
     assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
 
 
@@ -560,7 +620,10 @@ async def test_create_port_in_sector_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to create port"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_COMP_PORT_IN_SECTOR_CREATE_FAILED",
+        "detail": "Failed to create port",
+    }
     assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
 
 
@@ -576,7 +639,10 @@ async def test_get_sector_warp_tunnels_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to get sector warp tunnels"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_COMP_SECTOR_WARPS_FAILED",
+        "detail": "Failed to get sector warp tunnels",
+    }
     assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
 
 
@@ -599,7 +665,10 @@ async def test_create_warp_tunnel_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to create warp tunnel"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_COMP_WARP_CREATE_FAILED",
+        "detail": "Failed to create warp tunnel",
+    }
     assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
 
 
@@ -617,7 +686,10 @@ async def test_update_warp_tunnel_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to update warp tunnel"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_COMP_WARP_UPDATE_FAILED",
+        "detail": "Failed to update warp tunnel",
+    }
     assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
 
 
@@ -634,7 +706,10 @@ async def test_delete_warp_tunnel_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to delete warp tunnel"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_COMP_WARP_DELETE_FAILED",
+        "detail": "Failed to delete warp tunnel",
+    }
     assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
 
 
@@ -651,7 +726,10 @@ async def test_delete_port_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to delete port"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_COMP_PORT_DELETE_FAILED",
+        "detail": "Failed to delete port",
+    }
     assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
 
 
@@ -668,7 +746,10 @@ async def test_create_port_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to create port"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_COMP_PORT_CREATE_FAILED",
+        "detail": "Failed to create port",
+    }
     assert "secret-admin-comp-query-should-not-leak" not in str(exc.detail)
 
 
@@ -676,16 +757,16 @@ def test_admin_comprehensive_world_entity_mutation_cluster_http500_opaque():
     """LEG-3647 — static pin: world-entity mutation cluster 500 details stay opaque."""
     src = Path(ac.__file__).read_text(encoding="utf-8")
     for stable in (
-        'detail="Failed to update sector"',
-        'detail="Failed to create planet"',
-        'detail="Failed to update planet"',
-        'detail="Failed to delete planet"',
-        'detail="Failed to create port"',
-        'detail="Failed to get sector warp tunnels"',
-        'detail="Failed to create warp tunnel"',
-        'detail="Failed to update warp tunnel"',
-        'detail="Failed to delete warp tunnel"',
-        'detail="Failed to delete port"',
+        '"Failed to update sector"',
+        '"Failed to create planet"',
+        '"Failed to update planet"',
+        '"Failed to delete planet"',
+        '"Failed to create port"',
+        '"Failed to get sector warp tunnels"',
+        '"Failed to create warp tunnel"',
+        '"Failed to update warp tunnel"',
+        '"Failed to delete warp tunnel"',
+        '"Failed to delete port"',
     ):
         assert stable in src
     assert "Failed to update sector: {str(e)}" not in src
