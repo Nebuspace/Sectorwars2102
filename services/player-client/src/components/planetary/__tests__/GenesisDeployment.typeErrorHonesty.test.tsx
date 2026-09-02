@@ -35,3 +35,40 @@ describe('GenesisDeployment TypeError densify (LEG-3491)', () => {
     expect(formatGenesisDeployError(new Error('sector_occupied'))).toBe('sector_occupied');
   });
 });
+
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
+
+describe('GenesisDeployment 403/429 densify (LEG-4004)', () => {
+  it('formatGenesisQuotesLoadError maps 403/429 without raw transport strings', () => {
+    expect(formatGenesisQuotesLoadError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatGenesisQuotesLoadError(apiRequestError(403, 'quotes_denied'))).toBe(
+      'quotes_denied',
+    );
+    expect(formatGenesisQuotesLoadError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatGenesisQuotesLoadError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatGenesisQuotesLoadError(apiRequestError(403))).not.toMatch(/TypeError/i);
+    expect(formatGenesisQuotesLoadError(apiRequestError(403))).not.toMatch(/Network Error/i);
+  });
+
+  it('formatGenesisVerifyError maps 403/429 without raw transport strings', () => {
+    expect(formatGenesisVerifyError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatGenesisVerifyError(apiRequestError(403, 'verify_denied'))).toBe('verify_denied');
+    expect(formatGenesisVerifyError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatGenesisVerifyError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatGenesisVerifyError(apiRequestError(403))).not.toMatch(/TypeError/i);
+    expect(formatGenesisVerifyError(apiRequestError(403))).not.toMatch(/Network Error/i);
+  });
+
+  it('formatGenesisDeployError maps 403/429 without raw transport strings', () => {
+    expect(formatGenesisDeployError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatGenesisDeployError(apiRequestError(403, 'deploy_denied'))).toBe('deploy_denied');
+    expect(formatGenesisDeployError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatGenesisDeployError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatGenesisDeployError(apiRequestError(403))).not.toMatch(/TypeError/i);
+    expect(formatGenesisDeployError(apiRequestError(403))).not.toMatch(/Network Error/i);
+  });
+});
