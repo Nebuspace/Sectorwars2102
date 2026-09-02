@@ -1,6 +1,8 @@
-"""LEG-3815 — haggle.py HTTP 500 catches must not echo Exception text.
+"""LEG-3913 densify — structured route_internal_error 500 densify.
 
-Mirrors LEG-3805 messages / LEG-3604 trading opaque densify.
+LEG-3815 — haggle.py HTTP 500 catches return structured Exception text.
+
+Mirrors LEG-3805 messages / LEG-3604 trading structured densify.
 """
 
 from __future__ import annotations
@@ -32,7 +34,7 @@ def _station():
 
 
 @pytest.mark.asyncio
-async def test_open_haggle_unexpected_is_opaque_500():
+async def test_open_haggle_unexpected_returns_structured_500():
     secret = "secret-open-haggle-should-not-leak"
     body = HaggleOpenRequest(
         station_id=str(uuid.uuid4()),
@@ -68,7 +70,7 @@ async def test_open_haggle_unexpected_is_opaque_500():
 
 
 @pytest.mark.asyncio
-async def test_submit_offer_unexpected_is_opaque_500():
+async def test_submit_offer_unexpected_returns_structured_500():
     secret = "secret-submit-offer-should-not-leak"
     body = HaggleOfferRequest(
         station_id=str(uuid.uuid4()),
@@ -104,7 +106,7 @@ async def test_submit_offer_unexpected_is_opaque_500():
 
 
 @pytest.mark.asyncio
-async def test_haggle_status_unexpected_is_opaque_500():
+async def test_haggle_status_unexpected_returns_structured_500():
     secret = "secret-haggle-status-should-not-leak"
     station_id = str(uuid.uuid4())
 

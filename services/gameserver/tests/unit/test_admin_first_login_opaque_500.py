@@ -37,7 +37,10 @@ async def test_list_conversations_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to fetch conversations"
+    assert exc.detail == {
+            "error_code": "ERR_ADMIN_FIRST_LOGIN_LIST_FAILED",
+            "detail": "Failed to fetch conversations",
+        }
     assert secret not in str(exc.detail)
 
 
@@ -53,17 +56,18 @@ async def test_get_conversation_detail_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to fetch conversation detail"
+    assert exc.detail == {
+            "error_code": "ERR_ADMIN_FIRST_LOGIN_DETAIL_FAILED",
+            "detail": "Failed to fetch conversation detail",
+        }
     assert secret not in str(exc.detail)
 
 
 def test_admin_first_login_http500_catches_have_no_detail_str_e():
     """LEG-3689 — static pin: first-login 500 details stay opaque."""
     src = Path(afl_mod.__file__).read_text(encoding="utf-8")
-    for stable in (
-        'detail="Failed to fetch conversations"',
-        'detail="Failed to fetch conversation detail"',
-    ):
-        assert stable in src
+    assert "ERR_ADMIN_FIRST_LOGIN_LIST_FAILED" in src
+    assert "ERR_ADMIN_FIRST_LOGIN_DETAIL_FAILED" in src
+    assert "route_internal_error" in src
     assert "Failed to fetch conversations: {str(e)}" not in src
     assert "Failed to fetch conversation detail: {str(e)}" not in src

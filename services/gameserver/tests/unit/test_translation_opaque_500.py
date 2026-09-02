@@ -59,7 +59,10 @@ async def test_get_translations_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to retrieve translations"
+    assert exc.detail == {
+            "error_code": "ERR_I18N_TRANSLATIONS_GET_FAILED",
+            "detail": "Failed to retrieve translations",
+        }
     assert secret not in str(exc.detail)
 
 
@@ -76,7 +79,10 @@ async def test_get_user_language_preference_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to get language preference"
+    assert exc.detail == {
+            "error_code": "ERR_I18N_PREF_GET_FAILED",
+            "detail": "Failed to get language preference",
+        }
     assert secret not in str(exc.detail)
 
 
@@ -102,23 +108,30 @@ async def test_set_translation_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to set translation"
+    assert exc.detail == {
+            "error_code": "ERR_I18N_SET_FAILED",
+            "detail": "Failed to set translation",
+        }
     assert secret not in str(exc.detail)
 
 
 def test_translation_http500_catches_have_no_detail_str_e():
     """LEG-3818 — static pin: all twelve HTTP 500 catch paths stay opaque."""
     src = Path(translation_mod.__file__).read_text(encoding="utf-8")
+    assert "route_internal_error" in src
+    assert "ERR_I18N_TRANSLATIONS_GET_FAILED" in src
+    assert "ERR_I18N_SET_FAILED" in src
+    assert 'detail="Failed to retrieve translations"' not in src
     for stable in (
         "ERR_I18N_LANGUAGES_FAILED",
-        'detail="Failed to retrieve translations"',
-        'detail="Failed to get language preference"',
-        'detail="Failed to set language preference"',
-        'detail="Failed to get AI context"',
-        'detail="Failed to get translation progress"',
-        'detail="Failed to set translation"',
-        'detail="Failed to import translations"',
-        'detail="Failed to initialize translation data"',
+        # densified 'detail="Failed to retrieve translations"',
+        # densified 'detail="Failed to get language preference"',
+        # densified 'detail="Failed to set language preference"',
+        # densified 'detail="Failed to get AI context"',
+        # densified 'detail="Failed to get translation progress"',
+        # densified 'detail="Failed to set translation"',
+        # densified 'detail="Failed to import translations"',
+        # densified 'detail="Failed to initialize translation data"',
     ):
         assert stable in src
     assert "detail=str(e)" not in src

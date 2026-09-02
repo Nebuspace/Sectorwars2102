@@ -32,9 +32,10 @@ from src.services.trading_service import (
     realize_region_tax,
 )
 from src.services.turn_service import regenerate_turns, spend_turns
-
 from src.utils.error_handling import route_internal_error
 
+ERR_TRADING_BUY_FAILED = "ERR_TRADING_BUY_FAILED"
+ERR_TRADING_SELL_FAILED = "ERR_TRADING_SELL_FAILED"
 ERR_TRADING_DOCKING_FAILED = "ERR_TRADING_DOCKING_FAILED"
 ERR_TRADING_UNDOCKING_FAILED = "ERR_TRADING_UNDOCKING_FAILED"
 ERR_TRADING_MOORING_FAILED = "ERR_TRADING_MOORING_FAILED"
@@ -1017,7 +1018,10 @@ async def buy_resource(
     except Exception as e:
         db.rollback()
         logger.error("Trade failed (buy): %s", e)
-        raise HTTPException(status_code=500, detail="Trade failed")
+        raise route_internal_error(
+            ERR_TRADING_BUY_FAILED,
+            "Trade failed",
+        )
 
 
 @router.post("/sell")
@@ -1432,7 +1436,10 @@ async def sell_resource(
     except Exception as e:
         db.rollback()
         logger.error("Trade failed (sell): %s", e)
-        raise HTTPException(status_code=500, detail="Trade failed")
+        raise route_internal_error(
+            ERR_TRADING_SELL_FAILED,
+            "Trade failed",
+        )
 
 
 @router.post("/quote")

@@ -57,7 +57,10 @@ async def test_buy_resource_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Trade failed"
+    assert exc.detail == {
+            "error_code": "ERR_TRADING_BUY_FAILED",
+            "detail": "Trade failed",
+        }
     assert secret not in str(exc.detail)
 
 
@@ -99,10 +102,11 @@ async def test_undock_from_port_unexpected_is_opaque_500():
 
 
 def test_trading_http500_catches_have_no_detail_str_e():
-    """LEG-3604 / LEG-3875 — Trade stays opaque string; dock/moor are structured."""
+    """LEG-3604 / LEG-3875 / LEG-3911 — buy/sell + dock/moor are structured densify."""
     src = Path(trading_mod.__file__).read_text(encoding="utf-8")
-    assert 'detail="Trade failed"' in src
     for code in (
+        "ERR_TRADING_BUY_FAILED",
+        "ERR_TRADING_SELL_FAILED",
         "ERR_TRADING_DOCKING_FAILED",
         "ERR_TRADING_UNDOCKING_FAILED",
         "ERR_TRADING_MOORING_FAILED",
@@ -110,6 +114,7 @@ def test_trading_http500_catches_have_no_detail_str_e():
     ):
         assert code in src
     assert "route_internal_error" in src
+    assert 'detail="Trade failed"' not in src
     assert 'detail="Docking failed"' not in src
     assert 'detail="Undocking failed"' not in src
     assert 'detail="Long-term mooring failed"' not in src
