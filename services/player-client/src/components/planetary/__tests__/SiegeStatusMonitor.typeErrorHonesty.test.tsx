@@ -43,3 +43,23 @@ describe('SiegeStatusMonitor TypeError densify (LEG-3074)', () => {
     expect(formatSiegeAidError(new Error('Network Error'))).not.toMatch(/Network Error/i);
   });
 });
+
+describe('SiegeStatusMonitor 403/429 densify (LEG-3979)', () => {
+  it('formatSiegeAidError surfaces 403/429 without raw status codes', () => {
+    expect(formatSiegeAidError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatSiegeAidError(apiRequestError(403, 'siege_aid_denied'))).toBe('siege_aid_denied');
+    expect(formatSiegeAidError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatSiegeAidError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatSiegeAidError(apiRequestError(403))).not.toMatch(/TypeError/i);
+    expect(formatSiegeAidError(apiRequestError(403))).not.toMatch(/Network Error/i);
+  });
+
+  it('formatSiegeHailError surfaces 403/429 without raw status codes', () => {
+    expect(formatSiegeHailError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatSiegeHailError(apiRequestError(403, 'siege_hail_denied'))).toBe('siege_hail_denied');
+    expect(formatSiegeHailError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatSiegeHailError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatSiegeHailError(apiRequestError(403))).not.toMatch(/TypeError/i);
+    expect(formatSiegeHailError(apiRequestError(403))).not.toMatch(/Network Error/i);
+  });
+});
