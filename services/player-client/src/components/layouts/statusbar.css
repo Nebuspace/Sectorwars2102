@@ -376,17 +376,6 @@
   color: var(--color-text-muted, #7e8ca0);
 }
 
-.sb-colonies-hab {
-  color: #7dcea0;
-  font-size: 0.9231em;
-}
-
-.sb-colonies-terraform {
-  color: #f5c542;
-  font-size: 0.8462em;
-  white-space: nowrap;
-}
-
 .sb-colonies-siege {
   color: var(--health-danger, #ef4444);
   font-weight: 700;
