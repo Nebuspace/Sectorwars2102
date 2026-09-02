@@ -37,6 +37,49 @@ MIN_ORBITAL_SHIPYARD_FOR_SPACE_ENGINEERS = 2  # professions.md Space Engineers
 MIN_MILITARY_ACADEMY_FOR_COMBAT_PILOTS = 2  # professions.md Combat Pilots
 MIN_TERRAFORMING_LAB_FOR_TERRAFORM_ENGINEERS = 3  # professions.md Terraform Engineers
 
+# Specialization cap by citadel phase (professions.md §Caps and limits, L134-142).
+SPECIALIZATION_CAP_BY_CITADEL_LEVEL: dict[int, float] = {
+    0: 0.0,
+    1: 0.0,  # Outpost — no specialists
+    2: 0.10,  # Settlement — hold-only; local training blocked by MIN_CITADEL_FOR_TRAINING
+    3: 0.25,  # Colony
+    4: 0.50,  # Major Colony
+    5: 0.75,  # Planetary Capital
+}
+
+
+def specialization_cap_fraction(citadel_level: int) -> float:
+    level = int(citadel_level or 0)
+    if level >= 5:
+        return SPECIALIZATION_CAP_BY_CITADEL_LEVEL[5]
+    return SPECIALIZATION_CAP_BY_CITADEL_LEVEL.get(level, 0.0)
+
+
+def total_specialized_headcount(db: Session, planet_id: UUID) -> int:
+    return sum(profession_counts(db, planet_id).values())
+
+
+def queued_specialist_trainees(db: Session, planet_id: UUID) -> int:
+    rows = (
+        db.query(ProfessionTrainingQueue)
+        .filter(
+            ProfessionTrainingQueue.planet_id == planet_id,
+            ProfessionTrainingQueue.status == ProfessionTrainingStatus.QUEUED.value,
+        )
+        .all()
+    )
+    return sum(int(row.trainee_count or 0) for row in rows)
+
+
+def max_specialized_for_planet(planet: Planet, db: Session) -> int:
+    """Max trained specialists allowed at the planet's current citadel phase."""
+    specialized = total_specialized_headcount(db, planet.id)
+    total_pop = int(planet.colonists or 0) + specialized
+    if total_pop <= 0:
+        return 0
+    return int(total_pop * specialization_cap_fraction(planet.citadel_level or 0))
+
+
 # Numeric bonus multipliers from professions.md (non-TBD cells only).
 PRODUCTION_BONUS: dict[ProfessionType, dict[str, float]] = {
     ProfessionType.MINING_ENGINEERS: {"fuel": 1.30},
@@ -323,6 +366,13 @@ class ProfessionService:
 
         return max_kind_level(getattr(planet, "structures", None) or {}, kind)
 
+    def _assert_specialization_cap(self, planet: Planet, trainee_count: int) -> None:
+        specialized = total_specialized_headcount(self.db, planet.id)
+        queued = queued_specialist_trainees(self.db, planet.id)
+        cap = max_specialized_for_planet(planet, self.db)
+        if specialized + queued + trainee_count > cap:
+            raise ValueError("specialization_cap_exceeded")
+
     def _assert_profession_training_gate(self, planet: Planet, prof: ProfessionType) -> None:
         self._assert_training_gate(planet)
         if prof == ProfessionType.RESEARCH_SCIENTISTS:
@@ -507,6 +557,7 @@ class ProfessionService:
         self.advance_queue(planet, now=now)
         if (planet.colonists or 0) < trainee_count:
             raise ValueError("insufficient_generic_colonists")
+        self._assert_specialization_cap(planet, trainee_count)
         player = self._load_player_for_update(player_id)
         cost = training_cost_for(prof, trainee_count)
         self._apply_training_charge(planet, player, cost)
