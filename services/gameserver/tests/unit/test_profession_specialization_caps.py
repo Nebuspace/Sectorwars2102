@@ -105,10 +105,12 @@ def _profession_row(planet_id, profession: ProfessionType, count: int):
 
 def _queue_row(planet_id, trainee_count: int, *, status=ProfessionTrainingStatus.QUEUED.value):
     return SimpleNamespace(
+        id=uuid4(),
         planet_id=planet_id,
         profession=ProfessionType.MINING_ENGINEERS.value,
         trainee_count=trainee_count,
         status=status,
+        queued_at=datetime(2026, 9, 1, tzinfo=timezone.utc),
         completes_at=datetime(2099, 1, 1, tzinfo=timezone.utc),
     )
 
@@ -229,6 +231,23 @@ def test_outpost_zero_cap_rejects_training_at_l3_gate_first():
     svc = ProfessionService(db)
     with pytest.raises(ValueError, match="citadel_level_too_low"):
         svc.queue_training(planet, owner, ProfessionType.MINING_ENGINEERS.value, 1)
+
+
+def test_get_state_exposes_specialization_cap_fields(monkeypatch):
+    owner = uuid4()
+    planet = _planet(owner, citadel_level=3, colonists=800)
+    professions = [_profession_row(planet.id, ProfessionType.MINING_ENGINEERS, 200)]
+    queue = [_queue_row(planet.id, 50)]
+    db = _DBStub(professions=professions, queue=queue)
+    svc = ProfessionService(db)
+    monkeypatch.setattr(svc, "advance_queue", lambda *_a, **_k: False)
+    state = svc.get_state(planet, owner)
+    assert state["specialization_cap_max"] == 250  # 25% of 800 generic + 200 specialized
+    assert state["specialized_total"] == 250  # 200 trained + 50 queued
+    assert state["specialization_cap_fraction"] == pytest.approx(0.25)
+    assert "specialization_cap_max" in state
+    assert "specialized_total" in state
+    assert "specialization_cap_fraction" in state
 
 
 def test_l3_partial_specialists_allows_remaining_headroom(monkeypatch):

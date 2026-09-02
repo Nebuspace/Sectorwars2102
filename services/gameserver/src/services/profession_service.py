@@ -507,9 +507,16 @@ class ProfessionService:
             .order_by(ProfessionTrainingQueue.queued_at)
             .all()
         )
+        specialized = total_specialized_headcount(self.db, planet.id)
+        queued = queued_specialist_trainees(self.db, planet.id)
         return {
             "planet_id": str(planet.id),
             "generic_colonists": planet.colonists or 0,
+            "specialization_cap_max": max_specialized_for_planet(planet, self.db),
+            "specialized_total": specialized + queued,
+            "specialization_cap_fraction": specialization_cap_fraction(
+                planet.citadel_level or 0
+            ),
             "cost_blocked": False,
             "cost_basis": "provisional_per_100",
             "cost_basis_ref": "ADR-0093 item 35 / LEG-DEC-804",
