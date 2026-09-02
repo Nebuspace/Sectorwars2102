@@ -19,6 +19,9 @@ from src.utils.error_handling import route_internal_error
 ERR_HAGGLE_OPEN_FAILED = "ERR_HAGGLE_OPEN_FAILED"
 ERR_HAGGLE_OFFER_FAILED = "ERR_HAGGLE_OFFER_FAILED"
 ERR_HAGGLE_STATUS_FAILED = "ERR_HAGGLE_STATUS_FAILED"
+ERR_HAGGLE_NARRATIVE_OPEN_FAILED = "ERR_HAGGLE_NARRATIVE_OPEN_FAILED"
+ERR_HAGGLE_NARRATIVE_SUBMIT_FAILED = "ERR_HAGGLE_NARRATIVE_SUBMIT_FAILED"
+ERR_HAGGLE_NARRATIVE_STATUS_FAILED = "ERR_HAGGLE_NARRATIVE_STATUS_FAILED"
 
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -47,6 +50,20 @@ class HaggleOfferRequest(BaseModel):
     commodity: str
     side: str = Field(..., description="'buy' or 'sell'")
     offer: float = Field(..., gt=0, description="Per-unit offer in credits")
+
+
+class HaggleNarrativeOpenRequest(BaseModel):
+    station_id: str
+    commodity: str
+    side: str = Field(..., description="'buy' (player buying) or 'sell' (player selling)")
+    quantity: int = Field(..., gt=0, le=100000)
+
+
+class HaggleNarrativeSubmitRequest(BaseModel):
+    station_id: str
+    commodity: str
+    side: str = Field(..., description="'buy' or 'sell'")
+    submission: str = Field(..., min_length=1, max_length=280)
 
 
 def _station_or_404(db: Session, station_id: str) -> Station:
@@ -144,4 +161,92 @@ async def haggle_status(
         raise route_internal_error(
             ERR_HAGGLE_STATUS_FAILED,
             "Failed to read haggle status",
+        )
+
+
+@router.post("/narrative/open")
+async def open_narrative_haggle(
+    body: HaggleNarrativeOpenRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player),
+):
+    station = _station_or_404(db, body.station_id)
+    _require_docked_here(current_player, station)
+    try:
+        card = HaggleService(db).open_narrative_session(
+            current_player, station, body.commodity, body.side, body.quantity
+        )
+        db.commit()
+        return card
+    except HaggleError as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        logger.error("narrative haggle open failed", exc_info=True)
+        raise route_internal_error(
+            ERR_HAGGLE_NARRATIVE_OPEN_FAILED,
+            "Failed to open narrative haggle session",
+        )
+
+
+@router.post("/narrative/submit")
+async def submit_narrative_haggle(
+    body: HaggleNarrativeSubmitRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player),
+):
+    station = _station_or_404(db, body.station_id)
+    _require_docked_here(current_player, station)
+    try:
+        result = HaggleService(db).submit_narrative_line(
+            current_player,
+            station,
+            body.commodity,
+            body.side,
+            body.submission,
+        )
+        db.commit()
+        return result
+    except HaggleError as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        logger.error("narrative haggle submit failed", exc_info=True)
+        raise route_internal_error(
+            ERR_HAGGLE_NARRATIVE_SUBMIT_FAILED,
+            "Failed to submit narrative haggle line",
+        )
+
+
+@router.get("/narrative/status")
+async def narrative_haggle_status(
+    station_id: str = Query(...),
+    commodity: str = Query(...),
+    side: str = Query(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player),
+):
+    station = _station_or_404(db, station_id)
+    try:
+        return HaggleService(db).get_narrative_status(
+            current_player, station, commodity, side
+        )
+    except HaggleError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        logger.error("narrative haggle status failed", exc_info=True)
+        raise route_internal_error(
+            ERR_HAGGLE_NARRATIVE_STATUS_FAILED,
+            "Failed to read narrative haggle status",
         )
