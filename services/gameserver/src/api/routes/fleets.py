@@ -8,6 +8,7 @@ BEFORE parameterized routes (e.g., /{fleet_id}) to avoid FastAPI
 treating the named path segment as a path parameter.
 """
 
+import logging
 from typing import List, Optional
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -21,6 +22,7 @@ from src.models.fleet import FleetRole
 from src.services.fleet_service import FleetService
 
 router = APIRouter(prefix="/fleets", tags=["fleets"])
+logger = logging.getLogger(__name__)
 
 
 # Request/Response Models
@@ -172,6 +174,13 @@ async def create_fleet(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except AttributeError:
+        # Mack regression guard: broken async-session wiring must not be
+        # swallowed into an opaque 500 (test_fleets_route_dep_swap_mack).
+        raise
+    except Exception:
+        logger.exception("Failed to create fleet")
+        raise HTTPException(status_code=500, detail="Failed to create fleet")
 
 
 @router.get("/", response_model=List[FleetResponse])
@@ -353,6 +362,11 @@ async def simulate_battle_round(
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except AttributeError:
+        raise
+    except Exception:
+        logger.exception("Failed to simulate battle round")
+        raise HTTPException(status_code=500, detail="Failed to simulate battle round")
 
 
 # =============================================================================
@@ -679,6 +693,11 @@ async def initiate_battle(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except AttributeError:
+        raise
+    except Exception:
+        logger.exception("Failed to initiate battle")
+        raise HTTPException(status_code=500, detail="Failed to initiate battle")
 
 
 @router.post("/{fleet_id}/resupply", response_model=ResupplyResponse)
