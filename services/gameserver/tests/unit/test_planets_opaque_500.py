@@ -46,7 +46,10 @@ async def test_upgrade_shield_generator_boom_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to upgrade shield generator"
+    assert exc.detail == {
+        "error_code": "ERR_PLANETS_SHIELD_UPGRADE_FAILED",
+        "detail": "Failed to upgrade shield generator",
+    }
     assert secret not in str(exc.detail)
 
 
@@ -66,7 +69,10 @@ async def test_get_planet_defenses_boom_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to fetch planet defenses"
+    assert exc.detail == {
+        "error_code": "ERR_PLANETS_DEFENSES_FETCH_FAILED",
+        "detail": "Failed to fetch planet defenses",
+    }
     assert secret not in str(exc.detail)
 
 
@@ -152,7 +158,10 @@ async def test_update_defenses_boom_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to update defenses"
+    assert exc.detail == {
+        "error_code": "ERR_PLANETS_DEFENSES_UPDATE_FAILED",
+        "detail": "Failed to update defenses",
+    }
     assert secret not in str(exc.detail)
 
 
@@ -183,16 +192,20 @@ def test_planets_http500_is_opaque():
     """LEG-3794 — static pin: planets route 500 details stay opaque."""
     src = Path(mod.__file__).read_text(encoding="utf-8")
     opaque_details = [
-        'detail="Failed to upgrade shield generator"',
-        'detail="Failed to fetch planet defenses"',
         'detail="Failed to fetch planet details"',
         'detail="Failed to allocate colonists"',
         'detail="Failed to upgrade building"',
-        'detail="Failed to update defenses"',
         'detail="Failed to deploy genesis device"',
+    ]
+    structured_codes = [
+        "ERR_PLANETS_SHIELD_UPGRADE_FAILED",
+        "ERR_PLANETS_DEFENSES_FETCH_FAILED",
+        "ERR_PLANETS_DEFENSES_UPDATE_FAILED",
     ]
     for needle in opaque_details:
         assert needle in src
+    for code in structured_codes:
+        assert code in src
     assert "Failed to upgrade shield generator: {str(e)}" not in src
     assert "Failed to fetch planet defenses: {str(e)}" not in src
     assert "Failed to fetch planet details: {str(e)}" not in src
