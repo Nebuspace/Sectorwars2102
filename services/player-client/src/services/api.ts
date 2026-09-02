@@ -2643,6 +2643,13 @@ export const portOwnershipAPI = {
       body: JSON.stringify({ amount }),
     }),
 
+  // Owner cash-injection into station treasury (port-ownership.md § Cash-injection) — tip GS LEG-4123.
+  inject: (stationId: string, amount: number) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/inject`, {
+      method: 'POST',
+      body: JSON.stringify({ amount }),
+    }),
+
   // Owner defense_policy levers (port-ownership.md § Defense system).
   // GS DefensePolicyRequest — patrol_radius must stay 0 (deferred).
   getDefensePolicy: (stationId: string) =>
@@ -2773,6 +2780,27 @@ export const portOwnershipAPI = {
   syndicateBuyout: (stationId: string) =>
     apiRequest(`/api/v1/port-ownership/stations/${stationId}/syndicate/buyout`, {
       method: 'POST',
+    }),
+
+  // Syndicate co-owner policy vote (port-ownership.md § Syndicate policy votes) — tip GS LEG-301 / LEG-4121.
+  // Path is /api/v1/stations/{id}/governance/vote (NOT under /port-ownership/).
+  castGovernanceVote: (
+    stationId: string,
+    body: {
+      vote_type: string;
+      proposed_value: unknown;
+      voter_stake_pct: number;
+      position: string;
+    },
+  ) =>
+    apiRequest(`/api/v1/stations/${stationId}/governance/vote`, {
+      method: 'POST',
+      body: JSON.stringify({
+        vote_type: body.vote_type,
+        proposed_value: body.proposed_value,
+        voter_stake_pct: body.voter_stake_pct,
+        position: body.position,
+      }),
     }),
 };
 

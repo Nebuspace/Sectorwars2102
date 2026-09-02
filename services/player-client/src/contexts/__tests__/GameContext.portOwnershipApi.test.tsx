@@ -16,6 +16,7 @@ const {
   mockGetMyStations,
   mockSetTax,
   mockWithdraw,
+  mockInject,
   mockGetTakeoverStatus,
   mockLaunchTakeover,
   mockCounterTakeover,
@@ -30,6 +31,7 @@ const {
   mockGetMyStations: vi.fn(),
   mockSetTax: vi.fn(),
   mockWithdraw: vi.fn(),
+  mockInject: vi.fn(),
   mockGetTakeoverStatus: vi.fn(),
   mockLaunchTakeover: vi.fn(),
   mockCounterTakeover: vi.fn(),
@@ -54,6 +56,7 @@ vi.mock('../../services/api', async () => {
       getMyStations: (...a: unknown[]) => mockGetMyStations(...a),
       setTax: (...a: unknown[]) => mockSetTax(...a),
       withdraw: (...a: unknown[]) => mockWithdraw(...a),
+      inject: (...a: unknown[]) => mockInject(...a),
       getTakeoverStatus: (...a: unknown[]) => mockGetTakeoverStatus(...a),
       launchTakeover: (...a: unknown[]) => mockLaunchTakeover(...a),
       counterTakeover: (...a: unknown[]) => mockCounterTakeover(...a),
@@ -178,6 +181,7 @@ describe('GameContext portOwnershipAPI', () => {
       await captured!.getMyStations();
       await captured!.setStationTax('st-1', 0.1);
       await captured!.withdrawTreasury('st-1', 50);
+      await captured!.injectTreasury('st-1', 25);
       await captured!.getTakeoverStatus('st-1');
       await captured!.launchTakeover('st-1');
       await captured!.counterTakeover('st-1', 'match');
@@ -192,6 +196,7 @@ describe('GameContext portOwnershipAPI', () => {
     expect(mockGetMyStations).toHaveBeenCalled();
     expect(mockSetTax).toHaveBeenCalledWith('st-1', 0.1);
     expect(mockWithdraw).toHaveBeenCalledWith('st-1', 50);
+    expect(mockInject).toHaveBeenCalledWith('st-1', 25);
     expect(mockGetTakeoverStatus).toHaveBeenCalledWith('st-1');
     expect(mockLaunchTakeover).toHaveBeenCalledWith('st-1');
     expect(mockCounterTakeover).toHaveBeenCalledWith('st-1', 'match');

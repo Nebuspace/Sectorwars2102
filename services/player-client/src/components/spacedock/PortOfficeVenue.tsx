@@ -3,6 +3,7 @@ import { useGame } from '../../contexts/GameContext';
 import { formatCredits } from '../../utils/formatters';
 import DeckPageTabs from '../cockpit/DeckPageTabs';
 import StationSecurityMonitoringPane from '../station/StationSecurityMonitoringPane';
+import PortOfficeGovernancePanel from './PortOfficeGovernancePanel';
 import PortOfficeSyndicatePanel from './PortOfficeSyndicatePanel';
 import PortOfficeTeamPanel from './PortOfficeTeamPanel';
 import './port-office-venue.css';
@@ -492,6 +493,7 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
     setServiceCharge,
     setStorageRental,
     withdrawTreasury,
+    injectTreasury,
     getDefensePolicy,
     setDefensePolicy,
     getTakeoverStatus,
@@ -541,6 +543,7 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
   // Owner console inputs
   const [taxPctInput, setTaxPctInput] = useState<number | null>(null);
   const [withdrawInput, setWithdrawInput] = useState('');
+  const [injectInput, setInjectInput] = useState('');
 
   // Revenue levers (LEG-366) — defaults match tip GS Field baselines when unset.
   const [priceLeverPct, setPriceLeverPct] = useState(0);
@@ -868,6 +871,52 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
       await Promise.allSettled([fetchOwner(), fetchListing()]);
     }
   }, [withdrawInput, myStation?.treasury, listing?.treasuryBalance, runAction, withdrawTreasury, stationId, onCreditsSet, fetchOwner, fetchListing]);
+
+  const submitInject = useCallback(async () => {
+    const amount = parseInt(injectInput, 10);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setConsoleError('Enter an amount to inject.');
+      return;
+    }
+    if (amount > credits) {
+      setConsoleError(
+        `Insufficient credits to inject. Need ${formatCredits(amount)}, have ${formatCredits(credits)}.`,
+      );
+      return;
+    }
+    setConsoleSuccess(null);
+    const result = await runAction(
+      'inject',
+      () => injectTreasury(stationId, amount),
+      setConsoleError,
+      'Vault injection failed.',
+    );
+    if (result !== null) {
+      const body = asRecord(result);
+      const newCredits = creditsFromResponse(result);
+      if (newCredits !== null) onCreditsSet(newCredits);
+      const treasuryBal = body ? pickNumber(body.treasury_balance) : null;
+      const serverMsg = typeof body?.message === 'string' ? body.message : null;
+      const balanceNote =
+        treasuryBal !== null ? ` Vault now holds ${formatCredits(treasuryBal)}.` : '';
+      setConsoleSuccess(
+        serverMsg
+          ? `${serverMsg}${balanceNote}`
+          : `${formatCredits(amount)} injected into the station vault from your account.${balanceNote}`,
+      );
+      setInjectInput('');
+      await Promise.allSettled([fetchOwner(), fetchListing()]);
+    }
+  }, [
+    injectInput,
+    credits,
+    runAction,
+    injectTreasury,
+    stationId,
+    onCreditsSet,
+    fetchOwner,
+    fetchListing,
+  ]);
 
   const submitDefensePolicy = useCallback(async () => {
     const mult = Math.max(1, Math.min(5, Number(defenseForm.punitiveFeeMult)));
@@ -1526,6 +1575,7 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
                   placeholder="Amount"
                   disabled={Boolean(busyAction) || vault <= 0}
                   aria-label="Credits to withdraw from the station vault"
+                  data-testid="po-vault-withdraw-input"
                 />
                 <button
                   className="po-max-btn"
@@ -1538,8 +1588,38 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
                   className="action-button primary"
                   onClick={submitWithdraw}
                   disabled={Boolean(busyAction) || vault <= 0 || !withdrawInput}
+                  data-testid="po-vault-withdraw-btn"
                 >
                   {busyAction === 'withdraw' ? 'Transferring...' : 'Withdraw'}
+                </button>
+              </div>
+              <div className="po-withdraw-row" data-testid="po-vault-inject-row">
+                <input
+                  type="number"
+                  min={1}
+                  max={credits}
+                  value={injectInput}
+                  onChange={e => setInjectInput(e.target.value)}
+                  placeholder="Amount"
+                  disabled={Boolean(busyAction) || credits <= 0}
+                  aria-label="Credits to inject into the station vault"
+                  data-testid="po-vault-inject-input"
+                />
+                <button
+                  className="po-max-btn"
+                  onClick={() => setInjectInput(String(credits))}
+                  disabled={Boolean(busyAction) || credits <= 0}
+                  data-testid="po-vault-inject-max"
+                >
+                  Max
+                </button>
+                <button
+                  className="action-button"
+                  onClick={submitInject}
+                  disabled={Boolean(busyAction) || credits <= 0 || !injectInput}
+                  data-testid="po-vault-inject-btn"
+                >
+                  {busyAction === 'inject' ? 'Injecting...' : 'Inject'}
                 </button>
               </div>
             </>
@@ -2136,6 +2216,7 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
         </div>
 
         <PortOfficeSyndicatePanel stationId={stationId} stationName={stationName} />
+        <PortOfficeGovernancePanel stationId={stationId} stationName={stationName} />
 
         <DeckPageTabs
           pages={[
