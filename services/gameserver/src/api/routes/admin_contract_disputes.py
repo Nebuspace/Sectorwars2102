@@ -24,6 +24,7 @@ only, no reputation system) -- this route does not invent one. The queue and
 ruling form below are the whole Tier-2 surface for now; a reputation/
 cooldown cross-link is deferred to when that system actually lands.
 """
+import logging
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -45,6 +46,8 @@ from src.services.contract_service import (
 )
 
 router = APIRouter(prefix="/admin/contracts", tags=["admin-contract-disputes"])
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_uuid(raw: str, field_name: str) -> uuid.UUID:
@@ -97,16 +100,23 @@ async def list_disputed_contracts(
     db: Session = Depends(get_db),
 ) -> List[Dict[str, Any]]:
     """The Tier-2 queue: contracts Tier-1 escalated (contracts.md:404)."""
-    contracts = (
-        db.query(Contract)
-        .filter(
-            Contract.status == ContractStatus.DISPUTED,
-            Contract.escalated_to_admin.is_(True),
+    try:
+        contracts = (
+            db.query(Contract)
+            .filter(
+                Contract.status == ContractStatus.DISPUTED,
+                Contract.escalated_to_admin.is_(True),
+            )
+            .order_by(Contract.dispute_filed_at.asc())
+            .all()
         )
-        .order_by(Contract.dispute_filed_at.asc())
-        .all()
-    )
-    return [_serialize_dispute(c) for c in contracts]
+        return [_serialize_dispute(c) for c in contracts]
+    except Exception:
+        logger.exception("Failed to fetch contract disputes")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to fetch contract disputes",
+        )
 
 
 @router.get("/{contract_id}")
@@ -152,10 +162,19 @@ async def resolve_contract_dispute(
         payload={"outcome": outcome.value},
     ) as attempt:
         try:
-            result = resolve_dispute(
-                db, contract_uuid, admin.id, outcome=outcome, notes=body.notes
+            try:
+                result = resolve_dispute(
+                    db, contract_uuid, admin.id, outcome=outcome, notes=body.notes
+                )
+            except ContractError as exc:
+                _raise_for(exc)
+            attempt.succeed(payload={"outcome": outcome.value})
+            return result
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception("Failed to resolve contract dispute")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to resolve contract dispute",
             )
-        except ContractError as exc:
-            _raise_for(exc)
-        attempt.succeed(payload={"outcome": outcome.value})
-        return result

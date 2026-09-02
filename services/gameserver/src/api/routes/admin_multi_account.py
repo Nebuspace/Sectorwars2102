@@ -18,6 +18,7 @@ participation discount (0.5×) remains out of scope; HARD flags drive
 ``participation_weight``. This route surfaces whatever the DB holds and
 records admin decisions.
 """
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -38,6 +39,8 @@ from src.models.user import User
 from src.services.admin_action_log_service import log_admin_action
 
 router = APIRouter(prefix="/admin/multi-account", tags=["admin-multi-account"])
+
+logger = logging.getLogger(__name__)
 
 # Rulings an admin may record.  PENDING is the initial state, not a valid
 # admin action.
@@ -133,25 +136,34 @@ def list_clusters(
 ) -> List[Dict[str, Any]]:
     """List multi-account clusters.  Defaults to pending-only; supply
     ``?decision=<value>`` to filter by a specific decision state."""
-    q = db.query(MultiAccountCluster)
-    if decision is not None:
-        try:
-            decision_enum = MultiAccountAdminDecision(decision)
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=(
-                    f"Unknown decision value '{decision}'; valid: "
-                    "pending, confirmed, overridden, escalated"
-                ),
+    try:
+        q = db.query(MultiAccountCluster)
+        if decision is not None:
+            try:
+                decision_enum = MultiAccountAdminDecision(decision)
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        f"Unknown decision value '{decision}'; valid: "
+                        "pending, confirmed, overridden, escalated"
+                    ),
+                )
+            q = q.filter(MultiAccountCluster.admin_decision == decision_enum)
+        else:
+            q = q.filter(
+                MultiAccountCluster.admin_decision == MultiAccountAdminDecision.PENDING
             )
-        q = q.filter(MultiAccountCluster.admin_decision == decision_enum)
-    else:
-        q = q.filter(
-            MultiAccountCluster.admin_decision == MultiAccountAdminDecision.PENDING
+        clusters = q.order_by(MultiAccountCluster.created_at.desc()).all()
+        return [_serialize_cluster(c) for c in clusters]
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to fetch multi-account clusters")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to fetch multi-account clusters",
         )
-    clusters = q.order_by(MultiAccountCluster.created_at.desc()).all()
-    return [_serialize_cluster(c) for c in clusters]
 
 
 @router.get("/clusters/{cluster_id}", response_model=Dict[str, Any])
@@ -161,17 +173,26 @@ def get_cluster(
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """Return a single cluster with its full flag list (evidence panel)."""
-    cid = _parse_uuid(cluster_id, "cluster_id")
-    c = (
-        db.query(MultiAccountCluster)
-        .filter(MultiAccountCluster.id == cid)
-        .first()
-    )
-    if c is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Cluster not found"
+    try:
+        cid = _parse_uuid(cluster_id, "cluster_id")
+        c = (
+            db.query(MultiAccountCluster)
+            .filter(MultiAccountCluster.id == cid)
+            .first()
         )
-    return _serialize_cluster(c, include_flags=True)
+        if c is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Cluster not found"
+            )
+        return _serialize_cluster(c, include_flags=True)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to fetch multi-account cluster")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to fetch multi-account cluster",
+        )
 
 
 @router.post("/clusters/{cluster_id}/decide", response_model=Dict[str, Any])
@@ -189,51 +210,60 @@ def decide_cluster(
     explicitly rejected (initial state, not a valid ruling).
     """
     try:
-        decision_enum = MultiAccountAdminDecision(body.decision)
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                f"Unknown decision '{body.decision}'; valid: "
-                "confirmed, overridden, escalated"
-            ),
-        )
-    if decision_enum not in _ALLOWED_DECISIONS:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "Cannot set decision to 'pending' — that is the initial state, "
-                "not a valid admin ruling"
-            ),
-        )
+        try:
+            decision_enum = MultiAccountAdminDecision(body.decision)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Unknown decision '{body.decision}'; valid: "
+                    "confirmed, overridden, escalated"
+                ),
+            )
+        if decision_enum not in _ALLOWED_DECISIONS:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Cannot set decision to 'pending' — that is the initial state, "
+                    "not a valid admin ruling"
+                ),
+            )
 
-    cid = _parse_uuid(cluster_id, "cluster_id")
-    c = (
-        db.query(MultiAccountCluster)
-        .filter(MultiAccountCluster.id == cid)
-        .first()
-    )
-    if c is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Cluster not found"
+        cid = _parse_uuid(cluster_id, "cluster_id")
+        c = (
+            db.query(MultiAccountCluster)
+            .filter(MultiAccountCluster.id == cid)
+            .first()
         )
+        if c is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Cluster not found"
+            )
 
-    c.admin_decision = decision_enum
-    c.admin_decision_reason = body.reason
-    c.admin_decision_at = datetime.now(timezone.utc)
-    c.admin_decision_by = admin.id
-    log_admin_action(
-        db,
-        actor=admin,
-        scope_used=MULTI_ACCOUNT_REVIEW,
-        action="multi_account_decide",
-        target_type="multi_account_cluster",
-        target_id=str(cid),
-        payload={
-            "decision": decision_enum.value,
-            "reason": body.reason,
-        },
-    )
-    db.commit()
-    db.refresh(c)
-    return _serialize_cluster(c, include_flags=True)
+        c.admin_decision = decision_enum
+        c.admin_decision_reason = body.reason
+        c.admin_decision_at = datetime.now(timezone.utc)
+        c.admin_decision_by = admin.id
+        log_admin_action(
+            db,
+            actor=admin,
+            scope_used=MULTI_ACCOUNT_REVIEW,
+            action="multi_account_decide",
+            target_type="multi_account_cluster",
+            target_id=str(cid),
+            payload={
+                "decision": decision_enum.value,
+                "reason": body.reason,
+            },
+        )
+        db.commit()
+        db.refresh(c)
+        return _serialize_cluster(c, include_flags=True)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to record multi-account decision")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to record multi-account decision",
+        )

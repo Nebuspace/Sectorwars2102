@@ -17,7 +17,9 @@ from src.api.routes import admin as admin_mod
 from src.api.routes.admin import (
     QuickEventCreateRequest,
     create_game_event,
+    get_all_regions,
     get_all_stations,
+    get_all_users,
     update_player,
 )
 
@@ -113,3 +115,42 @@ def test_admin_http500_catches_have_no_detail_str_e():
     assert "Failed to update player: {str(e)}" not in src
     assert "Failed to fetch stations: {str(e)}" not in src
     assert "Failed to create game event: {str(e)}" not in src
+
+
+@pytest.mark.asyncio
+async def test_get_all_users_unexpected_is_opaque_500():
+    """get_all_users catch must not echo raw Exception text."""
+    with pytest.raises(HTTPException) as excinfo:
+        await get_all_users(
+            current_admin=SimpleNamespace(),
+            db=_BoomDB(),
+        )
+
+    exc = excinfo.value
+    assert exc.status_code == 500
+    assert exc.detail == "Failed to fetch users"
+    assert "secret-admin-query-should-not-leak" not in str(exc.detail)
+
+
+@pytest.mark.asyncio
+async def test_get_all_regions_unexpected_is_opaque_500():
+    """get_all_regions catch must not echo raw Exception text."""
+    with pytest.raises(HTTPException) as excinfo:
+        await get_all_regions(
+            current_admin=SimpleNamespace(),
+            db=_BoomDB(),
+        )
+
+    exc = excinfo.value
+    assert exc.status_code == 500
+    assert exc.detail == "Failed to fetch regions"
+    assert "secret-admin-query-should-not-leak" not in str(exc.detail)
+
+
+def test_admin_users_regions_http500_catches_have_no_detail_str_e():
+    """LEG-3734 — static pin: users/regions list 500 details stay opaque."""
+    src = Path(admin_mod.__file__).read_text(encoding="utf-8")
+    assert 'detail="Failed to fetch users"' in src
+    assert 'detail="Failed to fetch regions"' in src
+    assert "Failed to fetch users: {str(e)}" not in src
+    assert "Failed to fetch regions: {str(e)}" not in src
