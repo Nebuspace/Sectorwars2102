@@ -80,6 +80,34 @@ describe('formatMedalShowcasePinError TypeError densify (LEG-3680)', () => {
   });
 });
 
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
+
+describe('formatMedalShowcaseLoadError 403/429 densify (LEG-4040)', () => {
+  it('surfaces 403/429 without raw status codes', () => {
+    expect(formatMedalShowcaseLoadError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatMedalShowcaseLoadError(apiRequestError(403, 'medals_denied'))).toBe(
+      'medals_denied',
+    );
+    expect(formatMedalShowcaseLoadError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatMedalShowcaseLoadError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatMedalShowcaseLoadError(apiRequestError(403))).not.toMatch(/TypeError/i);
+  });
+});
+
+describe('formatMedalShowcasePinError 403/429 densify (LEG-4040)', () => {
+  it('surfaces 403/429 without raw status codes', () => {
+    expect(formatMedalShowcasePinError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatMedalShowcasePinError(apiRequestError(403, 'pin_denied'))).toBe('pin_denied');
+    expect(formatMedalShowcasePinError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatMedalShowcasePinError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatMedalShowcasePinError(apiRequestError(403))).not.toMatch(/TypeError/i);
+  });
+});
+
 describe('MedalShowcase load/pin TypeError honesty (LEG-3680)', () => {
   let container: HTMLElement;
   let root: ReturnType<typeof createRoot>;

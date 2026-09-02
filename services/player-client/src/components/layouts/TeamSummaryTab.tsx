@@ -94,6 +94,10 @@ export function formatTeamSummaryLoadError(err: unknown): string {
     return 'You are not a member of this team.';
   }
 
+  if (status === 429) {
+    return 'Team load rate limit exceeded — wait a moment and try again.';
+  }
+
   if (hasServerDetail) return message!;
   return 'Failed to load team data';
 }

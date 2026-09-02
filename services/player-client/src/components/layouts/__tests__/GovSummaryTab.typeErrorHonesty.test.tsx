@@ -29,3 +29,19 @@ describe('GovSummaryTab TypeError densify (LEG-3460)', () => {
     );
   });
 });
+
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
+
+describe('formatGovSummaryLoadError 403/429 densify (LEG-4042)', () => {
+  it('surfaces 403/429 without raw status codes', () => {
+    expect(formatGovSummaryLoadError(apiRequestError(403))).toMatch(/not a member|permission/i);
+    expect(formatGovSummaryLoadError(apiRequestError(403, 'gov_denied'))).toBe('gov_denied');
+    expect(formatGovSummaryLoadError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatGovSummaryLoadError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatGovSummaryLoadError(apiRequestError(403))).not.toMatch(/TypeError/i);
+  });
+});
