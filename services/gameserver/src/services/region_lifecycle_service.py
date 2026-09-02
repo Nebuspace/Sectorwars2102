@@ -467,11 +467,22 @@ async def execute_takeover(
     if pending_result.scalar_one_or_none() is not None:
         return {"ok": False, "code": ERR_TAKEOVER_INTENT_PENDING}
 
+    intent = TakeoverIntent(
+        region_id=region_id,
+        caller_user_id=caller_user_id,
+        approval_url=return_url,
+        status=TakeoverIntentStatus.PENDING.value,
+        expires_at=now + timedelta(hours=TAKEOVER_PAYPAL_FLOW_HOURS),
+    )
+    db.add(intent)
+    await db.flush()
+
     paypal_result = await paypal_service.create_regional_ownership_subscription(
         user_id=str(caller_user_id),
         region_name=region.name,
         return_url=return_url,
         cancel_url=cancel_url,
+        takeover_intent_id=str(intent.id),
     )
     approval_url = next(
         (link["href"] for link in paypal_result.get("links", []) if link.get("rel") == "approve"),
@@ -484,14 +495,7 @@ async def execute_takeover(
         )
         return {"ok": False, "code": "ERR_PAYPAL_APPROVAL_URL_MISSING"}
 
-    intent = TakeoverIntent(
-        region_id=region_id,
-        caller_user_id=caller_user_id,
-        approval_url=approval_url,
-        status=TakeoverIntentStatus.PENDING.value,
-        expires_at=now + timedelta(hours=TAKEOVER_PAYPAL_FLOW_HOURS),
-    )
-    db.add(intent)
+    intent.approval_url = approval_url
     await db.flush()
 
     return {
@@ -499,4 +503,122 @@ async def execute_takeover(
         "intent": intent,
         "takeover_intent": _serialize_takeover_intent(intent),
         "subscription_id": paypal_result.get("id"),
+    }
+
+
+async def _mark_takeover_intent_lost(
+    intent: TakeoverIntent,
+    *,
+    now: datetime,
+    refund_subscription_id: Optional[str] = None,
+) -> None:
+    """Mark a takeover intent lost and best-effort refund its PayPal subscription."""
+    intent.status = TakeoverIntentStatus.LOST.value
+    intent.completed_at = now
+    if refund_subscription_id:
+        await paypal_service.refund_subscription(refund_subscription_id)
+
+
+async def commit_takeover(
+    db: AsyncSession,
+    *,
+    takeover_intent_id: uuid.UUID | str,
+    paypal_subscription_id: str,
+) -> Dict[str, Any]:
+    """Commit region ownership after PayPal ACTIVATED for a takeover intent.
+
+    Canon: ``SYSTEMS/region-lifecycle.md`` § Takeover endpoint (LEG-3775 slice 3).
+    Serializes via per-region advisory lock + ``SELECT FOR UPDATE`` on the
+    ``Region`` row. Losers are marked ``lost`` in the same transaction as the
+    winner's ``transferred`` commit; PayPal refunds run for the activating
+    subscription when the region is no longer takeover-eligible.
+    """
+    if isinstance(takeover_intent_id, str):
+        takeover_intent_id = uuid.UUID(takeover_intent_id)
+
+    now = datetime.now(UTC)
+
+    intent_result = await db.execute(
+        select(TakeoverIntent)
+        .where(TakeoverIntent.id == takeover_intent_id)
+        .with_for_update()
+    )
+    intent = intent_result.scalar_one_or_none()
+    if intent is None:
+        return {"ok": False, "code": "ERR_TAKEOVER_INTENT_NOT_FOUND"}
+
+    if intent.status == TakeoverIntentStatus.TRANSFERRED.value:
+        return {"ok": True, "code": "ALREADY_TRANSFERRED", "intent_id": str(intent.id)}
+
+    if intent.status != TakeoverIntentStatus.PENDING.value:
+        return {"ok": False, "code": "ERR_TAKEOVER_INTENT_TERMINAL", "status": intent.status}
+
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(:key)"),
+        {"key": region_lock_key(intent.region_id)},
+    )
+
+    region_result = await db.execute(
+        select(Region).where(Region.id == intent.region_id).with_for_update()
+    )
+    region = region_result.scalar_one_or_none()
+    if region is None:
+        await _mark_takeover_intent_lost(intent, now=now, refund_subscription_id=paypal_subscription_id)
+        return {"ok": False, "code": ERR_REGION_NOT_FOUND}
+
+    transferred_exists = await db.execute(
+        select(TakeoverIntent.id).where(
+            TakeoverIntent.region_id == intent.region_id,
+            TakeoverIntent.status == TakeoverIntentStatus.TRANSFERRED.value,
+        ).limit(1)
+    )
+    if transferred_exists.scalar_one_or_none() is not None:
+        await _mark_takeover_intent_lost(intent, now=now, refund_subscription_id=paypal_subscription_id)
+        return {"ok": False, "code": "ERR_TAKEOVER_LOST"}
+
+    if region.status not in (RegionStatus.SUSPENDED.value, RegionStatus.GRACE.value):
+        await _mark_takeover_intent_lost(intent, now=now, refund_subscription_id=paypal_subscription_id)
+        return {"ok": False, "code": ERR_REGION_NOT_AVAILABLE_FOR_TAKEOVER}
+
+    if intent.expires_at and intent.expires_at < now:
+        await _mark_takeover_intent_lost(intent, now=now, refund_subscription_id=paypal_subscription_id)
+        return {"ok": False, "code": "ERR_TAKEOVER_INTENT_EXPIRED"}
+
+    old_owner_id = region.owner_id
+    region.owner_id = intent.caller_user_id
+    region.paypal_subscription_id = paypal_subscription_id
+    region.status = RegionStatus.ACTIVE.value
+    region.subscription_status = "active"
+    region.suspended_at = None
+    region.terminated_at = None
+    region.scheduled_hard_delete_at = None
+
+    intent.status = TakeoverIntentStatus.TRANSFERRED.value
+    intent.completed_at = now
+
+    losers_result = await db.execute(
+        select(TakeoverIntent).where(
+            TakeoverIntent.region_id == intent.region_id,
+            TakeoverIntent.id != intent.id,
+            TakeoverIntent.status == TakeoverIntentStatus.PENDING.value,
+        ).with_for_update()
+    )
+    for loser in losers_result.scalars().all():
+        loser.status = TakeoverIntentStatus.LOST.value
+        loser.completed_at = now
+
+    logger.info(
+        "region takeover committed: region=%s new_owner=%s old_owner=%s intent=%s",
+        region.id,
+        intent.caller_user_id,
+        old_owner_id,
+        intent.id,
+    )
+
+    return {
+        "ok": True,
+        "region_id": str(region.id),
+        "intent_id": str(intent.id),
+        "old_owner_id": str(old_owner_id) if old_owner_id else None,
+        "new_owner_id": str(intent.caller_user_id),
     }
