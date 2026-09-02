@@ -35,10 +35,23 @@ function makeInteriorIds(count: number): string[] {
   });
 }
 
+const axiosError = (status: number, detail?: string) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: detail ? { detail } : {} },
+  });
+
+function assertNoTransportLeak(text: string) {
+  expect(text).not.toBe('Network Error');
+  expect(text).not.toContain('Network Error');
+  expect(text).not.toMatch(/Failed to fetch/i);
+  expect(text).not.toMatch(/TypeError/i);
+}
+
 /**
  * LEG-3618 Soft-ORDER — PlaceGoldBubblePanel TypeError/Network Error honesty densify.
+ * LEG-3915 Soft-ORDER — HTTP 429 densify (invent=0).
  */
-describe('PlaceGoldBubblePanel typeErrorHonesty densify (LEG-3618)', () => {
+describe('PlaceGoldBubblePanel typeErrorHonesty densify (LEG-3618 / LEG-3915)', () => {
   const regionId = '11111111-1111-4111-8111-111111111111';
   const gateway = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 
@@ -62,6 +75,14 @@ describe('PlaceGoldBubblePanel typeErrorHonesty densify (LEG-3618)', () => {
   it('formatPlaceGoldBubbleError surfaces 403 with GALAXY_MANAGE hint', () => {
     const err = { response: { status: 403, data: {} } };
     expect(formatPlaceGoldBubbleError(err)).toMatch(/admin\.galaxy\.manage/i);
+  });
+
+  it('formatPlaceGoldBubbleError surfaces 429 as admin rate-limit copy', () => {
+    const collapsed = formatPlaceGoldBubbleError(axiosError(429));
+    expect(collapsed).toMatch(/rate limit/i);
+    expect(collapsed).not.toMatch(/\b429\b/);
+    expect(collapsed).not.toMatch(/HTTP 429/i);
+    assertNoTransportLeak(collapsed);
   });
 
   async function submitValidForm() {
@@ -104,5 +125,19 @@ describe('PlaceGoldBubblePanel typeErrorHonesty densify (LEG-3618)', () => {
     expect(alert).toMatch(/could not reach the gameserver/i);
     expect(alert).not.toMatch(/Failed to fetch/i);
     expect(alert).not.toMatch(/TypeError/i);
+  });
+
+  it('surfaces 429 as admin rate-limit copy on placeGoldBubble submit', async () => {
+    vi.mocked(placeGoldBubble).mockRejectedValue(axiosError(429));
+    await submitValidForm();
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/rate limit/i);
+    expect(alert).not.toMatch(/\b429\b/);
+    expect(alert).not.toMatch(/HTTP 429/i);
+    assertNoTransportLeak(alert);
   });
 });
