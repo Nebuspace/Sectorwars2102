@@ -38,6 +38,15 @@ export function formatExplorationSuggestionError(err: unknown): string {
     message.trim().length > 0 &&
     !/^API Error: \d+$/.test(message.trim()) &&
     !isNetworkCollapseMessage(message);
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission to load exploration suggestions.';
+  }
+
+  if (status === 429) {
+    return 'Exploration suggestions rate limit exceeded — wait a moment and try again.';
+  }
+
   if ((status === 500 || status === 503) && hasServerDetail) return message!;
   if (hasServerDetail) return message!;
   return fallback;
