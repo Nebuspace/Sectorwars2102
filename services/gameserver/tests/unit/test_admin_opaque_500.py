@@ -48,7 +48,10 @@ async def test_update_player_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to update player"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_PLAYER_UPDATE_FAILED",
+        "detail": "Failed to update player",
+    }
     assert "secret-admin-query-should-not-leak" not in str(exc.detail)
 
 
@@ -63,7 +66,10 @@ async def test_get_all_stations_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to fetch stations"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_STATIONS_LIST_FAILED",
+        "detail": "Failed to fetch stations",
+    }
     assert "secret-admin-query-should-not-leak" not in str(exc.detail)
 
 
@@ -97,15 +103,19 @@ async def test_create_game_event_unexpected_is_opaque_500():
 def test_admin_http500_catches_have_no_detail_str_e():
     """LEG-3628 — static pin: representative admin.py 500 details stay opaque."""
     src = Path(admin_mod.__file__).read_text(encoding="utf-8")
+    for code in (
+        "ERR_ADMIN_PLAYER_UPDATE_FAILED",
+        "ERR_ADMIN_STATIONS_LIST_FAILED",
+        "ERR_ADMIN_GAME_EVENT_GET_FAILED",
+    ):
+        assert code in src
+    assert "route_internal_error" in src
     for stable in (
-        'detail="Failed to update player"',
-        'detail="Failed to fetch stations"',
         'detail="Failed to create warp tunnel"',
         'detail="Failed to clear galaxy data"',
         'detail="Failed to fix galaxy statistics"',
         'detail="Failed to update port"',
         'detail="Failed to create game event"',
-        'detail="Failed to fetch game event"',
         'detail="Failed to update game event"',
         'detail="Failed to activate game event"',
         'detail="Failed to deactivate game event"',
@@ -128,7 +138,10 @@ async def test_get_all_users_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to fetch users"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_USERS_LIST_FAILED",
+        "detail": "Failed to fetch users",
+    }
     assert "secret-admin-query-should-not-leak" not in str(exc.detail)
 
 
@@ -143,14 +156,18 @@ async def test_get_all_regions_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to fetch regions"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_REGIONS_LIST_FAILED",
+        "detail": "Failed to fetch regions",
+    }
     assert "secret-admin-query-should-not-leak" not in str(exc.detail)
 
 
 def test_admin_users_regions_http500_catches_have_no_detail_str_e():
     """LEG-3734 — static pin: users/regions list 500 details stay opaque."""
     src = Path(admin_mod.__file__).read_text(encoding="utf-8")
-    assert 'detail="Failed to fetch users"' in src
-    assert 'detail="Failed to fetch regions"' in src
+    assert "ERR_ADMIN_USERS_LIST_FAILED" in src
+    assert "ERR_ADMIN_REGIONS_LIST_FAILED" in src
+    assert "route_internal_error" in src
     assert "Failed to fetch users: {str(e)}" not in src
     assert "Failed to fetch regions: {str(e)}" not in src
