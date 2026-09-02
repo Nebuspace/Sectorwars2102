@@ -1,5 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as d3 from 'd3';
+import { formatAdminApiError } from '../../utils/adminApiError';
+
+export const COMBAT_ACTIVITY_LOAD_FALLBACK =
+  'Combat activity unavailable — network error loading combat analytics';
+
+/** Parent fetch failures collapse to operator-safe copy (chart is presentational). */
+export function combatActivityLoadError(err: unknown): string {
+  return formatAdminApiError(err, { fallback: COMBAT_ACTIVITY_LOAD_FALLBACK });
+}
 
 interface CombatActivityChartProps {
   // Loosely typed at the boundary; the real runtime payload is the backend
