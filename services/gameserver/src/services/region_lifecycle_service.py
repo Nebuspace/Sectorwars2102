@@ -34,6 +34,7 @@ from src.models.takeover_intent import TakeoverIntent, TakeoverIntentStatus
 from src.models.sector import Sector
 from src.models.ship import Ship
 from src.models.station import Station
+from src.models.user import User
 from src.models.warp_gate import WarpGate, WarpGateBeacon
 from src.services.realtime_outbox import RealtimeOutbox
 from src.services.region_termination_cascade_service import (
@@ -394,6 +395,73 @@ def admin_execute_region_termination(
         "planetsProcessed": len(planets),
         "stationCascade": station_result,
         "_outbox": outbox,
+    }
+
+
+class AdminRegionTransferOwnershipError(Exception):
+    """Business-rule rejection for admin unilateral region ownership transfer."""
+
+    def __init__(self, code: str, detail: str) -> None:
+        self.code = code
+        self.detail = detail
+        super().__init__(detail)
+
+
+def admin_execute_region_ownership_transfer(
+    db: Session,
+    region_id: uuid.UUID,
+    new_owner_id: uuid.UUID,
+) -> Dict[str, Any]:
+    """Admin unilateral region ownership transfer (LEG-DEC-500 / LEG-3207).
+
+    Mutates ``Region.owner_id`` only. Caller wraps with ``admin_action_attempt``
+    for commit + AdminActionLog (actor, from, to, timestamp).
+    """
+    region = (
+        db.query(Region)
+        .filter(Region.id == region_id)
+        .with_for_update()
+        .first()
+    )
+    if region is None:
+        raise AdminRegionTransferOwnershipError("not_found", "Region not found")
+
+    if region.region_type in (
+        RegionType.CENTRAL_NEXUS.value,
+        RegionType.TERRAN_SPACE.value,
+    ):
+        raise AdminRegionTransferOwnershipError(
+            "system_region",
+            "System regions (Central Nexus, Terran Space) cannot be transferred",
+        )
+
+    if region.cleanup_completed_at is not None:
+        raise AdminRegionTransferOwnershipError(
+            "already_terminated",
+            "Region cleanup already completed",
+        )
+
+    new_owner = db.query(User).filter(User.id == new_owner_id).first()
+    if new_owner is None:
+        raise AdminRegionTransferOwnershipError(
+            "new_owner_not_found",
+            "New owner user not found",
+        )
+
+    if region.owner_id == new_owner_id:
+        raise AdminRegionTransferOwnershipError(
+            "same_owner",
+            "Region is already owned by the requested new owner",
+        )
+
+    old_owner_id = region.owner_id
+    region.owner_id = new_owner_id
+
+    return {
+        "regionId": str(region.id),
+        "regionName": region.name,
+        "oldOwnerId": str(old_owner_id) if old_owner_id else None,
+        "newOwnerId": str(new_owner_id),
     }
 
 

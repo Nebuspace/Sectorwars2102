@@ -3,9 +3,13 @@ import { useAuth } from '../../contexts/AuthContext';
 import { formatAdminApiError, axiosResponseStatus } from '../../utils/adminApiError';
 import { api } from '../../utils/auth';
 import { postRegionTerminate } from '../../services/regionTerminateApi';
+import { postRegionTransferOwnership } from '../../services/regionTransferApi';
 import RegionTerminateConfirmDialog, {
   formatRegionTerminateError,
 } from './RegionTerminateConfirmDialog';
+import RegionTransferOwnershipConfirmDialog, {
+  formatRegionTransferError,
+} from './RegionTransferOwnershipConfirmDialog';
 import './regional-governor-dashboard.css';
 
 interface Region {
@@ -160,6 +164,11 @@ const RegionalGovernorDashboard: React.FC = () => {
   const [showTerminateDialog, setShowTerminateDialog] = useState(false);
   const [terminateBusy, setTerminateBusy] = useState(false);
   const [terminateError, setTerminateError] = useState<string | null>(null);
+
+  // Admin region ownership transfer (LEG-3967 / LEG-DEC-500)
+  const [showTransferDialog, setShowTransferDialog] = useState(false);
+  const [transferBusy, setTransferBusy] = useState(false);
+  const [transferError, setTransferError] = useState<string | null>(null);
 
   useEffect(() => {
     loadRegionalData();
@@ -425,6 +434,28 @@ const RegionalGovernorDashboard: React.FC = () => {
     }
   };
 
+  const handleRegionTransferOwnership = async (newOwnerId: string, reason: string) => {
+    if (!region?.id) return;
+    setTransferBusy(true);
+    setTransferError(null);
+    try {
+      await postRegionTransferOwnership(region.id, newOwnerId, reason);
+      setShowTransferDialog(false);
+      setSuccess(`Region "${region.display_name}" ownership transferred successfully`);
+      await loadRegionalData();
+    } catch (err) {
+      if (err instanceof TypeError) {
+        setTransferError(
+          'Network error — could not reach the gameserver. Check your connection and try again.',
+        );
+      } else {
+        setTransferError(formatRegionTransferError(err));
+      }
+    } finally {
+      setTransferBusy(false);
+    }
+  };
+
   const handleRegionTerminate = async (confirmRegionName: string, reason: string) => {
     if (!region?.id) return;
     setTerminateBusy(true);
@@ -633,21 +664,37 @@ const RegionalGovernorDashboard: React.FC = () => {
               >
                 <h3 style={{ margin: '0 0 8px 0', color: '#fca5a5' }}>Admin — Danger Zone</h3>
                 <p style={{ margin: '0 0 12px 0', fontSize: '0.85rem', color: '#fecaca' }}>
-                  Requires <code>admin.regions.terminate</code> scope. Irreversible region teardown
-                  with mandatory reason and typed-name confirmation (LEG-DEC-103).
+                  Requires scoped admin grants. Transfer needs{' '}
+                  <code>admin.regions.transfer_ownership</code> (LEG-DEC-500). Terminate needs{' '}
+                  <code>admin.regions.terminate</code> — irreversible teardown with typed-name
+                  confirmation (LEG-DEC-103).
                 </p>
-                <button
-                  type="button"
-                  className="action-button"
-                  style={{ background: '#b91c1c', color: '#fff' }}
-                  onClick={() => {
-                    setTerminateError(null);
-                    setShowTerminateDialog(true);
-                  }}
-                  disabled={loading || terminateBusy}
-                >
-                  Terminate Region…
-                </button>
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    className="action-button"
+                    style={{ background: '#b45309', color: '#fff' }}
+                    onClick={() => {
+                      setTransferError(null);
+                      setShowTransferDialog(true);
+                    }}
+                    disabled={loading || transferBusy || terminateBusy}
+                  >
+                    Transfer Ownership…
+                  </button>
+                  <button
+                    type="button"
+                    className="action-button"
+                    style={{ background: '#b91c1c', color: '#fff' }}
+                    onClick={() => {
+                      setTerminateError(null);
+                      setShowTerminateDialog(true);
+                    }}
+                    disabled={loading || terminateBusy || transferBusy}
+                  >
+                    Terminate Region…
+                  </button>
+                </div>
               </div>
             )}
             {/* Regional Overview */}
@@ -1235,6 +1282,23 @@ const RegionalGovernorDashboard: React.FC = () => {
           </div>
         )}
       </div>
+
+      {showTransferDialog && region?.id && (
+        <RegionTransferOwnershipConfirmDialog
+          regionId={region.id}
+          regionDisplayName={region.display_name}
+          currentOwnerId={region.owner_id}
+          onCancel={() => {
+            if (!transferBusy) {
+              setShowTransferDialog(false);
+              setTransferError(null);
+            }
+          }}
+          onConfirm={handleRegionTransferOwnership}
+          busy={transferBusy}
+          error={transferError}
+        />
+      )}
 
       {showTerminateDialog && region?.id && (
         <RegionTerminateConfirmDialog
