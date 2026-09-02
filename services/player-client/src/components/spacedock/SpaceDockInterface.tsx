@@ -8,8 +8,8 @@ import TradingVenue from './TradingVenue';
 import ShipyardVenue from './ShipyardVenue';
 import GenesisVenue from './GenesisVenue';
 import ArmoryVenue from './ArmoryVenue';
-import ServicesVenue from './ServicesVenue';
-import MiningVenue from './MiningVenue';
+import ServicesVenue, { formatServicesVenueError } from './ServicesVenue';
+import MiningVenue, { formatMiningVenueError } from './MiningVenue';
 import type { ClaimLicenseRow } from './MiningVenue';
 import GamblingVenue from './GamblingVenue';
 import RefiningVenue from './RefiningVenue';
@@ -1385,7 +1385,10 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
       if (!response.ok) {
         const error = await response.json().catch(() => null);
         const rawDetail = error?.message ?? error?.detail;
-        setRepairError(typeof rawDetail === 'string' && rawDetail ? rawDetail : 'Repair failed');
+        const detail =
+          typeof rawDetail === 'string' && rawDetail ? rawDetail : `API Error: ${response.status}`;
+        const err = Object.assign(new Error(detail), { status: response.status });
+        setRepairError(formatServicesVenueError(err, 'Repair failed'));
         return;
       }
 
@@ -1410,7 +1413,7 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
       refreshPlayerState();
     } catch (error) {
       console.error('Ship repair error:', error);
-      setRepairError('Connection error. Please try again.');
+      setRepairError(formatServicesVenueError(error, 'Connection error. Please try again.'));
     } finally {
       setRepairBusy(false);
     }
@@ -1469,7 +1472,7 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
     } catch (error) {
       console.error('Claim license list error:', error);
       setLicenses([]);
-      setLicensesError('Could not load licenses.');
+      setLicensesError(formatMiningVenueError(error, 'Could not load licenses.'));
     } finally {
       setLicensesLoading(false);
     }
@@ -1510,7 +1513,14 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
       if (!response.ok) {
         const error = await response.json().catch(() => null);
         const rawDetail = error?.detail ?? error?.message;
-        const reason = typeof rawDetail === 'string' && rawDetail ? rawDetail : 'License purchase failed';
+        const detail =
+          typeof rawDetail === 'string' && rawDetail ? rawDetail : `API Error: ${response.status}`;
+        const err = Object.assign(new Error(detail), { status: response.status });
+        if (response.status === 403 || response.status === 429) {
+          setLicenseError(formatMiningVenueError(err, 'License purchase failed'));
+          return;
+        }
+        const reason = detail === `API Error: ${response.status}` ? 'License purchase failed' : detail;
         // Map the most common stable reason to a friendlier line.
         setLicenseError(
           reason === 'not_an_asteroid_field'
@@ -1528,7 +1538,7 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
       Promise.allSettled([refreshPlayerState(), fetchShipData(), fetchLicenses()]);
     } catch (error) {
       console.error('Claim license error:', error);
-      setLicenseError('Connection error. Please try again.');
+      setLicenseError(formatMiningVenueError(error, 'Connection error. Please try again.'));
     } finally {
       setLicenseBusy(false);
     }
@@ -1558,7 +1568,7 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
       Promise.allSettled([refreshPlayerState(), fetchShipData()]);
     } catch (error) {
       console.error('Mining laser install error:', error);
-      setLaserError(formatSpaceDockShellError(error, 'Mining laser install failed'));
+      setLaserError(formatMiningVenueError(error, 'Mining laser install failed'));
     } finally {
       setLaserBusy(false);
     }
@@ -1587,7 +1597,12 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
       if (!response.ok) {
         const error = await response.json().catch(() => null);
         const rawDetail = error?.detail ?? error?.message;
-        setLaserError(typeof rawDetail === 'string' && rawDetail ? rawDetail : 'Mining laser upgrade failed');
+        const detail =
+          typeof rawDetail === 'string' && rawDetail
+            ? rawDetail
+            : `API Error: ${response.status}`;
+        const err = Object.assign(new Error(detail), { status: response.status });
+        setLaserError(formatMiningVenueError(err, 'Mining laser upgrade failed'));
         return;
       }
       const result = await response.json();
@@ -1603,7 +1618,7 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
       Promise.allSettled([refreshPlayerState(), fetchShipData()]);
     } catch (error) {
       console.error('Mining laser upgrade error:', error);
-      setLaserError('Connection error. Please try again.');
+      setLaserError(formatMiningVenueError(error, 'Connection error. Please try again.'));
     } finally {
       setLaserBusy(false);
     }
