@@ -114,6 +114,10 @@ export function formatTradeError(raw: unknown, fallback: string): string {
     return 'Access denied — you cannot trade right now.';
   }
 
+  if (status === 429) {
+    return 'Trade rate limit exceeded — wait a moment and try again.';
+  }
+
   if (isTradeNetworkCollapseMessage(key)) return mappedFallback;
   if (TRADE_REASON_COPY[key]) return TRADE_REASON_COPY[key];
   // Throttle / antirmt reasons may be longer free-form — pass through if already prose.

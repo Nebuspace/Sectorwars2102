@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 /**
  * LEG-3672 Soft-ORDER — BountyPlaceCancel TypeError/Network Error densify.
+ * LEG-4054 Soft-ORDER — HTTP 429 densify (invent=0).
  */
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -80,6 +81,28 @@ describe('BountyPlaceCancel TypeError densify (LEG-3672)', () => {
     expect(formatBountyInspectLoadError(apiRequestError(403, 'bounty_inspect_denied'))).toBe(
       'bounty_inspect_denied',
     );
+  });
+
+  it('surfaces 429 without raw status codes; 403 remains densified (LEG-4054)', () => {
+    expect(formatBountyInspectLoadError(apiRequestError(429))).toBe(
+      'Bounty inspect rate limit exceeded — wait a moment and try again.',
+    );
+    expect(formatBountyInspectLoadError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatBountyInspectLoadError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatBountyInspectLoadError(apiRequestError(429))).not.toMatch(/API Error/i);
+    expect(formatBountyPlaceError(apiRequestError(429))).toBe(
+      'Bounty place rate limit exceeded — wait a moment and try again.',
+    );
+    expect(formatBountyPlaceError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatBountyCancelError(apiRequestError(429))).toBe(
+      'Bounty cancel rate limit exceeded — wait a moment and try again.',
+    );
+    expect(formatBountyCancelError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatBountyInspectLoadError(apiRequestError(403))).toBe(
+      'Access denied — you cannot inspect bounties on this target right now.',
+    );
+    expect(formatBountyInspectLoadError(apiRequestError(403))).not.toMatch(/TypeError/i);
+    expect(formatBountyInspectLoadError(apiRequestError(403))).not.toMatch(/Network Error/i);
   });
 });
 

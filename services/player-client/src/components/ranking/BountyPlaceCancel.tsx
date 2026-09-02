@@ -90,6 +90,10 @@ export function formatBountyInspectLoadError(err: unknown): string {
     return 'Access denied — you cannot inspect bounties on this target right now.';
   }
 
+  if (status === 429) {
+    return 'Bounty inspect rate limit exceeded — wait a moment and try again.';
+  }
+
   if (hasServerDetail) return message!;
   return 'Failed to load bounties on target';
 }
@@ -110,12 +114,18 @@ function bountyActionDetail(err: unknown): string | undefined {
 }
 
 export function formatBountyPlaceError(err: unknown): string {
+  if (httpStatus(err) === 429) {
+    return 'Bounty place rate limit exceeded — wait a moment and try again.';
+  }
   const detail = bountyActionDetail(err);
   if (detail) return detail;
   return 'Failed to place bounty';
 }
 
 export function formatBountyCancelError(err: unknown): string {
+  if (httpStatus(err) === 429) {
+    return 'Bounty cancel rate limit exceeded — wait a moment and try again.';
+  }
   const detail = bountyActionDetail(err);
   if (detail) return detail;
   return 'Failed to cancel bounty';
