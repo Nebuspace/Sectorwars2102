@@ -22,6 +22,10 @@ interface RankProgressData {
   next_rank_points_required: number | null;
   progress_percent: number;
   is_max_rank: boolean;
+  /** Tip GET /ranking/progress — Federation Wanted standing (overrides Suspect). */
+  is_wanted?: boolean;
+  /** Tip GET /ranking/progress — temporary Suspect flag (weaker than Wanted). */
+  is_suspect?: boolean;
   stats: {
     combat_victories: number;
     total_trades: number;
@@ -144,6 +148,16 @@ const RankProgress: React.FC = () => {
     credits: 0,
     turns_remaining: 0,
   };
+  // Law status from tip GET /ranking/progress — Wanted overrides Suspect (LEG-4130).
+  const isWanted = data.is_wanted === true;
+  const isSuspect = !isWanted && data.is_suspect === true;
+  const usernameClass = [
+    'rank-username',
+    isWanted ? 'wanted' : '',
+    isSuspect ? 'suspect' : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
 
   return (
     <div className="rank-progress">
@@ -154,6 +168,19 @@ const RankProgress: React.FC = () => {
       <div className="rank-progress-ranks">
         <div className="rank-progress-current">
           <span className="rank-progress-label">Current</span>
+          {data.username ? (
+            <div className={usernameClass} data-testid="rank-progress-username">
+              {data.username}
+            </div>
+          ) : null}
+          {(isWanted || isSuspect) && (
+            <span
+              className={`rank-law-status ${isWanted ? 'wanted' : 'suspect'}`}
+              data-testid="rank-law-status"
+            >
+              {isWanted ? 'Wanted' : 'Suspect'}
+            </span>
+          )}
           <div className="rank-progress-current-row">
             {showCompactBadge && (
               <span
