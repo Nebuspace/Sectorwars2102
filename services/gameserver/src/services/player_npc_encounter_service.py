@@ -75,6 +75,9 @@ def record_npc_copresence_for_sector(
             row.last_sector_id = sector_id
         touched += 1
 
+    if touched == 0:
+        return 0
+
     db.commit()
     return touched
 
