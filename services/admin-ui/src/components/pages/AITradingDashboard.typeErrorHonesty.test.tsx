@@ -47,8 +47,23 @@ const okMetrics = {
   },
 };
 
+const axiosError = (status: number, detail?: string) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: detail ? { detail } : {} },
+  });
+
+function assertNoTransportLeak(text: string) {
+  expect(text).not.toBe('Network Error');
+  expect(text).not.toContain('Network Error');
+  expect(text).not.toMatch(/Failed to fetch/i);
+  expect(text).not.toMatch(/TypeError/i);
+  expect(text).not.toMatch(/^HTTP \d+$/);
+  expect(text).not.toContain('Request failed with status code');
+}
+
 /**
  * LEG-3651 Soft-ORDER — AITradingDashboard TypeError/Network Error densify.
+ * LEG-3898 Soft-ORDER — 403/429 HTTP honesty densify.
  */
 describe('AITradingDashboard typeErrorHonesty densify (LEG-3651)', () => {
   beforeEach(() => {
@@ -190,5 +205,51 @@ describe('AITradingDashboard typeErrorHonesty densify (LEG-3651)', () => {
     expect(text).toMatch(/Failed to load AI trading data/i);
     expect(text).not.toMatch(/Failed to fetch/i);
     expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('surfaces 403 with admin.ai.view scope copy when models GET is denied', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/ai/models')) {
+        throw axiosError(403);
+      }
+      if (url.includes('/ai/predictions/accuracy')) return okPredictions;
+      if (url.includes('/ai/profiles')) return okProfiles;
+      if (url.includes('/ai/metrics')) return okMetrics;
+      return { data: {} };
+    });
+
+    render(<AITradingDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+    const text = screen.getByRole('alert').textContent ?? '';
+    expect(text).toMatch(/Access denied|admin\.ai\.view/i);
+    expect(text).not.toMatch(/\b403\b/);
+    expect(text).not.toMatch(/HTTP 403/i);
+    assertNoTransportLeak(text);
+  });
+
+  it('surfaces 429 as admin rate-limit copy on models GET', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/ai/models')) {
+        throw axiosError(429);
+      }
+      if (url.includes('/ai/predictions/accuracy')) return okPredictions;
+      if (url.includes('/ai/profiles')) return okProfiles;
+      if (url.includes('/ai/metrics')) return okMetrics;
+      return { data: {} };
+    });
+
+    render(<AITradingDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
+    });
+    const text = screen.getByRole('alert').textContent ?? '';
+    expect(text).toMatch(/rate limit/i);
+    expect(text).not.toMatch(/\b429\b/);
+    expect(text).not.toMatch(/HTTP 429/i);
+    assertNoTransportLeak(text);
   });
 });

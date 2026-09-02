@@ -33,8 +33,23 @@ const okStats = {
   },
 };
 
+const axiosError = (status: number, detail?: string) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: detail ? { detail } : {} },
+  });
+
+function assertNoTransportLeak(text: string) {
+  expect(text).not.toBe('Network Error');
+  expect(text).not.toContain('Network Error');
+  expect(text).not.toMatch(/Failed to fetch/i);
+  expect(text).not.toMatch(/TypeError/i);
+  expect(text).not.toMatch(/^HTTP \d+$/);
+  expect(text).not.toContain('Request failed with status code');
+}
+
 /**
  * LEG-3663 Soft-ORDER — CentralNexusManager TypeError/Network Error densify.
+ * LEG-3901 Soft-ORDER — 403/429 HTTP honesty densify.
  */
 describe('CentralNexusManager typeErrorHonesty densify (LEG-3663)', () => {
   beforeEach(() => {
@@ -170,5 +185,49 @@ describe('CentralNexusManager typeErrorHonesty densify (LEG-3663)', () => {
     expect(text).toMatch(/Failed to load nexus stats/i);
     expect(text).not.toMatch(/Failed to fetch/i);
     expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('surfaces 403 with nexus scope copy when status GET is denied', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/nexus/status')) {
+        throw axiosError(403);
+      }
+      if (url.includes('/nexus/clusters')) return okClusters;
+      if (url.includes('/nexus/stats')) return okStats;
+      return { data: {} };
+    });
+
+    render(<CentralNexusManager />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+    const text = screen.getByRole('alert').textContent ?? '';
+    expect(text).toMatch(/Access denied|nexus scopes/i);
+    expect(text).not.toMatch(/\b403\b/);
+    expect(text).not.toMatch(/HTTP 403/i);
+    assertNoTransportLeak(text);
+  });
+
+  it('surfaces 429 as admin rate-limit copy on nexus status GET', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/nexus/status')) {
+        throw axiosError(429);
+      }
+      if (url.includes('/nexus/clusters')) return okClusters;
+      if (url.includes('/nexus/stats')) return okStats;
+      return { data: {} };
+    });
+
+    render(<CentralNexusManager />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
+    });
+    const text = screen.getByRole('alert').textContent ?? '';
+    expect(text).toMatch(/rate limit/i);
+    expect(text).not.toMatch(/\b429\b/);
+    expect(text).not.toMatch(/HTTP 429/i);
+    assertNoTransportLeak(text);
   });
 });

@@ -82,8 +82,23 @@ function mockSuccessfulCompanionGets() {
   };
 }
 
+const axiosError = (status: number, detail?: string) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: detail ? { detail } : {} },
+  });
+
+function assertNoTransportLeak(text: string) {
+  expect(text).not.toBe('Network Error');
+  expect(text).not.toContain('Network Error');
+  expect(text).not.toMatch(/Failed to fetch/i);
+  expect(text).not.toMatch(/TypeError/i);
+  expect(text).not.toMatch(/^HTTP \d+$/);
+  expect(text).not.toContain('Request failed with status code');
+}
+
 /**
  * LEG-3656 Soft-ORDER — PlayerAnalytics TypeError/Network Error honesty densify.
+ * LEG-3905 Soft-ORDER — 403/429 HTTP honesty densify (adminHttpErrorMessage).
  */
 describe('PlayerAnalytics typeErrorHonesty densify (LEG-3656)', () => {
   beforeEach(() => {
@@ -164,5 +179,46 @@ describe('PlayerAnalytics typeErrorHonesty densify (LEG-3656)', () => {
     const text = screen.getByRole('alert').textContent ?? '';
     expect(text).not.toMatch(/Failed to fetch/i);
     expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('surfaces 403 with PLAYERS_VIEW scope copy when comprehensive GET is denied', async () => {
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (typeof url === 'string' && url.startsWith('/api/v1/admin/players/comprehensive')) {
+        return Promise.reject(axiosError(403));
+      }
+      return mockSuccessfulCompanionGets()(url);
+    });
+
+    render(<PlayerAnalytics />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/Access denied|PLAYERS_VIEW/i);
+    });
+    const text = screen.getByRole('alert').textContent ?? '';
+    expect(text).toMatch(/Access denied/i);
+    expect(text).toMatch(/PLAYERS_VIEW/i);
+    expect(text).not.toMatch(/\b403\b/);
+    expect(text).not.toMatch(/HTTP 403/i);
+    assertNoTransportLeak(text);
+  });
+
+  it('surfaces 429 as admin rate-limit copy on comprehensive GET', async () => {
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (typeof url === 'string' && url.startsWith('/api/v1/admin/players/comprehensive')) {
+        return Promise.reject(axiosError(429));
+      }
+      return mockSuccessfulCompanionGets()(url);
+    });
+
+    render(<PlayerAnalytics />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
+    });
+    const text = screen.getByRole('alert').textContent ?? '';
+    expect(text).toMatch(/rate limit/i);
+    expect(text).not.toMatch(/\b429\b/);
+    expect(text).not.toMatch(/HTTP 429/i);
+    assertNoTransportLeak(text);
   });
 });

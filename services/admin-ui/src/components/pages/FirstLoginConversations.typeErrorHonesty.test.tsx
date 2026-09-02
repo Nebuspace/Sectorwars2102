@@ -61,8 +61,23 @@ const sampleConversation: ConversationSummary = {
   total_cost_usd: 0.0123,
 };
 
+const axiosError = (status: number, detail?: string) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: detail ? { detail } : {} },
+  });
+
+function assertNoTransportLeak(text: string) {
+  expect(text).not.toBe('Network Error');
+  expect(text).not.toContain('Network Error');
+  expect(text).not.toMatch(/Failed to fetch/i);
+  expect(text).not.toMatch(/TypeError/i);
+  expect(text).not.toMatch(/^HTTP \d+$/);
+  expect(text).not.toContain('Request failed with status code');
+}
+
 /**
  * LEG-3668 Soft-ORDER — FirstLoginConversations TypeError/Network Error densify.
+ * LEG-3906 Soft-ORDER — 403/429 HTTP honesty densify.
  */
 describe('FirstLoginConversations typeErrorHonesty densify (LEG-3668)', () => {
   beforeEach(() => {
@@ -150,5 +165,36 @@ describe('FirstLoginConversations typeErrorHonesty densify (LEG-3668)', () => {
       screen.getByText(/Failed to load conversation details/i).textContent ?? '';
     expect(text).not.toMatch(/Failed to fetch/i);
     expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('surfaces 403 with first-login conversation scope copy when list GET is denied', async () => {
+    vi.mocked(api.get).mockRejectedValue(axiosError(403));
+
+    render(<FirstLoginConversations />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Access denied|first-login conversation scopes/i)).toBeTruthy();
+    });
+    const text =
+      screen.getByText(/Access denied|first-login conversation scopes/i).textContent ?? '';
+    expect(text).toMatch(/Access denied|first-login conversation scopes/i);
+    expect(text).not.toMatch(/\b403\b/);
+    expect(text).not.toMatch(/HTTP 403/i);
+    assertNoTransportLeak(text);
+  });
+
+  it('surfaces 429 as admin rate-limit copy on conversations list GET', async () => {
+    vi.mocked(api.get).mockRejectedValue(axiosError(429));
+
+    render(<FirstLoginConversations />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/rate limit/i)).toBeTruthy();
+    });
+    const text = screen.getByText(/rate limit/i).textContent ?? '';
+    expect(text).toMatch(/rate limit/i);
+    expect(text).not.toMatch(/\b429\b/);
+    expect(text).not.toMatch(/HTTP 429/i);
+    assertNoTransportLeak(text);
   });
 });
