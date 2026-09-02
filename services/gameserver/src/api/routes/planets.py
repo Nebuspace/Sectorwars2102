@@ -2740,6 +2740,7 @@ async def train_planet_profession(
             "insufficient_equipment": status.HTTP_400_BAD_REQUEST,
             "insufficient_organics": status.HTTP_400_BAD_REQUEST,
             "invalid_trainee_count": status.HTTP_400_BAD_REQUEST,
+            "specialization_cap_exceeded": status.HTTP_400_BAD_REQUEST,
         }
         if code.startswith("unknown_profession:"):
             raise HTTPException(status_code=400, detail=code)
