@@ -1,4 +1,4 @@
-"""LEG-3712 — admin scope grant/revoke must not echo Exception text."""
+"""LEG-3833 — admin_scopes grant/revoke unexpected failures return structured 500s."""
 
 from __future__ import annotations
 
@@ -12,7 +12,13 @@ import pytest
 from fastapi import HTTPException
 
 from src.api.routes import admin_scopes as mod
-from src.api.routes.admin_scopes import ScopeMutationRequest, grant_scope, revoke_scope
+from src.api.routes.admin_scopes import (
+    ERR_SCOPE_GRANT_FAILED,
+    ERR_SCOPE_REVOKE_FAILED,
+    ScopeMutationRequest,
+    grant_scope,
+    revoke_scope,
+)
 
 
 @contextmanager
@@ -22,7 +28,7 @@ def _noop_admin_action_attempt(*_args, **_kwargs):
 
 
 @pytest.mark.asyncio
-async def test_grant_scope_boom_is_opaque_500():
+async def test_grant_scope_boom_returns_structured_500():
     secret = "secret-scope-grant-should-not-leak"
     target = SimpleNamespace(id=uuid4(), is_admin=False)
     db = MagicMock()
@@ -43,14 +49,14 @@ async def test_grant_scope_boom_is_opaque_500():
     exc = excinfo.value
     assert exc.status_code == 500
     assert exc.detail == {
-        "error_code": mod.ERR_SCOPE_GRANT_FAILED,
+        "error_code": ERR_SCOPE_GRANT_FAILED,
         "detail": "Grant failed",
     }
     assert secret not in str(exc.detail)
 
 
 @pytest.mark.asyncio
-async def test_revoke_scope_boom_is_opaque_500():
+async def test_revoke_scope_boom_returns_structured_500():
     secret = "secret-scope-revoke-should-not-leak"
     target = SimpleNamespace(id=uuid4(), is_admin=True)
     db = MagicMock()
@@ -71,17 +77,19 @@ async def test_revoke_scope_boom_is_opaque_500():
     exc = excinfo.value
     assert exc.status_code == 500
     assert exc.detail == {
-        "error_code": mod.ERR_SCOPE_REVOKE_FAILED,
+        "error_code": ERR_SCOPE_REVOKE_FAILED,
         "detail": "Revoke failed",
     }
     assert secret not in str(exc.detail)
 
 
-def test_admin_scopes_http500_is_opaque():
-    """LEG-3712 / LEG-3833 — static pin: scope grant/revoke 500s stay opaque."""
+def test_admin_scopes_grant_revoke_densify_is_structured():
+    """LEG-3833 — static pin: grant/revoke catch paths emit error_code + detail."""
     src = Path(mod.__file__).read_text(encoding="utf-8")
-    assert mod.ERR_SCOPE_GRANT_FAILED in src
-    assert mod.ERR_SCOPE_REVOKE_FAILED in src
+    assert ERR_SCOPE_GRANT_FAILED in src
+    assert ERR_SCOPE_REVOKE_FAILED in src
+    assert '"error_code": ERR_SCOPE_GRANT_FAILED' in src
+    assert '"error_code": ERR_SCOPE_REVOKE_FAILED' in src
     assert 'detail="Grant failed"' not in src
     assert 'detail="Revoke failed"' not in src
     assert ') from exc' not in src

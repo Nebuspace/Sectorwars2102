@@ -36,6 +36,9 @@ router = APIRouter(prefix="/admin/scopes", tags=["admin-scopes"])
 
 logger = logging.getLogger(__name__)
 
+ERR_SCOPE_GRANT_FAILED = "ERR_SCOPE_GRANT_FAILED"
+ERR_SCOPE_REVOKE_FAILED = "ERR_SCOPE_REVOKE_FAILED"
+
 
 class ScopeMutationRequest(BaseModel):
     user_id: UUID
@@ -377,7 +380,13 @@ async def grant_scope(
             raise
         except Exception:
             logger.exception("Grant scope failed")
-            raise HTTPException(status_code=500, detail="Grant failed")
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error_code": ERR_SCOPE_GRANT_FAILED,
+                    "detail": "Grant failed",
+                },
+            )
 
     return ScopeMutationResponse(
         user_id=target.id,
@@ -419,7 +428,13 @@ async def revoke_scope(
             raise
         except Exception:
             logger.exception("Revoke scope failed")
-            raise HTTPException(status_code=500, detail="Revoke failed")
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error_code": ERR_SCOPE_REVOKE_FAILED,
+                    "detail": "Revoke failed",
+                },
+            )
 
     still = (
         db.query(AdminScopeGrant.id)
