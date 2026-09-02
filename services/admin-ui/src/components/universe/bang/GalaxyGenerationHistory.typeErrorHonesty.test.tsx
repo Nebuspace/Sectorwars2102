@@ -23,6 +23,11 @@ vi.mock('../../../contexts/AdminContext', () => ({
 
 const HISTORY_FALLBACK = 'Failed to load history';
 
+const axiosError = (status: number) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: {} },
+  });
+
 function assertNoTransportLeak(text: string) {
   expect(text).not.toBe('Network Error');
   expect(text).not.toContain('Network Error');
@@ -32,8 +37,9 @@ function assertNoTransportLeak(text: string) {
 
 /**
  * LEG-3809 Soft-ORDER — GalaxyGenerationHistory load TypeError/Network Error densify.
+ * LEG-4051 Soft-ORDER — HTTP 429 densify (invent=0).
  */
-describe('adminHttpErrorMessage formatter (LEG-3809)', () => {
+describe('adminHttpErrorMessage formatter (LEG-3809 / LEG-4051)', () => {
   it('collapses TypeError Failed to fetch to history load fallback', () => {
     const text = adminHttpErrorMessage(
       new TypeError('Failed to fetch'),
@@ -57,15 +63,23 @@ describe('adminHttpErrorMessage formatter (LEG-3809)', () => {
   it('preserves BANG_REGENERATE denial on 403', () => {
     expect(
       adminHttpErrorMessage(
-        Object.assign(new Error('HTTP 403'), { response: { status: 403 } }),
+        axiosError(403),
         HISTORY_FALLBACK,
         'BANG_REGENERATE',
       ),
     ).toMatch(/BANG_REGENERATE/i);
   });
+
+  it('surfaces 429 as admin rate-limit copy', () => {
+    const text = adminHttpErrorMessage(axiosError(429), HISTORY_FALLBACK, 'BANG_REGENERATE');
+    expect(text).toMatch(/rate limit/i);
+    expect(text).not.toMatch(/\b429\b/);
+    expect(text).not.toMatch(/HTTP 429/i);
+    assertNoTransportLeak(text);
+  });
 });
 
-describe('GalaxyGenerationHistory typeErrorHonesty densify (LEG-3809)', () => {
+describe('GalaxyGenerationHistory typeErrorHonesty densify (LEG-3809 / LEG-4051)', () => {
   beforeEach(() => {
     loadBangHistory.mockReset();
     vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -96,6 +110,22 @@ describe('GalaxyGenerationHistory typeErrorHonesty densify (LEG-3809)', () => {
 
     const text = screen.getByText(/bang\.history\.loadFailed/i).textContent ?? '';
     expect(text).toMatch(/Failed to load history/i);
+    assertNoTransportLeak(text);
+  });
+
+  it('load 429 surfaces admin rate-limit copy without raw transport text', async () => {
+    loadBangHistory.mockRejectedValue(axiosError(429));
+
+    render(<GalaxyGenerationHistory />);
+
+    await waitFor(() => {
+      expect(loadBangHistory).toHaveBeenCalledWith(0, 20);
+    });
+
+    const text = screen.getByText(/bang\.history\.loadFailed/i).textContent ?? '';
+    expect(text).toMatch(/rate limit/i);
+    expect(text).not.toMatch(/\b429\b/);
+    expect(text).not.toMatch(/HTTP 429/i);
     assertNoTransportLeak(text);
   });
 });
