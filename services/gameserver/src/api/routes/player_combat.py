@@ -31,6 +31,7 @@ from src.services.combat_service import CombatService
 from src.services.movement_service import MovementService
 from src.services.planetary_service import PlanetaryService
 from src.services.turn_service import spend_turns
+from src.utils.error_handling import route_internal_error
 
 logger = logging.getLogger(__name__)
 
@@ -422,7 +423,7 @@ async def engage_combat(
     except Exception:
         db.rollback()
         logger.exception("Failed to engage in combat")
-        raise HTTPException(status_code=500, detail="Failed to engage in combat")
+        raise route_internal_error("ERR_PLAYER_COMBAT_ENGAGE_FAILED", "Failed to engage in combat")
 
 
 @router.get("/{combatId}/status", response_model=CombatStatusResponse)
@@ -758,7 +759,7 @@ async def retreat_from_sector(
         Sector.sector_id == player.current_sector_id
     ).first()
     if not current_sector:
-        raise HTTPException(status_code=500, detail="Current sector not found")
+        raise route_internal_error("ERR_PLAYER_COMBAT_SECTOR_NOT_FOUND", "Current sector not found")
 
     # Find connected sectors via the sector_warps association table
     connected_rows = db.execute(
