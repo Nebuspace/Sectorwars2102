@@ -9,8 +9,24 @@ vi.mock('../../utils/auth', () => ({
   },
 }));
 
+
+const axiosError = (status: number, detail?: string) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: detail ? { detail } : {} },
+  });
+
+function assertNoTransportLeak(text: string) {
+  expect(text).not.toBe('Network Error');
+  expect(text).not.toContain('Network Error');
+  expect(text).not.toMatch(/Failed to fetch/i);
+  expect(text).not.toMatch(/TypeError/i);
+  expect(text).not.toMatch(/^HTTP \d+$/);
+  expect(text).not.toContain('Request failed with status code');
+}
+
 /**
  * LEG-3633 Soft-ORDER — CustomReportBuilder TypeError/Network Error densify.
+ * LEG-3884 Soft-ORDER — 429 HTTP honesty densify.
  */
 describe('CustomReportBuilder typeErrorHonesty densify (LEG-3633)', () => {
   beforeEach(() => {
@@ -64,4 +80,20 @@ describe('CustomReportBuilder typeErrorHonesty densify (LEG-3633)', () => {
     expect(alert).toMatch(/admin\.audit\.view/i);
     expect(alert).toMatch(/Access denied/i);
   });
+
+  it('surfaces 429 as admin rate-limit copy on report builder GET', async () => {
+    vi.mocked(api.get).mockRejectedValue(axiosError(429));
+
+    render(<CustomReportBuilder onGenerate={() => {}} />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
+    });
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/rate limit/i);
+    expect(alert).not.toMatch(/\b429\b/);
+    expect(alert).not.toMatch(/HTTP 429/i);
+    assertNoTransportLeak(alert);
+  });
+
 });

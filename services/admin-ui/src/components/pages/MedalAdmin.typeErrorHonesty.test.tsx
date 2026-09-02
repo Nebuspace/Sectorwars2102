@@ -25,9 +25,25 @@ vi.mock('../../contexts/ToastContext', () => ({
   }),
 }));
 
+
+const axiosError = (status: number, detail?: string) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: detail ? { detail } : {} },
+  });
+
+function assertNoTransportLeak(text: string) {
+  expect(text).not.toBe('Network Error');
+  expect(text).not.toContain('Network Error');
+  expect(text).not.toMatch(/Failed to fetch/i);
+  expect(text).not.toMatch(/TypeError/i);
+  expect(text).not.toMatch(/^HTTP \d+$/);
+  expect(text).not.toContain('Request failed with status code');
+}
+
 /**
  * LEG-3416 Soft-ORDER — MedalAdmin TypeError/Network Error honesty densify.
  * formatAdminApiError on grant/revoke/collection paths collapses transport to fallbacks.
+ * LEG-3891 Soft-ORDER — 403/429 HTTP honesty densify.
  */
 describe('MedalAdmin typeErrorHonesty densify (LEG-3416)', () => {
   beforeEach(() => {
@@ -115,4 +131,47 @@ describe('MedalAdmin typeErrorHonesty densify (LEG-3416)', () => {
     expect(msg).not.toMatch(/TypeError/i);
     expect(msg).not.toContain('Network Error');
   });
+
+  it('surfaces 403 with PLAYERS_VIEW scope copy when catalog GET is denied', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/medals/admin/catalog')) {
+        throw axiosError(403);
+      }
+      return { data: { players: [] } };
+    });
+
+    render(<MedalAdmin />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Catalog' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Access denied|PLAYERS_VIEW/i);
+    expect(alert).not.toMatch(/\b403\b/);
+    expect(alert).not.toMatch(/HTTP 403/i);
+    assertNoTransportLeak(alert);
+  });
+
+  it('surfaces 429 as admin rate-limit copy on catalog GET', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/medals/admin/catalog')) {
+        throw axiosError(429);
+      }
+      return { data: { players: [] } };
+    });
+
+    render(<MedalAdmin />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Catalog' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
+    });
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/rate limit/i);
+    expect(alert).not.toMatch(/\b429\b/);
+    expect(alert).not.toMatch(/HTTP 429/i);
+    assertNoTransportLeak(alert);
+  });
+
 });
