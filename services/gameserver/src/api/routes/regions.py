@@ -25,6 +25,7 @@ from src.services.region_lifecycle_service import (
     ERR_REGION_NOT_FOUND,
     ERR_TAKEOVER_INTENT_PENDING,
     execute_takeover,
+    list_takeover_eligible_regions,
 )
 
 logger = logging.getLogger(__name__)
@@ -57,6 +58,24 @@ class RegionTakeoverRequest(BaseModel):
 def _default_takeover_urls() -> tuple[str, str]:
     base = (settings.FRONTEND_URL or "http://localhost:3000").rstrip("/")
     return f"{base}/regions/takeover/success", f"{base}/regions/takeover/cancel"
+
+
+@router.get("/takeover-eligible")
+async def list_takeover_eligible_regions_route(
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """List suspended/grace regions eligible for GC-subscription takeover."""
+    try:
+        return await list_takeover_eligible_regions(db)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to list takeover-eligible regions")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to list takeover-eligible regions",
+        )
 
 
 @router.post("/{region_id}/takeover", status_code=201)
