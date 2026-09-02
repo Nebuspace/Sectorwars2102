@@ -41,7 +41,10 @@ async def test_engage_combat_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to engage in combat"
+    assert exc.detail == {
+        "error_code": "ERR_PLAYER_COMBAT_ENGAGE_FAILED",
+        "detail": "Failed to engage in combat",
+    }
     assert secret not in str(exc.detail)
     db.rollback.assert_called_once()
 
@@ -49,7 +52,8 @@ async def test_engage_combat_unexpected_is_opaque_500():
 def test_player_combat_engage_http500_catch_has_no_detail_str_e():
     """LEG-3825 — static pin: engage HTTP 500 catch path stays opaque."""
     src = Path(player_combat_mod.__file__).read_text(encoding="utf-8")
-    assert 'detail="Failed to engage in combat"' in src
+    assert "ERR_PLAYER_COMBAT_ENGAGE_FAILED" in src
+    assert "route_internal_error" in src
     assert "Failed to engage in combat: {str(e)}" not in src
     assert "detail=str(e)" not in src.split("async def engage_combat")[1].split(
         "@router.get(\"/{combatId}/status\""

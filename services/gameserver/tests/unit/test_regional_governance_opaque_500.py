@@ -102,7 +102,10 @@ async def test_create_policy_proposal_for_member_service_failure_is_opaque_500()
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "ERR_POLICY_CREATE_FAILED"
+    assert exc.detail == {
+        "error_code": "ERR_POLICY_CREATE_FAILED",
+        "detail": "Failed to create policy proposal",
+    }
 
 
 @pytest.mark.asyncio
@@ -127,12 +130,16 @@ async def test_create_policy_proposal_for_member_runtime_error_secret_never_leak
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "ERR_POLICY_CREATE_FAILED"
+    assert exc.detail == {
+        "error_code": "ERR_POLICY_CREATE_FAILED",
+        "detail": "Failed to create policy proposal",
+    }
     assert secret not in str(exc.detail)
 
 
 def test_regional_governance_policy_create_http500_is_opaque():
     """LEG-3829 — static pin: policy-create 500 detail stays opaque."""
     src = Path(gov_mod.__file__).read_text(encoding="utf-8")
-    assert 'detail="ERR_POLICY_CREATE_FAILED"' in src
+    assert "ERR_POLICY_CREATE_FAILED" in src
+    assert "route_internal_error" in src
     assert "ERR_POLICY_CREATE_FAILED: {str(e)}" not in src

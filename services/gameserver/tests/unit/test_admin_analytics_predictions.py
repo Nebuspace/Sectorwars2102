@@ -145,5 +145,8 @@ async def test_analytics_predictions_unexpected_is_opaque_500(monkeypatch):
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to fetch analytics predictions"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_COMP_ANALYTICS_PREDICTIONS_FAILED",
+        "detail": "Failed to fetch analytics predictions",
+    }
     assert secret not in str(exc.detail)
