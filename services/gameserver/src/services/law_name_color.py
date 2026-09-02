@@ -20,17 +20,25 @@ def apply_law_name_color(player: Player) -> str:
     Wanted overrides Suspect and tier; Suspect overrides tier; otherwise
     restore via ``PersonalReputationService._get_tier_for_score``. Returns
     the color written. Pure in-memory mutation — caller owns flush/commit.
+
+    Law flags use ``getattr`` defaults so DB-free unit suites that pass
+    ``types.SimpleNamespace`` / lightweight Player stand-ins (missing
+    ``is_wanted`` / ``is_suspect``) keep working after reputation hooks
+    call this helper — same defensive posture as
+    ``_recompute_wanted_defensively``.
     """
-    if player.is_wanted:
+    if getattr(player, "is_wanted", False):
         player.name_color = WANTED_NAME_COLOR
         return player.name_color
-    if player.is_suspect:
+    if getattr(player, "is_suspect", False):
         player.name_color = SUSPECT_NAME_COLOR
         return player.name_color
 
     from src.services.personal_reputation_service import PersonalReputationService
 
-    score = player.personal_reputation if player.personal_reputation is not None else 0
+    score = getattr(player, "personal_reputation", None)
+    if score is None:
+        score = 0
     _tier, color = PersonalReputationService._get_tier_for_score(score)
     player.name_color = color
     return player.name_color

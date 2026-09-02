@@ -196,3 +196,19 @@ def test_apply_suspect_event_sets_amber(monkeypatch):
     assert first is True
     assert player.is_suspect is True
     assert player.name_color == SUSPECT_NAME_COLOR
+
+
+@pytest.mark.unit
+def test_apply_law_name_color_tolerates_simple_namespace_without_law_flags():
+    """Regression: reputation/combat unit mocks often omit is_wanted/is_suspect.
+
+    Closer bounce on LEG-4135/#1472 — unconditional attr access broke 37
+    DB-free tests after personal_reputation_service hooked this helper.
+    """
+    from types import SimpleNamespace
+
+    stub = SimpleNamespace(personal_reputation=0, name_color="#000000")
+    color = apply_law_name_color(stub)
+    _tier, expected = PersonalReputationService._get_tier_for_score(0)
+    assert color == expected
+    assert stub.name_color == expected
