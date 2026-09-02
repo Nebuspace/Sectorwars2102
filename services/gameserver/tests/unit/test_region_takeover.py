@@ -95,7 +95,7 @@ class TestExecuteTakeover:
         ), patch(
             "src.services.region_lifecycle_service.paypal_service.create_regional_ownership_subscription",
             new=AsyncMock(return_value=paypal_payload),
-        ):
+        ) as paypal_mock:
             result = await execute_takeover(
                 db,
                 region_id=ids["region"],
@@ -113,7 +113,9 @@ class TestExecuteTakeover:
         assert intent.caller_user_id == ids["caller"]
         assert intent.status == TakeoverIntentStatus.PENDING.value
         assert intent.approval_url == "https://paypal.example/approve"
-        db.flush.assert_awaited_once()
+        paypal_mock.assert_awaited_once()
+        assert paypal_mock.await_args.kwargs.get("takeover_intent_id") == str(intent.id)
+        assert db.flush.await_count >= 2
 
     @pytest.mark.asyncio
     async def test_rejects_non_takeover_eligible_status(self, ids):
