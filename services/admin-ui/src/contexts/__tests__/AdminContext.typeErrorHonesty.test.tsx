@@ -36,7 +36,14 @@ function assertNoTransportLeak(text: string) {
   expect(text).not.toContain('Network Error');
   expect(text).not.toMatch(/Failed to fetch/i);
   expect(text).not.toMatch(/TypeError/i);
+  expect(text).not.toMatch(/^HTTP \d+$/);
+  expect(text).not.toContain('Request failed with status code');
 }
+
+const axiosError = (status: number) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: {} },
+  });
 
 function Probe() {
   const { error, loadAdminStats, loadGalaxyInfo, bangGalaxy } = useAdmin();
@@ -67,6 +74,7 @@ function renderProbe() {
 
 /**
  * LEG-3830 Soft-ORDER — AdminContext TypeError/Network Error densify.
+ * LEG-3945 Soft-ORDER — HTTP 403/429 densify via adminHttpErrorMessage.
  */
 describe('AdminContext typeErrorHonesty densify (LEG-3830)', () => {
   beforeEach(() => {
@@ -146,5 +154,67 @@ describe('AdminContext typeErrorHonesty densify (LEG-3830)', () => {
       expect(screen.getByTestId('error')).toHaveTextContent('Failed to start bang generation job'),
     );
     assertNoTransportLeak(screen.getByTestId('error').textContent ?? '');
+  });
+
+  it('loadAdminStats 403 surfaces PLAYERS_VIEW scope copy without transport leak', async () => {
+    vi.mocked(api.get).mockRejectedValue(axiosError(403));
+    const user = userEvent.setup();
+    renderProbe();
+
+    await user.click(screen.getByText('load-stats'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/Access denied/i),
+    );
+    const text = screen.getByTestId('error').textContent ?? '';
+    expect(text).toMatch(/PLAYERS_VIEW/i);
+    expect(text).not.toMatch(/\b403\b/);
+    expect(text).not.toMatch(/HTTP 403/i);
+    assertNoTransportLeak(text);
+  });
+
+  it('loadAdminStats 429 surfaces rate-limit copy without transport leak', async () => {
+    vi.mocked(api.get).mockRejectedValue(axiosError(429));
+    const user = userEvent.setup();
+    renderProbe();
+
+    await user.click(screen.getByText('load-stats'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/rate limit/i),
+    );
+    const text = screen.getByTestId('error').textContent ?? '';
+    expect(text).not.toMatch(/\b429\b/);
+    expect(text).not.toMatch(/HTTP 429/i);
+    assertNoTransportLeak(text);
+  });
+
+  it('loadGalaxyInfo 403 surfaces admin.galaxy.manage scope copy without transport leak', async () => {
+    vi.mocked(api.get).mockRejectedValue(axiosError(403));
+    const user = userEvent.setup();
+    renderProbe();
+
+    await user.click(screen.getByText('load-galaxy-info'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/Access denied/i),
+    );
+    const text = screen.getByTestId('error').textContent ?? '';
+    expect(text).toMatch(/admin\.galaxy\.manage/i);
+    expect(text).not.toMatch(/\b403\b/);
+    expect(text).not.toMatch(/HTTP 403/i);
+    assertNoTransportLeak(text);
+  });
+
+  it('bangGalaxy 429 surfaces rate-limit copy without transport leak', async () => {
+    vi.mocked(createBangJob).mockRejectedValue(axiosError(429));
+    const user = userEvent.setup();
+    renderProbe();
+
+    await user.click(screen.getByText('bang-galaxy'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error').textContent).toMatch(/rate limit/i),
+    );
+    const text = screen.getByTestId('error').textContent ?? '';
+    expect(text).not.toMatch(/\b429\b/);
+    expect(text).not.toMatch(/HTTP 429/i);
+    assertNoTransportLeak(text);
   });
 });

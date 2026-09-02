@@ -9,6 +9,20 @@ vi.mock('../../utils/auth', () => ({
   },
 }));
 
+const axiosError = (status: number) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: {} },
+  });
+
+function assertNoTransportLeak(text: string) {
+  expect(text).not.toBe('Network Error');
+  expect(text).not.toContain('Network Error');
+  expect(text).not.toMatch(/Failed to fetch/i);
+  expect(text).not.toMatch(/TypeError/i);
+  expect(text).not.toMatch(/^HTTP \d+$/);
+  expect(text).not.toContain('Request failed with status code');
+}
+
 const basePort = {
   id: 'port-1',
   name: 'Outpost Alpha',
@@ -31,6 +45,7 @@ async function saveName(value: string) {
 
 /**
  * LEG-3457 Soft-ORDER — StationDetail TypeError/Network Error honesty densify.
+ * LEG-3941 Soft-ORDER — HTTP 403/429 densify via formatAdminApiError.
  */
 describe('StationDetail typeErrorHonesty densify (LEG-3457)', () => {
   beforeEach(() => {
@@ -67,5 +82,37 @@ describe('StationDetail typeErrorHonesty densify (LEG-3457)', () => {
     expect(alert).toMatch(/Failed to update name/i);
     expect(alert).not.toMatch(/TypeError/i);
     expect(alert).not.toMatch(/Failed to fetch/i);
+  });
+
+  it('surfaces admin.universe.manage on name PATCH 403 without transport leak', async () => {
+    vi.mocked(api.patch).mockRejectedValue(axiosError(403));
+
+    render(<PortDetail port={basePort} onBack={() => {}} />);
+    await saveName('Forbidden Rename');
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Access denied|admin\.universe\.manage/i);
+    expect(alert).not.toMatch(/\b403\b/);
+    expect(alert).not.toMatch(/HTTP 403/i);
+    assertNoTransportLeak(alert);
+  });
+
+  it('surfaces rate-limit on name PATCH 429 without transport leak', async () => {
+    vi.mocked(api.patch).mockRejectedValue(axiosError(429));
+
+    render(<PortDetail port={basePort} onBack={() => {}} />);
+    await saveName('Rate Limited');
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/rate limit/i);
+    expect(alert).not.toMatch(/\b429\b/);
+    expect(alert).not.toMatch(/HTTP 429/i);
+    assertNoTransportLeak(alert);
   });
 });

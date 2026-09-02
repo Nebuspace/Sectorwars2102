@@ -21,10 +21,18 @@ function assertNoTransportLeak(text: string) {
   expect(text).not.toContain('Network Error');
   expect(text).not.toMatch(/Failed to fetch/i);
   expect(text).not.toMatch(/TypeError/i);
+  expect(text).not.toMatch(/^HTTP \d+$/);
+  expect(text).not.toContain('Request failed with status code');
 }
+
+const axiosError = (status: number) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: {} },
+  });
 
 /**
  * LEG-3811 Soft-ORDER — AddRegionDialog parent-supplied error TypeError/Network densify.
+ * LEG-3943 Soft-ORDER — HTTP 403/429 densify via formatAdminApiError.
  */
 describe('AddRegionDialog typeErrorHonesty densify (LEG-3811)', () => {
   const onCancel = vi.fn();
@@ -132,6 +140,80 @@ describe('AddRegionDialog typeErrorHonesty densify (LEG-3811)', () => {
     });
 
     const text = screen.getByText(/Failed to add player-owned region/i).textContent ?? '';
+    assertNoTransportLeak(text);
+  });
+
+  it('surfaces parent-collapsed 403 with admin.universe.manage without transport leak', () => {
+    const collapsed = formatAdminApiError(axiosError(403), formatOptions);
+
+    render(
+      <AddRegionDialog
+        onCancel={onCancel}
+        onConfirm={onConfirm}
+        error={collapsed}
+      />,
+    );
+
+    const text = screen.getByText(collapsed).textContent ?? '';
+    expect(text).toMatch(/Access denied/i);
+    expect(text).toMatch(/admin\.universe\.manage/i);
+    expect(text).not.toMatch(/\b403\b/);
+    expect(text).not.toMatch(/HTTP 403/i);
+    assertNoTransportLeak(text);
+  });
+
+  it('surfaces parent-collapsed 429 rate-limit copy without transport leak', () => {
+    const collapsed = formatAdminApiError(axiosError(429), formatOptions);
+
+    render(
+      <AddRegionDialog
+        onCancel={onCancel}
+        onConfirm={onConfirm}
+        error={collapsed}
+      />,
+    );
+
+    const text = screen.getByText(collapsed).textContent ?? '';
+    expect(text).toMatch(/rate limit/i);
+    expect(text).not.toMatch(/\b429\b/);
+    expect(text).not.toMatch(/HTTP 429/i);
+    assertNoTransportLeak(text);
+  });
+
+  it('parent catch on onConfirm 403 collapses to scope copy without transport leak', async () => {
+    onConfirm.mockRejectedValue(axiosError(403));
+
+    function ParentHarness() {
+      const [error, setError] = useState<string | null>(null);
+      return (
+        <AddRegionDialog
+          onCancel={onCancel}
+          onConfirm={async (seed, sectors) => {
+            try {
+              await onConfirm(seed, sectors);
+            } catch (err) {
+              setError(formatAdminApiError(err, formatOptions));
+            }
+          }}
+          error={error}
+        />
+      );
+    }
+
+    render(<ParentHarness />);
+
+    const form = screen.getByLabelText('bang.addRegion.sectors').closest('form');
+    expect(form).toBeTruthy();
+    form!.noValidate = true;
+    fireEvent.submit(form!);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Access denied/i)).toBeTruthy();
+    });
+
+    const text = screen.getByText(/Access denied/i).textContent ?? '';
+    expect(text).toMatch(/admin\.universe\.manage/i);
+    expect(text).not.toMatch(/\b403\b/);
     assertNoTransportLeak(text);
   });
 });
