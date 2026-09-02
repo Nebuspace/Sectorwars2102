@@ -26,8 +26,24 @@ vi.mock('../universe/SectorEditModal', () => ({
   default: () => null,
 }));
 
+
+const axiosError = (status: number, detail?: string) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: detail ? { detail } : {} },
+  });
+
+function assertNoTransportLeak(text: string) {
+  expect(text).not.toBe('Network Error');
+  expect(text).not.toContain('Network Error');
+  expect(text).not.toMatch(/Failed to fetch/i);
+  expect(text).not.toMatch(/TypeError/i);
+  expect(text).not.toMatch(/^HTTP \d+$/);
+  expect(text).not.toContain('Request failed with status code');
+}
+
 /**
  * LEG-3659 Soft-ORDER — SectorsManager TypeError/Network Error densify.
+ * LEG-3922 Soft-ORDER — 403/429 HTTP honesty densify.
  */
 describe('SectorsManager typeErrorHonesty densify (LEG-3659)', () => {
   beforeEach(() => {
@@ -62,4 +78,35 @@ describe('SectorsManager typeErrorHonesty densify (LEG-3659)', () => {
     expect(text).not.toMatch(/Failed to fetch/i);
     expect(text).not.toMatch(/TypeError/i);
   });
+
+  it('surfaces 403 with galaxy.manage scope copy when sectors GET is denied', async () => {
+    vi.mocked(api.get).mockRejectedValue(axiosError(403));
+
+    render(<SectorsManager />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+    const text = screen.getByRole('alert').textContent ?? '';
+    expect(text).toMatch(/Access denied|admin\.galaxy\.manage|list sectors/i);
+    expect(text).not.toMatch(/\b403\b/);
+    expect(text).not.toMatch(/HTTP 403/i);
+    assertNoTransportLeak(text);
+  });
+
+  it('surfaces 429 as admin rate-limit copy on sectors GET', async () => {
+    vi.mocked(api.get).mockRejectedValue(axiosError(429));
+
+    render(<SectorsManager />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
+    });
+    const text = screen.getByRole('alert').textContent ?? '';
+    expect(text).toMatch(/rate limit/i);
+    expect(text).not.toMatch(/\b429\b/);
+    expect(text).not.toMatch(/HTTP 429/i);
+    assertNoTransportLeak(text);
+  });
+
 });

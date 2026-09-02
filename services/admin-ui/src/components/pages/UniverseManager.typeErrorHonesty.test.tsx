@@ -4,6 +4,20 @@ import { MemoryRouter } from 'react-router-dom';
 import UniverseManager from './UniverseManager';
 import { adminHttpErrorMessage } from '../../utils/adminHttpError';
 
+const axiosError = (status: number, detail?: string) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: detail ? { detail } : {} },
+  });
+
+function assertNoTransportLeak(text: string) {
+  expect(text).not.toBe('Network Error');
+  expect(text).not.toContain('Network Error');
+  expect(text).not.toMatch(/Failed to fetch/i);
+  expect(text).not.toMatch(/TypeError/i);
+  expect(text).not.toMatch(/^HTTP \d+$/);
+  expect(text).not.toContain('Request failed with status code');
+}
+
 const mockAdmin = vi.hoisted(() => ({
   galaxyState: {
     id: 'g1',
@@ -71,6 +85,7 @@ function errorStripText(): string {
 
 /**
  * LEG-3658 Soft-ORDER — UniverseManager TypeError/Network Error densify.
+ * LEG-3927 Soft-ORDER — 403/429 HTTP honesty densify.
  * Universe overview and sector list errors surface via AdminContext error strip.
  */
 describe('UniverseManager typeErrorHonesty densify (LEG-3658)', () => {
@@ -196,4 +211,57 @@ describe('UniverseManager typeErrorHonesty densify (LEG-3658)', () => {
     expect(errorStripText()).not.toMatch(/TypeError/i);
     expect(screen.getByText('Andromeda Prime')).toBeTruthy();
   });
+
+  it('surfaces 403 with admin.galaxy.manage scope copy on galaxy load', async () => {
+    mockAdmin.galaxyState = null;
+    mockAdmin.loadGalaxyInfo.mockImplementation(async () => {
+      mockAdmin.error = adminHttpErrorMessage(
+        axiosError(403),
+        'Failed to load galaxy information',
+        'admin.galaxy.manage',
+      );
+    });
+
+    const { rerender } = renderUniverse();
+    await waitFor(() => expect(mockAdmin.loadGalaxyInfo).toHaveBeenCalled());
+    rerender(
+      <MemoryRouter>
+        <UniverseManager />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(errorStripText()).toMatch(/Access denied|admin\.galaxy\.manage/i);
+    });
+    expect(errorStripText()).not.toMatch(/\b403\b/);
+    expect(errorStripText()).not.toMatch(/HTTP 403/i);
+    assertNoTransportLeak(errorStripText());
+  });
+
+  it('surfaces 429 as admin rate-limit copy on galaxy load', async () => {
+    mockAdmin.galaxyState = null;
+    mockAdmin.loadGalaxyInfo.mockImplementation(async () => {
+      mockAdmin.error = adminHttpErrorMessage(
+        axiosError(429),
+        'Failed to load galaxy information',
+        'admin.galaxy.manage',
+      );
+    });
+
+    const { rerender } = renderUniverse();
+    await waitFor(() => expect(mockAdmin.loadGalaxyInfo).toHaveBeenCalled());
+    rerender(
+      <MemoryRouter>
+        <UniverseManager />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(errorStripText()).toMatch(/rate limit/i);
+    });
+    expect(errorStripText()).not.toMatch(/\b429\b/);
+    expect(errorStripText()).not.toMatch(/HTTP 429/i);
+    assertNoTransportLeak(errorStripText());
+  });
+
 });
