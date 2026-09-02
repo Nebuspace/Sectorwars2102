@@ -180,13 +180,48 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
   );
 };
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+function hasFleetManagerServerDetail(err: unknown): boolean {
+  if (err instanceof TypeError) return false;
+  const message = err instanceof Error ? err.message : undefined;
+  if (typeof message === 'string' && isNetworkCollapseMessage(message)) return false;
+  return (
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim())
+  );
+}
+
 export function formatFleetManagerError(
   e: unknown,
   fallback = 'Fleet request failed',
 ): string {
+  const status = httpStatus(e);
+  const message = e instanceof Error ? e.message : undefined;
+  const hasServerDetail = hasFleetManagerServerDetail(e);
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission for this fleet action.';
+  }
+
+  if (status === 429) {
+    return 'Fleet rate limit exceeded — wait a moment and try again.';
+  }
+
   if (e instanceof TypeError) return fallback;
   if (e instanceof Error) {
     if (isNetworkCollapseMessage(e.message)) return fallback;
+    if (hasServerDetail) return message!;
     return e.message;
   }
   return fallback;
