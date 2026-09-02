@@ -281,15 +281,26 @@ class PayPalService:
         return result
     
     async def create_regional_ownership_subscription(
-        self, 
-        user_id: str, 
-        region_name: str, 
-        return_url: str, 
-        cancel_url: str
+        self,
+        user_id: str,
+        region_name: str,
+        return_url: str,
+        cancel_url: str,
+        takeover_intent_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Create regional ownership subscription ($25/month)"""
+        """Create regional ownership subscription ($25/month).
+
+        When ``takeover_intent_id`` is set (region GC-subscription takeover),
+        ``custom_id`` is ``region_takeover_{intent_id}`` so the ACTIVATED
+        webhook can route to ``commit_takeover`` without client-supplied metadata.
+        """
         plan_id = self.subscription_plans[SubscriptionTier.REGIONAL_OWNER]
-        
+
+        if takeover_intent_id:
+            custom_id = f"region_takeover_{takeover_intent_id}"
+        else:
+            custom_id = f"regional_owner_{user_id}_{region_name}"
+
         subscription_data = {
             "plan_id": plan_id,
             "subscriber": {
@@ -310,15 +321,20 @@ class PayPalService:
                 "return_url": return_url,
                 "cancel_url": cancel_url
             },
-            "custom_id": f"regional_owner_{user_id}_{region_name}",
+            "custom_id": custom_id,
             "plan": {
                 "id": plan_id
             }
         }
-        
+
         result = await self._make_request("POST", "/v1/billing/subscriptions", subscription_data)
-        
-        logger.info("Created regional ownership subscription for user %s, region %s: %s", user_id, region_name, _sub_ref(result.get("id")))  # lgtm[py/clear-text-logging-sensitive-data] -- _sub_ref() is SHA-256, non-recoverable
+
+        logger.info(
+            "Created regional ownership subscription for user %s, region %s: %s",
+            user_id,
+            region_name,
+            _sub_ref(result.get("id")),
+        )  # lgtm[py/clear-text-logging-sensitive-data] -- _sub_ref() is SHA-256, non-recoverable
         return result
     
     async def get_subscription_details(self, subscription_id: str) -> Dict[str, Any]:
@@ -339,6 +355,44 @@ class PayPalService:
         except Exception:
             logger.exception("Failed to cancel subscription %s", _sub_ref(subscription_id))  # lgtm[py/clear-text-logging-sensitive-data] -- _sub_ref() is SHA-256, non-recoverable
             return False
+
+    async def refund_subscription(
+        self,
+        subscription_id: str,
+        reason: str = "Region takeover lost or region no longer available",
+    ) -> bool:
+        """Cancel a takeover-loser subscription after payment.
+
+        Canon: ``region-lifecycle.md`` § Takeover endpoint — escrow refund for
+        losing concurrent claims. PayPal billing subscriptions are cancelled;
+        initial-sale refund is best-effort when transaction ids are available.
+        """
+        cancelled = await self.cancel_subscription(subscription_id, reason=reason)
+        if not cancelled:
+            return False
+        try:
+            details = await self.get_subscription_details(subscription_id)
+            billing_info = details.get("billing_info") or {}
+            last_payment = billing_info.get("last_payment") or {}
+            sale_id = last_payment.get("id") or last_payment.get("transaction_id")
+            if sale_id:
+                await self._make_request(
+                    "POST",
+                    f"/v2/payments/captures/{sale_id}/refund",
+                    {"note_to_payer": reason},
+                )
+                logger.info(
+                    "Refunded takeover subscription %s (sale %s)",
+                    _sub_ref(subscription_id),
+                    _sub_ref(str(sale_id)),
+                )
+        except Exception:
+            logger.warning(
+                "Cancelled takeover subscription %s; initial-sale refund skipped",
+                _sub_ref(subscription_id),
+                exc_info=True,
+            )
+        return True
     
     async def suspend_subscription(self, subscription_id: str, reason: str = "Payment failure") -> bool:
         """Suspend a PayPal subscription"""
@@ -430,6 +484,15 @@ class PayPalService:
         if custom_id.startswith("galactic_citizen_"):
             user_id = custom_id.replace("galactic_citizen_", "")
             await self._activate_galactic_citizenship(session, user_id, subscription_id, resource)
+        elif custom_id.startswith("region_takeover_"):
+            from src.services.region_lifecycle_service import commit_takeover
+
+            intent_id = custom_id.replace("region_takeover_", "")
+            await commit_takeover(
+                session,
+                takeover_intent_id=intent_id,
+                paypal_subscription_id=subscription_id,
+            )
         elif custom_id.startswith("regional_owner_"):
             parts = custom_id.replace("regional_owner_", "").split("_")
             user_id = parts[0]
