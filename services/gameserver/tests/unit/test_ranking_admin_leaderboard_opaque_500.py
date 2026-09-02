@@ -34,7 +34,10 @@ async def test_get_rankings_leaderboard_service_boom_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to fetch rankings leaderboard"
+    assert exc.detail == {
+        "error_code": "ERR_RANKING_LEADERBOARD_FETCH_FAILED",
+        "detail": "Failed to fetch rankings leaderboard",
+    }
     assert secret not in str(exc.detail)
 
 
@@ -54,12 +57,16 @@ async def test_get_rankings_leaderboard_count_boom_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to fetch rankings leaderboard"
+    assert exc.detail == {
+        "error_code": "ERR_RANKING_LEADERBOARD_FETCH_FAILED",
+        "detail": "Failed to fetch rankings leaderboard",
+    }
     assert secret not in str(exc.detail)
 
 
 def test_ranking_leaderboard_http500_is_opaque():
     """LEG-3733 — static pin: leaderboard 500 detail stays opaque."""
     src = Path(ranking_mod.__file__).read_text(encoding="utf-8")
-    assert 'detail="Failed to fetch rankings leaderboard"' in src
+    assert "ERR_RANKING_LEADERBOARD_FETCH_FAILED" in src
+    assert "route_internal_error" in src
     assert "Failed to fetch rankings leaderboard: {str(e)}" not in src

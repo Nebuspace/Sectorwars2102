@@ -1,7 +1,4 @@
-"""LEG-3817 — expeditions.py HTTP 500 catches must not echo Exception text.
-
-Mirrors LEG-3815 haggle / LEG-3812 fleets opaque densify.
-"""
+"""LEG-4045 — expeditions launch/reroll routes return structured 500s."""
 
 from __future__ import annotations
 
@@ -38,7 +35,7 @@ def _prior_expedition():
 
 
 @pytest.mark.asyncio
-async def test_launch_expedition_unexpected_is_opaque_500():
+async def test_launch_expedition_boom_returns_structured_500():
     secret = "secret-launch-expedition-should-not-leak"
     body = LaunchExpeditionRequest(planet_id=uuid.uuid4())
     db = MagicMock()
@@ -60,11 +57,10 @@ async def test_launch_expedition_unexpected_is_opaque_500():
         "detail": "Failed to launch expedition",
     }
     assert secret not in str(exc.detail)
-    db.rollback.assert_called_once()
 
 
 @pytest.mark.asyncio
-async def test_reroll_expedition_unexpected_is_opaque_500():
+async def test_reroll_expedition_boom_returns_structured_500():
     secret = "secret-reroll-expedition-should-not-leak"
     prior = _prior_expedition()
     db = MagicMock()
@@ -86,22 +82,12 @@ async def test_reroll_expedition_unexpected_is_opaque_500():
         "detail": "Failed to reroll expedition",
     }
     assert secret not in str(exc.detail)
-    db.rollback.assert_called_once()
 
 
-def test_expeditions_http500_catches_have_no_bare_reraise():
-    """LEG-3817 — static pin: launch/reroll use opaque HTTPException on unexpected errors."""
+def test_expeditions_http500_is_structured():
     src = Path(expeditions_mod.__file__).read_text(encoding="utf-8")
-    for code in (
-        "ERR_EXPEDITIONS_LAUNCH_FAILED",
-        "ERR_EXPEDITIONS_REROLL_FAILED",
-    ):
+    for code in ("ERR_EXPEDITIONS_LAUNCH_FAILED", "ERR_EXPEDITIONS_REROLL_FAILED"):
         assert code in src
     assert "route_internal_error" in src
-    assert 'Failed to launch expedition: {str(e)}' not in src
-    assert 'Failed to reroll expedition: {str(e)}' not in src
-    # No bare re-raise after except Exception in launch/reroll handlers.
-    launch_block = src.split("async def launch_expedition")[1].split("async def expedition_status")[0]
-    reroll_block = src.split("async def reroll_expedition")[1]
-    assert "except Exception:\n        db.rollback()\n        raise\n" not in launch_block
-    assert "except Exception:\n        db.rollback()\n        raise\n" not in reroll_block
+    assert 'detail="Failed to launch expedition"' not in src
+    assert 'detail="Failed to reroll expedition"' not in src

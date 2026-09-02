@@ -110,7 +110,7 @@ const STATION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-
 // verify_region_owner / ConstructionError call sites), and only falls back
 // to the bare `API Error: {status}` text when it can't. Pass a real message
 // straight through; translate the bare-status fallback into an honest,
-// codebase-accurate per-status message so a bare 402/403/404/409 is never
+// codebase-accurate per-status message so a bare 402/403/404/409/429 is never
 // shown as a raw number.
 const isNetworkCollapseMessage = (msg: string): boolean => {
   const trimmed = msg.trim();
@@ -122,7 +122,7 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
   );
 };
 
-/** Exported for TypeError/network honesty Vitest (LEG-3262). */
+/** Exported for TypeError/network honesty Vitest (LEG-3262); 429 densify LEG-4053. */
 export const friendlyError = (msg: string, fallback: string): string => {
   if (isNetworkCollapseMessage(msg)) return fallback;
   const bare = /^API Error: (\d+)$/.exec(msg);
@@ -136,6 +136,8 @@ export const friendlyError = (msg: string, fallback: string): string => {
         return 'Station not found, or your account has no player record.';
       case '409':
         return 'That station already has a TradeDock construction in progress, or your region does not yet meet the 500-sector requirement.';
+      case '429':
+        return 'TradeDock action rate limit exceeded — wait a moment and try again.';
       default:
         return fallback;
     }
