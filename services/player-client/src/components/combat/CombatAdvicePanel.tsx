@@ -15,6 +15,16 @@ function httpStatus(err: unknown): number | undefined {
   return undefined;
 }
 
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
 export function formatCombatAdviceError(err: unknown): string {
   const fallback = 'ARIA combat advice unavailable';
   if (err instanceof TypeError) return fallback;
@@ -22,6 +32,7 @@ export function formatCombatAdviceError(err: unknown): string {
   const hasServerDetail =
     typeof message === 'string' &&
     message.trim().length > 0 &&
+    !isNetworkCollapseMessage(message) &&
     !/^API Error: \d+$/.test(message.trim());
   if (httpStatus(err) === 503 && hasServerDetail) return message!;
   if (hasServerDetail) return message!;
