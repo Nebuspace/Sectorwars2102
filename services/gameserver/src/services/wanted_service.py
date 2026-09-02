@@ -48,9 +48,19 @@ def is_live_wanted(player: Player, *, now: Optional[datetime] = None) -> bool:
     """True iff ``player`` is EFFECTIVELY wanted right now via the timer
     trigger -- checks ``wanted_until`` against the clock, not just the
     ``is_wanted`` boolean (which can be stale until the lazy auto-clear
-    sweep runs). Mirrors ``suspect_service.is_live_suspect``."""
+    sweep runs). Mirrors ``suspect_service.is_live_suspect``.
+
+    Law flag / timer attrs use ``getattr`` defaults so DB-free combat unit
+    suites that pass ``types.SimpleNamespace`` defenders (missing
+    ``is_wanted`` / ``wanted_until``) keep working after ``attack_player``
+    started calling this on every path (LEG-4137 closer bounce).
+    """
     now = _now(now)
-    return bool(player.is_wanted) and player.wanted_until is not None and player.wanted_until > now
+    return (
+        bool(getattr(player, "is_wanted", False))
+        and getattr(player, "wanted_until", None) is not None
+        and player.wanted_until > now
+    )
 
 
 def apply_wanted_event(db: Session, player: Player, *, now: Optional[datetime] = None) -> bool:
