@@ -85,6 +85,15 @@ export function formatMedalShowcaseLoadError(err: unknown): string {
   const message = err instanceof Error ? err.message : undefined;
   const hasServerDetail = hasMedalShowcaseServerDetail(err, message);
 
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission to load medals.';
+  }
+
+  if (status === 429) {
+    return 'Medal showcase rate limit exceeded — wait a moment and try again.';
+  }
+
   if (status === 404) {
     if (hasServerDetail) return message!;
     return 'Failed to load medals';
@@ -106,10 +115,26 @@ const isMedalPinNetworkCollapse = (msg: string): boolean => {
   );
 };
 
-/** Exported for TypeError/network honesty Vitest (LEG-3275). */
+/** Exported for TypeError/network honesty Vitest (LEG-3275 / LEG-4040). */
 export function formatMedalShowcasePinError(err: unknown): string {
   if (err instanceof TypeError) return PIN_FALLBACK;
+  const status = httpStatus(err);
   const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isMedalPinNetworkCollapse(message);
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission to update pinned medal.';
+  }
+
+  if (status === 429) {
+    return 'Medal pin rate limit exceeded — wait a moment and try again.';
+  }
+
   if (typeof message === 'string' && message.trim().length > 0) {
     if (isMedalPinNetworkCollapse(message)) return PIN_FALLBACK;
     return message;
