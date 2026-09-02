@@ -59,6 +59,31 @@ const loadoutKeyForItem = (itemId: string): 'attack_drones' | 'defense_drones' |
   return null;
 };
 
+/** Transport collapse copy is not gameserver detail (LEG-3771 densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+export const ARMORY_CATALOG_LOAD_FALLBACK = 'Connection error. Please try again.';
+
+export function formatArmoryCatalogError(error: unknown, fallback: string): string {
+  if (error instanceof TypeError) return fallback;
+  if (error instanceof Error && error.message) {
+    if (isNetworkCollapseMessage(error.message)) return fallback;
+    return error.message;
+  }
+  if (typeof error === 'string') {
+    if (isNetworkCollapseMessage(error)) return fallback;
+    return error;
+  }
+  return fallback;
+}
+
 interface ArmoryVenueProps {
   armoryCatalog: ArmoryCatalogItem[] | null;
   armoryLoading: boolean;
@@ -237,7 +262,7 @@ const ArmoryVenue: React.FC<ArmoryVenueProps> = ({
         {armoryCatalogError && !armoryLoading && (
           <div className="genesis-error-message">
             <span className="error-icon">❌</span>
-            {armoryCatalogError}
+            {formatArmoryCatalogError(armoryCatalogError, ARMORY_CATALOG_LOAD_FALLBACK)}
             <button className="action-button" onClick={fetchArmoryCatalog}>Retry</button>
           </div>
         )}
