@@ -62,6 +62,7 @@ def _make_ship(*, type_=ShipType.SCOUT_SHIP, sector_id=1, name="Test Hull"):
 
 def _make_player(
     *, ship, personal_reputation=0, is_suspect=False, suspect_until=None,
+    is_wanted=False, wanted_until=None,
     grey_until=None, grey_kind=None, team_id=None,
 ):
     return types.SimpleNamespace(
@@ -94,6 +95,8 @@ def _make_player(
         team_id=team_id,
         is_suspect=is_suspect,
         suspect_until=suspect_until,
+        is_wanted=is_wanted,
+        wanted_until=wanted_until,
         # WO-API-A1: attack_player now backstops on engage-range (SAME
         # sector alone is not "in range") -- every fixture built through
         # this shared helper shares this IDENTICAL literal pose, so
@@ -302,6 +305,63 @@ class TestLiveSuspectDefenderSuppressesAttackInnocent:
 
         assert result["success"] is True
         assert attacker.personal_reputation == -100
+
+
+class TestLiveWantedDefenderSuppressesAttackInnocent:
+    """LEG-4137 — ranking.md Wanted suspends attack_innocent the same way
+    live-Suspect does. Wanted-only (is_suspect false) must be covered."""
+
+    def test_live_wanted_only_defender_no_attack_innocent(self, monkeypatch):
+        now = datetime.now(timezone.utc)
+        cs, attacker, defender = _setup(
+            monkeypatch,
+            defender_kwargs={
+                "is_wanted": True,
+                "wanted_until": now + timedelta(hours=1),
+                "is_suspect": False,
+                "suspect_until": None,
+            },
+        )
+
+        result = cs.attack_player(attacker_id=attacker.id, defender_id=defender.id)
+
+        assert result["success"] is True
+        assert attacker.personal_reputation == 0
+
+    def test_expired_wanted_defender_attack_innocent_fires(self, monkeypatch):
+        now = datetime.now(timezone.utc)
+        cs, attacker, defender = _setup(
+            monkeypatch,
+            defender_kwargs={
+                "is_wanted": True,
+                "wanted_until": now - timedelta(minutes=5),
+                "is_suspect": False,
+                "suspect_until": None,
+            },
+        )
+
+        result = cs.attack_player(attacker_id=attacker.id, defender_id=defender.id)
+
+        assert result["success"] is True
+        assert attacker.personal_reputation == -100
+
+    def test_suspect_only_still_exempt(self, monkeypatch):
+        """Regression: Suspect-only path unchanged after Wanted OR."""
+        now = datetime.now(timezone.utc)
+        cs, attacker, defender = _setup(
+            monkeypatch,
+            defender_kwargs={
+                "is_suspect": True,
+                "suspect_until": now + timedelta(minutes=30),
+                "is_wanted": False,
+                "wanted_until": None,
+            },
+        )
+
+        result = cs.attack_player(attacker_id=attacker.id, defender_id=defender.id)
+
+        assert result["success"] is True
+        assert attacker.personal_reputation == 0
 
 
 def _setup_teams(monkeypatch, *, attacker_team_id, defender_team_id):
