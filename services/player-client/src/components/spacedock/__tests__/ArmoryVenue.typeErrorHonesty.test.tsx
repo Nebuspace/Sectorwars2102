@@ -59,10 +59,10 @@ describe('formatArmoryCatalogError TypeError densify (LEG-3771)', () => {
 describe('ArmoryVenue catalog load TypeError densify (LEG-3771)', () => {
   let container: HTMLElement;
   let root: ReturnType<typeof createRoot>;
-  let fetchArmoryCatalog: ReturnType<typeof vi.fn>;
+  let fetchArmoryCatalog: () => void;
 
   beforeEach(() => {
-    fetchArmoryCatalog = vi.fn();
+    fetchArmoryCatalog = vi.fn<() => void>();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);

@@ -42,10 +42,10 @@ describe('formatShipyardCatalogError TypeError densify (LEG-3772)', () => {
 describe('ShipyardVenue catalog load TypeError densify (LEG-3772)', () => {
   let container: HTMLElement;
   let root: ReturnType<typeof createRoot>;
-  let fetchShipCatalog: ReturnType<typeof vi.fn>;
+  let fetchShipCatalog: () => void;
 
   beforeEach(() => {
-    fetchShipCatalog = vi.fn();
+    fetchShipCatalog = vi.fn<() => void>();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
