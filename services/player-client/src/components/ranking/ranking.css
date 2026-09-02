@@ -61,7 +61,7 @@
   text-overflow: ellipsis;
 }
 
-/* Law status — tip GET /ranking/rank is_wanted / is_suspect (LEG-4127). */
+/* Law status — tip GET /ranking/rank|progress is_wanted / is_suspect (LEG-4127 / LEG-4130). */
 .rank-username {
   font-size: 0.8rem;
   font-weight: 600;
