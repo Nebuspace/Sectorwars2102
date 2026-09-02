@@ -35,7 +35,10 @@ async def test_get_supported_languages_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to retrieve languages"
+    assert exc.detail == {
+        "error_code": "ERR_I18N_LANGUAGES_FAILED",
+        "detail": "Failed to retrieve languages",
+    }
     assert secret not in str(exc.detail)
 
 
@@ -107,7 +110,7 @@ def test_translation_http500_catches_have_no_detail_str_e():
     """LEG-3818 — static pin: all twelve HTTP 500 catch paths stay opaque."""
     src = Path(translation_mod.__file__).read_text(encoding="utf-8")
     for stable in (
-        'detail="Failed to retrieve languages"',
+        "ERR_I18N_LANGUAGES_FAILED",
         'detail="Failed to retrieve translations"',
         'detail="Failed to get language preference"',
         'detail="Failed to set language preference"',

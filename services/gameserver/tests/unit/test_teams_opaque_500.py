@@ -31,7 +31,10 @@ async def test_create_team_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to create team"
+    assert exc.detail == {
+        "error_code": "ERR_TEAMS_CREATE_FAILED",
+        "detail": "Failed to create team",
+    }
     assert secret not in str(exc.detail)
 
 
@@ -61,13 +64,13 @@ def test_teams_http500_catches_have_no_detail_str_e():
     """LEG-3595 — static pin: all fourteen HTTP 500 catch paths stay opaque."""
     src = Path(teams_mod.__file__).read_text(encoding="utf-8")
     for stable in (
-        'detail="Failed to create team"',
-        'detail="Failed to update team"',
-        'detail="Failed to delete team"',
-        'detail="Failed to invite player"',
-        'detail="Failed to join team"',
-        'detail="Failed to leave team"',
-        'detail="Failed to remove member"',
+        "ERR_TEAMS_CREATE_FAILED",
+        "ERR_TEAMS_UPDATE_FAILED",
+        "ERR_TEAMS_DELETE_FAILED",
+        "ERR_TEAMS_INVITE_FAILED",
+        "ERR_TEAMS_JOIN_FAILED",
+        "ERR_TEAMS_LEAVE_FAILED",
+        "ERR_TEAMS_REMOVE_MEMBER_FAILED",
         'detail="Failed to update role"',
         'detail="Failed to transfer leadership"',
         'detail="Failed to deposit"',

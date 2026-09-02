@@ -25,8 +25,11 @@ from src.models.user import User
 from src.models.fleet import Fleet, FleetBattle, FleetBattleCasualty, FleetStatus
 from src.services.fleet_service import FleetService
 from src.services.audit_service import AuditService, AuditAction
+from src.utils.error_handling import route_internal_error
 
 logger = logging.getLogger(__name__)
+
+ERR_ADMIN_FLEETS_LIST_FAILED = "ERR_ADMIN_FLEETS_LIST_FAILED"
 
 router = APIRouter(prefix="/admin/fleets", tags=["admin", "fleets"])
 
@@ -188,7 +191,7 @@ async def get_all_fleets(
         raise
     except Exception:
         logger.exception("Error in get_all_fleets")
-        raise HTTPException(status_code=500, detail="Failed to fetch fleets")
+        raise route_internal_error(ERR_ADMIN_FLEETS_LIST_FAILED, "Failed to fetch fleets")
 
 
 @router.get("/stats", response_model=FleetStatsResponse)

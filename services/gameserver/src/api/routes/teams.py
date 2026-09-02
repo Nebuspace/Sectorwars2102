@@ -21,7 +21,15 @@ from src.services.team_service import TeamService
 from src.services.message_service import MessageService
 from src.services import team_reputation_service
 from src.services.movement_service import share_warp_knowledge_with_team
+from src.utils.error_handling import route_internal_error
 
+ERR_TEAMS_CREATE_FAILED = "ERR_TEAMS_CREATE_FAILED"
+ERR_TEAMS_UPDATE_FAILED = "ERR_TEAMS_UPDATE_FAILED"
+ERR_TEAMS_DELETE_FAILED = "ERR_TEAMS_DELETE_FAILED"
+ERR_TEAMS_INVITE_FAILED = "ERR_TEAMS_INVITE_FAILED"
+ERR_TEAMS_JOIN_FAILED = "ERR_TEAMS_JOIN_FAILED"
+ERR_TEAMS_LEAVE_FAILED = "ERR_TEAMS_LEAVE_FAILED"
+ERR_TEAMS_REMOVE_MEMBER_FAILED = "ERR_TEAMS_REMOVE_MEMBER_FAILED"
 
 router = APIRouter(prefix="/teams", tags=["teams"])
 
@@ -172,7 +180,7 @@ async def create_team(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error("Failed to create team: %s", e)
-        raise HTTPException(status_code=500, detail="Failed to create team")
+        raise route_internal_error(ERR_TEAMS_CREATE_FAILED, "Failed to create team")
 
 
 @router.get("/{team_id}", response_model=TeamResponse)
@@ -264,7 +272,7 @@ async def update_team(
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         logger.error("Failed to update team: %s", e)
-        raise HTTPException(status_code=500, detail="Failed to update team")
+        raise route_internal_error(ERR_TEAMS_UPDATE_FAILED, "Failed to update team")
 
 
 @router.delete("/{team_id}")
@@ -282,7 +290,7 @@ async def delete_team(
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         logger.error("Failed to delete team: %s", e)
-        raise HTTPException(status_code=500, detail="Failed to delete team")
+        raise route_internal_error(ERR_TEAMS_DELETE_FAILED, "Failed to delete team")
 
 
 @router.get("/{team_id}/members", response_model=List[TeamMemberResponse])
@@ -324,7 +332,7 @@ async def invite_player(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error("Failed to invite player: %s", e)
-        raise HTTPException(status_code=500, detail="Failed to invite player")
+        raise route_internal_error(ERR_TEAMS_INVITE_FAILED, "Failed to invite player")
 
 
 @router.post("/join", response_model=TeamResponse)
@@ -385,7 +393,7 @@ async def join_team(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error("Failed to join team: %s", e)
-        raise HTTPException(status_code=500, detail="Failed to join team")
+        raise route_internal_error(ERR_TEAMS_JOIN_FAILED, "Failed to join team")
 
 
 @router.post("/leave")
@@ -402,7 +410,7 @@ async def leave_team(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error("Failed to leave team: %s", e)
-        raise HTTPException(status_code=500, detail="Failed to leave team")
+        raise route_internal_error(ERR_TEAMS_LEAVE_FAILED, "Failed to leave team")
 
 
 @router.delete("/{team_id}/members/{member_id}")
@@ -425,7 +433,7 @@ async def remove_member(
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         logger.error("Failed to remove member: %s", e)
-        raise HTTPException(status_code=500, detail="Failed to remove member")
+        raise route_internal_error(ERR_TEAMS_REMOVE_MEMBER_FAILED, "Failed to remove member")
 
 
 @router.put("/{team_id}/members/{member_id}/role", response_model=TeamMemberResponse)

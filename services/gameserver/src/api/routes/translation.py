@@ -12,8 +12,12 @@ from src.auth.admin_scopes import GALAXY_MANAGE, PLAYERS_VIEW
 from src.auth.dependencies import get_current_user, require_scope
 from src.models.user import User
 from src.services.admin_action_log_service import log_admin_action
+from src.utils.error_handling import route_internal_error
 
 logger = logging.getLogger(__name__)
+
+ERR_I18N_LANGUAGES_FAILED = "ERR_I18N_LANGUAGES_FAILED"
+ERR_I18N_DETECT_FAILED = "ERR_I18N_DETECT_FAILED"
 
 # Create router
 router = APIRouter(prefix="/i18n", tags=["Internationalization"])
@@ -68,9 +72,9 @@ async def get_supported_languages(
     try:
         languages = await translation_service.get_supported_languages(active_only)
         return languages
-    except Exception as e:
-        logger.error(f"Failed to get languages: {e}")
-        raise HTTPException(status_code=500, detail="Failed to retrieve languages")
+    except Exception:
+        logger.exception("Failed to get languages")
+        raise route_internal_error(ERR_I18N_LANGUAGES_FAILED, "Failed to retrieve languages")
 
 
 @router.get("/detect")
@@ -83,9 +87,9 @@ async def detect_language(
     try:
         detected_language = await translation_service.detect_user_language(accept_language or "")
         return {"detectedLanguage": detected_language}
-    except Exception as e:
-        logger.error(f"Failed to detect language: {e}")
-        return {"detectedLanguage": "en"}
+    except Exception:
+        logger.exception("Failed to detect language")
+        raise route_internal_error(ERR_I18N_DETECT_FAILED, "Failed to detect language")
 
 
 @router.get("/{language_code}")
