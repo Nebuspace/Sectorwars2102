@@ -6,28 +6,34 @@ defenses, sieges, and landing/departing operations.
 """
 
 import logging
-from datetime import datetime, timedelta, UTC
-from typing import List, Optional, Dict, Any
+from datetime import UTC, datetime, timedelta
+from typing import Any, Dict, List, Optional
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
-from sqlalchemy import func, text, select, update, or_
-from sqlalchemy.exc import OperationalError
-from sqlalchemy.orm.attributes import flag_modified
-from pydantic import BaseModel, Field
 
-from src.core.database import get_db
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, Field
+from sqlalchemy import func, or_, select, text, update
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
+
 from src.auth.dependencies import get_current_player
-from src.models.player import Player
+from src.core.database import get_db
 from src.models.planet import Planet, PlanetStatus
+from src.models.player import Player
 from src.models.ship import Ship, effective_cargo_capacity
 from src.services.planetary_service import (
     PlanetaryService,
+    clamp_tax_rate,
+    defense_unit_price,
     max_colonists_for,
     max_population_for,
-    defense_unit_price,
-    clamp_tax_rate,
 )
+from src.utils.error_handling import route_internal_error
+
+ERR_PLANETS_SHIELD_UPGRADE_FAILED = "ERR_PLANETS_SHIELD_UPGRADE_FAILED"
+ERR_PLANETS_DEFENSES_FETCH_FAILED = "ERR_PLANETS_DEFENSES_FETCH_FAILED"
+ERR_PLANETS_DEFENSES_UPDATE_FAILED = "ERR_PLANETS_DEFENSES_UPDATE_FAILED"
 
 router = APIRouter(prefix="/planets", tags=["planets"])
 
@@ -470,8 +476,8 @@ async def claim_planet(
     # pre-ADR-0091 planet has contest_state IS NULL — treated here as the
     # OPEN branch (any eligible player may settle) since it predates the
     # contest state machine and was never deployer-gated or reserved.
-    from src.models.planet import PlanetContestState
     from src.models.expedition import Expedition, ExpeditionStatus
+    from src.models.planet import PlanetContestState
     from src.services.multi_account_service import eligible_for_contest
 
     # (M24 CANON / Amendment A) real-player anti-sybil eligibility gate.
@@ -770,11 +776,11 @@ async def claim_planet(
     # Fully best-effort / non-fatal — an influence hiccup must never block a
     # colony founding (flush-only; the helper rides this route's single commit).
     try:
+        from src.models.sector import Sector as _Sector
         from src.services.faction_service import (
             adjust_sector_influence,
             dominant_reputation_faction_id,
         )
-        from src.models.sector import Sector as _Sector
 
         influence_faction_id = dominant_reputation_faction_id(db, player.id)
         if influence_faction_id is not None:
@@ -1927,9 +1933,9 @@ async def upgrade_shield_generator(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception:
         logger.exception("Failed to upgrade shield generator")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to upgrade shield generator",
+        raise route_internal_error(
+            ERR_PLANETS_SHIELD_UPGRADE_FAILED,
+            "Failed to upgrade shield generator",
         )
 
 
@@ -1954,9 +1960,9 @@ async def get_planet_defenses(
         raise HTTPException(status_code=404, detail=str(e))
     except Exception:
         logger.exception("Failed to fetch planet defenses")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to fetch planet defenses",
+        raise route_internal_error(
+            ERR_PLANETS_DEFENSES_FETCH_FAILED,
+            "Failed to fetch planet defenses",
         )
 
 
@@ -2040,9 +2046,9 @@ async def get_planet_details(
         planet_id = UUID(planetId)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid planet ID format")
-    
+
     service = PlanetaryService(db)
-    
+
     try:
         planet_data = service.get_planet_details(planet_id, player.id)
         return planet_data
@@ -2068,9 +2074,9 @@ async def allocate_colonists(
         planet_id = UUID(planetId)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid planet ID format")
-    
+
     service = PlanetaryService(db)
-    
+
     try:
         result = service.allocate_colonists(
             planet_id=planet_id,
@@ -2102,9 +2108,9 @@ async def upgrade_building(
         planet_id = UUID(planetId)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid planet ID format")
-    
+
     service = PlanetaryService(db)
-    
+
     try:
         result = service.upgrade_building(
             planet_id=planet_id,
@@ -2135,9 +2141,9 @@ async def update_defenses(
         planet_id = UUID(planetId)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid planet ID format")
-    
+
     service = PlanetaryService(db)
-    
+
     try:
         result = service.update_defenses(
             planet_id=planet_id,
@@ -2151,9 +2157,9 @@ async def update_defenses(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception:
         logger.exception("Failed to update defenses")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to update defenses",
+        raise route_internal_error(
+            ERR_PLANETS_DEFENSES_UPDATE_FAILED,
+            "Failed to update defenses",
         )
 
 
@@ -2232,9 +2238,9 @@ async def set_specialization(
         planet_id = UUID(planetId)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid planet ID format")
-    
+
     service = PlanetaryService(db)
-    
+
     try:
         result = service.set_specialization(
             planet_id=planet_id,
@@ -2257,7 +2263,7 @@ async def get_siege_status(
         planet_id = UUID(planetId)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid planet ID format")
-    
+
     service = PlanetaryService(db)
 
     try:
