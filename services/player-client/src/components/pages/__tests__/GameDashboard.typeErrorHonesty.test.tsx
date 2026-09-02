@@ -52,3 +52,37 @@ describe('GameDashboard TypeError densify (LEG-3736)', () => {
     );
   });
 });
+
+describe('GameDashboard 403/429 densify (LEG-4099)', () => {
+  const apiRequestError = (status: number, message?: string) => {
+    const err = new Error(message ?? `API Error: ${status}`);
+    (err as { status?: number }).status = status;
+    return err;
+  };
+
+  it('formatQuantumRefineryError surfaces 403/429 without raw status codes', () => {
+    expect(formatQuantumRefineryError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatQuantumRefineryError(apiRequestError(403, 'refine_denied'))).toBe('refine_denied');
+    expect(formatQuantumRefineryError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatQuantumRefineryError(apiRequestError(429))).not.toMatch(/\b429\b/);
+  });
+
+  it('formatTerraformingStartError surfaces 403/429 without raw status codes', () => {
+    expect(formatTerraformingStartError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatTerraformingStartError(apiRequestError(403, 'terraform_denied'))).toBe(
+      'terraform_denied',
+    );
+    expect(formatTerraformingStartError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatTerraformingStartError(apiRequestError(429))).not.toMatch(/\b429\b/);
+  });
+
+  it('formatGameDashboardOpsError surfaces 403/429 without raw status codes', () => {
+    const fallback = 'Shield generator upgrade failed';
+    expect(formatGameDashboardOpsError(apiRequestError(403), fallback)).toMatch(/permission/i);
+    expect(formatGameDashboardOpsError(apiRequestError(403, 'ops_denied'), fallback)).toBe(
+      'ops_denied',
+    );
+    expect(formatGameDashboardOpsError(apiRequestError(429), fallback)).toMatch(/rate limit/i);
+    expect(formatGameDashboardOpsError(apiRequestError(429), fallback)).not.toMatch(/\b429\b/);
+  });
+});

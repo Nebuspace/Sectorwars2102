@@ -45,13 +45,46 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
   );
 };
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
 export function formatStealthModuleInstallError(err: unknown): string {
   const fallback = 'Stealth Module install failed';
-  if (err instanceof TypeError) return fallback;
+  const status = httpStatus(err);
   const responseDetail =
     (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-  if (typeof responseDetail === 'string' && responseDetail) return responseDetail;
   const message = (err as { message?: string })?.message;
+  const detailCandidate =
+    typeof responseDetail === 'string' && responseDetail.trim()
+      ? responseDetail.trim()
+      : typeof message === 'string' && message.trim()
+        ? message.trim()
+        : undefined;
+  const hasServerDetail =
+    !(err instanceof TypeError) &&
+    typeof detailCandidate === 'string' &&
+    detailCandidate.length > 0 &&
+    !/^API Error: \d+$/.test(detailCandidate) &&
+    !isNetworkCollapseMessage(detailCandidate);
+
+  if (status === 403) {
+    if (hasServerDetail) return detailCandidate!;
+    return 'You do not have permission to install a Stealth Module.';
+  }
+
+  if (status === 429) {
+    return 'Stealth Module install rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (err instanceof TypeError) return fallback;
+  if (hasServerDetail) return detailCandidate!;
   if (typeof message === 'string' && message) {
     if (isNetworkCollapseMessage(message)) return fallback;
     return message;

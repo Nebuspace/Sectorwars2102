@@ -38,6 +38,15 @@ export function formatRecommendationsLoadError(err: unknown): string {
     !/^Failed to fetch recommendations:/i.test(message.trim()) &&
     !/^API Error: \d+$/.test(message.trim());
 
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission to view trading recommendations.';
+  }
+
+  if (status === 429) {
+    return 'Trading recommendations rate limit exceeded — wait a moment and try again.';
+  }
+
   if (status === 503 || status === 500) {
     if (hasServerDetail) return message!;
     return fallback;

@@ -316,14 +316,47 @@ const TERRAFORM_MAX_HABITABILITY = 90;
 
 const TERRAFORMING_START_FAILED_FALLBACK = 'Terraforming start failed';
 
-/** Exported for TypeError/network honesty Vitest (LEG-3272). */
-export function formatTerraformingStartError(err: unknown): string {
-  if (err instanceof TypeError) return TERRAFORMING_START_FAILED_FALLBACK;
-  if (err instanceof Error && err.message) return err.message;
+function httpStatusGameDashboard(err: unknown): number | undefined {
   if (err && typeof err === 'object') {
-    const msg = (err as { message?: unknown }).message;
-    if (typeof msg === 'string' && msg) return msg;
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
   }
+  return undefined;
+}
+
+const isTerraformStartNetworkCollapse = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
+};
+
+/** Exported for TypeError/network honesty Vitest (LEG-3272 / LEG-4099). */
+export function formatTerraformingStartError(err: unknown): string {
+  const status = httpStatusGameDashboard(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const detail =
+    !(err instanceof TypeError) &&
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isTerraformStartNetworkCollapse(message)
+      ? message.trim()
+      : undefined;
+
+  if (status === 403) {
+    if (detail) return detail;
+    return 'You do not have permission to start terraforming.';
+  }
+  if (status === 429) {
+    return 'Terraforming start rate limit exceeded — wait a moment and try again.';
+  }
+  if (detail) return detail;
   return TERRAFORMING_START_FAILED_FALLBACK;
 }
 
@@ -345,11 +378,30 @@ const isGameDashboardNetworkCollapseMessage = (msg: string): boolean => {
  */
 export function formatGameDashboardOpsError(err: unknown, fallback: string): string {
   const e = err as {
-    response?: { data?: { detail?: unknown; message?: unknown } };
+    response?: { data?: { detail?: unknown; message?: unknown }; status?: number };
     message?: string;
   };
+  const status = httpStatusGameDashboard(err);
   const raw = e?.response?.data?.detail ?? e?.response?.data?.message;
-  if (typeof raw === 'string' && raw.trim()) return raw;
+  const responseCopy = typeof raw === 'string' && raw.trim() ? raw.trim() : undefined;
+  const messageDetail =
+    typeof e?.message === 'string' &&
+    e.message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(e.message.trim()) &&
+    !isGameDashboardNetworkCollapseMessage(e.message)
+      ? e.message.trim()
+      : undefined;
+  const serverCopy = responseCopy ?? messageDetail;
+
+  if (status === 403) {
+    if (serverCopy) return serverCopy;
+    return 'You do not have permission to perform this planetary operation.';
+  }
+  if (status === 429) {
+    return 'Planetary operation rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (responseCopy) return responseCopy;
   if (err instanceof TypeError) return fallback;
   if (!e?.response && typeof e?.message === 'string') {
     if (isGameDashboardNetworkCollapseMessage(e.message)) return fallback;

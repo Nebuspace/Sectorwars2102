@@ -245,6 +245,21 @@ const apiRequestError = (status: number, message?: string) => {
   return err;
 };
 
+describe('formatProfessionsLoadError 429 densify (LEG-4103)', () => {
+  const apiRequestError = (status: number, message?: string) => {
+    const err = new Error(message ?? `API Error: ${status}`);
+    (err as { status?: number }).status = status;
+    return err;
+  };
+
+  it('surfaces 429 without raw status codes (403 densify remains)', () => {
+    expect(formatProfessionsLoadError(apiRequestError(403))).toMatch(/own this planet/i);
+    expect(formatProfessionsLoadError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatProfessionsLoadError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatProfessionsLoadError(apiRequestError(429))).not.toMatch(/TypeError/i);
+  });
+});
+
 describe('ProfessionsPanel train/assign 403/429 densify (LEG-3971)', () => {
   it('formatProfessionsTrainError surfaces 403/429 without raw status codes', () => {
     expect(formatProfessionsTrainError(apiRequestError(403))).toMatch(/permission/i);

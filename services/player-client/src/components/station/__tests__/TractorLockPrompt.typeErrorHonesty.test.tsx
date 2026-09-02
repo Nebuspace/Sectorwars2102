@@ -29,3 +29,18 @@ describe('TractorLockPrompt Network Error densify (LEG-3563)', () => {
     );
   });
 });
+
+describe('formatTractorLockActionError 403/429 densify (LEG-4086)', () => {
+  const apiRequestError = (status: number, message?: string) => {
+    const err = new Error(message ?? `API Error: ${status}`);
+    (err as { status?: number }).status = status;
+    return err;
+  };
+  it('surfaces 403/429 without raw status codes', () => {
+    expect(formatTractorLockActionError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatTractorLockActionError(apiRequestError(403, 'lock_denied'))).toBe('lock_denied');
+    expect(formatTractorLockActionError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatTractorLockActionError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatTractorLockActionError(apiRequestError(403))).not.toMatch(/TypeError/i);
+  });
+});

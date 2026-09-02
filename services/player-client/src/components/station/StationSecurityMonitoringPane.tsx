@@ -41,7 +41,7 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
   );
 };
 
-function httpStatus(err: unknown): number | undefined {
+function httpStatusStationSecurity(err: unknown): number | undefined {
   if (err && typeof err === 'object') {
     const direct = (err as { status?: number }).status;
     if (typeof direct === 'number') return direct;
@@ -51,9 +51,9 @@ function httpStatus(err: unknown): number | undefined {
   return undefined;
 }
 
-/** Exported for TypeError densify tests — fetch/upgrade/downgrade catch paths use this. */
+/** Exported for TypeError densify tests — fetch/upgrade/downgrade catch paths use this (LEG-4102). */
 export function formatStationSecurityError(err: unknown, fallback: string): string {
-  const status = httpStatus(err);
+  const status = httpStatusStationSecurity(err);
   let detail: string | undefined;
   if (err && typeof err === 'object') {
     const resp = (err as { response?: { data?: unknown } }).response;
@@ -79,7 +79,6 @@ export function formatStationSecurityError(err: unknown, fallback: string): stri
     if (detail) return detail;
     return 'You do not have permission to manage station security.';
   }
-
   if (status === 429) {
     return 'Station security action rate limit exceeded — wait a moment and try again.';
   }

@@ -25,6 +25,7 @@ from src.services.special_formation_service import (
     GoldBubblePlacementError,
     place_gold_bubble,
 )
+from src.utils.error_handling import route_internal_error
 
 logger = logging.getLogger(__name__)
 
@@ -140,9 +141,9 @@ async def place_gold_bubble_route(
             raise
         except Exception as e:
             logger.error("place_gold_bubble failed for region %s: %s", region_id, e)
-            raise HTTPException(
-                status_code=500,
-                detail="Failed to place Gold Bubble",
+            raise route_internal_error(
+                "ERR_ADMIN_FORMATIONS_GOLD_BUBBLE_PLACE_FAILED",
+                "Failed to place Gold Bubble",
             ) from e
 
 

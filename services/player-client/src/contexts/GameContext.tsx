@@ -574,16 +574,60 @@ function formatGameContextTransportError(err: unknown, fallback: string): string
   return fallback;
 }
 
-/** Exported for TypeError/network honesty Vitest (LEG-3265). */
-export function formatSetActiveShipError(err: unknown): string {
-  if (err instanceof TypeError) return 'Failed to set active ship';
-  return 'Failed to set active ship';
+function httpStatusGameContextShipMoves(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
 }
 
-/** Exported for TypeError/network honesty Vitest (LEG-3265). */
+/** Exported for TypeError/network honesty Vitest (LEG-3265 / LEG-4100). */
+export function formatSetActiveShipError(err: unknown): string {
+  const fallback = 'Failed to set active ship';
+  const status = httpStatusGameContextShipMoves(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const detail =
+    !(err instanceof TypeError) &&
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNetworkCollapseMessage(message)
+      ? message.trim()
+      : undefined;
+  if (status === 403) {
+    if (detail) return detail;
+    return 'You do not have permission to set the active ship.';
+  }
+  if (status === 429) {
+    return 'Active ship change rate limit exceeded — wait a moment and try again.';
+  }
+  return fallback;
+}
+
+/** Exported for TypeError/network honesty Vitest (LEG-3265 / LEG-4100). */
 export function formatGetAvailableMovesError(err: unknown): string {
-  if (err instanceof TypeError) return 'Failed to get available moves';
-  return 'Failed to get available moves';
+  const fallback = 'Failed to get available moves';
+  const status = httpStatusGameContextShipMoves(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const detail =
+    !(err instanceof TypeError) &&
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNetworkCollapseMessage(message)
+      ? message.trim()
+      : undefined;
+  if (status === 403) {
+    if (detail) return detail;
+    return 'You do not have permission to load available moves.';
+  }
+  if (status === 429) {
+    return 'Available moves rate limit exceeded — wait a moment and try again.';
+  }
+  return fallback;
 }
 
 const isPlanetaryNetworkCollapse = (msg: string): boolean => {

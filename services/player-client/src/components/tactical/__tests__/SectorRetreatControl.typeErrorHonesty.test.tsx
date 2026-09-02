@@ -103,3 +103,21 @@ describe('SectorRetreatControl retreat TypeError densify (LEG-3159)', () => {
     expect(msg?.textContent).not.toMatch(/TypeError/i);
   });
 });
+
+describe('formatSectorRetreatError 403/429 densify (LEG-4080)', () => {
+  const FALLBACK = 'Sector retreat failed';
+  const apiRequestError = (status: number, message?: string) => {
+    const err = new Error(message ?? `API Error: ${status}`);
+    (err as { status?: number }).status = status;
+    return err;
+  };
+  it('surfaces 403/429 without raw status codes', () => {
+    expect(formatSectorRetreatError(apiRequestError(403), FALLBACK)).toMatch(/permission/i);
+    expect(formatSectorRetreatError(apiRequestError(403, 'retreat_denied'), FALLBACK)).toBe(
+      'retreat_denied',
+    );
+    expect(formatSectorRetreatError(apiRequestError(429), FALLBACK)).toMatch(/rate limit/i);
+    expect(formatSectorRetreatError(apiRequestError(429), FALLBACK)).not.toMatch(/\b429\b/);
+    expect(formatSectorRetreatError(apiRequestError(403), FALLBACK)).not.toMatch(/TypeError/i);
+  });
+});

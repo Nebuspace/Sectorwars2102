@@ -23,3 +23,18 @@ describe('TeamChat TypeError densify (LEG-3412)', () => {
     expect(formatTeamChatSendError(new Error('muted'))).toBe('muted');
   });
 });
+
+describe('formatTeamChatSendError 403/429 densify (LEG-4082)', () => {
+  const apiRequestError = (status: number, message?: string) => {
+    const err = new Error(message ?? `API Error: ${status}`);
+    (err as { status?: number }).status = status;
+    return err;
+  };
+  it('surfaces 403/429 without raw status codes', () => {
+    expect(formatTeamChatSendError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatTeamChatSendError(apiRequestError(403, 'muted'))).toBe('muted');
+    expect(formatTeamChatSendError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatTeamChatSendError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatTeamChatSendError(apiRequestError(403))).not.toMatch(/TypeError/i);
+  });
+});
