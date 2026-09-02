@@ -13,6 +13,10 @@ import MiningVenue, { formatMiningVenueError } from './MiningVenue';
 import type { ClaimLicenseRow } from './MiningVenue';
 import GamblingVenue, { formatGamblingVenueError } from './GamblingVenue';
 import RefiningVenue from './RefiningVenue';
+import SyndicateFencePanel, {
+  probeSyndicateFence,
+} from './SyndicateFencePanel';
+import type { SyndicateFenceInfo } from '../../services/api';
 import { getStationClassInfo } from '../common/stationIdentity';
 import { shipAPI, registryAPI, ariaMarketAPI, shipUpgradeAPI, miningAPI, type AriaMarketIntelList } from '../../services/api';
 import { formatCredits } from '../../utils/formatters';
@@ -138,7 +142,7 @@ export function formatSpaceDockShellError(error: unknown, fallback: string): str
 }
 
 // Venue type definitions
-type VenueType = 'hub' | 'trading' | 'shipyard' | 'construction' | 'portoffice' | 'contracts' | 'genesis' | 'armory' | 'services' | 'gambling' | 'mining' | 'refining';
+type VenueType = 'hub' | 'trading' | 'shipyard' | 'construction' | 'portoffice' | 'contracts' | 'genesis' | 'armory' | 'services' | 'gambling' | 'mining' | 'refining' | 'syndicatefence';
 type GamblingGame = 'menu' | 'slots' | 'dice' | 'blackjack' | 'lottery';
 
 // Blackjack card types
@@ -319,6 +323,8 @@ interface SpaceDockProps {
 const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = false }) => {
   const { playerState, stationsInSector, updatePlayerCredits, updateShipGenesis, refreshPlayerState, loadShips, getStationSlips } = useGame();
   const [activeVenue, setActiveVenue] = useState<VenueType>('hub');
+  // LEG-4112 — GET-gated syndicate fence venue (404 = hide; never advertise).
+  const [syndicateFenceInfo, setSyndicateFenceInfo] = useState<SyndicateFenceInfo | null>(null);
 
   React.useEffect(() => {
     const latched = getLatestSpacedockVenueRequest();
@@ -526,6 +532,28 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
     currentStation.type.toUpperCase() === 'BLACK_MARKET';
   const hasBlackMarketAccess = stationIsBlackMarket;
 
+  // LEG-4112 — probe syndicate fence GET; 404 keeps the venue hidden.
+  React.useEffect(() => {
+    const stationId = currentStation?.id;
+    if (!stationId || !playerState?.is_docked) {
+      setSyndicateFenceInfo(null);
+      return;
+    }
+    let cancelled = false;
+    void probeSyndicateFence(stationId).then((info) => {
+      if (!cancelled) setSyndicateFenceInfo(info);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentStation?.id, playerState?.is_docked]);
+
+  React.useEffect(() => {
+    if (activeVenue === 'syndicatefence' && !syndicateFenceInfo) {
+      setActiveVenue('hub');
+    }
+  }, [activeVenue, syndicateFenceInfo]);
+
   // Define available venues based on station services
   const stationServices = currentStation?.services || {};
 
@@ -658,7 +686,20 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
       description: 'Test your luck with games of chance and skill',
       available: true,
       services: ['Cosmic Slots', 'Nebula Dice', 'Stellar Blackjack', 'Sector Lottery']
-    }
+    },
+    // LEG-4112 — only when GET /syndicate-fence succeeds (404 = omit entirely).
+    ...(syndicateFenceInfo
+      ? [
+          {
+            id: 'syndicatefence' as VenueType,
+            name: 'Syndicate Fence',
+            icon: '🕶️',
+            description: 'Fence flagged-origin cargo through Shadow Syndicate contacts',
+            available: true,
+            services: ['Cargo Fencing', `${syndicateFenceInfo.payout_percent}% payout`],
+          },
+        ]
+      : []),
   ];
 
   // Gambling game logic - API based
@@ -2243,6 +2284,17 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
           <PortOfficeVenue
             stationId={currentStation.id}
             stationName={currentStation.name}
+            credits={displayCredits}
+            onCreditsSet={handleCreditsSet}
+            onBack={() => setActiveVenue('hub')}
+          />
+        ) : renderHub();
+      case 'syndicatefence':
+        return currentStation && syndicateFenceInfo ? (
+          <SyndicateFencePanel
+            stationId={currentStation.id}
+            stationName={currentStation.name}
+            fenceInfo={syndicateFenceInfo}
             credits={displayCredits}
             onCreditsSet={handleCreditsSet}
             onBack={() => setActiveVenue('hub')}

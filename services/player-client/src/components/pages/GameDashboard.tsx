@@ -10,6 +10,10 @@ import TradingInterface from '../trading/TradingInterface';
 import SpaceDockInterface from '../spacedock/SpaceDockInterface';
 import PortOfficeVenue from '../spacedock/PortOfficeVenue';
 import ContractBoardVenue from '../spacedock/ContractBoardVenue';
+import SyndicateFencePanel, {
+  probeSyndicateFence,
+} from '../spacedock/SyndicateFencePanel';
+import type { SyndicateFenceInfo } from '../../services/api';
 import PopulationCenterInterface from '../planetary/PopulationCenterInterface';
 import SurveyExpeditionPanel from '../survey/SurveyExpeditionPanel';
 import { LandingRightsControl } from '../planetary/LandingRightsControl';
@@ -1041,11 +1045,35 @@ const GameDashboardInner: React.FC = () => {
 
   // Docked trading-station terminal: trade desk or the Port Office registry.
   // SpaceDocks/TradeDocks reach the Port Office through their own venue hub.
-  const [stationTerminal, setStationTerminal] = useState<'trade' | 'portoffice' | 'contracts' | 'bank'>('trade');
+  const [stationTerminal, setStationTerminal] = useState<
+    'trade' | 'portoffice' | 'contracts' | 'bank' | 'fence'
+  >('trade');
+  // LEG-4112 — GET-gated syndicate fence tab (404 = hide).
+  const [syndicateFenceInfo, setSyndicateFenceInfo] = useState<SyndicateFenceInfo | null>(null);
   useEffect(() => {
     setStationTerminal('trade');
   }, [playerState?.current_port_id]);
 
+  useEffect(() => {
+    const stationId = playerState?.current_port_id;
+    if (!stationId || !playerState?.is_docked) {
+      setSyndicateFenceInfo(null);
+      return;
+    }
+    let cancelled = false;
+    void probeSyndicateFence(stationId).then((info) => {
+      if (!cancelled) setSyndicateFenceInfo(info);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [playerState?.current_port_id, playerState?.is_docked]);
+
+  useEffect(() => {
+    if (stationTerminal === 'fence' && !syndicateFenceInfo) {
+      setStationTerminal('trade');
+    }
+  }, [stationTerminal, syndicateFenceInfo]);
 
   // NAV monitor mode (WO-UI2-DECK-RECONCILE, §05: [COURSE · CHART · DRIVE]):
   // COURSE (adjacent-exit MOVE + plotted-course PLOT/ENGAGE, its own page --
@@ -3286,6 +3314,18 @@ const GameDashboardInner: React.FC = () => {
                       >
                         🏦 BANK
                       </button>
+                      {syndicateFenceInfo && (
+                        <button
+                          type="button"
+                          role="tab"
+                          aria-selected={stationTerminal === 'fence'}
+                          className={`venue-tab${stationTerminal === 'fence' ? ' active' : ''}`}
+                          onClick={() => setStationTerminal('fence')}
+                          data-testid="station-tab-syndicate-fence"
+                        >
+                          🕶️ FENCE
+                        </button>
+                      )}
                     </div>
                   )}
                   {/* UNDOCK & LAUNCH — for regular (non-SpaceDock) stations.
@@ -3337,6 +3377,23 @@ const GameDashboardInner: React.FC = () => {
                       playerTurns={playerState?.turns ?? 0}
                       cargoFree={shipCargoFree(currentShip)}
                       onAfterWithdraw={() => { void refreshPlayerState(); }}
+                    />
+                  ) : stationTerminal === 'fence' &&
+                    playerState?.current_port_id &&
+                    syndicateFenceInfo ? (
+                    <SyndicateFencePanel
+                      stationId={playerState.current_port_id}
+                      stationName={
+                        stationsInSector?.find((s: any) => s.id === playerState?.current_port_id)?.name ||
+                        'Trading Station'
+                      }
+                      fenceInfo={syndicateFenceInfo}
+                      credits={playerState?.credits ?? 0}
+                      onCreditsSet={(c) => {
+                        updatePlayerCredits(c);
+                        void refreshPlayerState();
+                      }}
+                      onBack={() => setStationTerminal('trade')}
                     />
                   ) : (
                     <TradingInterface onClose={() => {}} />

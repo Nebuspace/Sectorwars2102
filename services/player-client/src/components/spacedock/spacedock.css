@@ -3269,3 +3269,88 @@
   flex-direction: column;
   gap: 6px;
 }
+
+/* LEG-4112 — Shadow Syndicate fence desk (cargo fencing only) */
+.syndicate-fence-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 14px;
+  min-height: 0;
+}
+.syndicate-fence-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.syndicate-fence-header h3 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+.syndicate-fence-sub {
+  margin: 2px 0 0;
+  font-size: 0.78rem;
+  opacity: 0.75;
+}
+.syndicate-fence-credits {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.syndicate-fence-empty {
+  font-size: 0.85rem;
+  opacity: 0.8;
+  font-style: italic;
+}
+.syndicate-fence-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.syndicate-fence-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  border: 1px solid rgba(180, 140, 100, 0.35);
+  border-radius: 4px;
+  background: rgba(40, 28, 18, 0.35);
+}
+.syndicate-fence-row-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.8rem;
+}
+.syndicate-fence-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.syndicate-fence-qty {
+  width: 4.5rem;
+  padding: 4px 6px;
+  border-radius: 3px;
+  border: 1px solid rgba(180, 140, 100, 0.45);
+  background: rgba(0, 0, 0, 0.35);
+  color: inherit;
+}
+.syndicate-fence-cta {
+  padding: 6px 14px;
+  border-radius: 3px;
+  border: 1px solid rgba(200, 150, 80, 0.55);
+  background: rgba(120, 70, 20, 0.55);
+  color: #f5e6c8;
+  font-weight: 600;
+  cursor: pointer;
+}
+.syndicate-fence-cta:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

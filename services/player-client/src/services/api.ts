@@ -2192,6 +2192,44 @@ export const tradingAPI = {
     }),
 };
 
+/** GET /trading/syndicate-fence/{station_id} — tip-PRESENT (LEG-4112). */
+export interface SyndicateFenceInfo {
+  station_id: string;
+  has_syndicate_fence: boolean;
+  services: string[];
+  payout_percent: number;
+}
+
+/** POST /trading/syndicate-fence/fence success body (LEG-4112). */
+export interface SyndicateFenceCargoResult {
+  success: boolean;
+  reason: string;
+  commodity: string;
+  quantity: number;
+  market_value: number;
+  payout: number;
+  payout_percent: number;
+  credits: number;
+}
+
+/** Shadow Syndicate cargo fencing — tip GET/POST only; invent=0 (LEG-4112). */
+export const syndicateFenceAPI = {
+  getFence: (stationId: string): Promise<SyndicateFenceInfo> =>
+    apiRequest(
+      `/api/v1/trading/syndicate-fence/${encodeURIComponent(stationId)}`,
+    ),
+
+  fenceCargo: (body: {
+    station_id: string;
+    commodity: string;
+    quantity: number;
+  }): Promise<SyndicateFenceCargoResult> =>
+    apiRequest('/api/v1/trading/syndicate-fence/fence', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+};
+
 // Trade Contract APIs (SYSTEMS/contracts.md, gameserver contracts.py) —
 // per-station board reads, accept/complete/abandon transitions, and
 // player-issued posting/cancel. Callers type-cast the response at the call
