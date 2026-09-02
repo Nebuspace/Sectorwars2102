@@ -44,5 +44,7 @@ def test_trading_dock_moor_http500_catches_are_structured():
     assert 'detail="Undocking failed"' not in src
     assert 'detail="Long-term mooring failed"' not in src
     assert 'detail="Releasing long-term mooring failed"' not in src
-    # Trade failed intentionally left opaque for a separate Soft-ORDER
-    assert 'detail="Trade failed"' in src
+    # Buy/sell Trade-failed densify (LEG-3911 / #1407) also structured now
+    assert "ERR_TRADING_BUY_FAILED" in src
+    assert "ERR_TRADING_SELL_FAILED" in src
+    assert 'detail="Trade failed"' not in src
