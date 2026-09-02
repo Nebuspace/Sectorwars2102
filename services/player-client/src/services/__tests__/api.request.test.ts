@@ -648,6 +648,37 @@ describe('apiRequest via trade/combat/grey wrappers', () => {
     );
   });
 
+  it('portOwnershipAPI.getMyStations GETs /my-stations (LEG-4125 insolvency hydrate source)', async () => {
+    get.mockResolvedValue({
+      data: {
+        stations: [
+          {
+            station_id: 'st-1',
+            revenue: {
+              insolvency_months: 3,
+              insolvency_pending: true,
+              insolvency_sell_at: '2099-01-01T00:00:00Z',
+            },
+          },
+        ],
+      },
+    });
+    const out = await portOwnershipAPI.getMyStations();
+    expect(out).toEqual({
+      stations: [
+        {
+          station_id: 'st-1',
+          revenue: {
+            insolvency_months: 3,
+            insolvency_pending: true,
+            insolvency_sell_at: '2099-01-01T00:00:00Z',
+          },
+        },
+      ],
+    });
+    expect(get).toHaveBeenCalledWith('/api/v1/port-ownership/my-stations', jsonHeaders);
+  });
+
   it('portOwnershipAPI.inject POSTs amount to /stations/{id}/inject (LEG-4123)', async () => {
     post.mockResolvedValue({
       data: {
