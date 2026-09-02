@@ -11,11 +11,19 @@ function assertNoTransportLeak(text: string) {
   expect(text).not.toContain('Network Error');
   expect(text).not.toMatch(/Failed to fetch/i);
   expect(text).not.toMatch(/TypeError/i);
+  expect(text).not.toMatch(/^HTTP \d+$/);
+  expect(text).not.toContain('Request failed with status code');
 }
+
+const axiosError = (status: number, detail?: string) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: detail ? { detail } : {} },
+  });
 
 /**
  * LEG-3790 Soft-ORDER — CombatActivityChart TypeError/Network Error densify.
  * Chart is presentational; parent fetch uses combatActivityLoadError for operator-safe copy.
+ * LEG-3896 Soft-ORDER — 403/429 HTTP honesty densify.
  */
 describe('combatActivityLoadError formatter (LEG-3790)', () => {
   it('collapses TypeError Failed to fetch to operator-safe fallback', () => {
@@ -41,6 +49,22 @@ describe('combatActivityLoadError formatter (LEG-3790)', () => {
       response: { status: 500, data: { detail: 'Combat analytics temporarily disabled.' } },
     });
     expect(text).toBe('Combat analytics temporarily disabled.');
+  });
+
+  it('surfaces 403 with Access denied copy (no raw HTTP 403)', () => {
+    const text = combatActivityLoadError(axiosError(403));
+    expect(text).toMatch(/Access denied/i);
+    expect(text).not.toMatch(/\b403\b/);
+    expect(text).not.toMatch(/HTTP 403/i);
+    assertNoTransportLeak(text);
+  });
+
+  it('surfaces 429 as admin rate-limit copy (no raw HTTP 429)', () => {
+    const text = combatActivityLoadError(axiosError(429));
+    expect(text).toMatch(/rate limit/i);
+    expect(text).not.toMatch(/\b429\b/);
+    expect(text).not.toMatch(/HTTP 429/i);
+    assertNoTransportLeak(text);
   });
 });
 

@@ -1,8 +1,4 @@
-"""LEG-3605 / LEG-3872 — admin_economy.py HTTP 500 catches must not echo Exception text.
-
-Mirrors LEG-3595 teams.py / LEG-3581 audit.py opaque densify.
-LEG-3872 upgraded the five catches to structured route_internal_error.
-"""
+"""LEG-3872 — admin_economy unexpected failures return structured 500s."""
 
 from __future__ import annotations
 
@@ -15,6 +11,11 @@ from fastapi import HTTPException
 
 from src.api.routes import admin_economy as ae_mod
 from src.api.routes.admin_economy import (
+    ERR_ADMIN_ECONOMY_DASHBOARD_FAILED,
+    ERR_ADMIN_ECONOMY_INTERVENTION_FAILED,
+    ERR_ADMIN_ECONOMY_MARKET_DATA_FAILED,
+    ERR_ADMIN_ECONOMY_METRICS_FAILED,
+    ERR_ADMIN_ECONOMY_PRICE_ALERTS_FAILED,
     MarketInterventionRequest,
     get_dashboard_summary,
     get_economic_metrics,
@@ -30,23 +31,23 @@ class _BoomDB:
 
 
 @pytest.mark.asyncio
-async def test_get_market_data_unexpected_is_opaque_500():
-    """Outer get_market_data catch must not echo raw Exception text."""
+async def test_get_market_data_unexpected_returns_structured_500():
+    secret = "secret-market-data-query-should-not-leak"
+
     with pytest.raises(HTTPException) as excinfo:
         await get_market_data(admin=SimpleNamespace(), db=_BoomDB())
 
     exc = excinfo.value
     assert exc.status_code == 500
     assert exc.detail == {
-        "error_code": "ERR_ADMIN_ECONOMY_MARKET_DATA_FAILED",
+        "error_code": ERR_ADMIN_ECONOMY_MARKET_DATA_FAILED,
         "detail": "Failed to retrieve market data",
     }
-    assert "secret-market-data-query-should-not-leak" not in str(exc.detail)
+    assert secret not in str(exc.detail)
 
 
 @pytest.mark.asyncio
-async def test_get_economic_metrics_unexpected_is_opaque_500():
-    """get_economic_metrics catch must not echo raw Exception text."""
+async def test_get_economic_metrics_unexpected_returns_structured_500():
     secret = "secret-economic-metrics-should-not-leak"
     db = MagicMock()
     db.query.side_effect = RuntimeError(secret)
@@ -57,15 +58,14 @@ async def test_get_economic_metrics_unexpected_is_opaque_500():
     exc = excinfo.value
     assert exc.status_code == 500
     assert exc.detail == {
-        "error_code": "ERR_ADMIN_ECONOMY_METRICS_FAILED",
+        "error_code": ERR_ADMIN_ECONOMY_METRICS_FAILED,
         "detail": "Failed to retrieve economic metrics",
     }
     assert secret not in str(exc.detail)
 
 
 @pytest.mark.asyncio
-async def test_get_price_alerts_unexpected_is_opaque_500():
-    """get_price_alerts catch must not echo raw Exception text."""
+async def test_get_price_alerts_unexpected_returns_structured_500():
     secret = "secret-price-alerts-should-not-leak"
 
     with patch.object(ae_mod, "EconomyAnalyticsService") as svc_cls:
@@ -76,15 +76,14 @@ async def test_get_price_alerts_unexpected_is_opaque_500():
     exc = excinfo.value
     assert exc.status_code == 500
     assert exc.detail == {
-        "error_code": "ERR_ADMIN_ECONOMY_PRICE_ALERTS_FAILED",
+        "error_code": ERR_ADMIN_ECONOMY_PRICE_ALERTS_FAILED,
         "detail": "Failed to retrieve price alerts",
     }
     assert secret not in str(exc.detail)
 
 
 @pytest.mark.asyncio
-async def test_perform_market_intervention_unexpected_is_opaque_500():
-    """perform_market_intervention catch must not echo raw Exception text."""
+async def test_perform_market_intervention_unexpected_returns_structured_500():
     secret = "secret-intervention-should-not-leak"
     request = MarketInterventionRequest(
         intervention_type="reset_market",
@@ -103,15 +102,14 @@ async def test_perform_market_intervention_unexpected_is_opaque_500():
     exc = excinfo.value
     assert exc.status_code == 500
     assert exc.detail == {
-        "error_code": "ERR_ADMIN_ECONOMY_INTERVENTION_FAILED",
+        "error_code": ERR_ADMIN_ECONOMY_INTERVENTION_FAILED,
         "detail": "Market intervention failed",
     }
     assert secret not in str(exc.detail)
 
 
 @pytest.mark.asyncio
-async def test_get_dashboard_summary_unexpected_is_opaque_500():
-    """get_dashboard_summary catch must not echo raw Exception text."""
+async def test_get_dashboard_summary_unexpected_returns_structured_500():
     secret = "secret-dashboard-summary-should-not-leak"
 
     with patch.object(ae_mod, "EconomyAnalyticsService") as svc_cls:
@@ -122,24 +120,30 @@ async def test_get_dashboard_summary_unexpected_is_opaque_500():
     exc = excinfo.value
     assert exc.status_code == 500
     assert exc.detail == {
-        "error_code": "ERR_ADMIN_ECONOMY_DASHBOARD_FAILED",
+        "error_code": ERR_ADMIN_ECONOMY_DASHBOARD_FAILED,
         "detail": "Failed to generate dashboard summary",
     }
     assert secret not in str(exc.detail)
 
 
-def test_admin_economy_http500_catches_have_no_detail_str_e():
-    """LEG-3605 / LEG-3872 — static pin: all five HTTP 500 catch paths stay opaque."""
+def test_admin_economy_http500_catches_are_structured():
+    """LEG-3872 — static pin: economy admin 500 catch paths emit error_code + detail."""
     src = Path(ae_mod.__file__).read_text(encoding="utf-8")
     for code in (
-        "ERR_ADMIN_ECONOMY_MARKET_DATA_FAILED",
-        "ERR_ADMIN_ECONOMY_METRICS_FAILED",
-        "ERR_ADMIN_ECONOMY_PRICE_ALERTS_FAILED",
-        "ERR_ADMIN_ECONOMY_INTERVENTION_FAILED",
-        "ERR_ADMIN_ECONOMY_DASHBOARD_FAILED",
+        ERR_ADMIN_ECONOMY_MARKET_DATA_FAILED,
+        ERR_ADMIN_ECONOMY_METRICS_FAILED,
+        ERR_ADMIN_ECONOMY_PRICE_ALERTS_FAILED,
+        ERR_ADMIN_ECONOMY_INTERVENTION_FAILED,
+        ERR_ADMIN_ECONOMY_DASHBOARD_FAILED,
     ):
         assert code in src
     assert "route_internal_error" in src
+    assert src.count("route_internal_error(") >= 5
+    assert 'detail="Failed to retrieve market data"' not in src
+    assert 'detail="Failed to retrieve economic metrics"' not in src
+    assert 'detail="Failed to retrieve price alerts"' not in src
+    assert 'detail="Market intervention failed"' not in src
+    assert 'detail="Failed to generate dashboard summary"' not in src
     assert "Failed to retrieve market data: {str(e)}" not in src
     assert "Failed to retrieve economic metrics: {str(e)}" not in src
     assert "Failed to retrieve price alerts: {str(e)}" not in src
