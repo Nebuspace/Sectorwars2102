@@ -1925,6 +1925,12 @@ async def upgrade_shield_generator(
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        logger.exception("Failed to upgrade shield generator")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to upgrade shield generator",
+        )
 
 
 @router.get("/{planet_id}/defenses")
@@ -1946,6 +1952,12 @@ async def get_planet_defenses(
         return result
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except Exception:
+        logger.exception("Failed to fetch planet defenses")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to fetch planet defenses",
+        )
 
 
 @router.get("/{planet_id}/defenses/pricing")
@@ -2036,6 +2048,12 @@ async def get_planet_details(
         return planet_data
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except Exception:
+        logger.exception("Failed to fetch planet details")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to fetch planet details",
+        )
 
 
 @router.put("/{planetId}/allocate")
@@ -2064,6 +2082,12 @@ async def allocate_colonists(
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        logger.exception("Failed to allocate colonists")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to allocate colonists",
+        )
 
 
 @router.post("/{planetId}/buildings/upgrade")
@@ -2091,6 +2115,12 @@ async def upgrade_building(
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        logger.exception("Failed to upgrade building")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to upgrade building",
+        )
 
 
 @router.put("/{planetId}/defenses")
@@ -2119,6 +2149,12 @@ async def update_defenses(
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        logger.exception("Failed to update defenses")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update defenses",
+        )
 
 
 @router.post("/genesis/deploy")
@@ -2176,6 +2212,12 @@ async def deploy_genesis_device(
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        logger.exception("Failed to deploy genesis device")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to deploy genesis device",
+        )
 
 
 @router.put("/{planetId}/specialize")
