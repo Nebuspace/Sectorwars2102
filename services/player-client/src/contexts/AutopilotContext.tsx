@@ -54,6 +54,16 @@ const isAutopilotNetworkCollapseMessage = (msg: string): boolean => {
   );
 };
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
 /**
  * Autopilot hop movement catch — prefer structured axios detail; densify
  * TypeError / Failed to fetch to fallback. Exported for Vitest (LEG-3332).
@@ -63,8 +73,28 @@ export function formatAutopilotMovementError(err: unknown, fallback = 'Movement 
     response?: { data?: { detail?: unknown; message?: unknown } };
     message?: string;
   };
+  const status = httpStatus(err);
   const raw = e?.response?.data?.detail ?? e?.response?.data?.message;
-  if (typeof raw === 'string' && raw.trim()) return raw;
+  const responseCopy = typeof raw === 'string' && raw.trim() ? raw.trim() : undefined;
+  const messageDetail =
+    typeof e?.message === 'string' &&
+    e.message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(e.message.trim()) &&
+    !isAutopilotNetworkCollapseMessage(e.message)
+      ? e.message.trim()
+      : undefined;
+  const serverCopy = responseCopy ?? messageDetail;
+
+  if (status === 403) {
+    if (serverCopy) return serverCopy;
+    return 'You do not have permission to move with autopilot.';
+  }
+
+  if (status === 429) {
+    return 'Autopilot movement rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (responseCopy) return responseCopy;
   if (err instanceof TypeError) return fallback;
   if (!e?.response && typeof e?.message === 'string') {
     if (isAutopilotNetworkCollapseMessage(e.message)) return fallback;

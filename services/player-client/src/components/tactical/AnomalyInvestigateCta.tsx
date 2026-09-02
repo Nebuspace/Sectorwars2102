@@ -19,18 +19,51 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
   );
 };
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
 export function formatAnomalyInvestigateError(
   err: unknown,
   fallback = INVESTIGATE_FALLBACK,
 ): string {
   if (err instanceof TypeError) return fallback;
+
+  const status = httpStatus(err);
   const responseDetail =
     (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-  if (typeof responseDetail === 'string' && responseDetail) return responseDetail;
   const message = (err as { message?: string })?.message;
-  if (typeof message === 'string' && message) {
-    if (isNetworkCollapseMessage(message)) return fallback;
-    return message;
+  const messageDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNetworkCollapseMessage(message)
+      ? message.trim()
+      : undefined;
+  const serverCopy =
+    typeof responseDetail === 'string' && responseDetail.trim()
+      ? responseDetail.trim()
+      : messageDetail;
+
+  if (status === 403) {
+    if (serverCopy) return serverCopy;
+    return 'You do not have permission to investigate this anomaly.';
+  }
+
+  if (status === 429) {
+    return 'Anomaly investigation rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (typeof responseDetail === 'string' && responseDetail) return responseDetail;
+  if (messageDetail) return messageDetail;
+  if (typeof message === 'string' && message && isNetworkCollapseMessage(message)) {
+    return fallback;
   }
   return fallback;
 }
