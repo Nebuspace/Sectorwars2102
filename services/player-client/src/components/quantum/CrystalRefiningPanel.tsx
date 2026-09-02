@@ -40,21 +40,53 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
   );
 };
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
 /** RefiningVenue surfaces errors via this panel — exported for TypeError densify tests. */
 export function formatCrystalRefiningError(e: unknown, fallback: string): string {
   if (e instanceof TypeError) return fallback;
+
+  const status = httpStatus(e);
+  let detail: string | undefined;
   if (e && typeof e === 'object') {
     const resp = (e as { response?: { data?: unknown } }).response;
     const data = resp?.data ?? (e as { data?: unknown }).data;
     if (data && typeof data === 'object') {
-      const detail = (data as Record<string, unknown>).detail;
-      if (typeof detail === 'string' && detail) return detail;
+      const d = (data as Record<string, unknown>).detail;
+      if (typeof d === 'string' && d.trim()) detail = d.trim();
     }
-    const msg = (e as { message?: string }).message;
-    if (typeof msg === 'string' && msg) {
-      if (isNetworkCollapseMessage(msg)) return fallback;
-      return msg;
-    }
+  }
+  const message = e instanceof Error ? e.message : undefined;
+  const messageDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNetworkCollapseMessage(message)
+      ? message.trim()
+      : undefined;
+  const serverCopy = detail ?? messageDetail;
+
+  if (status === 403) {
+    if (serverCopy) return serverCopy;
+    return 'You do not have permission to refine crystals.';
+  }
+
+  if (status === 429) {
+    return 'Crystal refining rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (detail) return detail;
+  if (messageDetail) return messageDetail;
+  if (typeof message === 'string' && message && isNetworkCollapseMessage(message)) {
+    return fallback;
   }
   return fallback;
 }
