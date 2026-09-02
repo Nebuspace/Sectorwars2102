@@ -104,8 +104,24 @@ async function openSaveKeyFlow() {
   });
 }
 
+
+const axiosError = (status: number, detail?: string) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: detail ? { detail } : {} },
+  });
+
+function assertNoTransportLeak(text: string) {
+  expect(text).not.toBe('Network Error');
+  expect(text).not.toContain('Network Error');
+  expect(text).not.toMatch(/Failed to fetch/i);
+  expect(text).not.toMatch(/TypeError/i);
+  expect(text).not.toMatch(/^HTTP \d+$/);
+  expect(text).not.toContain('Request failed with status code');
+}
+
 /**
  * LEG-3665 Soft-ORDER — TranslationManagement TypeError/Network Error densify.
+ * LEG-3926 Soft-ORDER — 403/429 HTTP honesty densify.
  */
 describe('TranslationManagement typeErrorHonesty densify (LEG-3665)', () => {
   beforeEach(() => {
@@ -310,4 +326,36 @@ describe('TranslationManagement typeErrorHonesty densify (LEG-3665)', () => {
     expect(msg).not.toMatch(/Failed to fetch/i);
     expect(msg).not.toMatch(/TypeError/i);
   });
+
+  it('surfaces 403 with i18n.manage scope copy when languages GET is denied', async () => {
+    vi.mocked(api.get).mockRejectedValue(axiosError(403));
+
+    render(<TranslationManagement />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Access denied|admin\.i18n\.manage|manage translations/i)).toBeTruthy();
+    });
+    const text =
+      screen.getByText(/Access denied|admin\.i18n\.manage|manage translations/i).textContent ?? '';
+    expect(text).toMatch(/Access denied|admin\.i18n\.manage|manage translations/i);
+    expect(text).not.toMatch(/\b403\b/);
+    expect(text).not.toMatch(/HTTP 403/i);
+    assertNoTransportLeak(text);
+  });
+
+  it('surfaces 429 as admin rate-limit copy on languages GET', async () => {
+    vi.mocked(api.get).mockRejectedValue(axiosError(429));
+
+    render(<TranslationManagement />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/rate limit/i)).toBeTruthy();
+    });
+    const text = screen.getByText(/rate limit/i).textContent ?? '';
+    expect(text).toMatch(/rate limit/i);
+    expect(text).not.toMatch(/\b429\b/);
+    expect(text).not.toMatch(/HTTP 429/i);
+    assertNoTransportLeak(text);
+  });
+
 });
