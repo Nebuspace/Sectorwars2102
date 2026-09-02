@@ -27,10 +27,14 @@ from src.services.region_lifecycle_service import (
     execute_takeover,
     list_takeover_eligible_regions,
 )
+from src.utils.error_handling import route_internal_error
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/regions", tags=["regions"])
+
+ERR_REGIONS_TAKEOVER_ELIGIBLE_LIST_FAILED = "ERR_REGIONS_TAKEOVER_ELIGIBLE_LIST_FAILED"
+ERR_REGIONS_TAKEOVER_BEGIN_FAILED = "ERR_REGIONS_TAKEOVER_BEGIN_FAILED"
 
 _TAKEOVER_ERROR_STATUS = {
     ERR_REGION_NOT_FOUND: 404,
@@ -72,9 +76,9 @@ async def list_takeover_eligible_regions_route(
         raise
     except Exception:
         logger.exception("Failed to list takeover-eligible regions")
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to list takeover-eligible regions",
+        raise route_internal_error(
+            ERR_REGIONS_TAKEOVER_ELIGIBLE_LIST_FAILED,
+            "Failed to list takeover-eligible regions",
         )
 
 
@@ -114,7 +118,7 @@ async def takeover_region(
         raise
     except Exception:
         logger.exception("Failed to begin region takeover")
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to begin region takeover",
+        raise route_internal_error(
+            ERR_REGIONS_TAKEOVER_BEGIN_FAILED,
+            "Failed to begin region takeover",
         )
