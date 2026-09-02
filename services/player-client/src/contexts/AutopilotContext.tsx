@@ -170,8 +170,11 @@ export const AutopilotProvider: React.FC<{ children: React.ReactNode }> = ({
           setStatus('idle');
         }
         return plot;
-      } catch {
-        setStatus('idle');
+      } catch (err: unknown) {
+        setStatus('paused');
+        setPauseReason(
+          formatAutopilotMovementError(err, 'Course plot failed. Please try again.'),
+        );
         return null;
       }
     },

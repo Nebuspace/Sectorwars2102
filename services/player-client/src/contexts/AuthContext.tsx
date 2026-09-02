@@ -77,6 +77,52 @@ export class MFARequiredError extends Error {
   }
 }
 
+export const AUTH_NETWORK_FALLBACKS = {
+  login: 'Unable to sign in. Please check your connection and try again.',
+  refresh: 'Unable to restore your session. Please sign in again.',
+} as const;
+
+const isAuthNetworkCollapse = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+/** Collapse fetch/network TypeErrors to player-safe copy (LEG-3792). */
+export function formatAuthTransportError(err: unknown, fallback: string): string {
+  if (err instanceof TypeError) {
+    return fallback;
+  }
+  if (typeof err === 'object' && err !== null && 'response' in err) {
+    const detail = (err as { response?: { data?: { detail?: unknown } } }).response?.data
+      ?.detail;
+    if (typeof detail === 'string' && detail.trim() && !isAuthNetworkCollapse(detail)) {
+      return detail;
+    }
+  }
+  const raw = err instanceof Error ? err.message : String(err ?? '');
+  if (isAuthNetworkCollapse(raw)) {
+    return fallback;
+  }
+  if (raw.trim() && /unexpected token|json|syntaxerror/i.test(raw)) {
+    return fallback;
+  }
+  if (raw.trim()) {
+    return raw;
+  }
+  return fallback;
+}
+
+function surfaceAuthError(err: unknown, fallback: string): never {
+  if (err instanceof MFARequiredError) {
+    throw err;
+  }
+  throw new Error(formatAuthTransportError(err, fallback));
+}
+
 interface AuthContextType {
   user: User | null;
   isAuthenticated: boolean;
@@ -305,10 +351,11 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }: AuthProv
       const userResponse = await axios.get<User>(`${apiUrl}/api/v1/auth/me`);
       setUser(userResponse.data);
     } catch (error) {
-      if (!(error instanceof MFARequiredError)) {
-        console.error('All login attempts failed:', error);
+      if (error instanceof MFARequiredError) {
+        throw error;
       }
-      throw error;
+      console.error('All login attempts failed:', error);
+      surfaceAuthError(error, AUTH_NETWORK_FALLBACKS.login);
     } finally {
       setIsLoading(false);
     }
@@ -360,10 +407,15 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }: AuthProv
     // a single /auth/refresh and all callers receive the same rotated token.
     // refreshAccessToken() already persists the new tokens and updates the global
     // axios Authorization header; it never throws (returns null on failure).
-    const token = await refreshAccessToken();
-    if (!token) {
+    try {
+      const token = await refreshAccessToken();
+      if (!token) {
+        setUser(null);
+        throw new Error(AUTH_NETWORK_FALLBACKS.refresh);
+      }
+    } catch (error) {
       setUser(null);
-      throw new Error('Token refresh failed');
+      surfaceAuthError(error, AUTH_NETWORK_FALLBACKS.refresh);
     }
   };
   
