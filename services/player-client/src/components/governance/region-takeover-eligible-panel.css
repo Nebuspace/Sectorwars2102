@@ -1,0 +1,71 @@
+.region-takeover-eligible-panel .rte-panel-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.region-takeover-eligible-panel .rte-close-btn,
+.region-takeover-eligible-panel .rte-refresh-btn {
+  font-size: 0.75rem;
+  padding: 0.25rem 0.6rem;
+  cursor: pointer;
+}
+
+.region-takeover-eligible-panel .rte-table-wrap {
+  overflow-x: auto;
+}
+
+.region-takeover-eligible-panel .rte-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.region-takeover-eligible-panel .rte-table th,
+.region-takeover-eligible-panel .rte-table td {
+  padding: 0.5rem 0.65rem;
+  text-align: left;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.region-takeover-eligible-panel .rte-status {
+  display: inline-block;
+  padding: 0.1rem 0.45rem;
+  border-radius: 3px;
+  font-size: 0.75rem;
+  text-transform: capitalize;
+}
+
+.region-takeover-eligible-panel .rte-status--suspended {
+  background: rgba(255, 140, 0, 0.2);
+  color: #ffb870;
+}
+
+.region-takeover-eligible-panel .rte-status--grace {
+  background: rgba(255, 215, 0, 0.15);
+  color: #ffe08a;
+}
+
+.region-takeover-eligible-panel .rte-takeover-btn {
+  font-size: 0.75rem;
+  padding: 0.3rem 0.65rem;
+  cursor: pointer;
+}
+
+.region-takeover-eligible-panel .rte-error {
+  color: #ff8da3;
+  font-size: 0.85rem;
+  margin: 0.5rem 0;
+}
+
+.region-takeover-eligible-panel .rte-action-error {
+  margin-top: 0.75rem;
+}
+
+.region-takeover-eligible-panel .rte-footnote {
+  margin-top: 1rem;
+  font-size: 0.72rem;
+  opacity: 0.75;
+  line-height: 1.4;
+}
