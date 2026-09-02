@@ -31,6 +31,24 @@ function inferCategory(line: string): string {
   return '';
 }
 
+const STREAM_NETWORK_FALLBACK =
+  'Generation log stream unavailable — network error. Check your connection and try again.';
+
+/** Admin-safe copy for SSE stream errors — never leak raw transport strings. */
+export function formatGenerationLogStreamError(error: string): string {
+  const trimmed = error.trim();
+  if (!trimmed) {
+    return STREAM_NETWORK_FALLBACK;
+  }
+  if (trimmed === 'Network Error' || trimmed === 'Failed to fetch') {
+    return STREAM_NETWORK_FALLBACK;
+  }
+  if (/^TypeError:/i.test(trimmed) || /failed to fetch/i.test(trimmed)) {
+    return STREAM_NETWORK_FALLBACK;
+  }
+  return trimmed;
+}
+
 const GenerationLogPanel: React.FC<GenerationLogPanelProps> = ({
   jobId,
   title,
@@ -102,8 +120,8 @@ const GenerationLogPanel: React.FC<GenerationLogPanelProps> = ({
       </div>
 
       {error && (
-        <p className="log-error">
-          {t('bang.log.error', { error })}
+        <p className="log-error" role="alert">
+          {t('bang.log.error', { error: formatGenerationLogStreamError(error) })}
         </p>
       )}
 
