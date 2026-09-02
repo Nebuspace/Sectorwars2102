@@ -2,19 +2,29 @@
 Gambling API Routes
 Handles all gambling games at SpaceDock facilities
 """
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
-from pydantic import BaseModel, Field
-from typing import Literal, Optional
+import logging
 import random
+from typing import Literal, Optional
 
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
-from src.core.database import get_db
 from src.auth.dependencies import get_current_user, get_current_player
-from src.models.user import User
+from src.core.database import get_db
 from src.models.player import Player
 from src.models.station import Station
+from src.models.user import User
+from src.utils.error_handling import route_internal_error
+
+ERR_GAMBLING_SLOTS_SPIN_FAILED = "ERR_GAMBLING_SLOTS_SPIN_FAILED"
+ERR_GAMBLING_DICE_ROLL_FAILED = "ERR_GAMBLING_DICE_ROLL_FAILED"
+ERR_GAMBLING_LOTTERY_BUY_FAILED = "ERR_GAMBLING_LOTTERY_BUY_FAILED"
+ERR_GAMBLING_BLACKJACK_DEAL_FAILED = "ERR_GAMBLING_BLACKJACK_DEAL_FAILED"
+ERR_GAMBLING_BLACKJACK_ACTION_FAILED = "ERR_GAMBLING_BLACKJACK_ACTION_FAILED"
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================
@@ -253,73 +263,83 @@ async def spin_slots(
 ):
     """Spin the cosmic slot machine"""
 
-    # Validate player has enough credits
-    if current_player.credits < request.bet_amount:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Insufficient credits. Need {request.bet_amount}, have {current_player.credits}"
+    try:
+        # Validate player has enough credits
+        if current_player.credits < request.bet_amount:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Insufficient credits. Need {request.bet_amount}, have {current_player.credits}"
+            )
+
+        # Verify player is docked
+        if not current_player.is_docked:
+            raise HTTPException(
+                status_code=400,
+                detail="You must be docked at a SpaceDock to gamble"
+            )
+
+        # Canon: gambling is offered ONLY at a SpaceDock (403 at any other station)
+        _require_spacedock(db, current_player)
+
+        # Lock the player row so the bet deduction + payout are atomic against a
+        # concurrent gambling request (no lost-update / concurrent double-spend).
+        # populate_existing refreshes the locked row's credits rather than reusing a
+        # stale identity-map snapshot (the trading.py-documented trap).
+        current_player = db.query(Player).filter(
+            Player.id == current_player.id
+        ).populate_existing().with_for_update().first()
+        if current_player.credits < request.bet_amount:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Insufficient credits. Need {request.bet_amount}, have {current_player.credits}"
+            )
+
+        # Deduct bet amount
+        current_player.credits -= request.bet_amount
+
+        # Spin the reels
+        reels = [weighted_random_symbol() for _ in range(3)]
+        reel_emojis = [SYMBOL_EMOJIS[r] for r in reels]
+
+        # Calculate winnings
+        win_amount = 0
+        jackpot = False
+
+        # Three of a kind
+        if reels[0] == reels[1] == reels[2]:
+            multiplier = SLOT_PAYOUTS.get(reels[0], 0)
+            win_amount = request.bet_amount * multiplier
+            jackpot = reels[0] == 'jackpot'
+        # Two matching (partial win)
+        elif reels[0] == reels[1] or reels[1] == reels[2]:
+            # 50% of bet returned
+            win_amount = request.bet_amount // 2
+        # Black hole penalty - already lost the bet, no additional penalty
+
+        # Add winnings
+        current_player.credits += win_amount
+
+        # Calculate net result
+        net_result = win_amount - request.bet_amount
+
+        db.commit()
+
+        return SlotSpinResponse(
+            reels=reel_emojis,
+            win_amount=win_amount,
+            net_result=net_result,
+            new_credits=current_player.credits,
+            jackpot=jackpot
         )
-
-    # Verify player is docked
-    if not current_player.is_docked:
-        raise HTTPException(
-            status_code=400,
-            detail="You must be docked at a SpaceDock to gamble"
+    except HTTPException:
+        raise
+    except Exception:
+        db.rollback()
+        logger.exception('Failed to spin slots')
+        raise route_internal_error(
+            ERR_GAMBLING_SLOTS_SPIN_FAILED,
+            'Failed to spin slots',
         )
-
-    # Canon: gambling is offered ONLY at a SpaceDock (403 at any other station)
-    _require_spacedock(db, current_player)
-
-    # Lock the player row so the bet deduction + payout are atomic against a
-    # concurrent gambling request (no lost-update / concurrent double-spend).
-    # populate_existing refreshes the locked row's credits rather than reusing a
-    # stale identity-map snapshot (the trading.py-documented trap).
-    current_player = db.query(Player).filter(
-        Player.id == current_player.id
-    ).populate_existing().with_for_update().first()
-    if current_player.credits < request.bet_amount:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Insufficient credits. Need {request.bet_amount}, have {current_player.credits}"
-        )
-
-    # Deduct bet amount
-    current_player.credits -= request.bet_amount
-
-    # Spin the reels
-    reels = [weighted_random_symbol() for _ in range(3)]
-    reel_emojis = [SYMBOL_EMOJIS[r] for r in reels]
-
-    # Calculate winnings
-    win_amount = 0
-    jackpot = False
-
-    # Three of a kind
-    if reels[0] == reels[1] == reels[2]:
-        multiplier = SLOT_PAYOUTS.get(reels[0], 0)
-        win_amount = request.bet_amount * multiplier
-        jackpot = reels[0] == 'jackpot'
-    # Two matching (partial win)
-    elif reels[0] == reels[1] or reels[1] == reels[2]:
-        # 50% of bet returned
-        win_amount = request.bet_amount // 2
-    # Black hole penalty - already lost the bet, no additional penalty
-
-    # Add winnings
-    current_player.credits += win_amount
-
-    # Calculate net result
-    net_result = win_amount - request.bet_amount
-
-    db.commit()
-
-    return SlotSpinResponse(
-        reels=reel_emojis,
-        win_amount=win_amount,
-        net_result=net_result,
-        new_credits=current_player.credits,
-        jackpot=jackpot
-    )
 
 
 @router.post("/dice/roll", response_model=DiceRollResponse)
@@ -331,94 +351,104 @@ async def roll_dice(
 ):
     """Roll the nebula dice"""
 
-    # Validate exact number for exact bets
-    if request.bet_type == "exact" and request.exact_number is None:
-        raise HTTPException(
-            status_code=400,
-            detail="exact_number is required for exact bet type"
-        )
+    try:
+        # Validate exact number for exact bets
+        if request.bet_type == "exact" and request.exact_number is None:
+            raise HTTPException(
+                status_code=400,
+                detail="exact_number is required for exact bet type"
+            )
 
-    # Validate player has enough credits
-    if current_player.credits < request.bet_amount:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Insufficient credits. Need {request.bet_amount}, have {current_player.credits}"
-        )
+        # Validate player has enough credits
+        if current_player.credits < request.bet_amount:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Insufficient credits. Need {request.bet_amount}, have {current_player.credits}"
+            )
 
-    # Verify player is docked
-    if not current_player.is_docked:
-        raise HTTPException(
-            status_code=400,
-            detail="You must be docked at a SpaceDock to gamble"
-        )
+        # Verify player is docked
+        if not current_player.is_docked:
+            raise HTTPException(
+                status_code=400,
+                detail="You must be docked at a SpaceDock to gamble"
+            )
 
-    # Canon: gambling is offered ONLY at a SpaceDock (403 at any other station)
-    _require_spacedock(db, current_player)
+        # Canon: gambling is offered ONLY at a SpaceDock (403 at any other station)
+        _require_spacedock(db, current_player)
 
-    # Lock the player row so the bet deduction + payout are atomic against a
-    # concurrent gambling request (no lost-update / concurrent double-spend).
-    # populate_existing refreshes the locked row's credits rather than reusing a
-    # stale identity-map snapshot (the trading.py-documented trap).
-    current_player = db.query(Player).filter(
-        Player.id == current_player.id
-    ).populate_existing().with_for_update().first()
-    if current_player.credits < request.bet_amount:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Insufficient credits. Need {request.bet_amount}, have {current_player.credits}"
-        )
+        # Lock the player row so the bet deduction + payout are atomic against a
+        # concurrent gambling request (no lost-update / concurrent double-spend).
+        # populate_existing refreshes the locked row's credits rather than reusing a
+        # stale identity-map snapshot (the trading.py-documented trap).
+        current_player = db.query(Player).filter(
+            Player.id == current_player.id
+        ).populate_existing().with_for_update().first()
+        if current_player.credits < request.bet_amount:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Insufficient credits. Need {request.bet_amount}, have {current_player.credits}"
+            )
 
-    # Deduct bet amount
-    current_player.credits -= request.bet_amount
+        # Deduct bet amount
+        current_player.credits -= request.bet_amount
 
-    # Roll the dice
-    die1 = random.randint(1, 6)
-    die2 = random.randint(1, 6)
-    total = die1 + die2
+        # Roll the dice
+        die1 = random.randint(1, 6)
+        die2 = random.randint(1, 6)
+        total = die1 + die2
 
-    # Check for special conditions
-    supernova = die1 == 6 and die2 == 6  # Double 6s
-    void = total == 7  # The Void
+        # Check for special conditions
+        supernova = die1 == 6 and die2 == 6  # Double 6s
+        void = total == 7  # The Void
 
-    # Calculate winnings
-    win_amount = 0
-
-    if supernova:
-        # Supernova always pays 35x regardless of bet type
-        win_amount = request.bet_amount * 35
-    elif void:
-        # The Void - house always wins
+        # Calculate winnings
         win_amount = 0
-    elif request.bet_type == "high" and 8 <= total <= 12:
-        win_amount = request.bet_amount * 2
-    elif request.bet_type == "low" and 2 <= total <= 6:
-        win_amount = request.bet_amount * 2
-    elif request.bet_type == "exact" and total == request.exact_number:
-        # Payout based on probability
-        exact_payouts = {
-            2: 35, 3: 17, 4: 11, 5: 8, 6: 6,
-            7: 5,  # Very rare to bet on 7 and win (supernova only)
-            8: 6, 9: 8, 10: 11, 11: 17, 12: 35
-        }
-        win_amount = request.bet_amount * exact_payouts.get(request.exact_number, 5)
 
-    # Add winnings
-    current_player.credits += win_amount
+        if supernova:
+            # Supernova always pays 35x regardless of bet type
+            win_amount = request.bet_amount * 35
+        elif void:
+            # The Void - house always wins
+            win_amount = 0
+        elif request.bet_type == "high" and 8 <= total <= 12:
+            win_amount = request.bet_amount * 2
+        elif request.bet_type == "low" and 2 <= total <= 6:
+            win_amount = request.bet_amount * 2
+        elif request.bet_type == "exact" and total == request.exact_number:
+            # Payout based on probability
+            exact_payouts = {
+                2: 35, 3: 17, 4: 11, 5: 8, 6: 6,
+                7: 5,  # Very rare to bet on 7 and win (supernova only)
+                8: 6, 9: 8, 10: 11, 11: 17, 12: 35
+            }
+            win_amount = request.bet_amount * exact_payouts.get(request.exact_number, 5)
 
-    # Calculate net result
-    net_result = win_amount - request.bet_amount
+        # Add winnings
+        current_player.credits += win_amount
 
-    db.commit()
+        # Calculate net result
+        net_result = win_amount - request.bet_amount
 
-    return DiceRollResponse(
-        dice=[die1, die2],
-        total=total,
-        win_amount=win_amount,
-        net_result=net_result,
-        new_credits=current_player.credits,
-        supernova=supernova,
-        void=void
-    )
+        db.commit()
+
+        return DiceRollResponse(
+            dice=[die1, die2],
+            total=total,
+            win_amount=win_amount,
+            net_result=net_result,
+            new_credits=current_player.credits,
+            supernova=supernova,
+            void=void
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        db.rollback()
+        logger.exception('Failed to roll dice')
+        raise route_internal_error(
+            ERR_GAMBLING_DICE_ROLL_FAILED,
+            'Failed to roll dice',
+        )
 
 
 # Lottery configuration
@@ -440,82 +470,92 @@ async def buy_lottery_ticket(
 ):
     """Buy a Sector Sweep lottery ticket"""
 
-    # Validate player numbers are in valid range (1-12 for sectors)
-    for num in request.numbers:
-        if num < 1 or num > 12:
+    try:
+        # Validate player numbers are in valid range (1-12 for sectors)
+        for num in request.numbers:
+            if num < 1 or num > 12:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid sector number: {num}. Must be between 1 and 12"
+                )
+
+        # Check for duplicate numbers
+        if len(set(request.numbers)) != 4:
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid sector number: {num}. Must be between 1 and 12"
+                detail="All 4 sector numbers must be unique"
             )
 
-    # Check for duplicate numbers
-    if len(set(request.numbers)) != 4:
-        raise HTTPException(
-            status_code=400,
-            detail="All 4 sector numbers must be unique"
+        # Validate player has enough credits
+        if current_player.credits < request.bet_amount:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Insufficient credits. Need {request.bet_amount}, have {current_player.credits}"
+            )
+
+        # Verify player is docked
+        if not current_player.is_docked:
+            raise HTTPException(
+                status_code=400,
+                detail="You must be docked at a SpaceDock to gamble"
+            )
+
+        # Canon: gambling is offered ONLY at a SpaceDock (403 at any other station)
+        _require_spacedock(db, current_player)
+
+        # Lock the player row so the bet deduction + payout are atomic against a
+        # concurrent gambling request (no lost-update / concurrent double-spend).
+        # populate_existing refreshes the locked row's credits rather than reusing a
+        # stale identity-map snapshot (the trading.py-documented trap).
+        current_player = db.query(Player).filter(
+            Player.id == current_player.id
+        ).populate_existing().with_for_update().first()
+        if current_player.credits < request.bet_amount:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Insufficient credits. Need {request.bet_amount}, have {current_player.credits}"
+            )
+
+        # Deduct bet amount
+        current_player.credits -= request.bet_amount
+
+        # Generate winning numbers (4 unique numbers from 1-12)
+        winning_numbers = random.sample(range(1, 13), 4)
+
+        # Count matches
+        matches = len(set(request.numbers) & set(winning_numbers))
+
+        # Calculate winnings
+        multiplier = LOTTERY_PAYOUTS.get(matches, 0)
+        win_amount = request.bet_amount * multiplier
+        jackpot = matches == 4
+
+        # Add winnings
+        current_player.credits += win_amount
+
+        # Calculate net result
+        net_result = win_amount - request.bet_amount
+
+        db.commit()
+
+        return LotteryTicketResponse(
+            player_numbers=request.numbers,
+            winning_numbers=winning_numbers,
+            matches=matches,
+            win_amount=win_amount,
+            net_result=net_result,
+            new_credits=current_player.credits,
+            jackpot=jackpot
         )
-
-    # Validate player has enough credits
-    if current_player.credits < request.bet_amount:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Insufficient credits. Need {request.bet_amount}, have {current_player.credits}"
+    except HTTPException:
+        raise
+    except Exception:
+        db.rollback()
+        logger.exception('Failed to buy lottery ticket')
+        raise route_internal_error(
+            ERR_GAMBLING_LOTTERY_BUY_FAILED,
+            'Failed to buy lottery ticket',
         )
-
-    # Verify player is docked
-    if not current_player.is_docked:
-        raise HTTPException(
-            status_code=400,
-            detail="You must be docked at a SpaceDock to gamble"
-        )
-
-    # Canon: gambling is offered ONLY at a SpaceDock (403 at any other station)
-    _require_spacedock(db, current_player)
-
-    # Lock the player row so the bet deduction + payout are atomic against a
-    # concurrent gambling request (no lost-update / concurrent double-spend).
-    # populate_existing refreshes the locked row's credits rather than reusing a
-    # stale identity-map snapshot (the trading.py-documented trap).
-    current_player = db.query(Player).filter(
-        Player.id == current_player.id
-    ).populate_existing().with_for_update().first()
-    if current_player.credits < request.bet_amount:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Insufficient credits. Need {request.bet_amount}, have {current_player.credits}"
-        )
-
-    # Deduct bet amount
-    current_player.credits -= request.bet_amount
-
-    # Generate winning numbers (4 unique numbers from 1-12)
-    winning_numbers = random.sample(range(1, 13), 4)
-
-    # Count matches
-    matches = len(set(request.numbers) & set(winning_numbers))
-
-    # Calculate winnings
-    multiplier = LOTTERY_PAYOUTS.get(matches, 0)
-    win_amount = request.bet_amount * multiplier
-    jackpot = matches == 4
-
-    # Add winnings
-    current_player.credits += win_amount
-
-    # Calculate net result
-    net_result = win_amount - request.bet_amount
-
-    db.commit()
-
-    return LotteryTicketResponse(
-        player_numbers=request.numbers,
-        winning_numbers=winning_numbers,
-        matches=matches,
-        win_amount=win_amount,
-        net_result=net_result,
-        new_credits=current_player.credits,
-        jackpot=jackpot
-    )
 
 
 # ============================================
@@ -530,112 +570,121 @@ async def blackjack_deal(
     current_player: Player = Depends(get_current_player)
 ):
     """Start a new blackjack hand"""
+    try:
+        # Validate player has enough credits
+        if current_player.credits < request.bet_amount:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Insufficient credits. Need {request.bet_amount}, have {current_player.credits}"
+            )
 
-    # Validate player has enough credits
-    if current_player.credits < request.bet_amount:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Insufficient credits. Need {request.bet_amount}, have {current_player.credits}"
-        )
+        # Verify player is docked
+        if not current_player.is_docked:
+            raise HTTPException(
+                status_code=400,
+                detail="You must be docked at a SpaceDock to gamble"
+            )
 
-    # Verify player is docked
-    if not current_player.is_docked:
-        raise HTTPException(
-            status_code=400,
-            detail="You must be docked at a SpaceDock to gamble"
-        )
+        # Canon: gambling is offered ONLY at a SpaceDock (403 at any other station)
+        _require_spacedock(db, current_player)
 
-    # Canon: gambling is offered ONLY at a SpaceDock (403 at any other station)
-    _require_spacedock(db, current_player)
+        # Lock the player row so the bet deduction + active-game write are atomic
+        # against a concurrent deal/action (no double-spend, no two live games).
+        current_player = db.query(Player).filter(
+            Player.id == current_player.id
+        ).populate_existing().with_for_update().first()
+        if current_player.credits < request.bet_amount:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Insufficient credits. Need {request.bet_amount}, have {current_player.credits}"
+            )
 
-    # Lock the player row so the bet deduction + active-game write are atomic
-    # against a concurrent deal/action (no double-spend, no two live games).
-    current_player = db.query(Player).filter(
-        Player.id == current_player.id
-    ).populate_existing().with_for_update().first()
-    if current_player.credits < request.bet_amount:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Insufficient credits. Need {request.bet_amount}, have {current_player.credits}"
-        )
+        # Deduct bet amount
+        current_player.credits -= request.bet_amount
 
-    # Deduct bet amount
-    current_player.credits -= request.bet_amount
+        # Create a new shuffled deck with a SERVER-chosen seed (never client-supplied)
+        deck_seed = random.randint(1, 1000000)
+        deck = create_deck(deck_seed)
 
-    # Create a new shuffled deck with a SERVER-chosen seed (never client-supplied)
-    deck_seed = random.randint(1, 1000000)
-    deck = create_deck(deck_seed)
+        # Deal initial cards: player gets 2, dealer gets 2 (one hidden)
+        player_cards = [
+            {'rank': deck[0]['rank'], 'suit': deck[0]['suit']},
+            {'rank': deck[2]['rank'], 'suit': deck[2]['suit']}
+        ]
+        dealer_cards = [
+            {'rank': deck[1]['rank'], 'suit': deck[1]['suit'], 'hidden': False},
+            {'rank': deck[3]['rank'], 'suit': deck[3]['suit'], 'hidden': True}
+        ]
 
-    # Deal initial cards: player gets 2, dealer gets 2 (one hidden)
-    player_cards = [
-        {'rank': deck[0]['rank'], 'suit': deck[0]['suit']},
-        {'rank': deck[2]['rank'], 'suit': deck[2]['suit']}
-    ]
-    dealer_cards = [
-        {'rank': deck[1]['rank'], 'suit': deck[1]['suit'], 'hidden': False},
-        {'rank': deck[3]['rank'], 'suit': deck[3]['suit'], 'hidden': True}
-    ]
+        player_total, player_soft = calculate_hand_total(player_cards)
+        dealer_visible_total, _ = calculate_hand_total(dealer_cards, count_hidden=False)
 
-    player_total, player_soft = calculate_hand_total(player_cards)
-    dealer_visible_total, _ = calculate_hand_total(dealer_cards, count_hidden=False)
+        # Check for natural blackjack
+        game_over = False
+        result = None
+        win_amount = 0
 
-    # Check for natural blackjack
-    game_over = False
-    result = None
-    win_amount = 0
+        if player_total == 21:
+            # Player has blackjack - reveal dealer cards
+            dealer_cards[1]['hidden'] = False
+            dealer_total, _ = calculate_hand_total(dealer_cards, count_hidden=True)
 
-    if player_total == 21:
-        # Player has blackjack - reveal dealer cards
-        dealer_cards[1]['hidden'] = False
-        dealer_total, _ = calculate_hand_total(dealer_cards, count_hidden=True)
+            if dealer_total == 21:
+                # Both have blackjack - push
+                result = "push"
+                win_amount = request.bet_amount  # Return bet
+            else:
+                # Player wins with blackjack (pays 3:2)
+                result = "blackjack"
+                win_amount = int(request.bet_amount * 2.5)
 
-        if dealer_total == 21:
-            # Both have blackjack - push
-            result = "push"
-            win_amount = request.bet_amount  # Return bet
+            game_over = True
+            current_player.credits += win_amount
+
+        # Persist the authoritative game state server-side so /blackjack/action can
+        # rebuild the hands from the seed (never trusting client-sent cards) and so
+        # a payout cannot be claimed without a real, un-settled deal. Cleared the
+        # moment the hand ends (here on a natural blackjack).
+        settings = dict(current_player.settings or {})
+        if game_over:
+            settings.pop('blackjack_game', None)
         else:
-            # Player wins with blackjack (pays 3:2)
-            result = "blackjack"
-            win_amount = int(request.bet_amount * 2.5)
+            settings['blackjack_game'] = {
+                'deck_seed': deck_seed,
+                'bet_amount': request.bet_amount,
+                'player_card_count': len(player_cards),
+            }
+        current_player.settings = settings
+        flag_modified(current_player, 'settings')
 
-        game_over = True
-        current_player.credits += win_amount
+        db.commit()
 
-    # Persist the authoritative game state server-side so /blackjack/action can
-    # rebuild the hands from the seed (never trusting client-sent cards) and so
-    # a payout cannot be claimed without a real, un-settled deal. Cleared the
-    # moment the hand ends (here on a natural blackjack).
-    settings = dict(current_player.settings or {})
-    if game_over:
-        settings.pop('blackjack_game', None)
-    else:
-        settings['blackjack_game'] = {
-            'deck_seed': deck_seed,
-            'bet_amount': request.bet_amount,
-            'player_card_count': len(player_cards),
-        }
-    current_player.settings = settings
-    flag_modified(current_player, 'settings')
+        net_result = win_amount - request.bet_amount if game_over else 0
 
-    db.commit()
+        return BlackjackResponse(
+            player_cards=player_cards,
+            dealer_cards=dealer_cards,
+            player_total=player_total,
+            dealer_total=dealer_visible_total if not game_over else calculate_hand_total(dealer_cards, True)[0],
+            player_soft=player_soft,
+            game_over=game_over,
+            result=result,
+            win_amount=win_amount,
+            net_result=net_result,
+            new_credits=current_player.credits,
+            deck_seed=deck_seed,
+            can_double=not game_over and len(player_cards) == 2
+        )
 
-    net_result = win_amount - request.bet_amount if game_over else 0
-
-    return BlackjackResponse(
-        player_cards=player_cards,
-        dealer_cards=dealer_cards,
-        player_total=player_total,
-        dealer_total=dealer_visible_total if not game_over else calculate_hand_total(dealer_cards, True)[0],
-        player_soft=player_soft,
-        game_over=game_over,
-        result=result,
-        win_amount=win_amount,
-        net_result=net_result,
-        new_credits=current_player.credits,
-        deck_seed=deck_seed,
-        can_double=not game_over and len(player_cards) == 2
-    )
-
+    except HTTPException:
+        raise
+    except Exception:
+        db.rollback()
+        logger.exception('Failed to deal blackjack')
+        raise route_internal_error(
+            ERR_GAMBLING_BLACKJACK_DEAL_FAILED,
+            'Failed to deal blackjack',
+        )
 
 @router.post("/blackjack/action", response_model=BlackjackResponse)
 async def blackjack_action(
@@ -645,155 +694,164 @@ async def blackjack_action(
     current_player: Player = Depends(get_current_player)
 ):
     """Perform a blackjack action (hit, stand, or double)"""
-
-    # Verify player is docked
-    if not current_player.is_docked:
-        raise HTTPException(
-            status_code=400,
-            detail="You must be docked at a SpaceDock to gamble"
-        )
-
-    # Canon: gambling is offered ONLY at a SpaceDock (403 at any other station)
-    _require_spacedock(db, current_player)
-
-    # Lock the player + load the authoritative active game. No active game means
-    # no real un-settled deal — reject (closes the "/action without /deal" and
-    # replay-a-settled-hand credit faucets).
-    current_player = db.query(Player).filter(
-        Player.id == current_player.id
-    ).populate_existing().with_for_update().first()
-    game = (current_player.settings or {}).get('blackjack_game')
-    if not game:
-        raise HTTPException(status_code=400, detail="No active blackjack hand — deal first.")
-
-    # Rebuild the deck + hands from the SERVER-stored seed and player-card count.
-    # Client-sent cards / seed / bet are IGNORED (anti-fabrication / anti-inflation):
-    # cards_dealt is the next free deck index from the deterministic deal order.
-    deck = create_deck(int(game['deck_seed']))
-    bet_amount = int(game['bet_amount'])
-    player_cards, dealer_cards, cards_dealt = reconstruct_blackjack_hands(
-        deck, int(game['player_card_count'])
-    )
-
-    game_over = False
-    result = None
-    win_amount = 0
-
-    if request.action == "double":
-        # Double down: double bet, take one card, then stand
-        if len(player_cards) != 2:
-            raise HTTPException(status_code=400, detail="Can only double on first two cards")
-
-        if current_player.credits < bet_amount:
+    try:
+        # Verify player is docked
+        if not current_player.is_docked:
             raise HTTPException(
                 status_code=400,
-                detail=f"Insufficient credits to double. Need {bet_amount}, have {current_player.credits}"
+                detail="You must be docked at a SpaceDock to gamble"
             )
 
-        # Deduct additional bet (the stored stake, never a client-sent amount)
-        current_player.credits -= bet_amount
-        bet_amount = bet_amount * 2
+        # Canon: gambling is offered ONLY at a SpaceDock (403 at any other station)
+        _require_spacedock(db, current_player)
 
-        # Deal one card to player
-        new_card = deck[cards_dealt]
-        player_cards.append({'rank': new_card['rank'], 'suit': new_card['suit']})
-        cards_dealt += 1
+        # Lock the player + load the authoritative active game. No active game means
+        # no real un-settled deal — reject (closes the "/action without /deal" and
+        # replay-a-settled-hand credit faucets).
+        current_player = db.query(Player).filter(
+            Player.id == current_player.id
+        ).populate_existing().with_for_update().first()
+        game = (current_player.settings or {}).get('blackjack_game')
+        if not game:
+            raise HTTPException(status_code=400, detail="No active blackjack hand — deal first.")
 
-        # Force stand after double
-        request.action = "stand"
+        # Rebuild the deck + hands from the SERVER-stored seed and player-card count.
+        # Client-sent cards / seed / bet are IGNORED (anti-fabrication / anti-inflation):
+        # cards_dealt is the next free deck index from the deterministic deal order.
+        deck = create_deck(int(game['deck_seed']))
+        bet_amount = int(game['bet_amount'])
+        player_cards, dealer_cards, cards_dealt = reconstruct_blackjack_hands(
+            deck, int(game['player_card_count'])
+        )
 
-    if request.action == "hit":
-        # Deal one card to player
-        new_card = deck[cards_dealt]
-        player_cards.append({'rank': new_card['rank'], 'suit': new_card['suit']})
-        cards_dealt += 1
+        game_over = False
+        result = None
+        win_amount = 0
 
-        player_total, player_soft = calculate_hand_total(player_cards)
+        if request.action == "double":
+            # Double down: double bet, take one card, then stand
+            if len(player_cards) != 2:
+                raise HTTPException(status_code=400, detail="Can only double on first two cards")
 
-        if player_total > 21:
-            # Player busts
+            if current_player.credits < bet_amount:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Insufficient credits to double. Need {bet_amount}, have {current_player.credits}"
+                )
+
+            # Deduct additional bet (the stored stake, never a client-sent amount)
+            current_player.credits -= bet_amount
+            bet_amount = bet_amount * 2
+
+            # Deal one card to player
+            new_card = deck[cards_dealt]
+            player_cards.append({'rank': new_card['rank'], 'suit': new_card['suit']})
+            cards_dealt += 1
+
+            # Force stand after double
+            request.action = "stand"
+
+        if request.action == "hit":
+            # Deal one card to player
+            new_card = deck[cards_dealt]
+            player_cards.append({'rank': new_card['rank'], 'suit': new_card['suit']})
+            cards_dealt += 1
+
+            player_total, player_soft = calculate_hand_total(player_cards)
+
+            if player_total > 21:
+                # Player busts
+                game_over = True
+                result = "bust"
+                win_amount = 0
+                # Reveal dealer's hidden card
+                for card in dealer_cards:
+                    card['hidden'] = False
+
+        if request.action == "stand" or (request.action != "hit" and game_over is False):
+            # Player stands - dealer plays
             game_over = True
-            result = "bust"
-            win_amount = 0
+
             # Reveal dealer's hidden card
             for card in dealer_cards:
                 card['hidden'] = False
 
-    if request.action == "stand" or (request.action != "hit" and game_over is False):
-        # Player stands - dealer plays
-        game_over = True
-
-        # Reveal dealer's hidden card
-        for card in dealer_cards:
-            card['hidden'] = False
-
-        player_total, player_soft = calculate_hand_total(player_cards)
-        dealer_total, _ = calculate_hand_total(dealer_cards, count_hidden=True)
-
-        # Dealer must hit on 16 or less, stand on 17+
-        while dealer_total < 17:
-            new_card = deck[cards_dealt]
-            dealer_cards.append({'rank': new_card['rank'], 'suit': new_card['suit'], 'hidden': False})
-            cards_dealt += 1
+            player_total, player_soft = calculate_hand_total(player_cards)
             dealer_total, _ = calculate_hand_total(dealer_cards, count_hidden=True)
 
-        # Determine winner. A busted player ALWAYS loses — this covers the
-        # double-into-bust path, which forces a stand without re-entering the
-        # hit-bust check (a busted hand must never out-rank the dealer).
-        if player_total > 21:
-            result = "bust"
-            win_amount = 0
-        elif dealer_total > 21:
-            result = "win"
-            win_amount = bet_amount * 2
-        elif dealer_total > player_total:
-            result = "lose"
-            win_amount = 0
-        elif player_total > dealer_total:
-            result = "win"
-            win_amount = bet_amount * 2
+            # Dealer must hit on 16 or less, stand on 17+
+            while dealer_total < 17:
+                new_card = deck[cards_dealt]
+                dealer_cards.append({'rank': new_card['rank'], 'suit': new_card['suit'], 'hidden': False})
+                cards_dealt += 1
+                dealer_total, _ = calculate_hand_total(dealer_cards, count_hidden=True)
+
+            # Determine winner. A busted player ALWAYS loses — this covers the
+            # double-into-bust path, which forces a stand without re-entering the
+            # hit-bust check (a busted hand must never out-rank the dealer).
+            if player_total > 21:
+                result = "bust"
+                win_amount = 0
+            elif dealer_total > 21:
+                result = "win"
+                win_amount = bet_amount * 2
+            elif dealer_total > player_total:
+                result = "lose"
+                win_amount = 0
+            elif player_total > dealer_total:
+                result = "win"
+                win_amount = bet_amount * 2
+            else:
+                result = "push"
+                win_amount = bet_amount  # Return original bet
+
+            current_player.credits += win_amount
+
+        # Persist or clear the authoritative game state: clear on game over, else
+        # remember the new player-card count so the next action rebuilds correctly.
+        settings = dict(current_player.settings or {})
+        if game_over:
+            settings.pop('blackjack_game', None)
         else:
-            result = "push"
-            win_amount = bet_amount  # Return original bet
+            settings['blackjack_game'] = {
+                'deck_seed': int(game['deck_seed']),
+                'bet_amount': int(game['bet_amount']),
+                'player_card_count': len(player_cards),
+            }
+        current_player.settings = settings
+        flag_modified(current_player, 'settings')
 
-        current_player.credits += win_amount
+        # Calculate final totals
+        player_total, player_soft = calculate_hand_total(player_cards)
+        if game_over:
+            dealer_total, _ = calculate_hand_total(dealer_cards, count_hidden=True)
+        else:
+            dealer_total, _ = calculate_hand_total(dealer_cards, count_hidden=False)
 
-    # Persist or clear the authoritative game state: clear on game over, else
-    # remember the new player-card count so the next action rebuilds correctly.
-    settings = dict(current_player.settings or {})
-    if game_over:
-        settings.pop('blackjack_game', None)
-    else:
-        settings['blackjack_game'] = {
-            'deck_seed': int(game['deck_seed']),
-            'bet_amount': int(game['bet_amount']),
-            'player_card_count': len(player_cards),
-        }
-    current_player.settings = settings
-    flag_modified(current_player, 'settings')
+        db.commit()
 
-    # Calculate final totals
-    player_total, player_soft = calculate_hand_total(player_cards)
-    if game_over:
-        dealer_total, _ = calculate_hand_total(dealer_cards, count_hidden=True)
-    else:
-        dealer_total, _ = calculate_hand_total(dealer_cards, count_hidden=False)
+        net_result = win_amount - bet_amount if game_over else 0
 
-    db.commit()
-
-    net_result = win_amount - bet_amount if game_over else 0
-
-    return BlackjackResponse(
-        player_cards=player_cards,
-        dealer_cards=dealer_cards,
-        player_total=player_total,
-        dealer_total=dealer_total,
-        player_soft=player_soft,
-        game_over=game_over,
-        result=result,
-        win_amount=win_amount,
-        net_result=net_result,
-        new_credits=current_player.credits,
-        deck_seed=int(game['deck_seed']),
-        can_double=not game_over and len(player_cards) == 2
-    )
+        return BlackjackResponse(
+            player_cards=player_cards,
+            dealer_cards=dealer_cards,
+            player_total=player_total,
+            dealer_total=dealer_total,
+            player_soft=player_soft,
+            game_over=game_over,
+            result=result,
+            win_amount=win_amount,
+            net_result=net_result,
+            new_credits=current_player.credits,
+            deck_seed=int(game['deck_seed']),
+            can_double=not game_over and len(player_cards) == 2
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        db.rollback()
+        logger.exception('Failed to perform blackjack action')
+        raise route_internal_error(
+            ERR_GAMBLING_BLACKJACK_ACTION_FAILED,
+            'Failed to perform blackjack action',
+        )
