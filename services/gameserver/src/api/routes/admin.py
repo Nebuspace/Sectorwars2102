@@ -22,6 +22,7 @@ from src.services.region_lifecycle_service import (
     admin_execute_region_termination,
     admin_region_terminate_preview,
 )
+from src.utils.error_handling import route_internal_error
 from src.models.user import User
 from src.models.player import Player
 from src.models.ship import Ship
@@ -111,7 +112,7 @@ async def get_all_users(
         return {"users": user_list}
     except Exception:
         logger.exception("Failed to fetch users")
-        raise HTTPException(status_code=500, detail="Failed to fetch users")
+        raise route_internal_error("ERR_ADMIN_USERS_LIST_FAILED", "Failed to fetch users")
 
 @router.get("/players", response_model=dict)
 async def get_all_players(
@@ -297,7 +298,7 @@ async def get_all_regions(
         return {"regions": region_list}
     except Exception:
         logger.exception("Failed to fetch regions")
-        raise HTTPException(status_code=500, detail="Failed to fetch regions")
+        raise route_internal_error("ERR_ADMIN_REGIONS_LIST_FAILED", "Failed to fetch regions")
 
 
 class RegionTerminateRequest(BaseModel):
@@ -686,7 +687,9 @@ async def update_player(
             raise
         except Exception as e:
             logger.error(f"Error updating player {player_id}: {e}")
-            raise HTTPException(status_code=500, detail="Failed to update player") from e
+            raise route_internal_error(
+                "ERR_ADMIN_PLAYER_UPDATE_FAILED", "Failed to update player"
+            ) from e
 
 @router.get("/colonies", response_model=dict)
 async def get_all_colonies(
@@ -1268,7 +1271,9 @@ async def get_all_stations(
         return {"stations": stations_list, "total": total, "limit": limit, "offset": offset}
     except Exception as e:
         logger.error(f"Error fetching stations: {e}")
-        raise HTTPException(status_code=500, detail="Failed to fetch stations")
+        raise route_internal_error(
+            "ERR_ADMIN_STATIONS_LIST_FAILED", "Failed to fetch stations"
+        )
 
 @router.get("/sectors", response_model=dict)
 async def get_all_sectors(
@@ -2274,7 +2279,9 @@ async def get_game_event_detail(
         raise
     except Exception as e:
         logger.error(f"Error fetching game event {event_id}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to fetch game event")
+        raise route_internal_error(
+            "ERR_ADMIN_GAME_EVENT_GET_FAILED", "Failed to fetch game event"
+        )
 
 
 @router.patch("/game-events/{event_id}", response_model=dict)
