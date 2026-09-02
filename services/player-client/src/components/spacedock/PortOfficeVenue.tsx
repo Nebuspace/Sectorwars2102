@@ -3,6 +3,7 @@ import { useGame } from '../../contexts/GameContext';
 import { formatCredits } from '../../utils/formatters';
 import DeckPageTabs from '../cockpit/DeckPageTabs';
 import StationSecurityMonitoringPane from '../station/StationSecurityMonitoringPane';
+import PortOfficeGovernancePanel from './PortOfficeGovernancePanel';
 import PortOfficeSyndicatePanel from './PortOfficeSyndicatePanel';
 import PortOfficeTeamPanel from './PortOfficeTeamPanel';
 import './port-office-venue.css';
@@ -2078,6 +2079,7 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
         </div>
 
         <PortOfficeSyndicatePanel stationId={stationId} stationName={stationName} />
+        <PortOfficeGovernancePanel stationId={stationId} stationName={stationName} />
 
         <DeckPageTabs
           pages={[

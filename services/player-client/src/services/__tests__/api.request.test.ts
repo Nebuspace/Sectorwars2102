@@ -648,4 +648,41 @@ describe('apiRequest via trade/combat/grey wrappers', () => {
     );
   });
 
+  it('portOwnershipAPI.castGovernanceVote POSTs /stations/{id}/governance/vote (LEG-4121)', async () => {
+    post.mockResolvedValue({
+      data: {
+        id: 'vote-1',
+        station_id: 'st-1',
+        vote_type: 'tariff',
+        status: 'open',
+        ballots: [],
+        resolution: { status: 'open' },
+      },
+    });
+    const out = await portOwnershipAPI.castGovernanceVote('st-1', {
+      vote_type: 'tariff',
+      proposed_value: { tax_rate: 0.1 },
+      voter_stake_pct: 40,
+      position: 'for',
+    });
+    expect(out).toEqual({
+      id: 'vote-1',
+      station_id: 'st-1',
+      vote_type: 'tariff',
+      status: 'open',
+      ballots: [],
+      resolution: { status: 'open' },
+    });
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/stations/st-1/governance/vote',
+      JSON.stringify({
+        vote_type: 'tariff',
+        proposed_value: { tax_rate: 0.1 },
+        voter_stake_pct: 40,
+        position: 'for',
+      }),
+      jsonHeaders,
+    );
+  });
+
 });
