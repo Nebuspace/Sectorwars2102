@@ -18,6 +18,12 @@ vi.mock('../../../services/api', () => ({
 
 import Leaderboard, { formatLeaderboardLoadError } from '../Leaderboard';
 
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
+
 const FALLBACK = 'Failed to load leaderboard';
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -37,6 +43,19 @@ describe('Leaderboard TypeError densify (LEG-3670)', () => {
 
   it('preserves non-generic Error.message detail when not TypeError', () => {
     expect(formatLeaderboardLoadError(new Error('leaderboard_denied'))).toBe('leaderboard_denied');
+  });
+});
+
+describe('Leaderboard 403/429 densify (LEG-3999)', () => {
+  it('formatLeaderboardLoadError surfaces 403/429 without raw status codes', () => {
+    expect(formatLeaderboardLoadError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatLeaderboardLoadError(apiRequestError(403, 'leaderboard_denied'))).toBe(
+      'leaderboard_denied',
+    );
+    expect(formatLeaderboardLoadError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatLeaderboardLoadError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatLeaderboardLoadError(apiRequestError(403))).not.toMatch(/TypeError/i);
+    expect(formatLeaderboardLoadError(apiRequestError(403))).not.toMatch(/Network Error/i);
   });
 });
 

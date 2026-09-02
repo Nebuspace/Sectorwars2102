@@ -77,6 +77,15 @@ export function formatLeaderboardLoadError(err: unknown): string {
     return 'Failed to load leaderboard';
   }
 
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission to view the leaderboard.';
+  }
+
+  if (status === 429) {
+    return 'Leaderboard rate limit exceeded — wait a moment and try again.';
+  }
+
   if (hasServerDetail) return message!;
   return 'Failed to load leaderboard';
 }

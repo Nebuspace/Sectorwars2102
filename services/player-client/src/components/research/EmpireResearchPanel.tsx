@@ -124,8 +124,19 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
   );
 };
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
 export function formatEmpireResearchMutationError(err: unknown, fallback: string): string {
   if (err instanceof TypeError) return fallback;
+  const status = httpStatus(err);
   if (err && typeof err === 'object') {
     const resp = (err as { response?: { data?: unknown } }).response;
     const data = resp?.data ?? (err as { data?: unknown }).data;
@@ -135,10 +146,19 @@ export function formatEmpireResearchMutationError(err: unknown, fallback: string
     }
     const msg = (err as { message?: string }).message;
     if (typeof msg === 'string' && msg) {
+      if (status === 403) {
+        if (!isNetworkCollapseMessage(msg) && !/^API Error: \d+$/.test(msg.trim())) return msg;
+        return 'You do not have permission to perform this research action.';
+      }
+      if (status === 429) {
+        return 'Research action rate limit exceeded — wait a moment and try again.';
+      }
       if (isNetworkCollapseMessage(msg)) return fallback;
       return msg;
     }
   }
+  if (status === 403) return 'You do not have permission to perform this research action.';
+  if (status === 429) return 'Research action rate limit exceeded — wait a moment and try again.';
   return fallback;
 }
 
