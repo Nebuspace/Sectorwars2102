@@ -10,10 +10,23 @@ function assertNoTransportLeak(text: string) {
   expect(text).not.toContain('Network Error');
   expect(text).not.toMatch(/Failed to fetch/i);
   expect(text).not.toMatch(/TypeError/i);
+  expect(text).not.toMatch(/^HTTP \d+$/);
+  expect(text).not.toContain('Request failed with status code');
 }
+
+const axiosError = (status: number) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: {} },
+  });
+
+const ACCESS_DENIED =
+  'Access denied — you lack the required admin scope for this action.';
+const RATE_LIMIT =
+  'Admin rate limit exceeded — wait a moment and try again.';
 
 /**
  * LEG-3807 Soft-ORDER — MFAVerification verify TypeError/Network Error densify.
+ * LEG-3989 Soft-ORDER — HTTP 403/429 densify via formatAdminApiError fallback.
  */
 describe('mfaVerificationError formatter (LEG-3807)', () => {
   it('collapses TypeError Failed to fetch to operator-safe fallback', () => {
@@ -36,6 +49,22 @@ describe('mfaVerificationError formatter (LEG-3807)', () => {
 
   it('preserves non-transport verify errors', () => {
     expect(mfaVerificationError(new Error('Invalid MFA code'))).toBe('Invalid MFA code');
+  });
+
+  it('surfaces 403 access-denied copy without transport leak', () => {
+    const text = mfaVerificationError(axiosError(403));
+    expect(text).toBe(ACCESS_DENIED);
+    assertNoTransportLeak(text);
+    expect(text).not.toMatch(/\b403\b/);
+    expect(text).not.toMatch(/HTTP 403/i);
+  });
+
+  it('surfaces 429 rate-limit copy without transport leak', () => {
+    const text = mfaVerificationError(axiosError(429));
+    expect(text).toBe(RATE_LIMIT);
+    assertNoTransportLeak(text);
+    expect(text).not.toMatch(/\b429\b/);
+    expect(text).not.toMatch(/HTTP 429/i);
   });
 });
 
@@ -90,5 +119,43 @@ describe('MFAVerification typeErrorHonesty densify (LEG-3807)', () => {
     await waitFor(() => {
       expect(screen.getByText('Invalid MFA code')).toBeInTheDocument();
     });
+  });
+
+  it('submit 403 surfaces access-denied copy without transport leak', async () => {
+    const user = userEvent.setup();
+    const onVerify = vi.fn().mockRejectedValue(axiosError(403));
+    render(<MFAVerification onVerify={onVerify} />);
+
+    const input = screen.getByPlaceholderText('000000');
+    await user.type(input, '123456');
+    await user.click(screen.getByRole('button', { name: /verify/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(ACCESS_DENIED)).toBeInTheDocument();
+    });
+
+    const text = screen.getByText(ACCESS_DENIED).textContent ?? '';
+    assertNoTransportLeak(text);
+    expect(text).not.toMatch(/\b403\b/);
+    expect(text).not.toMatch(/HTTP 403/i);
+  });
+
+  it('submit 429 surfaces rate-limit copy without transport leak', async () => {
+    const user = userEvent.setup();
+    const onVerify = vi.fn().mockRejectedValue(axiosError(429));
+    render(<MFAVerification onVerify={onVerify} />);
+
+    const input = screen.getByPlaceholderText('000000');
+    await user.type(input, '123456');
+    await user.click(screen.getByRole('button', { name: /verify/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(RATE_LIMIT)).toBeInTheDocument();
+    });
+
+    const text = screen.getByText(RATE_LIMIT).textContent ?? '';
+    assertNoTransportLeak(text);
+    expect(text).not.toMatch(/\b429\b/);
+    expect(text).not.toMatch(/HTTP 429/i);
   });
 });

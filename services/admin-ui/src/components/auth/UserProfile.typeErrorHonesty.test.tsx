@@ -32,10 +32,23 @@ function assertNoTransportLeak(text: string) {
   expect(text).not.toContain('Network Error');
   expect(text).not.toMatch(/Failed to fetch/i);
   expect(text).not.toMatch(/TypeError/i);
+  expect(text).not.toMatch(/^HTTP \d+$/);
+  expect(text).not.toContain('Request failed with status code');
 }
+
+const axiosError = (status: number) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: {} },
+  });
+
+const ACCESS_DENIED =
+  'Access denied — you lack the required admin scope for this action.';
+const RATE_LIMIT =
+  'Admin rate limit exceeded — wait a moment and try again.';
 
 /**
  * LEG-3810 Soft-ORDER — UserProfile MFA toggle TypeError/Network Error densify.
+ * LEG-3991 Soft-ORDER — HTTP 403/429 densify via embedded MFASetup/formatAdminApiError.
  * UserProfile has no exported error helpers; failures surface via embedded MFASetup.
  */
 describe('UserProfile typeErrorHonesty densify (LEG-3810)', () => {
@@ -112,5 +125,43 @@ describe('UserProfile typeErrorHonesty densify (LEG-3810)', () => {
 
     const bodyText = document.body.textContent ?? '';
     assertNoTransportLeak(bodyText);
+  });
+
+  it('MFA toggle 403 surfaces access-denied copy without transport leak', async () => {
+    vi.mocked(api.post).mockRejectedValue(axiosError(403));
+
+    const user = userEvent.setup();
+    render(<UserProfile />);
+
+    await user.click(screen.getByRole('button', { name: /Enable MFA/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(ACCESS_DENIED)).toBeInTheDocument();
+    });
+
+    const bodyText = document.body.textContent ?? '';
+    assertNoTransportLeak(bodyText);
+    expect(bodyText).toContain(ACCESS_DENIED);
+    expect(bodyText).not.toMatch(/\b403\b/);
+    expect(bodyText).not.toMatch(/HTTP 403/i);
+  });
+
+  it('MFA toggle 429 surfaces rate-limit copy without transport leak', async () => {
+    vi.mocked(api.post).mockRejectedValue(axiosError(429));
+
+    const user = userEvent.setup();
+    render(<UserProfile />);
+
+    await user.click(screen.getByRole('button', { name: /Enable MFA/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(RATE_LIMIT)).toBeInTheDocument();
+    });
+
+    const bodyText = document.body.textContent ?? '';
+    assertNoTransportLeak(bodyText);
+    expect(bodyText).toContain(RATE_LIMIT);
+    expect(bodyText).not.toMatch(/\b429\b/);
+    expect(bodyText).not.toMatch(/HTTP 429/i);
   });
 });

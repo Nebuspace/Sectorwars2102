@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { formatAdminApiError } from '../../utils/adminApiError';
+import { axiosResponseStatus, detailFromResponse, formatAdminApiError } from '../../utils/adminApiError';
 import './mfa-verification.css';
 
 const MFA_VERIFY_FALLBACK = 'Verification failed';
@@ -15,9 +15,17 @@ function isNetworkTransportFailure(err: unknown): boolean {
   return false;
 }
 
-/** Collapse fetch/network failures; preserve intentional verify errors from onVerify. */
+/** Collapse fetch/network failures; route HTTP status via formatAdminApiError; preserve intentional verify errors. */
 export function mfaVerificationError(err: unknown): string {
   if (isNetworkTransportFailure(err)) {
+    return formatAdminApiError(err, { fallback: MFA_VERIFY_FALLBACK });
+  }
+  const status = axiosResponseStatus(err);
+  if (status !== undefined) {
+    const detail = detailFromResponse(err);
+    if (detail) {
+      return detail;
+    }
     return formatAdminApiError(err, { fallback: MFA_VERIFY_FALLBACK });
   }
   if (err instanceof Error) {
