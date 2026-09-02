@@ -10,6 +10,32 @@ import { useAutopilot } from './AutopilotContext';
 import type { PctPoint } from '../components/tactical/windshieldTableauLayout';
 import { ENGAGE_RANGE_EM } from '../components/tactical/windshieldTableauHelpers';
 
+/** Player-safe fallback when flight/navigation telemetry cannot load (LEG-3798). */
+export const WINDSHIELD_FLIGHT_TELEMETRY_FALLBACK = 'Flight telemetry unavailable';
+
+const isWindshieldFlightNetworkCollapse = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+/** Collapse TypeError/network tokens to caller-provided fallback (LEG-3798). */
+export function formatWindshieldFlightTelemetryError(err: unknown, fallback: string): string {
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    !(err instanceof TypeError) &&
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isWindshieldFlightNetworkCollapse(message);
+
+  if (hasServerDetail) return message!;
+  return fallback;
+}
+
 /**
  * WindshieldFlightContext — the ONE shared flight-state store unifying the
  * windshield tableau's own intra-sector click→glide with the SOLAR SYSTEM
@@ -92,6 +118,11 @@ export interface WindshieldFlightContextValue {
   /** The tableau calls this once per /contents fetch with the server-
    *  published value (mirrors reportShipPos). */
   reportEngageRangeEm: (em: number) => void;
+
+  /** Player-safe telemetry load failure, if any (LEG-3798). */
+  telemetryError: string | null;
+  /** Tableau/consumer reports a telemetry API failure for densified copy. */
+  reportTelemetryFailure: (err: unknown) => void;
 }
 
 const WindshieldFlightContext = createContext<WindshieldFlightContextValue | undefined>(undefined);
@@ -107,6 +138,7 @@ export const WindshieldFlightProvider: React.FC<{ children: React.ReactNode }> =
   const [shipPos, setShipPos] = useState<PctPoint | null>(null);
   const [contactPositions, setContactPositions] = useState<Map<string, PctPoint>>(new Map());
   const [engageRangeEm, setEngageRangeEm] = useState<number>(ENGAGE_RANGE_EM);
+  const [telemetryError, setTelemetryError] = useState<string | null>(null);
   const approachSeqRef = useRef(0);
   const lastGlideTargetRef = useRef<string | null>(null);
   const wasLocalFlyingRef = useRef(false);
@@ -162,6 +194,12 @@ export const WindshieldFlightProvider: React.FC<{ children: React.ReactNode }> =
     setEngageRangeEm(em);
   }, []);
 
+  const reportTelemetryFailure = useCallback((err: unknown) => {
+    setTelemetryError(
+      formatWindshieldFlightTelemetryError(err, WINDSHIELD_FLIGHT_TELEMETRY_FALLBACK),
+    );
+  }, []);
+
   const value = useMemo<WindshieldFlightContextValue>(() => ({
     isFlying: localFlying || autopilot.status === 'engaged',
     targetId,
@@ -177,10 +215,13 @@ export const WindshieldFlightProvider: React.FC<{ children: React.ReactNode }> =
     reportContactPositions,
     engageRangeEm,
     reportEngageRangeEm,
+    telemetryError,
+    reportTelemetryFailure,
   }), [
     localFlying, autopilot.status, targetId, arrivedTargetId, approach, allStop,
     pendingApproach, stopSignal, reportFlightState, shipPos, contactPositions,
     reportShipPos, reportContactPositions, engageRangeEm, reportEngageRangeEm,
+    telemetryError, reportTelemetryFailure,
   ]);
 
   return (
