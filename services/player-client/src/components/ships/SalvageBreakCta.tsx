@@ -19,6 +19,16 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
   );
 };
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
 /** Surface GS salvage-break detail; hide fetch TypeError / network-collapse noise (LEG-3144 / LEG-3298). */
 export function formatSalvageBreakError(err: unknown): string {
   const transportFallback = 'Salvage break failed — check your connection and try again.';
@@ -26,7 +36,24 @@ export function formatSalvageBreakError(err: unknown): string {
     return transportFallback;
   }
 
+  const status = httpStatus(err);
   let message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    !(err instanceof TypeError) &&
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNetworkCollapseMessage(message);
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission to break down this hull for salvage.';
+  }
+
+  if (status === 429) {
+    return 'Salvage break rate limit exceeded — wait a moment and try again.';
+  }
+
   if (typeof message === 'string' && isNetworkCollapseMessage(message)) {
     return transportFallback;
   }
