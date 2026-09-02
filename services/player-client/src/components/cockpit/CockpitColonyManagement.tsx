@@ -20,6 +20,28 @@ import './cockpit-colony.css';
 /** Matches gameserver MAX_BUILDING_LEVEL — inline upgrade cap. */
 const MAX_BUILDING_LEVEL = 10;
 
+export const COCKPIT_COLONY_LOAD_FALLBACK = 'Failed to load colony data';
+
+/** Transport collapse copy is not gameserver detail (LEG-3751 densify). */
+const isCockpitColonyNetworkCollapse = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+/** Exported for TypeError/network honesty Vitest (LEG-3751). */
+export function formatCockpitColonyLoadError(err: unknown): string {
+  if (err instanceof TypeError) return COCKPIT_COLONY_LOAD_FALLBACK;
+  const message = err instanceof Error ? err.message : undefined;
+  if (typeof message === 'string' && message.trim() && !isCockpitColonyNetworkCollapse(message)) {
+    return message;
+  }
+  return COCKPIT_COLONY_LOAD_FALLBACK;
+}
+
 /** Commodity row → production-building type for POST …/buildings/upgrade. */
 const COMMODITY_BUILDING: Record<'fuel' | 'organics' | 'equipment', BuildingType> = {
   fuel: 'mine',
@@ -137,6 +159,7 @@ const CockpitColonyManagement: React.FC<CockpitColonyManagementProps> = ({
   // The rich owned-Planet object for the modals (the landed poll's detail shape
   // is not the same as the /planets/owned shape the modals were written for).
   const [ownedPlanet, setOwnedPlanet] = useState<Planet | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   // Active management tab. Citadel is the default landing tab.
   const [tab, setTab] = useState<ColonyTab>('citadel');
@@ -150,9 +173,13 @@ const CockpitColonyManagement: React.FC<CockpitColonyManagementProps> = ({
         const list: Planet[] = res?.planets || [];
         const match = list.find((p) => String(p.id) === String(planetId)) || null;
         setOwnedPlanet(match);
+        setLoadError(null);
       })
-      .catch(() => {
-        if (!cancelled) setOwnedPlanet(null);
+      .catch((err) => {
+        if (!cancelled) {
+          setOwnedPlanet(null);
+          setLoadError(formatCockpitColonyLoadError(err));
+        }
       });
     return () => {
       cancelled = true;
@@ -306,6 +333,11 @@ const CockpitColonyManagement: React.FC<CockpitColonyManagementProps> = ({
 
   return (
     <div className="colony-mgmt-console">
+      {loadError && (
+        <div className="cmc-load-error" data-testid="cockpit-colony-load-error" role="alert">
+          {loadError}
+        </div>
+      )}
       <DeckPageTabs
         pages={deckPages}
         activeId={tab}
