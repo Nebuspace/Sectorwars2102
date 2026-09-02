@@ -65,6 +65,11 @@ interface PlanetProfessionsState {
   training_costs_per_100?: Record<string, TrainingCostRecipe>;
   /** Per-profession training gates from gameserver (LEG-2697 / LEG-2698). */
   training_eligibility?: Record<string, boolean>;
+  /** Citadel-phase specialization ceiling (LEG-3975 / LEG-3969). */
+  specialization_cap_max?: number;
+  /** Trained specialists + queued trainees counted toward the cap. */
+  specialized_total?: number;
+  specialization_cap_fraction?: number;
 }
 
 export interface ProfessionsPanelProps {
@@ -117,6 +122,17 @@ export const formatTrainingCostPreview = (cost: TrainingCostRecipe): string => {
   if (cost.equipment) parts.push(`${cost.equipment.toLocaleString()} equipment`);
   return parts.join(' + ');
 };
+
+/** Player-safe copy when training would exceed the citadel-phase specialization cap (LEG-3977). */
+export const SPECIALIZATION_CAP_EXCEEDED_MESSAGE =
+  'Specialization limit reached for this citadel phase — reduce trainees or wait for queued training to complete.';
+
+/** Train-form cap summary when GET payload exposes cap fields (LEG-3975). */
+export const formatSpecializationCapSummary = (
+  specializedTotal: number,
+  capMax: number,
+): string =>
+  `Specialists (trained + queued): ${specializedTotal.toLocaleString()} / ${capMax.toLocaleString()} citadel cap`;
 
 const isNotOwnerError = (message: string): boolean =>
   /not_owner|only the planet owner/i.test(message);
@@ -189,7 +205,12 @@ export function formatProfessionsTrainError(err: unknown): string {
     return 'Profession training rate limit exceeded — wait a moment and try again.';
   }
 
-  if (hasServerDetail) return message!;
+  if (hasServerDetail) {
+    if (message!.includes('specialization_cap_exceeded')) {
+      return SPECIALIZATION_CAP_EXCEEDED_MESSAGE;
+    }
+    return message!;
+  }
   return 'Training failed';
 }
 
@@ -382,6 +403,8 @@ const ProfessionsPanel: React.FC<ProfessionsPanelProps> = ({
         setActionMessage('Research Lab level 3 required to train Research Scientists.');
       } else if (rawMessage.includes('insufficient_generic_colonists')) {
         setActionMessage('Not enough generic colonists available for this training run.');
+      } else if (rawMessage.includes('specialization_cap_exceeded')) {
+        setActionMessage(SPECIALIZATION_CAP_EXCEEDED_MESSAGE);
       } else if (isNotOwnerError(rawMessage)) {
         setHidden(true);
       } else {
@@ -424,6 +447,11 @@ const ProfessionsPanel: React.FC<ProfessionsPanelProps> = ({
   const scaledTrainingCost =
     !state.cost_blocked && per100Recipe
       ? scaleTrainingCost(per100Recipe, traineeCount)
+      : null;
+  const specializationCapSummary =
+    typeof state.specialization_cap_max === 'number' &&
+    typeof state.specialized_total === 'number'
+      ? formatSpecializationCapSummary(state.specialized_total, state.specialization_cap_max)
       : null;
 
   return (
@@ -564,6 +592,14 @@ const ProfessionsPanel: React.FC<ProfessionsPanelProps> = ({
         >
           {actionLoading ? 'Queueing…' : 'Queue training'}
         </button>
+        {specializationCapSummary && (
+          <p
+            className="professions-panel__meta"
+            data-testid="professions-specialization-cap-summary"
+          >
+            {specializationCapSummary}
+          </p>
+        )}
         {scaledTrainingCost && (
           <p
             className="professions-panel__cost-preview"

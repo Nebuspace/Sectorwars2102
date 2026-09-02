@@ -70,6 +70,8 @@ const { getPlanetProfessions, trainPlanetProfession, assignPlanetProfession, OWN
     training_costs_per_100: undefined as
       | Record<string, { credits: number; equipment?: number; organics?: number }>
       | undefined,
+    specialization_cap_max: undefined as number | undefined,
+    specialized_total: undefined as number | undefined,
   };
   return {
     OWNER_STATE: state,
@@ -95,7 +97,12 @@ vi.mock('../../../services/api', () => ({
   },
 }));
 
-import ProfessionsPanel, { formatProfessionsLoadError } from '../ProfessionsPanel';
+import ProfessionsPanel, {
+  formatProfessionsLoadError,
+  formatProfessionsTrainError,
+  formatSpecializationCapSummary,
+  SPECIALIZATION_CAP_EXCEEDED_MESSAGE,
+} from '../ProfessionsPanel';
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -218,6 +225,58 @@ describe('ProfessionsPanel', () => {
     });
 
     expect(trainPlanetProfession).toHaveBeenCalledWith('planet-1', 'SPACE_ENGINEERS', 100);
+  });
+
+  it('formatProfessionsTrainError maps specialization_cap_exceeded to player-safe copy (LEG-3977)', () => {
+    expect(
+      formatProfessionsTrainError(new Error('specialization_cap_exceeded')),
+    ).toBe(SPECIALIZATION_CAP_EXCEEDED_MESSAGE);
+    expect(formatProfessionsTrainError(new Error('specialization_cap_exceeded'))).not.toMatch(
+      /specialization_cap_exceeded/i,
+    );
+  });
+
+  it('surfaces specialization cap exceeded on train mutation (LEG-3977)', async () => {
+    trainPlanetProfession.mockRejectedValueOnce(new Error('specialization_cap_exceeded'));
+
+    await act(async () => {
+      root.render(<ProfessionsPanel planetId="planet-1" citadelLevel={3} />);
+    });
+    await act(async () => {
+      await flush();
+    });
+
+    const btn = Array.from(container.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('Queue training'),
+    );
+    await act(async () => {
+      btn!.click();
+      await flush();
+    });
+
+    expect(container.textContent).toContain(SPECIALIZATION_CAP_EXCEEDED_MESSAGE);
+    expect(container.textContent).not.toMatch(/specialization_cap_exceeded/i);
+    expect(container.textContent).not.toMatch(/Training failed/i);
+  });
+
+  it('shows specialization cap summary when GET payload includes cap fields (LEG-3977)', async () => {
+    getPlanetProfessions.mockResolvedValueOnce({
+      ...OWNER_STATE,
+      specialization_cap_max: 250,
+      specialized_total: 180,
+    });
+
+    await act(async () => {
+      root.render(<ProfessionsPanel planetId="planet-1" citadelLevel={3} />);
+    });
+    await act(async () => {
+      await flush();
+    });
+
+    const summary = container.querySelector('[data-testid="professions-specialization-cap-summary"]');
+    expect(summary?.textContent).toBe(formatSpecializationCapSummary(180, 250));
+    expect(summary?.textContent).toContain('180');
+    expect(summary?.textContent).toContain('250');
   });
 
   it('blocks train UI below citadel L3 without inventing prices', async () => {
