@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 /**
- * LEG-3073 Soft-ORDER — CommsCrewPage TypeError densify.
- * Threads/flag/send/purge must not surface raw Failed to fetch / TypeError.
+ * LEG-3777 Soft-ORDER — CommsCrewPage TypeError densify.
  */
 import { describe, it, expect } from 'vitest';
 import {
@@ -9,9 +8,9 @@ import {
   formatCommsFlagError,
   formatCommsSendError,
   formatCommsPurgeError,
-} from './CommsCrewPage';
+} from '../CommsCrewPage';
 
-describe('CommsCrewPage TypeError densify (LEG-3073)', () => {
+describe('CommsCrewPage TypeError densify (LEG-3777)', () => {
   it('formatCommsThreadsLoadError falls back on TypeError network collapse', () => {
     const text = formatCommsThreadsLoadError(new TypeError('Failed to fetch'));
     expect(text).toBe('Failed to load threads');
@@ -40,7 +39,7 @@ describe('CommsCrewPage TypeError densify (LEG-3073)', () => {
     expect(text).not.toMatch(/TypeError/i);
   });
 
-  it('formatCommsThreadsLoad/Send/Flag/Purge fall back on axios Network Error / Failed to fetch (LEG-3353)', () => {
+  it('formatCommsThreadsLoad/Send/Flag/Purge fall back on axios Network Error / Failed to fetch', () => {
     expect(formatCommsThreadsLoadError(new Error('Network Error'))).toBe('Failed to load threads');
     expect(formatCommsThreadsLoadError(new Error('Failed to fetch'))).toBe('Failed to load threads');
     expect(formatCommsThreadsLoadError(new Error('Network Error'))).not.toBe('Network Error');
