@@ -11,6 +11,12 @@ export interface TerraformPanelProps {
 }
 
 /**
+ * Soft-ORDER invent=0 — Terraform HUD honesty surface (LEG-4072).
+ * Re-exports densified TerraformingPanel start formatter (child owns API).
+ */
+export { formatTerraformingStartError as formatTerraformPanelError } from '../planetary/TerraformingPanel';
+
+/**
  * TerraformPanel — the TERRAFORM HUD instrument. Reuses TerraformingPanel's
  * start / cancel / biome-reclass logic verbatim inside a cockpit panel. The
  * header shows current habitability as the glanceable points-out-of-100 readout

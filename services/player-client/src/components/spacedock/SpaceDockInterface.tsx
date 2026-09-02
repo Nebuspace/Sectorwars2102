@@ -6,12 +6,12 @@ import PortOfficeVenue from './PortOfficeVenue';
 import ContractBoardVenue from './ContractBoardVenue';
 import TradingVenue from './TradingVenue';
 import ShipyardVenue from './ShipyardVenue';
-import GenesisVenue from './GenesisVenue';
+import GenesisVenue, { formatGenesisVenueError } from './GenesisVenue';
 import ArmoryVenue from './ArmoryVenue';
 import ServicesVenue, { formatServicesVenueError } from './ServicesVenue';
 import MiningVenue, { formatMiningVenueError } from './MiningVenue';
 import type { ClaimLicenseRow } from './MiningVenue';
-import GamblingVenue from './GamblingVenue';
+import GamblingVenue, { formatGamblingVenueError } from './GamblingVenue';
 import RefiningVenue from './RefiningVenue';
 import { getStationClassInfo } from '../common/stationIdentity';
 import { shipAPI, registryAPI, ariaMarketAPI, shipUpgradeAPI, miningAPI, type AriaMarketIntelList } from '../../services/api';
@@ -708,7 +708,11 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
 
       if (!response.ok) {
         const error = await response.json();
-        setGamblingError(error.detail || 'Spin failed');
+        const detail = typeof error?.detail === 'string' && error.detail
+          ? error.detail
+          : (typeof error?.message === 'string' && error.message ? error.message : `API Error: ${response.status}`);
+        const err = Object.assign(new Error(detail), { status: response.status, detail: error?.detail });
+        setGamblingError(formatGamblingVenueError(err, 'Spin failed'));
         setSlotReels(['❌', '❌', '❌']);
         // Restore credits on error
         setLocalCredits(prev => (prev ?? displayCredits) + betAmount);
@@ -727,7 +731,7 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
       updatePlayerCredits(result.new_credits);
     } catch (error) {
       console.error('Slots error:', error);
-      setGamblingError('Connection error. Please try again.');
+      setGamblingError(formatGamblingVenueError(error, 'Connection error. Please try again.'));
       setSlotReels(['❌', '❌', '❌']);
       // Restore credits on error
       setLocalCredits(prev => (prev ?? displayCredits) + betAmount);
@@ -767,7 +771,11 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
 
       if (!response.ok) {
         const error = await response.json();
-        setGamblingError(error.detail || 'Roll failed');
+        const detail = typeof error?.detail === 'string' && error.detail
+          ? error.detail
+          : (typeof error?.message === 'string' && error.message ? error.message : `API Error: ${response.status}`);
+        const err = Object.assign(new Error(detail), { status: response.status, detail: error?.detail });
+        setGamblingError(formatGamblingVenueError(err, 'Roll failed'));
         // Restore credits on error
         setLocalCredits(prev => (prev ?? displayCredits) + betAmount);
         return;
@@ -785,7 +793,7 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
       updatePlayerCredits(result.new_credits);
     } catch (error) {
       console.error('Dice error:', error);
-      setGamblingError('Connection error. Please try again.');
+      setGamblingError(formatGamblingVenueError(error, 'Connection error. Please try again.'));
       // Restore credits on error
       setLocalCredits(prev => (prev ?? displayCredits) + betAmount);
     }
@@ -835,7 +843,11 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
 
       if (!response.ok) {
         const error = await response.json();
-        setGamblingError(error.detail || 'Lottery failed');
+        const detail = typeof error?.detail === 'string' && error.detail
+          ? error.detail
+          : (typeof error?.message === 'string' && error.message ? error.message : `API Error: ${response.status}`);
+        const err = Object.assign(new Error(detail), { status: response.status, detail: error?.detail });
+        setGamblingError(formatGamblingVenueError(err, 'Lottery failed'));
         // Restore credits on error
         setLocalCredits(prev => (prev ?? displayCredits) + betAmount);
         setIsLotteryPlaying(false);
@@ -854,7 +866,7 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
       updatePlayerCredits(result.new_credits);
     } catch (error) {
       console.error('Lottery error:', error);
-      setGamblingError('Connection error. Please try again.');
+      setGamblingError(formatGamblingVenueError(error, 'Connection error. Please try again.'));
       // Restore credits on error
       setLocalCredits(prev => (prev ?? displayCredits) + betAmount);
     } finally {
@@ -890,7 +902,11 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
 
       if (!response.ok) {
         const error = await response.json();
-        setGamblingError(error.detail || 'Deal failed');
+        const detail = typeof error?.detail === 'string' && error.detail
+          ? error.detail
+          : (typeof error?.message === 'string' && error.message ? error.message : `API Error: ${response.status}`);
+        const err = Object.assign(new Error(detail), { status: response.status, detail: error?.detail });
+        setGamblingError(formatGamblingVenueError(err, 'Deal failed'));
         setLocalCredits(prev => (prev ?? displayCredits) + betAmount);
         setIsBlackjackDealing(false);
         return;
@@ -915,7 +931,7 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
       }
     } catch (error) {
       console.error('Blackjack deal error:', error);
-      setGamblingError('Connection error. Please try again.');
+      setGamblingError(formatGamblingVenueError(error, 'Connection error. Please try again.'));
       setLocalCredits(prev => (prev ?? displayCredits) + betAmount);
     } finally {
       setIsBlackjackDealing(false);
@@ -956,7 +972,11 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
 
       if (!response.ok) {
         const error = await response.json();
-        setGamblingError(error.detail || 'Action failed');
+        const detail = typeof error?.detail === 'string' && error.detail
+          ? error.detail
+          : (typeof error?.message === 'string' && error.message ? error.message : `API Error: ${response.status}`);
+        const err = Object.assign(new Error(detail), { status: response.status, detail: error?.detail });
+        setGamblingError(formatGamblingVenueError(err, 'Action failed'));
         // Restore credits if double failed
         if (action === 'double') {
           setLocalCredits(prev => (prev ?? displayCredits) + betAmount);
@@ -983,7 +1003,7 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
       }
     } catch (error) {
       console.error('Blackjack action error:', error);
-      setGamblingError('Connection error. Please try again.');
+      setGamblingError(formatGamblingVenueError(error, 'Connection error. Please try again.'));
       if (action === 'double') {
         setLocalCredits(prev => (prev ?? displayCredits) + betAmount);
       }
@@ -1002,19 +1022,6 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
   // the gameserver's global error handler wraps it as `{message}` instead, or
   // renders `[object Object]` when a 422 sends `detail` as FastAPI's validation
   // array (`[{loc, msg, type}, ...]`) rather than a string.
-  const extractGenesisErrorDetail = (error: unknown, fallback: string): string => {
-    const raw = (error as { detail?: unknown; message?: unknown } | null)?.detail
-      ?? (error as { detail?: unknown; message?: unknown } | null)?.message;
-    if (typeof raw === 'string' && raw) return raw;
-    if (Array.isArray(raw)) {
-      const msgs = raw
-        .map(e => (e && typeof e === 'object' && typeof (e as { msg?: unknown }).msg === 'string' ? (e as { msg: string }).msg : null))
-        .filter((m): m is string => Boolean(m));
-      if (msgs.length) return msgs.join('; ');
-    }
-    return fallback;
-  };
-
   const purchaseGenesisDevice = useCallback(async () => {
     const token = getToken();
     if (!token || genesisPurchasing) return;
@@ -1051,7 +1058,18 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
 
       if (!response.ok) {
         const error = await response.json().catch(() => null);
-        setGenesisError(extractGenesisErrorDetail(error, 'Purchase failed'));
+        const raw = (error as { detail?: unknown; message?: unknown } | null)?.detail
+          ?? (error as { detail?: unknown; message?: unknown } | null)?.message;
+        let detail = 'Purchase failed';
+        if (typeof raw === 'string' && raw) detail = raw;
+        else if (Array.isArray(raw)) {
+          const msgs = raw
+            .map(e => (e && typeof e === 'object' && typeof (e as { msg?: unknown }).msg === 'string' ? (e as { msg: string }).msg : null))
+            .filter((m): m is string => Boolean(m));
+          if (msgs.length) detail = msgs.join('; ');
+        }
+        const err = Object.assign(new Error(detail), { status: response.status, detail: raw });
+        setGenesisError(formatGenesisVenueError(err, 'Purchase failed'));
         // Restore credits on error
         setLocalCredits(prev => (prev ?? displayCredits) + price);
         setGenesisPurchasing(false);
@@ -1072,7 +1090,7 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
       setTimeout(() => setGenesisSuccess(null), 3000);
     } catch (error) {
       console.error('Genesis purchase error:', error);
-      setGenesisError('Connection error. Please try again.');
+      setGenesisError(formatGenesisVenueError(error, 'Connection error. Please try again.'));
       setLocalCredits(prev => (prev ?? displayCredits) + price);
     } finally {
       setGenesisPurchasing(false);

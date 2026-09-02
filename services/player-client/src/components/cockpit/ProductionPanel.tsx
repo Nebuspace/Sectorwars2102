@@ -2,6 +2,12 @@ import React, { useEffect, useRef, useState } from 'react';
 import CockpitPanel from './CockpitPanel';
 import CoupledColonistSliders, { type RoleAllocation, type ProdRole, type PerColonistRates } from './CoupledColonistSliders';
 
+/**
+ * Soft-ORDER invent=0 — Production HUD honesty surface (LEG-4073).
+ * Re-exports densified CoupledColonistSliders alloc formatter (child owns API).
+ */
+export { formatCoupledColonistAllocError as formatProductionPanelError } from './CoupledColonistSliders';
+
 export interface ProductionLine {
   key: 'fuel' | 'organics' | 'equipment';
   icon: string;

@@ -3,6 +3,12 @@ import CockpitPanel from './CockpitPanel';
 import CitadelManager from '../planetary/CitadelManager';
 import ProfessionsPanel from '../planetary/ProfessionsPanel';
 
+/**
+ * Soft-ORDER invent=0 — Citadel HUD honesty surface (LEG-4074).
+ * Re-exports densified CitadelManager upgrade formatter (child owns API).
+ */
+export { formatCitadelUpgradeError as formatCitadelPanelError } from '../planetary/CitadelManager';
+
 export interface CitadelPanelProps {
   planetId: string;
   playerCredits: number;

@@ -9,6 +9,68 @@ import './spacedock.css';
 // SpaceDockInterface and are threaded through as props here.
 // =====================================================================
 
+export const GENESIS_VENUE_FALLBACK = 'Connection error. Please try again.';
+
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+/** Soft-ORDER invent=0 — Genesis purchase honesty (LEG-4070). */
+export function formatGenesisVenueError(error: unknown, fallback: string): string {
+  const status = httpStatus(error);
+  let detailCopy: string | undefined;
+  if (error && typeof error === 'object') {
+    const raw = (error as { detail?: unknown }).detail;
+    if (typeof raw === 'string' && raw.trim()) detailCopy = raw.trim();
+    else if (Array.isArray(raw)) {
+      const msgs = raw
+        .map((e) =>
+          e && typeof e === 'object' && typeof (e as { msg?: unknown }).msg === 'string'
+            ? (e as { msg: string }).msg
+            : null,
+        )
+        .filter((m): m is string => Boolean(m));
+      if (msgs.length) detailCopy = msgs.join('; ');
+    }
+  }
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : undefined;
+  const messageDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNetworkCollapseMessage(message)
+      ? message.trim()
+      : undefined;
+  const serverCopy = detailCopy ?? messageDetail;
+
+  if (status === 403) {
+    if (serverCopy) return serverCopy;
+    return 'You do not have permission to purchase Genesis devices.';
+  }
+  if (status === 429) {
+    return 'Genesis Store rate limit exceeded — wait a moment and try again.';
+  }
+  if (error instanceof TypeError) return fallback;
+  if (typeof message === 'string' && isNetworkCollapseMessage(message)) return fallback;
+  if (serverCopy) return serverCopy;
+  return fallback;
+}
+
 interface GenesisVenueProps {
   shipName: string | undefined;
   shipType: string | undefined;
