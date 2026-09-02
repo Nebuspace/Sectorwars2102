@@ -14,11 +14,14 @@ from src.auth.admin_scopes import (
     PLAYERS_SUSPEND,
     PLAYERS_VIEW,
     REGIONS_TERMINATE,
+    REGIONS_TRANSFER_OWNERSHIP,
 )
 from src.auth.dependencies import require_all_scopes, require_scope
 from src.services.admin_action_attempt import admin_action_attempt
 from src.services.region_lifecycle_service import (
     AdminRegionTerminationError,
+    AdminRegionTransferOwnershipError,
+    admin_execute_region_ownership_transfer,
     admin_execute_region_termination,
     admin_region_terminate_preview,
 )
@@ -305,8 +308,25 @@ class RegionTerminateRequest(BaseModel):
     reason: str = Field(..., min_length=1)
 
 
+class RegionTransferOwnershipRequest(BaseModel):
+    new_owner_id: uuid.UUID = Field(..., alias="newOwnerId")
+    reason: str = Field(..., min_length=1)
+
+    model_config = {"populate_by_name": True}
+
+
 def _map_admin_region_termination_error(exc: AdminRegionTerminationError) -> HTTPException:
     if exc.code == "not_found":
+        return HTTPException(status_code=404, detail=exc.detail)
+    if exc.code == "already_terminated":
+        return HTTPException(status_code=409, detail=exc.detail)
+    return HTTPException(status_code=422, detail=exc.detail)
+
+
+def _map_admin_region_transfer_ownership_error(
+    exc: AdminRegionTransferOwnershipError,
+) -> HTTPException:
+    if exc.code == "not_found" or exc.code == "new_owner_not_found":
         return HTTPException(status_code=404, detail=exc.detail)
     if exc.code == "already_terminated":
         return HTTPException(status_code=409, detail=exc.detail)
@@ -368,6 +388,44 @@ async def post_region_terminate(
         attempt.succeed(payload={**result, "reason": body.reason.strip()})
 
     outbox.flush()
+    return result
+
+
+@router.post("/regions/{region_id}/transfer-ownership", response_model=dict)
+async def post_region_transfer_ownership(
+    region_id: uuid.UUID,
+    body: RegionTransferOwnershipRequest,
+    current_admin: User = Depends(require_scope(REGIONS_TRANSFER_OWNERSHIP)),
+    db: Session = Depends(get_db),
+):
+    """Unilaterally transfer region ownership to another user (LEG-DEC-500)."""
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=REGIONS_TRANSFER_OWNERSHIP,
+        action="region_transfer_ownership",
+        target_type="region",
+        target_id=str(region_id),
+        payload={
+            "reason": body.reason.strip(),
+            "newOwnerId": str(body.new_owner_id),
+        },
+    ) as attempt:
+        try:
+            result = admin_execute_region_ownership_transfer(
+                db,
+                region_id,
+                body.new_owner_id,
+            )
+        except AdminRegionTransferOwnershipError as exc:
+            raise _map_admin_region_transfer_ownership_error(exc) from exc
+        attempt.succeed(
+            payload={
+                **result,
+                "reason": body.reason.strip(),
+            },
+        )
+
     return result
 
 
