@@ -360,3 +360,11 @@ def create_rate_limit_error(retry_after: int = 60) -> HTTPException:
         detail="Rate limit exceeded. Please try again later.",
         headers={"Retry-After": str(retry_after)}
     )
+
+
+def route_internal_error(error_code: str, detail: str, *, status_code: int = 500) -> HTTPException:
+    """Structured opaque 500 for route ``except Exception`` catch paths (Soft-ORDER densify)."""
+    return HTTPException(
+        status_code=status_code,
+        detail={"error_code": error_code, "detail": detail},
+    )

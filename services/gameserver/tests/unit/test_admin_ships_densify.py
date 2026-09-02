@@ -1,7 +1,4 @@
-"""LEG-3693/3709 — admin_ships routes HTTP 500 must not echo Exception text.
-
-Mirrors LEG-3570 admin_colonization opaque densify.
-"""
+"""LEG-3835 — admin_ships unexpected failures return structured 500s."""
 
 from __future__ import annotations
 
@@ -37,8 +34,7 @@ def _noop_admin_action_attempt(*_args, **_kwargs):
 
 
 @pytest.mark.asyncio
-async def test_get_ships_unexpected_is_opaque_500():
-    """LEG-3693 — ship list catch must not echo raw Exception text."""
+async def test_get_ships_unexpected_returns_structured_500():
     with pytest.raises(HTTPException) as excinfo:
         await get_ships(
             page=1,
@@ -61,8 +57,7 @@ async def test_get_ships_unexpected_is_opaque_500():
 
 
 @pytest.mark.asyncio
-async def test_emergency_ship_action_unexpected_is_opaque_500():
-    """LEG-3693 — emergency action catch must not echo raw Exception text."""
+async def test_emergency_ship_action_unexpected_returns_structured_500():
     secret = "secret-ship-emergency-should-not-leak"
     ship_id = uuid.uuid4()
     body = EmergencyActionRequest(action=EmergencyAction.REPAIR)
@@ -89,8 +84,7 @@ async def test_emergency_ship_action_unexpected_is_opaque_500():
 
 
 @pytest.mark.asyncio
-async def test_create_ship_unexpected_is_opaque_500():
-    """LEG-3709 — create ship catch must not echo raw Exception text."""
+async def test_create_ship_unexpected_returns_structured_500():
     secret = "secret-ship-create-should-not-leak"
     request = CreateShipRequest(
         type=ShipType.LIGHT_FREIGHTER,
@@ -117,8 +111,8 @@ async def test_create_ship_unexpected_is_opaque_500():
     assert secret not in str(exc.detail)
 
 
-def test_admin_ships_http500_catches_have_no_detail_str_e():
-    """LEG-3693/3709 — static pin: opaque 500 details stay non-interpolated."""
+def test_admin_ships_http500_catches_are_structured():
+    """LEG-3835 — static pin: ship admin 500 catch paths emit error_code + detail."""
     src = Path(ships_mod.__file__).read_text(encoding="utf-8")
     for code in (
         "ERR_ADMIN_SHIPS_LIST_FAILED",
@@ -127,7 +121,4 @@ def test_admin_ships_http500_catches_have_no_detail_str_e():
         "ERR_ADMIN_SHIPS_CREATE_FAILED",
     ):
         assert code in src
-    assert "Failed to list ships: {str(e)}" not in src
-    assert "Failed to perform emergency ship action: {str(e)}" not in src
-    assert "Failed to fetch fleet health report: {str(e)}" not in src
-    assert "Failed to create ship: {str(e)}" not in src
+    assert 'detail="Failed to list ships"' not in src

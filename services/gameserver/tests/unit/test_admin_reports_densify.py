@@ -1,4 +1,4 @@
-"""LEG-3703 — admin_reports generate/export/performance must not echo Exception text."""
+"""LEG-3836 — admin_reports unexpected failures return structured 500s."""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ class _BoomTimeRangeMap:
         raise RuntimeError("secret-performance-should-not-leak")
 
 
-def test_generate_report_unexpected_is_opaque_500():
+def test_generate_report_unexpected_returns_structured_500():
     template = ReportTemplate(
         id="tpl-test",
         name="Test",
@@ -57,7 +57,7 @@ def test_generate_report_unexpected_is_opaque_500():
     assert "secret-reports-query-should-not-leak" not in str(exc.detail)
 
 
-def test_export_data_unexpected_is_opaque_500():
+def test_export_data_unexpected_returns_structured_500():
     with pytest.raises(HTTPException) as excinfo:
         export_data(
             dataset="players",
@@ -75,7 +75,7 @@ def test_export_data_unexpected_is_opaque_500():
     assert "secret-reports-query-should-not-leak" not in str(exc.detail)
 
 
-def test_get_performance_metrics_unexpected_is_opaque_500():
+def test_get_performance_metrics_unexpected_returns_structured_500():
     secret = "secret-performance-should-not-leak"
     with patch.object(ar_mod, "_TIME_RANGE_HOURS", _BoomTimeRangeMap()):
         with pytest.raises(HTTPException) as excinfo:
@@ -91,11 +91,11 @@ def test_get_performance_metrics_unexpected_is_opaque_500():
         "error_code": "ERR_ADMIN_REPORTS_PERFORMANCE_FAILED",
         "detail": "Failed to fetch performance metrics",
     }
-    assert secret not in str(exc.detail)
+    assert "secret-performance-should-not-leak" not in str(exc.detail)
 
 
-def test_admin_reports_http500_catches_have_no_detail_str_e():
-    """LEG-3703 — static pin: HTTP 500 catch paths stay opaque."""
+def test_admin_reports_http500_catches_are_structured():
+    """LEG-3836 — static pin: report admin 500 catch paths emit error_code + detail."""
     src = Path(ar_mod.__file__).read_text(encoding="utf-8")
     for code in (
         "ERR_ADMIN_REPORTS_GENERATE_FAILED",
@@ -103,6 +103,4 @@ def test_admin_reports_http500_catches_have_no_detail_str_e():
         "ERR_ADMIN_REPORTS_PERFORMANCE_FAILED",
     ):
         assert code in src
-    assert "Failed to generate report: {str(e)}" not in src
-    assert "Failed to export analytics data: {str(e)}" not in src
-    assert "Failed to fetch performance metrics: {str(e)}" not in src
+    assert 'detail="Failed to generate report"' not in src

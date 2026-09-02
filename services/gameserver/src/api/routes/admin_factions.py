@@ -19,6 +19,7 @@ from src.models.user import User
 from src.services.admin_action_attempt import admin_action_attempt
 from src.services.admin_action_log_service import log_admin_action
 from src.services.faction_service import FactionService
+from src.utils.error_handling import route_internal_error
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +119,7 @@ async def list_all_factions(
         raise
     except Exception:
         logger.exception("Error in list_all_factions")
-        raise HTTPException(status_code=500, detail="Failed to list factions")
+        raise route_internal_error("ERR_ADMIN_FACTIONS_LIST_FAILED", "Failed to list factions")
 
 
 @router.post("/", response_model=FactionDetailResponse)
@@ -188,7 +189,7 @@ async def create_faction(
         raise
     except Exception:
         logger.exception("Error in create_faction")
-        raise HTTPException(status_code=500, detail="Failed to create faction")
+        raise route_internal_error("ERR_ADMIN_FACTIONS_CREATE_FAILED", "Failed to create faction")
 
 
 @router.put("/{faction_id}", response_model=FactionDetailResponse)
@@ -243,7 +244,7 @@ async def update_faction(
         raise
     except Exception:
         logger.exception("Error in update_faction")
-        raise HTTPException(status_code=500, detail="Failed to update faction")
+        raise route_internal_error("ERR_ADMIN_FACTIONS_UPDATE_FAILED", "Failed to update faction")
 
 
 @router.put("/{faction_id}/territory")
@@ -286,7 +287,10 @@ async def update_faction_territory(
         raise
     except Exception:
         logger.exception("Error in update_faction_territory")
-        raise HTTPException(status_code=500, detail="Failed to update faction territory")
+        raise route_internal_error(
+            "ERR_ADMIN_FACTIONS_TERRITORY_UPDATE_FAILED",
+            "Failed to update faction territory",
+        )
 
 
 @router.put("/{faction_id}/reputation")
@@ -334,4 +338,7 @@ async def update_player_reputation(
         raise
     except Exception:
         logger.exception("Error in update_player_reputation")
-        raise HTTPException(status_code=500, detail="Failed to update player reputation")
+        raise route_internal_error(
+            "ERR_ADMIN_FACTIONS_REPUTATION_UPDATE_FAILED",
+            "Failed to update player reputation",
+        )

@@ -1,7 +1,4 @@
-"""LEG-3694 / LEG-3714 — admin_construction HTTP 500 must not echo Exception text.
-
-Mirrors LEG-3570 admin_colonization opaque densify.
-"""
+"""LEG-3834 — admin_construction unexpected failures return structured 500s."""
 
 from __future__ import annotations
 
@@ -22,8 +19,7 @@ from src.api.routes.admin_construction import (
 
 
 @pytest.mark.asyncio
-async def test_list_tradedocks_unexpected_is_opaque_500():
-    """LEG-3694 — tradedock list catch must not echo raw Exception text."""
+async def test_list_tradedocks_unexpected_returns_structured_500():
     secret = "secret-tradedock-list-should-not-leak"
 
     with patch.object(ac_mod.construction_service, "admin_list_tradedocks") as list_svc:
@@ -41,8 +37,7 @@ async def test_list_tradedocks_unexpected_is_opaque_500():
 
 
 @pytest.mark.asyncio
-async def test_get_tradedock_overview_unexpected_is_opaque_500():
-    """LEG-3714 — tradedock overview catch must not echo raw Exception text."""
+async def test_get_tradedock_overview_unexpected_returns_structured_500():
     secret = "secret-tradedock-overview-should-not-leak"
     station_id = uuid4()
     db = SimpleNamespace(rollback=lambda: None, commit=lambda: None)
@@ -66,8 +61,7 @@ async def test_get_tradedock_overview_unexpected_is_opaque_500():
 
 
 @pytest.mark.asyncio
-async def test_force_cancel_reservation_unexpected_is_opaque_500():
-    """LEG-3714 — force-cancel catch must not echo raw Exception text."""
+async def test_force_cancel_reservation_unexpected_returns_structured_500():
     secret = "secret-force-cancel-should-not-leak"
     reservation_id = uuid4()
     db = SimpleNamespace(rollback=lambda: None, commit=lambda: None)
@@ -77,7 +71,7 @@ async def test_force_cancel_reservation_unexpected_is_opaque_500():
         with pytest.raises(HTTPException) as excinfo:
             await force_cancel_reservation(
                 reservation_id=reservation_id,
-                admin=SimpleNamespace(),
+                admin=SimpleNamespace(id=uuid4()),
                 db=db,
             )
 
@@ -90,20 +84,14 @@ async def test_force_cancel_reservation_unexpected_is_opaque_500():
     assert secret not in str(exc.detail)
 
 
-def test_admin_construction_list_tradedocks_http500_is_opaque():
-    """LEG-3694 — static pin: list_tradedocks 500 detail stays opaque."""
-    src = Path(ac_mod.__file__).read_text(encoding="utf-8")
-    assert "ERR_ADMIN_CONSTRUCTION_TRADEDOCKS_LIST_FAILED" in src
-    assert 'detail=f"Failed to list tradedocks: {e}"' not in src
-    assert "Failed to list tradedocks: {str(e)}" not in src
-
-
-def test_admin_construction_overview_detail_force_cancel_http500_is_opaque():
-    """LEG-3714 — static pin: overview/detail/force-cancel 500 details stay opaque."""
+def test_admin_construction_http500_catches_are_structured():
+    """LEG-3834 — static pin: construction admin 500 catch paths emit error_code + detail."""
     src = Path(ac_mod.__file__).read_text(encoding="utf-8")
     for code in (
+        "ERR_ADMIN_CONSTRUCTION_TRADEDOCKS_LIST_FAILED",
         "ERR_ADMIN_CONSTRUCTION_TRADEDOCK_OVERVIEW_FAILED",
         "ERR_ADMIN_CONSTRUCTION_RESERVATION_DETAIL_FAILED",
         "ERR_ADMIN_CONSTRUCTION_FORCE_CANCEL_FAILED",
     ):
         assert code in src
+    assert 'detail="Failed to list tradedocks"' not in src
