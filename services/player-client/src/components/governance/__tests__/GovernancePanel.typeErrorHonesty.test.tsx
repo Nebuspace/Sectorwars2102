@@ -36,6 +36,12 @@ vi.mock('../../layouts/GameLayout', () => ({
 
 import GovernancePanel, { formatGovernanceLoadError } from '../GovernancePanel';
 
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
+
 describe('formatGovernanceLoadError Network Error densify (LEG-3603)', () => {
   it('falls back on axios Network Error / Failed to fetch', () => {
     expect(formatGovernanceLoadError(new Error('Network Error'))).toBe(
@@ -50,6 +56,14 @@ describe('formatGovernanceLoadError Network Error densify (LEG-3603)', () => {
   it('preserves structured API detail when not transport collapse', () => {
     expect(formatGovernanceLoadError(new Error('region_governance_disabled'))).toBe(
       'region_governance_disabled',
+    );
+  });
+
+  it('surfaces 403 path with ERR_NOT_A_MEMBER detail and bare-403 fallback (LEG-3828)', () => {
+    const bare403 = Object.assign(new Error(''), { status: 403 });
+    expect(formatGovernanceLoadError(bare403)).toBe('You are not a member of this region.');
+    expect(formatGovernanceLoadError(apiRequestError(403, 'ERR_NOT_A_MEMBER'))).toBe(
+      'ERR_NOT_A_MEMBER',
     );
   });
 });
