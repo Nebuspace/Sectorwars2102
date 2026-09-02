@@ -19,8 +19,24 @@ vi.mock('../ui/PageHeader', () => ({
   default: ({ title }: { title: string }) => <h1>{title}</h1>,
 }));
 
+
+const axiosError = (status: number, detail?: string) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: detail ? { detail } : {} },
+  });
+
+function assertNoTransportLeak(text: string) {
+  expect(text).not.toBe('Network Error');
+  expect(text).not.toContain('Network Error');
+  expect(text).not.toMatch(/Failed to fetch/i);
+  expect(text).not.toMatch(/TypeError/i);
+  expect(text).not.toMatch(/^HTTP \d+$/);
+  expect(text).not.toContain('Request failed with status code');
+}
+
 /**
  * LEG-3662 Soft-ORDER — ScopesManager TypeError/Network Error densify.
+ * LEG-3921 Soft-ORDER — 403/429 HTTP honesty densify.
  */
 describe('ScopesManager typeErrorHonesty densify (LEG-3662)', () => {
   beforeEach(() => {
@@ -59,4 +75,35 @@ describe('ScopesManager typeErrorHonesty densify (LEG-3662)', () => {
     expect(text).not.toMatch(/Failed to fetch/i);
     expect(text).not.toMatch(/TypeError/i);
   });
+
+  it('surfaces 403 with scopes.grant scope copy when holders GET is denied', async () => {
+    vi.mocked(api.get).mockRejectedValue(axiosError(403));
+
+    render(<ScopesManager />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+    const text = screen.getByRole('alert').textContent ?? '';
+    expect(text).toMatch(/Access denied|admin\.scopes\.grant|cannot manage scopes/i);
+    expect(text).not.toMatch(/\b403\b/);
+    expect(text).not.toMatch(/HTTP 403/i);
+    assertNoTransportLeak(text);
+  });
+
+  it('surfaces 429 as admin rate-limit copy on scope holders GET', async () => {
+    vi.mocked(api.get).mockRejectedValue(axiosError(429));
+
+    render(<ScopesManager />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
+    });
+    const text = screen.getByRole('alert').textContent ?? '';
+    expect(text).toMatch(/rate limit/i);
+    expect(text).not.toMatch(/\b429\b/);
+    expect(text).not.toMatch(/HTTP 429/i);
+    assertNoTransportLeak(text);
+  });
+
 });

@@ -38,8 +38,24 @@ const region = {
   trade_bonuses: {},
 };
 
+
+const axiosError = (status: number, detail?: string) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: detail ? { detail } : {} },
+  });
+
+function assertNoTransportLeak(text: string) {
+  expect(text).not.toBe('Network Error');
+  expect(text).not.toContain('Network Error');
+  expect(text).not.toMatch(/Failed to fetch/i);
+  expect(text).not.toMatch(/TypeError/i);
+  expect(text).not.toMatch(/^HTTP \d+$/);
+  expect(text).not.toContain('Request failed with status code');
+}
+
 /**
  * LEG-3483 Soft-ORDER — RegionalGovernorDashboard TypeError/Network Error honesty densify.
+ * LEG-3920 Soft-ORDER — 403/429 HTTP honesty densify.
  */
 describe('RegionalGovernorDashboard typeErrorHonesty densify (LEG-3483)', () => {
   beforeEach(() => {
@@ -100,4 +116,57 @@ describe('RegionalGovernorDashboard typeErrorHonesty densify (LEG-3483)', () => 
     expect(msg).not.toMatch(/TypeError/i);
     expect(msg).not.toMatch(/Failed to fetch/i);
   });
+
+  it('surfaces 403 with admin.regions scope copy when regional stats GET is denied', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url === '/api/v1/regions/my-region') return { data: region };
+      if (url === '/api/v1/regions/my-region/stats') {
+        throw axiosError(403);
+      }
+      if (url.endsWith('/policies')) return { data: [] };
+      if (url.endsWith('/elections')) return { data: [] };
+      if (url.endsWith('/treaties')) return { data: [] };
+      if (url.endsWith('/members')) return { data: [] };
+      return { data: {} };
+    });
+
+    render(<RegionalGovernorDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(
+        /Access denied|admin\.regions|region owner/i,
+      );
+    });
+    const msg = screen.getByRole('alert').textContent ?? '';
+    expect(msg).toMatch(/Access denied|admin\.regions|region owner/i);
+    expect(msg).not.toMatch(/\b403\b/);
+    expect(msg).not.toMatch(/HTTP 403/i);
+    assertNoTransportLeak(msg);
+  });
+
+  it('surfaces 429 as admin rate-limit copy on regional stats GET', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url === '/api/v1/regions/my-region') return { data: region };
+      if (url === '/api/v1/regions/my-region/stats') {
+        throw axiosError(429);
+      }
+      if (url.endsWith('/policies')) return { data: [] };
+      if (url.endsWith('/elections')) return { data: [] };
+      if (url.endsWith('/treaties')) return { data: [] };
+      if (url.endsWith('/members')) return { data: [] };
+      return { data: {} };
+    });
+
+    render(<RegionalGovernorDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
+    });
+    const msg = screen.getByRole('alert').textContent ?? '';
+    expect(msg).toMatch(/rate limit/i);
+    expect(msg).not.toMatch(/\b429\b/);
+    expect(msg).not.toMatch(/HTTP 429/i);
+    assertNoTransportLeak(msg);
+  });
+
 });
