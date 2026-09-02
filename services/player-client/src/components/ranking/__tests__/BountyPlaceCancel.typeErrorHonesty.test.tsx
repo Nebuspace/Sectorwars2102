@@ -32,6 +32,12 @@ import BountyPlaceCancel, {
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
+
 function setInputValue(el: HTMLInputElement, value: string) {
   const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
     HTMLInputElement.prototype,
@@ -65,6 +71,15 @@ describe('BountyPlaceCancel TypeError densify (LEG-3672)', () => {
     expect(formatBountyPlaceError(new Error('insufficient_credits'))).toBe('insufficient_credits');
     expect(formatBountyCancelError(new Error('not_placer'))).toBe('not_placer');
     expect(formatBountyInspectLoadError(new Error('target_hidden'))).toBe('target_hidden');
+  });
+
+  it('surfaces 403 status path and preserves server detail (LEG-3827)', () => {
+    expect(formatBountyInspectLoadError(apiRequestError(403))).toBe(
+      'Access denied — you cannot inspect bounties on this target right now.',
+    );
+    expect(formatBountyInspectLoadError(apiRequestError(403, 'bounty_inspect_denied'))).toBe(
+      'bounty_inspect_denied',
+    );
   });
 });
 
