@@ -175,7 +175,10 @@ async def test_deploy_genesis_device_boom_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to deploy genesis device"
+    assert exc.detail == {
+        "error_code": "ERR_PLANETS_GENESIS_DEPLOY_FAILED",
+        "detail": "Failed to deploy genesis device",
+    }
     assert secret not in str(exc.detail)
 
 
@@ -189,7 +192,6 @@ def test_planets_http500_is_opaque():
         'detail="Failed to allocate colonists"',
         'detail="Failed to upgrade building"',
         'detail="Failed to update defenses"',
-        'detail="Failed to deploy genesis device"',
     ]
     for needle in opaque_details:
         assert needle in src
@@ -199,4 +201,3 @@ def test_planets_http500_is_opaque():
     assert "Failed to allocate colonists: {str(e)}" not in src
     assert "Failed to upgrade building: {str(e)}" not in src
     assert "Failed to update defenses: {str(e)}" not in src
-    assert "Failed to deploy genesis device: {str(e)}" not in src
