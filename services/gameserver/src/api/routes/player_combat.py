@@ -294,128 +294,134 @@ async def engage_combat(
 
     service = CombatService(db)
 
-    if request.targetType == "ship":
-        ship = db.query(Ship).filter(Ship.id == target_id).first()
-        if not ship or ship.is_destroyed:
-            raise HTTPException(status_code=404, detail="Target ship not found")
+        if request.targetType == "ship":
+            ship = db.query(Ship).filter(Ship.id == target_id).first()
+            if not ship or ship.is_destroyed:
+                raise HTTPException(status_code=404, detail="Target ship not found")
 
-        # NPC ships have no owning player. Guard on owner_id-is-None plus the
-        # is_npc flag via getattr so this code does not depend on the NPC
-        # slice's Ship model changes having landed.
-        is_npc_ship = ship.owner_id is None or bool(getattr(ship, "is_npc", False))
+            # NPC ships have no owning player. Guard on owner_id-is-None plus the
+            # is_npc flag via getattr so this code does not depend on the NPC
+            # slice's Ship model changes having landed.
+            is_npc_ship = ship.owner_id is None or bool(getattr(ship, "is_npc", False))
 
-        # Engage-range proximity (WO-API-A1): same-sector alone was never
-        # "in range" -- the client's own ENGAGE menu item is proximity-gated
-        # (windshieldTableauHelpers.tsx's ENGAGE_RANGE_EM), but nothing
-        # server-side enforced it, so a direct POST /combat/engage could
-        # attack from anywhere in the sector. Evaluated ONLY once we can
-        # independently confirm same-sector here at the route (a cross-
-        # sector distance number is meaningless -- %-space pose is sector-
-        # relative) -- when sectors differ this gate is silently skipped and
-        # CombatService's OWN "Target is not in your sector" precondition
-        # below is left to reject it exactly as it always has, unchanged.
-        # Unlocked pose reads, same soft-precondition idiom as
-        # assert_dock_land_proximity: this never takes a row lock, it only
-        # decides whether to raise before the service's own locked call.
-        if is_npc_ship:
-            if ship.sector_id == player.current_sector_id:
-                from src.models.npc_character import NPCCharacter
-                from src.services import intrasystem_movement_service as isp
+            # Engage-range proximity (WO-API-A1): same-sector alone was never
+            # "in range" -- the client's own ENGAGE menu item is proximity-gated
+            # (windshieldTableauHelpers.tsx's ENGAGE_RANGE_EM), but nothing
+            # server-side enforced it, so a direct POST /combat/engage could
+            # attack from anywhere in the sector. Evaluated ONLY once we can
+            # independently confirm same-sector here at the route (a cross-
+            # sector distance number is meaningless -- %-space pose is sector-
+            # relative) -- when sectors differ this gate is silently skipped and
+            # CombatService's OWN "Target is not in your sector" precondition
+            # below is left to reject it exactly as it always has, unchanged.
+            # Unlocked pose reads, same soft-precondition idiom as
+            # assert_dock_land_proximity: this never takes a row lock, it only
+            # decides whether to raise before the service's own locked call.
+            if is_npc_ship:
+                if ship.sector_id == player.current_sector_id:
+                    from src.models.npc_character import NPCCharacter
+                    from src.services import intrasystem_movement_service as isp
 
-                npc = db.query(NPCCharacter).filter(NPCCharacter.ship_id == ship.id).first()
-                if npc is None:
-                    # Single-pilot invariant (models/npc_character.py: every
-                    # is_npc Ship has exactly one NPCCharacter) says this
-                    # should never happen -- fail CLOSED rather than let an
-                    # unverifiable position bypass the gate.
-                    raise HTTPException(
-                        status_code=400,
-                        detail={
-                            "code": "ERR_TARGET_POSITION_UNVERIFIED",
-                            "message": "Target position could not be verified — try again",
-                        },
-                    )
-                attacker_xy = isp.current_player_pose_xy(player)
-                target_xy = isp.current_npc_pose_xy(npc)
-                if not isp.is_within_engage_range(*attacker_xy, *target_xy):
-                    raise HTTPException(
-                        status_code=400,
-                        detail={
-                            "code": "ERR_TARGET_OUT_OF_RANGE",
-                            "message": f"You are too far from {ship.name or 'the target'} "
-                                       "to engage — move closer and try again",
-                        },
-                    )
-            result = service.attack_npc_ship(player.id, ship.id)
+                    npc = db.query(NPCCharacter).filter(NPCCharacter.ship_id == ship.id).first()
+                    if npc is None:
+                        # Single-pilot invariant (models/npc_character.py: every
+                        # is_npc Ship has exactly one NPCCharacter) says this
+                        # should never happen -- fail CLOSED rather than let an
+                        # unverifiable position bypass the gate.
+                        raise HTTPException(
+                            status_code=400,
+                            detail={
+                                "code": "ERR_TARGET_POSITION_UNVERIFIED",
+                                "message": "Target position could not be verified — try again",
+                            },
+                        )
+                    attacker_xy = isp.current_player_pose_xy(player)
+                    target_xy = isp.current_npc_pose_xy(npc)
+                    if not isp.is_within_engage_range(*attacker_xy, *target_xy):
+                        raise HTTPException(
+                            status_code=400,
+                            detail={
+                                "code": "ERR_TARGET_OUT_OF_RANGE",
+                                "message": f"You are too far from {ship.name or 'the target'} "
+                                           "to engage — move closer and try again",
+                            },
+                        )
+                result = service.attack_npc_ship(player.id, ship.id)
+            else:
+                if ship.owner_id == player.id:
+                    return CombatEngageResponse(status="error", message="Cannot attack your own ship")
+                defender = db.query(Player).filter(Player.id == ship.owner_id).first()
+                if defender is not None and defender.current_sector_id == player.current_sector_id:
+                    from src.services import intrasystem_movement_service as isp
+
+                    attacker_xy = isp.current_player_pose_xy(player)
+                    defender_xy = isp.current_player_pose_xy(defender)
+                    if not isp.is_within_engage_range(*attacker_xy, *defender_xy):
+                        raise HTTPException(
+                            status_code=400,
+                            detail={
+                                "code": "ERR_TARGET_OUT_OF_RANGE",
+                                "message": f"You are too far from {ship.name or 'the target'} "
+                                           "to engage — move closer and try again",
+                            },
+                        )
+                result = service.attack_player(player.id, ship.owner_id)
+        elif request.targetType == "planet":
+            result = _execute_planet_assault(db, player, target_id)
+        elif request.targetType == "port":
+            # WO attack-port-build (corrected scope): JSONB defenses + live route.
+            # Capture remains unreachable in the station-defense kernel.
+            result = service.attack_port(player.id, target_id)
         else:
-            if ship.owner_id == player.id:
-                return CombatEngageResponse(status="error", message="Cannot attack your own ship")
-            defender = db.query(Player).filter(Player.id == ship.owner_id).first()
-            if defender is not None and defender.current_sector_id == player.current_sector_id:
-                from src.services import intrasystem_movement_service as isp
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported targetType: {request.targetType}"
+            )
 
-                attacker_xy = isp.current_player_pose_xy(player)
-                defender_xy = isp.current_player_pose_xy(defender)
-                if not isp.is_within_engage_range(*attacker_xy, *defender_xy):
-                    raise HTTPException(
-                        status_code=400,
-                        detail={
-                            "code": "ERR_TARGET_OUT_OF_RANGE",
-                            "message": f"You are too far from {ship.name or 'the target'} "
-                                       "to engage — move closer and try again",
-                        },
-                    )
-            result = service.attack_player(player.id, ship.owner_id)
-    elif request.targetType == "planet":
-        result = _execute_planet_assault(db, player, target_id)
-    elif request.targetType == "port":
-        # WO attack-port-build (corrected scope): JSONB defenses + live route.
-        # Capture remains unreachable in the station-defense kernel.
-        result = service.attack_port(player.id, target_id)
-    else:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported targetType: {request.targetType}"
-        )
+        if not result.get("success"):
+            return CombatEngageResponse(status="error", message=result.get("message", "Combat failed"))
 
-    if not result.get("success"):
-        return CombatEngageResponse(status="error", message=result.get("message", "Combat failed"))
-
-    # LEG-338: combat_attack (+ combat_defend when PvP defender known)
-    try:
-        from src.services.player_activity_service import (
-            ActivityEventType,
-            get_player_activity_service,
-        )
-        activity_service = await get_player_activity_service()
-        await activity_service.track_activity(
-            str(player.id),
-            ActivityEventType.COMBAT_ATTACK,
-            {
-                "sector_id": player.current_sector_id,
-                "target_type": request.targetType,
-            },
-            db=db,
-        )
-        defender_id = result.get("defender_id")
-        if defender_id and str(defender_id) != str(player.id):
+        # LEG-338: combat_attack (+ combat_defend when PvP defender known)
+        try:
+            from src.services.player_activity_service import (
+                ActivityEventType,
+                get_player_activity_service,
+            )
+            activity_service = await get_player_activity_service()
             await activity_service.track_activity(
-                str(defender_id),
-                ActivityEventType.COMBAT_DEFEND,
+                str(player.id),
+                ActivityEventType.COMBAT_ATTACK,
                 {
                     "sector_id": player.current_sector_id,
                     "target_type": request.targetType,
                 },
                 db=db,
             )
-    except Exception:
-        logger.warning("activity tracking failed (combat engage)", exc_info=True)
+            defender_id = result.get("defender_id")
+            if defender_id and str(defender_id) != str(player.id):
+                await activity_service.track_activity(
+                    str(defender_id),
+                    ActivityEventType.COMBAT_DEFEND,
+                    {
+                        "sector_id": player.current_sector_id,
+                        "target_type": request.targetType,
+                    },
+                    db=db,
+                )
+        except Exception:
+            logger.warning("activity tracking failed (combat engage)", exc_info=True)
 
-    return CombatEngageResponse(
-        combatId=result.get("combat_log_id"),
-        status="initiated",
-        message=result.get("message")
-    )
+        return CombatEngageResponse(
+            combatId=result.get("combat_log_id"),
+            status="initiated",
+            message=result.get("message")
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        db.rollback()
+        logger.exception("Failed to engage in combat")
+        raise HTTPException(status_code=500, detail="Failed to engage in combat")
 
 
 @router.get("/{combatId}/status", response_model=CombatStatusResponse)
