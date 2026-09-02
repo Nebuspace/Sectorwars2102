@@ -150,7 +150,7 @@ describe('AutopilotContext — plotCourse', () => {
     expect(latestState!.status).toBe('idle');
   });
 
-  it('resets to idle and returns null when the plot API call throws', async () => {
+  it('sets paused with pauseReason and returns null when the plot API call throws', async () => {
     navPlotMock.mockRejectedValue(new Error('network down'));
     await mountProvider();
 
@@ -160,7 +160,8 @@ describe('AutopilotContext — plotCourse', () => {
     });
 
     expect(returned).toBeNull();
-    expect(latestState!.status).toBe('idle');
+    expect(latestState!.status).toBe('paused');
+    expect(latestState!.pauseReason).toBe('network down');
   });
 });
 
