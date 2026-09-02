@@ -24,3 +24,19 @@ describe('CarrierHangarPanel TypeError densify (LEG-3076)', () => {
     expect(formatHangarActionError(new Error('Network Error'))).not.toMatch(/Network Error/i);
   });
 });
+
+describe('CarrierHangarPanel 403/429 densify (LEG-4023)', () => {
+  const apiRequestError = (status: number, message?: string) => {
+    const err = new Error(message ?? `API Error: ${status}`);
+    (err as { status?: number }).status = status;
+    return err;
+  };
+
+  it('formatHangarActionError surfaces 403/429 without raw status codes', () => {
+    expect(formatHangarActionError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatHangarActionError(apiRequestError(403, 'hangar_denied'))).toBe('hangar_denied');
+    expect(formatHangarActionError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatHangarActionError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatHangarActionError(apiRequestError(403))).not.toMatch(/TypeError/i);
+  });
+});

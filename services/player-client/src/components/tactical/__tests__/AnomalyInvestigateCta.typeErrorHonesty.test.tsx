@@ -44,6 +44,24 @@ describe('formatAnomalyInvestigateError TypeError densify (LEG-3765)', () => {
   });
 });
 
+describe('formatAnomalyInvestigateError 403/429 densify (LEG-4020)', () => {
+  const apiRequestError = (status: number, message?: string) => {
+    const err = new Error(message ?? `API Error: ${status}`);
+    (err as { status?: number }).status = status;
+    return err;
+  };
+
+  it('surfaces 403/429 without raw status codes', () => {
+    expect(formatAnomalyInvestigateError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatAnomalyInvestigateError(apiRequestError(403, 'investigate_denied'))).toBe(
+      'investigate_denied',
+    );
+    expect(formatAnomalyInvestigateError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatAnomalyInvestigateError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatAnomalyInvestigateError(apiRequestError(403))).not.toMatch(/TypeError/i);
+  });
+});
+
 describe('AnomalyInvestigateCta transport collapse densify (LEG-3765)', () => {
   let container: HTMLElement;
   let root: ReturnType<typeof createRoot>;

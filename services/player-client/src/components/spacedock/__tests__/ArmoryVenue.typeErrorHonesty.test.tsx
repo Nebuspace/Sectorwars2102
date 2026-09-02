@@ -56,6 +56,24 @@ describe('formatArmoryCatalogError TypeError densify (LEG-3771)', () => {
   });
 });
 
+describe('formatArmoryCatalogError 403/429 densify (LEG-4021)', () => {
+  const apiRequestError = (status: number, message?: string) => {
+    const err = new Error(message ?? `API Error: ${status}`);
+    (err as { status?: number }).status = status;
+    return err;
+  };
+
+  it('surfaces 403/429 without raw status codes', () => {
+    expect(formatArmoryCatalogError(apiRequestError(403), FALLBACK)).toMatch(/permission/i);
+    expect(formatArmoryCatalogError(apiRequestError(403, 'armory_denied'), FALLBACK)).toBe(
+      'armory_denied',
+    );
+    expect(formatArmoryCatalogError(apiRequestError(429), FALLBACK)).toMatch(/rate limit/i);
+    expect(formatArmoryCatalogError(apiRequestError(429), FALLBACK)).not.toMatch(/\b429\b/);
+    expect(formatArmoryCatalogError(apiRequestError(403), FALLBACK)).not.toMatch(/TypeError/i);
+  });
+});
+
 describe('ArmoryVenue catalog load TypeError densify (LEG-3771)', () => {
   let container: HTMLElement;
   let root: ReturnType<typeof createRoot>;

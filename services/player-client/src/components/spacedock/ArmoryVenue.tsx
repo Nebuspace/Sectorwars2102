@@ -71,7 +71,40 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
 
 export const ARMORY_CATALOG_LOAD_FALLBACK = 'Connection error. Please try again.';
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
 export function formatArmoryCatalogError(error: unknown, fallback: string): string {
+  const status = httpStatus(error);
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === 'string'
+        ? error
+        : undefined;
+  const hasServerDetail =
+    !(error instanceof TypeError) &&
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNetworkCollapseMessage(message);
+
+  if (status === 403) {
+    if (hasServerDetail) return message!.trim();
+    return 'You do not have permission to view the armory catalog.';
+  }
+
+  if (status === 429) {
+    return 'Armory catalog rate limit exceeded — wait a moment and try again.';
+  }
+
   if (error instanceof TypeError) return fallback;
   if (error instanceof Error && error.message) {
     if (isNetworkCollapseMessage(error.message)) return fallback;

@@ -50,3 +50,13 @@ describe('CitadelManager TypeError densify (LEG-3468)', () => {
     expect(formatCitadelLoadError(apiRequestError(403, 'planet_not_owned'))).toBe('planet_not_owned');
   });
 });
+
+describe('CitadelManager upgrade 403/429 densify (LEG-4024)', () => {
+  it('formatCitadelUpgradeError surfaces 403/429 without raw status codes', () => {
+    expect(formatCitadelUpgradeError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatCitadelUpgradeError(apiRequestError(403, 'upgrade_denied'))).toBe('upgrade_denied');
+    expect(formatCitadelUpgradeError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatCitadelUpgradeError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatCitadelUpgradeError(apiRequestError(403))).not.toMatch(/TypeError/i);
+  });
+});
