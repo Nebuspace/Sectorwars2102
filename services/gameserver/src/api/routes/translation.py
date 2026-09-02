@@ -68,8 +68,8 @@ async def get_supported_languages(
     try:
         languages = await translation_service.get_supported_languages(active_only)
         return languages
-    except Exception as e:
-        logger.error(f"Failed to get languages: {e}")
+    except Exception:
+        logger.exception("Failed to get languages")
         raise HTTPException(status_code=500, detail="Failed to retrieve languages")
 
 
@@ -101,8 +101,8 @@ async def get_translations(
             language_code, namespace, include_context
         )
         return translations
-    except Exception as e:
-        logger.error(f"Failed to get translations: {e}")
+    except Exception:
+        logger.exception("Failed to get translations")
         raise HTTPException(status_code=500, detail="Failed to retrieve translations")
 
 
@@ -118,8 +118,8 @@ async def get_namespace_translations(
             language_code, namespace
         )
         return translations
-    except Exception as e:
-        logger.error(f"Failed to get namespace translations: {e}")
+    except Exception:
+        logger.exception("Failed to get namespace translations")
         raise HTTPException(status_code=500, detail="Failed to retrieve translations")
 
 
@@ -134,8 +134,8 @@ async def get_user_language_preference(
     try:
         language_code = await translation_service.get_user_language_preference(current_user.id)
         return {"languageCode": language_code}
-    except Exception as e:
-        logger.error(f"Failed to get user language preference: {e}")
+    except Exception:
+        logger.exception("Failed to get user language preference")
         raise HTTPException(status_code=500, detail="Failed to get language preference")
 
 
@@ -156,8 +156,8 @@ async def set_user_language_preference(
         else:
             raise HTTPException(status_code=400, detail="Failed to set language preference")
             
-    except Exception as e:
-        logger.error(f"Failed to set user language preference: {e}")
+    except Exception:
+        logger.exception("Failed to set user language preference")
         raise HTTPException(status_code=500, detail="Failed to set language preference")
 
 
@@ -174,8 +174,8 @@ async def get_ai_language_context(
             "userLanguage": user_language,
             "aiContext": context
         }
-    except Exception as e:
-        logger.error(f"Failed to get AI language context: {e}")
+    except Exception:
+        logger.exception("Failed to get AI language context")
         raise HTTPException(status_code=500, detail="Failed to get AI context")
 
 
@@ -191,8 +191,8 @@ async def get_translation_progress(
     try:
         progress = await translation_service.get_translation_progress(language_code)
         return progress
-    except Exception as e:
-        logger.error(f"Failed to get translation progress: {e}")
+    except Exception:
+        logger.exception("Failed to get translation progress")
         raise HTTPException(status_code=500, detail="Failed to get translation progress")
 
 
@@ -241,8 +241,8 @@ async def set_translation(
         else:
             raise HTTPException(status_code=400, detail="Failed to set translation")
             
-    except Exception as e:
-        logger.error(f"Failed to set translation: {e}")
+    except Exception:
+        logger.exception("Failed to set translation")
         raise HTTPException(status_code=500, detail="Failed to set translation")
 
 
@@ -283,8 +283,8 @@ async def bulk_import_translations(
             overwrite=request.overwrite
         )
         return result
-    except Exception as e:
-        logger.error(f"Failed to bulk import translations: {e}")
+    except Exception:
+        logger.exception("Failed to bulk import translations")
         raise HTTPException(status_code=500, detail="Failed to import translations")
 
 
@@ -312,8 +312,8 @@ async def initialize_translation_data(
             return {"success": True, "message": "Translation data initialized"}
         else:
             raise HTTPException(status_code=500, detail="Failed to initialize translation data")
-    except Exception as e:
-        logger.error(f"Failed to initialize translation data: {e}")
+    except Exception:
+        logger.exception("Failed to initialize translation data")
         raise HTTPException(status_code=500, detail="Failed to initialize translation data")
 
 
@@ -326,8 +326,8 @@ async def get_all_languages(
     try:
         languages = await translation_service.get_supported_languages(active_only=False)
         return languages
-    except Exception as e:
-        logger.error(f"Failed to get all languages: {e}")
+    except Exception:
+        logger.exception("Failed to get all languages")
         raise HTTPException(status_code=500, detail="Failed to retrieve languages")
 
 
