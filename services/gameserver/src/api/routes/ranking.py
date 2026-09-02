@@ -20,6 +20,9 @@ from src.services.ranking_service import RankingService, RANK_DEFINITIONS
 from src.services.bounty_service import BountyService
 from src.services.personal_reputation_service import PersonalReputationService
 from src.services.websocket_service import connection_manager
+from src.utils.error_handling import route_internal_error
+
+ERR_RANKING_LEADERBOARD_FETCH_FAILED = "ERR_RANKING_LEADERBOARD_FETCH_FAILED"
 
 logger = logging.getLogger(__name__)
 
@@ -577,8 +580,9 @@ async def get_rankings_leaderboard(
         )
     except Exception:
         logger.exception("Failed to fetch rankings leaderboard")
-        raise HTTPException(
-            status_code=500, detail="Failed to fetch rankings leaderboard"
+        raise route_internal_error(
+            ERR_RANKING_LEADERBOARD_FETCH_FAILED,
+            "Failed to fetch rankings leaderboard",
         )
 
 
