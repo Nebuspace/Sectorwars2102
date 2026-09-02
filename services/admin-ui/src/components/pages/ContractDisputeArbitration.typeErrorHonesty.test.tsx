@@ -14,6 +14,18 @@ vi.mock('../ui/PageHeader', () => ({
   default: ({ title }: { title: string }) => <h1>{title}</h1>,
 }));
 
+const axiosError = (status: number, detail?: string) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: detail ? { detail } : {} },
+  });
+
+function assertNoTransportLeak(text: string) {
+  expect(text).not.toBe('Network Error');
+  expect(text).not.toContain('Network Error');
+  expect(text).not.toMatch(/Failed to fetch/i);
+  expect(text).not.toMatch(/TypeError/i);
+}
+
 const sampleDispute = {
   id: 'contract-1',
   payment: 1000,
@@ -114,5 +126,57 @@ describe('ContractDisputeArbitration typeErrorHonesty densify (LEG-3667)', () =>
     const msg = document.querySelector('.resolve-error')?.textContent ?? '';
     expect(msg).not.toMatch(/Failed to fetch/i);
     expect(msg).not.toMatch(/TypeError/i);
+  });
+
+  it('surfaces 403 with scope-aware copy on escalated disputes GET', async () => {
+    vi.mocked(api.get).mockRejectedValue(axiosError(403));
+
+    render(<ContractDisputeArbitration />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to load disputed contracts|Access denied/i)).toBeTruthy();
+    });
+
+    const text =
+      document.querySelector('.alert-message')?.textContent ??
+      screen.getByText(/Access denied|disputed contracts/i).textContent ??
+      '';
+    expect(text).toMatch(/Access denied|contract dispute arbitration scopes/i);
+    expect(text).not.toMatch(/HTTP 403/i);
+    assertNoTransportLeak(text);
+  });
+
+  it('surfaces 429 as admin rate-limit copy on escalated disputes GET', async () => {
+    vi.mocked(api.get).mockRejectedValue(axiosError(429));
+
+    render(<ContractDisputeArbitration />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/rate limit/i)).toBeTruthy();
+    });
+
+    const text = document.querySelector('.alert-message')?.textContent ?? '';
+    expect(text).toMatch(/rate limit/i);
+    expect(text).not.toMatch(/HTTP 429/i);
+    assertNoTransportLeak(text);
+  });
+
+  it('surfaces 403 with formatAdminApiError-friendly copy on ruling POST', async () => {
+    mockDisputesLoaded();
+    vi.mocked(api.post).mockRejectedValue(axiosError(403));
+
+    await openRulingForm();
+    fireEvent.click(screen.getByRole('button', { name: 'Submit Ruling' }));
+
+    await waitFor(() => {
+      const resolveError = document.querySelector('.resolve-error');
+      expect(resolveError).toBeTruthy();
+      expect(resolveError?.textContent).toMatch(/Access denied|contract dispute arbitration scopes/i);
+    });
+
+    const msg = document.querySelector('.resolve-error')?.textContent ?? '';
+    expect(msg).not.toMatch(/HTTP 403/i);
+    expect(msg).not.toBe('Request failed with status code 403');
+    assertNoTransportLeak(msg);
   });
 });
