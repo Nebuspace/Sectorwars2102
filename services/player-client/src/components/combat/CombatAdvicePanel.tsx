@@ -28,13 +28,24 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
 export function formatCombatAdviceError(err: unknown): string {
   const fallback = 'ARIA combat advice unavailable';
   if (err instanceof TypeError) return fallback;
+  const status = httpStatus(err);
   const message = err instanceof Error ? err.message : undefined;
   const hasServerDetail =
     typeof message === 'string' &&
     message.trim().length > 0 &&
     !isNetworkCollapseMessage(message) &&
     !/^API Error: \d+$/.test(message.trim());
-  if (httpStatus(err) === 503 && hasServerDetail) return message!;
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission to load combat advice.';
+  }
+
+  if (status === 429) {
+    return 'Combat advice rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (status === 503 && hasServerDetail) return message!;
   if (hasServerDetail) return message!;
   return fallback;
 }

@@ -21,6 +21,12 @@ import CombatAdvicePanel, { formatCombatAdviceError } from '../CombatAdvicePanel
 const FALLBACK = 'ARIA combat advice unavailable';
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
+
 describe('CombatAdvicePanel TypeError densify (LEG-3729)', () => {
   it('formatCombatAdviceError falls back on TypeError network collapse', () => {
     const text = formatCombatAdviceError(new TypeError('Failed to fetch'));
@@ -39,6 +45,15 @@ describe('CombatAdvicePanel TypeError densify (LEG-3729)', () => {
     const err503 = Object.assign(new Error('advice_model_warming'), { status: 503 });
     expect(formatCombatAdviceError(err503)).toBe('advice_model_warming');
     expect(formatCombatAdviceError(new Error('opponent_unknown'))).toBe('opponent_unknown');
+  });
+
+  it('formatCombatAdviceError surfaces 403/429 without raw status codes (LEG-3978)', () => {
+    expect(formatCombatAdviceError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatCombatAdviceError(apiRequestError(403, 'advice_denied'))).toBe('advice_denied');
+    expect(formatCombatAdviceError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatCombatAdviceError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatCombatAdviceError(apiRequestError(403))).not.toMatch(/TypeError/i);
+    expect(formatCombatAdviceError(apiRequestError(403))).not.toMatch(/Network Error/i);
   });
 });
 
@@ -72,6 +87,28 @@ describe('CombatAdvicePanel load transport collapse densify (LEG-3729)', () => {
 
     const alert = container.querySelector('[role="alert"]');
     expect(alert?.textContent).toBe(FALLBACK);
+    expect(container.textContent).not.toMatch(/Network Error/i);
+  });
+
+  it.each([
+    ['HTTP 403', apiRequestError(403)],
+    ['HTTP 429', apiRequestError(429)],
+  ])('advice load rejection with %s surfaces densified role=alert copy (LEG-3978)', async (_label, err) => {
+    mockGetAdvice.mockRejectedValue(err);
+
+    await act(async () => {
+      root.render(<CombatAdvicePanel opponentShipType="CARGO_HAULER" />);
+    });
+    await act(async () => {
+      await flush();
+    });
+
+    const alert = container.querySelector('[role="alert"]');
+    expect(alert).not.toBeNull();
+    expect(alert?.textContent).not.toBe(FALLBACK);
+    expect(container.textContent).not.toMatch(/\b403\b/);
+    expect(container.textContent).not.toMatch(/\b429\b/);
+    expect(container.textContent).not.toMatch(/TypeError/i);
     expect(container.textContent).not.toMatch(/Network Error/i);
   });
 });
