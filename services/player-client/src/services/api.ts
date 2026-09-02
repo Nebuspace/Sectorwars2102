@@ -212,6 +212,37 @@ export const combatAPI = {
     })
 };
 
+/** GET /pirate-holdings?sector_id= — discovery payload (LEG-4109 / LEG-4107). */
+export interface PirateHoldingDiscovery {
+  id: string;
+  tier: string | null;
+  sector_id: number;
+}
+
+/** POST /pirate-holdings/{id}/raid/initiate — G-F2 lock acquire (LEG-1105). */
+export interface PirateHoldingRaidInitiateResponse {
+  holding_id: string;
+  tier: string;
+  initiated: boolean;
+  lock_applied: boolean;
+  combat_lock_held_by?: string | null;
+  combat_lock_team_snapshot?: string[] | null;
+}
+
+/** Pirate holdings discovery + raid initiate (LEG-4107). Capture is tip-absent — invent=0. */
+export const pirateHoldingsAPI = {
+  listBySector: (sectorId: number): Promise<PirateHoldingDiscovery[]> =>
+    apiRequest(
+      `/api/v1/pirate-holdings?sector_id=${encodeURIComponent(String(sectorId))}`,
+    ),
+
+  initiateRaid: (holdingId: string): Promise<PirateHoldingRaidInitiateResponse> =>
+    apiRequest(
+      `/api/v1/pirate-holdings/${encodeURIComponent(holdingId)}/raid/initiate`,
+      { method: 'POST' },
+    ),
+};
+
 /**
  * Typed DroneType fleet (attack/defense/scout/mining/repair) — distinct from
  * planetary defense fighters, which the colony UI labels "Drones".
