@@ -147,8 +147,23 @@ const okSummary = {
   },
 };
 
+const axiosError = (status: number, detail?: string) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: detail ? { detail } : {} },
+  });
+
+function assertNoTransportLeak(text: string) {
+  expect(text).not.toBe('Network Error');
+  expect(text).not.toContain('Network Error');
+  expect(text).not.toMatch(/Failed to fetch/i);
+  expect(text).not.toMatch(/TypeError/i);
+  expect(text).not.toMatch(/^HTTP \d+$/);
+  expect(text).not.toContain('Request failed with status code');
+}
+
 /**
  * LEG-3635 Soft-ORDER — EconomyDashboard TypeError/Network Error densify.
+ * LEG-3860 Soft-ORDER — 403/429 HTTP honesty densify.
  */
 describe('EconomyDashboard typeErrorHonesty densify (LEG-3635)', () => {
   beforeEach(() => {
@@ -247,5 +262,51 @@ describe('EconomyDashboard typeErrorHonesty densify (LEG-3635)', () => {
     expect(text).toMatch(/Market data unavailable/i);
     expect(text).not.toMatch(/Failed to fetch/i);
     expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('surfaces 403 with friendly scope copy when dashboard-summary GET is denied', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/economy/market-data')) return okMarket;
+      if (url.includes('/economy/metrics')) return okMetrics;
+      if (url.includes('/economy/price-alerts')) return { data: [] };
+      if (url.includes('/economy/dashboard-summary')) {
+        throw axiosError(403);
+      }
+      return { data: {} };
+    });
+
+    render(<EconomyDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+    const text = screen.getByRole('alert').textContent ?? '';
+    expect(text).toMatch(/Access denied|economy summary/i);
+    expect(text).not.toMatch(/\b403\b/);
+    expect(text).not.toMatch(/HTTP 403/i);
+    assertNoTransportLeak(text);
+  });
+
+  it('surfaces 429 as admin rate-limit copy on dashboard-summary GET', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/economy/market-data')) return okMarket;
+      if (url.includes('/economy/metrics')) return okMetrics;
+      if (url.includes('/economy/price-alerts')) return { data: [] };
+      if (url.includes('/economy/dashboard-summary')) {
+        throw axiosError(429);
+      }
+      return { data: {} };
+    });
+
+    render(<EconomyDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
+    });
+    const text = screen.getByRole('alert').textContent ?? '';
+    expect(text).toMatch(/rate limit/i);
+    expect(text).not.toMatch(/\b429\b/);
+    expect(text).not.toMatch(/HTTP 429/i);
+    assertNoTransportLeak(text);
   });
 });
