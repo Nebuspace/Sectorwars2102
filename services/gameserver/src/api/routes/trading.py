@@ -33,6 +33,13 @@ from src.services.trading_service import (
 )
 from src.services.turn_service import regenerate_turns, spend_turns
 
+from src.utils.error_handling import route_internal_error
+
+ERR_TRADING_DOCKING_FAILED = "ERR_TRADING_DOCKING_FAILED"
+ERR_TRADING_UNDOCKING_FAILED = "ERR_TRADING_UNDOCKING_FAILED"
+ERR_TRADING_MOORING_FAILED = "ERR_TRADING_MOORING_FAILED"
+ERR_TRADING_RELEASE_MOORING_FAILED = "ERR_TRADING_RELEASE_MOORING_FAILED"
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/trading", tags=["trading"])
@@ -1991,7 +1998,10 @@ async def dock_at_station(
     except Exception as e:
         db.rollback()
         logger.error("Docking failed: %s", e)
-        raise HTTPException(status_code=500, detail="Docking failed")
+        raise route_internal_error(
+            ERR_TRADING_DOCKING_FAILED,
+            "Docking failed",
+        )
 
 
 @router.post("/undock")
@@ -2093,7 +2103,10 @@ async def undock_from_port(
     except Exception as e:
         db.rollback()
         logger.error("Undocking failed: %s", e)
-        raise HTTPException(status_code=500, detail="Undocking failed")
+        raise route_internal_error(
+            ERR_TRADING_UNDOCKING_FAILED,
+            "Undocking failed",
+        )
 
 
 @router.get("/stations/{station_id}/slips")
@@ -2261,7 +2274,10 @@ async def bump_docking_slip(
     except Exception as e:
         db.rollback()
         logger.error("Docking failed (bump slip): %s", e)
-        raise HTTPException(status_code=500, detail="Docking failed")
+        raise route_internal_error(
+            ERR_TRADING_DOCKING_FAILED,
+            "Docking failed",
+        )
 
 
 @router.post("/mooring/long-term")
@@ -2382,7 +2398,10 @@ async def acquire_long_term_mooring(
     except Exception as e:
         db.rollback()
         logger.error("Long-term mooring failed: %s", e)
-        raise HTTPException(status_code=500, detail="Long-term mooring failed")
+        raise route_internal_error(
+            ERR_TRADING_MOORING_FAILED,
+            "Long-term mooring failed",
+        )
 
 
 @router.post("/mooring/long-term/release")
@@ -2416,7 +2435,10 @@ async def release_long_term_mooring(
     except Exception as e:
         db.rollback()
         logger.error("Releasing long-term mooring failed: %s", e)
-        raise HTTPException(status_code=500, detail="Releasing long-term mooring failed")
+        raise route_internal_error(
+            ERR_TRADING_RELEASE_MOORING_FAILED,
+            "Releasing long-term mooring failed",
+        )
 
 
 @router.get("/history")

@@ -34,7 +34,10 @@ async def test_create_audit_log_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to create audit log"
+    assert exc.detail == {
+        "error_code": "ERR_AUDIT_CREATE_FAILED",
+        "detail": "Failed to create audit log",
+    }
     assert secret not in str(exc.detail)
 
 
@@ -50,7 +53,10 @@ async def test_get_audit_logs_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to fetch audit logs"
+    assert exc.detail == {
+        "error_code": "ERR_AUDIT_FETCH_LOGS_FAILED",
+        "detail": "Failed to fetch audit logs",
+    }
     assert secret not in str(exc.detail)
 
 
@@ -68,7 +74,10 @@ async def test_get_security_violations_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to fetch security violations"
+    assert exc.detail == {
+        "error_code": "ERR_AUDIT_SECURITY_VIOLATIONS_FAILED",
+        "detail": "Failed to fetch security violations",
+    }
     assert secret not in str(exc.detail)
 
 
@@ -86,18 +95,22 @@ async def test_get_user_activity_summary_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to fetch user activity summary"
+    assert exc.detail == {
+        "error_code": "ERR_AUDIT_USER_ACTIVITY_FAILED",
+        "detail": "Failed to fetch user activity summary",
+    }
     assert secret not in str(exc.detail)
 
 
 def test_audit_http500_catches_have_no_detail_str_e():
     """Static pin: the four HTTP 500 catch paths stay opaque (no str(e))."""
     src = Path(audit_mod.__file__).read_text(encoding="utf-8")
-    for stable in (
-        'detail="Failed to create audit log"',
-        'detail="Failed to fetch audit logs"',
-        'detail="Failed to fetch security violations"',
-        'detail="Failed to fetch user activity summary"',
-    ):
-        assert stable in src
+    assert "route_internal_error" in src
+    assert "ERR_AUDIT_USER_ACTIVITY_FAILED" in src
+    assert "ERR_AUDIT_SECURITY_VIOLATIONS_FAILED" in src
+    assert "ERR_AUDIT_FETCH_LOGS_FAILED" in src
+    assert "ERR_AUDIT_MARK_REVIEWED_FAILED" in src
+    assert "ERR_AUDIT_LIST_REVIEW_QUEUE_FAILED" in src
+    assert "ERR_AUDIT_LIST_ACTIONS_FAILED" in src
+    assert "ERR_AUDIT_CREATE_FAILED" in src
     assert "detail=str(e)" not in src
