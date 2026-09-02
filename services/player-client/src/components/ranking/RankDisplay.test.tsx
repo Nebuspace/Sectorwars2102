@@ -46,6 +46,8 @@ const FULL_RANK = {
     combat_damage_bonus_percent: 3,
   },
   is_max_rank: false,
+  is_wanted: false,
+  is_suspect: false,
 };
 
 describe('RankDisplay', () => {
@@ -111,6 +113,38 @@ describe('RankDisplay', () => {
     await mount();
 
     expect(container.querySelector('.rank-error')?.textContent).toBe('Network down');
+  });
+
+  it('shows Wanted law status when is_wanted is true (LEG-4127)', async () => {
+    mockGetRank.mockResolvedValue({ ...FULL_RANK, is_wanted: true, is_suspect: true });
+    await mount();
+
+    const badge = container.querySelector('[data-testid="rank-law-status"]');
+    expect(badge?.textContent).toBe('Wanted');
+    expect(badge?.classList.contains('wanted')).toBe(true);
+    expect(container.querySelector('.rank-username.wanted')?.textContent).toBe('TESTPILOT');
+    // Wanted overrides Suspect — no Suspect chip when both flags true.
+    expect(container.textContent).not.toMatch(/Suspect/);
+  });
+
+  it('shows Suspect law status when is_suspect is true and is_wanted is false (LEG-4127)', async () => {
+    mockGetRank.mockResolvedValue({ ...FULL_RANK, is_wanted: false, is_suspect: true });
+    await mount();
+
+    const badge = container.querySelector('[data-testid="rank-law-status"]');
+    expect(badge?.textContent).toBe('Suspect');
+    expect(badge?.classList.contains('suspect')).toBe(true);
+    expect(container.querySelector('.rank-username.suspect')?.textContent).toBe('TESTPILOT');
+  });
+
+  it('hides law status when is_wanted and is_suspect are false (LEG-4127)', async () => {
+    mockGetRank.mockResolvedValue(FULL_RANK);
+    await mount();
+
+    expect(container.querySelector('[data-testid="rank-law-status"]')).toBeNull();
+    expect(container.querySelector('.rank-username.wanted')).toBeNull();
+    expect(container.querySelector('.rank-username.suspect')).toBeNull();
+    expect(container.querySelector('.rank-username')?.textContent).toBe('TESTPILOT');
   });
 
   it('surfaces 404 server detail from rank load refusal', async () => {
