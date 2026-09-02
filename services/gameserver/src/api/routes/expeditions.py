@@ -88,7 +88,11 @@ async def launch_expedition(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception:
         db.rollback()
-        raise
+        logger.exception("Failed to launch expedition")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to launch expedition",
+        )
 
 
 @router.get("/{expedition_id}/status")
@@ -150,4 +154,8 @@ async def reroll_expedition(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception:
         db.rollback()
-        raise
+        logger.exception("Failed to reroll expedition")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to reroll expedition",
+        )
