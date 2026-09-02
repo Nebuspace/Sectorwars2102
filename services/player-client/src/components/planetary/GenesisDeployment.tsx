@@ -9,6 +9,16 @@ interface GenesisDeploymentProps {
   onClose?: () => void;
 }
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
 /** Transport collapse copy is not gameserver detail (network-collapse densify). */
 const isNetworkCollapseMessage = (msg: string): boolean => {
   const trimmed = msg.trim();
@@ -22,6 +32,7 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
 
 /** Surface GS genesis quote 400 detail (`detail=str(e)`), else stable fallback. */
 export function formatGenesisQuotesLoadError(err: unknown): string {
+  const status = httpStatus(err);
   const message = err instanceof Error ? err.message : undefined;
   // Network collapse (fetch TypeError / axios transport) is not gameserver copy — use the fallback.
   const hasServerDetail =
@@ -30,6 +41,15 @@ export function formatGenesisQuotesLoadError(err: unknown): string {
     message.trim().length > 0 &&
     !/^API Error: \d+$/.test(message.trim()) &&
     !isNetworkCollapseMessage(message);
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission to load genesis pricing.';
+  }
+
+  if (status === 429) {
+    return 'Genesis pricing rate limit exceeded — wait a moment and try again.';
+  }
 
   if (hasServerDetail) return message!;
   return 'Failed to load genesis pricing';
@@ -37,6 +57,7 @@ export function formatGenesisQuotesLoadError(err: unknown): string {
 
 /** Pre-deploy price re-verify failure (LEG-2933 Soft-ORDER). */
 export function formatGenesisVerifyError(err: unknown): string {
+  const status = httpStatus(err);
   const message = err instanceof Error ? err.message : undefined;
   // Network collapse (fetch TypeError / axios transport) is not gameserver copy — use the fallback.
   const hasServerDetail =
@@ -45,6 +66,15 @@ export function formatGenesisVerifyError(err: unknown): string {
     message.trim().length > 0 &&
     !/^API Error: \d+$/.test(message.trim()) &&
     !isNetworkCollapseMessage(message);
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission to verify genesis pricing.';
+  }
+
+  if (status === 429) {
+    return 'Genesis verify rate limit exceeded — wait a moment and try again.';
+  }
 
   if (hasServerDetail) return message!;
   return 'Failed to verify genesis pricing';
@@ -52,6 +82,7 @@ export function formatGenesisVerifyError(err: unknown): string {
 
 /** deployGenesis POST failure (LEG-2933 Soft-ORDER). */
 export function formatGenesisDeployError(err: unknown): string {
+  const status = httpStatus(err);
   const message = err instanceof Error ? err.message : undefined;
   // Network collapse (fetch TypeError / axios transport) is not gameserver copy — use the fallback.
   const hasServerDetail =
@@ -60,6 +91,15 @@ export function formatGenesisDeployError(err: unknown): string {
     message.trim().length > 0 &&
     !/^API Error: \d+$/.test(message.trim()) &&
     !isNetworkCollapseMessage(message);
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission to deploy a Genesis Device.';
+  }
+
+  if (status === 429) {
+    return 'Genesis deploy rate limit exceeded — wait a moment and try again.';
+  }
 
   if (hasServerDetail) return message!;
   return 'Failed to deploy Genesis Device';

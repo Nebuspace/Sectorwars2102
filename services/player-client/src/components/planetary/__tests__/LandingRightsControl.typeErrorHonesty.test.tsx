@@ -29,3 +29,26 @@ describe('LandingRightsControl TypeError densify (LEG-3492)', () => {
     );
   });
 });
+
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
+
+describe('LandingRightsControl 403/429 densify (LEG-4005)', () => {
+  it('formatLandingRightsError maps 403/429 without raw transport strings', () => {
+    expect(formatLandingRightsError(apiRequestError(403))).toBe(
+      'You do not have permission to change landing rights.',
+    );
+    expect(formatLandingRightsError(apiRequestError(403, 'landing_rights_denied'))).toBe(
+      'landing_rights_denied',
+    );
+    expect(formatLandingRightsError(apiRequestError(429))).toBe(
+      'Landing-rights update rate limit exceeded — wait a moment and try again.',
+    );
+    expect(formatLandingRightsError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatLandingRightsError(apiRequestError(403))).not.toMatch(/TypeError/i);
+    expect(formatLandingRightsError(apiRequestError(403))).not.toMatch(/Network Error/i);
+  });
+});
