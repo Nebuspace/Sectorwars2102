@@ -3,6 +3,7 @@ import { useGame } from '../../contexts/GameContext';
 import { formatCredits } from '../../utils/formatters';
 import DeckPageTabs from '../cockpit/DeckPageTabs';
 import StationSecurityMonitoringPane from '../station/StationSecurityMonitoringPane';
+import PortOfficeSyndicatePanel from './PortOfficeSyndicatePanel';
 import './port-office-venue.css';
 
 // =====================================================================
@@ -2072,6 +2073,8 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
             except the bids.
           </p>
         </div>
+
+        <PortOfficeSyndicatePanel stationId={stationId} stationName={stationName} />
 
         <DeckPageTabs
           pages={[
