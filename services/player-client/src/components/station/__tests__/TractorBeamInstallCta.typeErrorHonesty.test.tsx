@@ -38,3 +38,20 @@ describe('TractorBeamInstallCta Network Error densify (LEG-3562)', () => {
     );
   });
 });
+
+describe('formatTractorBeamInstallError 403/429 densify (LEG-4085)', () => {
+  const apiRequestError = (status: number, message?: string) => {
+    const err = new Error(message ?? `API Error: ${status}`);
+    (err as { status?: number }).status = status;
+    return err;
+  };
+  it('surfaces 403/429 without raw status codes', () => {
+    expect(formatTractorBeamInstallError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatTractorBeamInstallError(apiRequestError(403, 'tractor_denied'))).toBe(
+      'tractor_denied',
+    );
+    expect(formatTractorBeamInstallError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatTractorBeamInstallError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatTractorBeamInstallError(apiRequestError(403))).not.toMatch(/TypeError/i);
+  });
+});

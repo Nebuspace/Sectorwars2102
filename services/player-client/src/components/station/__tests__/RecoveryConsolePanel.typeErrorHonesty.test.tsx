@@ -105,3 +105,20 @@ describe('RecoveryConsolePanel action transport collapse densify (LEG-3738)', ()
     expect(feedback?.textContent).not.toMatch(/Network Error/i);
   });
 });
+
+describe('formatRecoveryActionError 403/429 densify (LEG-4084)', () => {
+  const apiRequestError = (status: number, message?: string) => {
+    const err = new Error(message ?? `API Error: ${status}`);
+    (err as { status?: number }).status = status;
+    return err;
+  };
+  it('surfaces 403/429 without raw status codes', () => {
+    expect(formatRecoveryActionError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatRecoveryActionError(apiRequestError(403, 'recovery_denied'))).toBe(
+      'recovery_denied',
+    );
+    expect(formatRecoveryActionError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatRecoveryActionError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatRecoveryActionError(apiRequestError(403))).not.toMatch(/TypeError/i);
+  });
+});

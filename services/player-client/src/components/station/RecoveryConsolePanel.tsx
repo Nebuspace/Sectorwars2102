@@ -27,6 +27,16 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
  * - Nested structured detail from `_distress_http_error` — FastAPI wraps
  *   `{detail: str(e), ...payload}` so the client sees `data.detail.detail`.
  */
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
 export function formatRecoveryActionError(err: unknown): string {
   let message = err instanceof Error ? err.message : undefined;
 
@@ -46,12 +56,22 @@ export function formatRecoveryActionError(err: unknown): string {
   }
 
   // Network collapse (fetch TypeError / axios Network Error) is not gameserver copy.
+  const status = httpStatus(err);
   const hasServerDetail =
     !(err instanceof TypeError) &&
     typeof message === 'string' &&
     message.trim().length > 0 &&
     !isNetworkCollapseMessage(message) &&
     !/^API Error: \d+$/.test(message.trim());
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission to perform this recovery action.';
+  }
+
+  if (status === 429) {
+    return 'Recovery action rate limit exceeded — wait a moment and try again.';
+  }
 
   if (hasServerDetail) return message!;
   return 'Recovery action failed';

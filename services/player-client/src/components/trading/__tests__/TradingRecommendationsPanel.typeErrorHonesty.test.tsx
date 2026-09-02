@@ -74,3 +74,18 @@ describe('TradingRecommendationsPanel TypeError honesty (LEG-3237)', () => {
     expect(container.textContent).not.toMatch(/TypeError/i);
   });
 });
+
+describe('formatRecommendationsLoadError 403/429 densify (LEG-4083)', () => {
+  const apiRequestError = (status: number, message?: string) => {
+    const err = new Error(message ?? `API Error: ${status}`);
+    (err as { status?: number }).status = status;
+    return err;
+  };
+  it('surfaces 403/429 without raw status codes', () => {
+    expect(formatRecommendationsLoadError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatRecommendationsLoadError(apiRequestError(403, 'recs_denied'))).toBe('recs_denied');
+    expect(formatRecommendationsLoadError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatRecommendationsLoadError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatRecommendationsLoadError(apiRequestError(403))).not.toMatch(/TypeError/i);
+  });
+});

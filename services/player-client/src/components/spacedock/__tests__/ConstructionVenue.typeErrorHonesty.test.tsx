@@ -63,6 +63,41 @@ describe('ConstructionVenue shell formatters TypeError densify (LEG-3774)', () =
   });
 });
 
+describe('formatConstructionQuotesLoadError 403/429 densify (LEG-4077)', () => {
+  const apiRequestError = (status: number, message?: string) => {
+    const err = new Error(message ?? `API Error: ${status}`);
+    (err as { status?: number }).status = status;
+    return err;
+  };
+
+  it('surfaces 403/429 without raw status codes', () => {
+    expect(formatConstructionQuotesLoadError(apiRequestError(403), FALLBACK)).toMatch(
+      /permission/i,
+    );
+    expect(
+      formatConstructionQuotesLoadError(apiRequestError(403, 'construction_denied'), FALLBACK),
+    ).toBe('construction_denied');
+    expect(formatConstructionQuotesLoadError(apiRequestError(429), FALLBACK)).toMatch(
+      /rate limit/i,
+    );
+    expect(formatConstructionQuotesLoadError(apiRequestError(429), FALLBACK)).not.toMatch(
+      /\b429\b/,
+    );
+    expect(formatConstructionQuotesLoadError(apiRequestError(403), FALLBACK)).not.toMatch(
+      /TypeError/i,
+    );
+  });
+
+  it('reservations alias inherits 403/429 densify', () => {
+    expect(
+      formatConstructionReservationsLoadError(apiRequestError(403), FALLBACK),
+    ).toMatch(/permission/i);
+    expect(
+      formatConstructionReservationsLoadError(apiRequestError(429), FALLBACK),
+    ).toMatch(/rate limit/i);
+  });
+});
+
 describe('ConstructionVenue shell load TypeError densify (LEG-3774)', () => {
   let container: HTMLElement;
   let root: ReturnType<typeof createRoot>;

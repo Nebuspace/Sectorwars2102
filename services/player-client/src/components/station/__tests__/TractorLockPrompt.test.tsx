@@ -65,8 +65,11 @@ describe('formatTractorLockActionError (LEG-2919)', () => {
   });
 
   it('falls back when message is bare API Error: 403', () => {
+    // Soft-ORDER densify (LEG-4086 / LEG-3995-class): bare API Error: 403 → permission copy
     const err = Object.assign(new Error('API Error: 403'), { status: 403 });
-    expect(formatTractorLockActionError(err)).toBe('Action failed');
+    expect(formatTractorLockActionError(err)).toBe(
+      'You do not have permission to resolve this tractor lock.',
+    );
   });
 });
 
