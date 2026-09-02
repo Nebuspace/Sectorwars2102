@@ -20,6 +20,22 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
 
 const REGION_PROBE_UNAVAILABLE = 'Region status unavailable — try again shortly.';
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+function hasRegionProbeServerDetail(err: unknown, message: string): boolean {
+  if (err instanceof TypeError) return false;
+  if (isNetworkCollapseMessage(message)) return false;
+  return message.trim().length > 0 && !/^API Error: \d+$/.test(message.trim());
+}
+
 /**
  * Map region-ownership probe failures to user-visible copy.
  * Returns null for the expected not-owner 404 heuristic (message contains
@@ -29,6 +45,16 @@ export function formatRegionOwnerProbeError(err: unknown): string | null {
   const message =
     err instanceof Error ? err.message : String((err as { message?: unknown })?.message ?? '');
   if (message.toLowerCase().includes('found')) return null;
+
+  const status = httpStatus(err);
+  if (status === 403) {
+    if (hasRegionProbeServerDetail(err, message)) return message;
+    return 'You do not have permission to view region ownership status.';
+  }
+  if (status === 429) {
+    return 'Region ownership probe rate limit exceeded — wait a moment and try again.';
+  }
+
   if (err instanceof TypeError || isNetworkCollapseMessage(message)) {
     return REGION_PROBE_UNAVAILABLE;
   }

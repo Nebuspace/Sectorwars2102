@@ -31,6 +31,16 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
   );
 };
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
 function serverDetail(err: unknown): string | undefined {
   // Network collapse (fetch TypeError) is not gameserver copy.
   if (err instanceof TypeError) return undefined;
@@ -53,13 +63,29 @@ function serverDetail(err: unknown): string | undefined {
 }
 
 export function formatSiegeAidError(err: unknown): string {
+  const status = httpStatus(err);
   const detail = serverDetail(err);
+  if (status === 403) {
+    if (detail) return detail;
+    return 'You do not have permission to send emergency aid.';
+  }
+  if (status === 429) {
+    return 'Emergency aid rate limit exceeded — wait a moment and try again.';
+  }
   if (detail) return detail;
   return 'Failed to send emergency aid request.';
 }
 
 export function formatSiegeHailError(err: unknown): string {
+  const status = httpStatus(err);
   const detail = serverDetail(err);
+  if (status === 403) {
+    if (detail) return detail;
+    return 'You do not have permission to send a negotiation hail.';
+  }
+  if (status === 429) {
+    return 'Negotiation hail rate limit exceeded — wait a moment and try again.';
+  }
   if (detail) return detail;
   return 'Failed to send negotiation hail.';
 }

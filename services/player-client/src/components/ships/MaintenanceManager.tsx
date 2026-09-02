@@ -57,8 +57,17 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
   );
 };
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
 function hasMaintenanceServerDetail(err: unknown): boolean {
-  // Network collapse (fetch TypeError / axios transport) is not gameserver copy — use the caller fallback.
   if (err instanceof TypeError) return false;
   const message = err instanceof Error ? err.message : undefined;
   if (typeof message === 'string' && isNetworkCollapseMessage(message)) return false;
@@ -71,17 +80,39 @@ function hasMaintenanceServerDetail(err: unknown): boolean {
 
 /** Preserve gameserver detail on maintenance status load refusal. */
 export function formatMaintenanceLoadError(err: unknown): string {
-  if (hasMaintenanceServerDetail(err)) {
-    return (err as Error).message;
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail = hasMaintenanceServerDetail(err);
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission to view maintenance status for this ship.';
   }
+
+  if (status === 429) {
+    return 'Maintenance status rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (hasServerDetail) return message!;
   return 'Maintenance data is unavailable.';
 }
 
 /** Preserve gameserver detail on repair refusal. */
 export function formatMaintenanceRepairError(err: unknown): string {
-  if (hasMaintenanceServerDetail(err)) {
-    return (err as Error).message;
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail = hasMaintenanceServerDetail(err);
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission to service this ship.';
   }
+
+  if (status === 429) {
+    return 'Maintenance repair rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (hasServerDetail) return message!;
   return 'Servicing failed.';
 }
 
