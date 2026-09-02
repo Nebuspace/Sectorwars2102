@@ -23,6 +23,10 @@ interface RankInfo {
   is_max_rank: boolean;
   is_game_complete?: boolean;
   rank_victory_at?: string | null;
+  /** Tip GET /ranking/rank — Federation Wanted standing (overrides Suspect). */
+  is_wanted?: boolean;
+  /** Tip GET /ranking/rank — temporary Suspect flag (weaker than Wanted). */
+  is_suspect?: boolean;
 }
 
 function httpStatus(err: unknown): number | undefined {
@@ -132,6 +136,16 @@ const RankDisplay: React.FC = () => {
     max_turns_bonus: 0,
     combat_damage_bonus_percent: 0,
   };
+  // Law status from tip GET /ranking/rank only — Wanted overrides Suspect.
+  const isWanted = rankInfo.is_wanted === true;
+  const isSuspect = !isWanted && rankInfo.is_suspect === true;
+  const usernameClass = [
+    'rank-username',
+    isWanted ? 'wanted' : '',
+    isSuspect ? 'suspect' : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
 
   return (
     <div className="rank-display">
@@ -139,6 +153,19 @@ const RankDisplay: React.FC = () => {
         <span className="rank-level">{rankInfo.rank_level}</span>
       </div>
       <div className="rank-info">
+        {rankInfo.username ? (
+          <div className={usernameClass} data-testid="rank-username">
+            {rankInfo.username}
+          </div>
+        ) : null}
+        {(isWanted || isSuspect) && (
+          <span
+            className={`rank-law-status ${isWanted ? 'wanted' : 'suspect'}`}
+            data-testid="rank-law-status"
+          >
+            {isWanted ? 'Wanted' : 'Suspect'}
+          </span>
+        )}
         <div className="rank-name" style={{ color: tierColor }}>
           {rankInfo.current_rank}
         </div>
