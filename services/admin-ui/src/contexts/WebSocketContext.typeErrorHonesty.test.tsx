@@ -32,7 +32,16 @@ function assertNoTransportLeak(text: string) {
   expect(text).not.toContain('Network Error');
   expect(text).not.toMatch(/Failed to fetch/i);
   expect(text).not.toMatch(/TypeError/i);
+  expect(text).not.toMatch(/HTTP 403/i);
+  expect(text).not.toMatch(/HTTP 429/i);
+  expect(text).not.toMatch(/^HTTP \d+$/);
+  expect(text).not.toContain('Request failed with status code');
 }
+
+const axiosError = (status: number) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: {} },
+  });
 
 function Probe() {
   const {
@@ -58,6 +67,8 @@ function Probe() {
 
 /**
  * LEG-3793 Soft-ORDER — WebSocketContext TypeError/Network Error densify.
+ * LEG-3945 Soft-ORDER — HTTP 403/429 densify (WS path has no operator error strip;
+ * axios-shaped rejections must not leak status/transport text into UI state).
  */
 describe('WebSocketContext typeErrorHonesty densify (LEG-3793)', () => {
   beforeEach(() => {
@@ -156,5 +167,66 @@ describe('WebSocketContext typeErrorHonesty densify (LEG-3793)', () => {
 
     await waitFor(() => expect(mockedWs.retryConnection).toHaveBeenCalled());
     assertNoTransportLeak(document.body.textContent ?? '');
+  });
+
+  it('initial connect HTTP 403 does not leak status or transport text in UI state', async () => {
+    mockedWs.connect.mockRejectedValue(axiosError(403));
+    mockedWs.hasGivenUp.mockReturnValue(true);
+    mockedWs.getReconnectAttempt.mockReturnValue(5);
+
+    render(
+      <WebSocketProvider>
+        <Probe />
+      </WebSocketProvider>,
+    );
+
+    await waitFor(() => expect(mockedWs.connect).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(screen.getByTestId('gave-up')).toHaveTextContent('true'),
+    );
+
+    assertNoTransportLeak(document.body.textContent ?? '');
+    expect(document.body.textContent ?? '').not.toMatch(/\b403\b/);
+  });
+
+  it('initial connect HTTP 429 does not leak status or transport text in UI state', async () => {
+    mockedWs.connect.mockRejectedValue(axiosError(429));
+    mockedWs.hasGivenUp.mockReturnValue(true);
+
+    render(
+      <WebSocketProvider>
+        <Probe />
+      </WebSocketProvider>,
+    );
+
+    await waitFor(() => expect(mockedWs.connect).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(screen.getByTestId('gave-up')).toHaveTextContent('true'),
+    );
+
+    assertNoTransportLeak(document.body.textContent ?? '');
+    expect(document.body.textContent ?? '').not.toMatch(/\b429\b/);
+  });
+
+  it('manual retry HTTP 403 does not leak status or transport text in UI state', async () => {
+    mockedWs.connect.mockResolvedValue(undefined);
+    mockedWs.retryConnection.mockRejectedValue(axiosError(403));
+    mockedWs.hasGivenUp.mockReturnValue(true);
+
+    render(
+      <WebSocketProvider>
+        <Probe />
+      </WebSocketProvider>,
+    );
+
+    await waitFor(() => expect(mockedWs.connect).toHaveBeenCalled());
+
+    await act(async () => {
+      screen.getByRole('button', { name: 'Retry' }).click();
+    });
+
+    await waitFor(() => expect(mockedWs.retryConnection).toHaveBeenCalled());
+    assertNoTransportLeak(document.body.textContent ?? '');
+    expect(document.body.textContent ?? '').not.toMatch(/\b403\b/);
   });
 });
