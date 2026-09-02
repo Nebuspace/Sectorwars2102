@@ -95,12 +95,17 @@ class PersonalReputationService:
 
         tier, color = self._get_tier_for_score(new_score)
         player.reputation_tier = tier
-        player.name_color = color
 
         # Wanted-trigger (ranking.md "Wanted status"): personal_reputation
         # crossing -500 in either direction. This is the only write site
         # for personal_reputation (apply_weekly_decay is the other, below).
         _recompute_wanted_defensively(self.db, player)
+        # LEG-4135: law standing overrides tier color (Wanted red / Suspect
+        # amber). recompute_is_wanted already calls apply_law_name_color;
+        # call again so stub sessions that skip recompute still land color.
+        from src.services.law_name_color import apply_law_name_color
+
+        color = apply_law_name_color(player)
 
         self.db.flush()
 
@@ -171,11 +176,13 @@ class PersonalReputationService:
             new_score = min(0, score + decay)
 
         player.personal_reputation = new_score
-        tier, color = self._get_tier_for_score(new_score)
+        tier, _tier_color = self._get_tier_for_score(new_score)
         player.reputation_tier = tier
-        player.name_color = color
 
         _recompute_wanted_defensively(self.db, player)
+        from src.services.law_name_color import apply_law_name_color
+
+        apply_law_name_color(player)
 
         self.db.flush()
 

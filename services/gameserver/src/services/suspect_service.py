@@ -41,6 +41,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from src.models.player import Player
+from src.services.law_name_color import apply_law_name_color
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +152,9 @@ def apply_suspect_event(
         # acquisition only (ADR-0061 S-V4).
 
     _apply_rep_penalty(db, player.id, reason)
+    # Rep penalty may rewrite name_color from tier; re-assert law override
+    # after flags are set (Wanted red still wins if also Wanted).
+    apply_law_name_color(player)
     return first_acquisition
 
 
@@ -234,6 +238,7 @@ def clear_expired_suspects(db: Session, *, now: Optional[datetime] = None) -> in
         player.suspect_until = None
         player.suspect_team_snapshot = None
         player.suspect_declared_at = None
+        apply_law_name_color(player)
 
     if expired:
         db.flush()
