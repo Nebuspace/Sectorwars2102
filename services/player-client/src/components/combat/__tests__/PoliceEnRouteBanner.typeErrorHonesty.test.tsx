@@ -44,6 +44,12 @@ import PoliceEnRouteBanner, {
 const FALLBACK = 'Failed to load law enforcement status';
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
+
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
 describe('formatPoliceEnRouteLoadError (LEG-3713)', () => {
   it('formatPoliceEnRouteLoadError falls back on TypeError network collapse', () => {
     const text = formatPoliceEnRouteLoadError(new TypeError('Failed to fetch'));
@@ -121,5 +127,15 @@ describe('PoliceEnRouteBanner transport collapse densify (LEG-3713)', () => {
     const alert = container.querySelector('[role="alert"]');
     expect(alert?.textContent).toContain(FALLBACK);
     expect(container.textContent).not.toMatch(/Cannot read properties/i);
+  });
+});
+
+describe('formatPoliceEnRouteLoadError 403/429 densify (LEG-4033)', () => {
+  it('surfaces 403/429 without raw status codes', () => {
+    expect(formatPoliceEnRouteLoadError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatPoliceEnRouteLoadError(apiRequestError(403, 'police_denied'))).toBe('police_denied');
+    expect(formatPoliceEnRouteLoadError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatPoliceEnRouteLoadError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatPoliceEnRouteLoadError(apiRequestError(403))).not.toMatch(/TypeError/i);
   });
 });

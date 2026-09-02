@@ -5,6 +5,12 @@
 import { describe, it, expect } from 'vitest';
 import { formatNearestAmRefineryError } from '../NearestAmRefineryOverlay';
 
+
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
 describe('NearestAmRefineryOverlay TypeError densify (LEG-3490)', () => {
   it('formatNearestAmRefineryError falls back on TypeError network collapse', () => {
     const text = formatNearestAmRefineryError(new TypeError('Failed to fetch'));
@@ -27,5 +33,15 @@ describe('NearestAmRefineryOverlay TypeError densify (LEG-3490)', () => {
     expect(formatNearestAmRefineryError(new Error('no_am_station_in_range'))).toBe(
       'no_am_station_in_range',
     );
+  });
+});
+
+describe('formatNearestAmRefineryError 403/429 densify (LEG-4036)', () => {
+  it('surfaces 403/429 without raw status codes', () => {
+    expect(formatNearestAmRefineryError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatNearestAmRefineryError(apiRequestError(403, 'refinery_denied'))).toBe('refinery_denied');
+    expect(formatNearestAmRefineryError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatNearestAmRefineryError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatNearestAmRefineryError(apiRequestError(403))).not.toMatch(/TypeError/i);
   });
 });

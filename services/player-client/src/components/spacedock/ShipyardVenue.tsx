@@ -47,16 +47,37 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
 
 export const SHIPYARD_CATALOG_LOAD_FALLBACK = 'Connection error. Please try again.';
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
 export function formatShipyardCatalogError(error: unknown, fallback: string): string {
   if (error instanceof TypeError) return fallback;
-  if (error instanceof Error && error.message) {
-    if (isNetworkCollapseMessage(error.message)) return fallback;
-    return error.message;
+  const status = httpStatus(error);
+  const message =
+    error instanceof Error ? error.message : typeof error === 'string' ? error : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNetworkCollapseMessage(message);
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission to load the shipyard catalog.';
   }
-  if (typeof error === 'string') {
-    if (isNetworkCollapseMessage(error)) return fallback;
-    return error;
+
+  if (status === 429) {
+    return 'Shipyard catalog rate limit exceeded — wait a moment and try again.';
   }
+
+  if (hasServerDetail) return message!;
   return fallback;
 }
 

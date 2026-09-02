@@ -56,13 +56,44 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
  * (fetch TypeError / axios Network Error) is not GS copy — use the stable
  * fallback (LEG-3070 Soft-ORDER; LEG-3394 densify).
  */
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
 export function formatQuantumDriveApiError(err: unknown, fallback: string): string {
   // Network collapse (fetch TypeError / axios transport) is not gameserver copy.
   if (err instanceof TypeError) return fallback;
+  const status = httpStatus(err);
   const detail = (err as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
-  if (typeof detail === 'string' && detail.trim().length > 0) return detail;
+  const detailCopy =
+    typeof detail === 'string' && detail.trim().length > 0 ? detail.trim() : undefined;
   const message =
     err instanceof Error ? err.message : String((err as { message?: unknown })?.message ?? '');
+  const messageDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNetworkCollapseMessage(message)
+      ? message.trim()
+      : undefined;
+  const serverCopy = detailCopy ?? messageDetail;
+
+  if (status === 403) {
+    if (serverCopy) return serverCopy;
+    return 'You do not have permission to use the quantum drive.';
+  }
+
+  if (status === 429) {
+    return 'Quantum drive rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (detailCopy) return detailCopy;
   if (isNetworkCollapseMessage(message)) return fallback;
   return fallback;
 }

@@ -5,6 +5,12 @@
 import { describe, it, expect } from 'vitest';
 import { formatPlanetaryLanderInstallError } from '../PlanetaryLanderInstallCta';
 
+
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
 describe('PlanetaryLanderInstallCta TypeError densify (LEG-3493)', () => {
   it('formatPlanetaryLanderInstallError falls back on TypeError network collapse', () => {
     const text = formatPlanetaryLanderInstallError(new TypeError('Failed to fetch'));
@@ -29,5 +35,15 @@ describe('PlanetaryLanderInstallCta TypeError densify (LEG-3493)', () => {
     expect(formatPlanetaryLanderInstallError(new Error('insufficient_credits'))).toBe(
       'insufficient_credits',
     );
+  });
+});
+
+describe('formatPlanetaryLanderInstallError 403/429 densify (LEG-4035)', () => {
+  it('surfaces 403/429 without raw status codes', () => {
+    expect(formatPlanetaryLanderInstallError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatPlanetaryLanderInstallError(apiRequestError(403, 'lander_denied'))).toBe('lander_denied');
+    expect(formatPlanetaryLanderInstallError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatPlanetaryLanderInstallError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatPlanetaryLanderInstallError(apiRequestError(403))).not.toMatch(/TypeError/i);
   });
 });
