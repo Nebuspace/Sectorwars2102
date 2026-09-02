@@ -49,3 +49,22 @@ describe('nav threat rollup error densify (LEG-3143)', () => {
     expect(text).not.toMatch(/Failed to fetch/i);
   });
 });
+
+
+describe('formatTacticalThreatError 403/429 densify (LEG-4093)', () => {
+  const apiRequestError = (status: number, message?: string) => {
+    const err = new Error(message ?? `API Error: ${status}`);
+    (err as { status?: number }).status = status;
+    return err;
+  };
+  it('surfaces 403/429 without raw status codes', () => {
+    const fallback = 'Threat action failed';
+    expect(formatTacticalThreatError(apiRequestError(403), fallback)).toMatch(/permission/i);
+    expect(formatTacticalThreatError(apiRequestError(403, 'threat_denied'), fallback)).toBe(
+      'threat_denied',
+    );
+    expect(formatTacticalThreatError(apiRequestError(429), fallback)).toMatch(/rate limit/i);
+    expect(formatTacticalThreatError(apiRequestError(429), fallback)).not.toMatch(/\b429\b/);
+    expect(formatTacticalThreatError(apiRequestError(403), fallback)).not.toMatch(/TypeError/i);
+  });
+});

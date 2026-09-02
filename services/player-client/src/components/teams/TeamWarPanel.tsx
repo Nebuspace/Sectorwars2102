@@ -93,6 +93,15 @@ export function formatTeamWarLoadError(err: unknown): string {
   const status = httpStatus(err);
   const detail = serverDetail(err);
 
+  if (status === 403) {
+    if (detail) return detail;
+    return 'You do not have permission to view team wars.';
+  }
+
+  if (status === 429) {
+    return 'Team war list rate limit exceeded — wait a moment and try again.';
+  }
+
   if (status === 404) {
     if (detail) return detail;
     return 'Failed to load wars';
@@ -104,7 +113,18 @@ export function formatTeamWarLoadError(err: unknown): string {
 
 /** Declare/ceasefire refusals — surface gameserver detail (403/404/400). */
 export function formatTeamWarActionError(err: unknown): string {
+  const status = httpStatus(err);
   const detail = serverDetail(err);
+
+  if (status === 403) {
+    if (detail) return detail;
+    return 'You do not have permission to perform this team war action.';
+  }
+
+  if (status === 429) {
+    return 'Team war action rate limit exceeded — wait a moment and try again.';
+  }
+
   if (detail) return detail;
   return 'Action failed';
 }

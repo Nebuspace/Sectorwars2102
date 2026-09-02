@@ -177,23 +177,63 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
   );
 };
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
 /** Exported for TypeError/network honesty Vitest (LEG-3261 / LEG-3304). */
 export function formatTacticalTargetHailError(err: unknown): string {
-  if (err instanceof TypeError) return HAIL_FAILED_FALLBACK;
-  if (err instanceof Error && err.message) {
-    if (isNetworkCollapseMessage(err.message)) return HAIL_FAILED_FALLBACK;
-    return err.message;
+  const status = httpStatus(err);
+  const detail =
+    err instanceof Error &&
+    err.message &&
+    !isNetworkCollapseMessage(err.message) &&
+    !/^API Error: \d+$/.test(err.message.trim())
+      ? err.message.trim()
+      : undefined;
+
+  if (status === 403) {
+    if (detail) return detail;
+    return 'You do not have permission to hail this target.';
   }
+
+  if (status === 429) {
+    return 'Hail rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (err instanceof TypeError) return HAIL_FAILED_FALLBACK;
+  if (detail) return detail;
   return HAIL_FAILED_FALLBACK;
 }
 
 /** Exported for TypeError/network honesty Vitest (LEG-3261 / LEG-3304). */
 export function formatTacticalTargetEngageError(err: unknown): string {
-  if (err instanceof TypeError) return ENGAGE_FAILED_FALLBACK;
-  if (err instanceof Error && err.message) {
-    if (isNetworkCollapseMessage(err.message)) return ENGAGE_FAILED_FALLBACK;
-    return err.message;
+  const status = httpStatus(err);
+  const detail =
+    err instanceof Error &&
+    err.message &&
+    !isNetworkCollapseMessage(err.message) &&
+    !/^API Error: \d+$/.test(err.message.trim())
+      ? err.message.trim()
+      : undefined;
+
+  if (status === 403) {
+    if (detail) return detail;
+    return 'You do not have permission to engage this target.';
   }
+
+  if (status === 429) {
+    return 'Engage rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (err instanceof TypeError) return ENGAGE_FAILED_FALLBACK;
+  if (detail) return detail;
   return ENGAGE_FAILED_FALLBACK;
 }
 

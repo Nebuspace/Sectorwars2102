@@ -54,12 +54,37 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
   );
 };
 
-export function formatSurveyExpeditionError(err: unknown, fallback: string): string {
-  if (err instanceof TypeError) return fallback;
-  if (err instanceof Error && err.message) {
-    if (isNetworkCollapseMessage(err.message)) return fallback;
-    return err.message;
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
   }
+  return undefined;
+}
+
+export function formatSurveyExpeditionError(err: unknown, fallback: string): string {
+  const status = httpStatus(err);
+  const detail =
+    err instanceof Error &&
+    err.message &&
+    !isNetworkCollapseMessage(err.message) &&
+    !/^API Error: \d+$/.test(err.message.trim())
+      ? err.message.trim()
+      : undefined;
+
+  if (status === 403) {
+    if (detail) return detail;
+    return 'You do not have permission to manage this survey expedition.';
+  }
+
+  if (status === 429) {
+    return 'Survey expedition rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (err instanceof TypeError) return fallback;
+  if (detail) return detail;
   return fallback;
 }
 

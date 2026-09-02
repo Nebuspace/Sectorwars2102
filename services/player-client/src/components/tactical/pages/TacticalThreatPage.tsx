@@ -18,14 +18,39 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
   );
 };
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
 /** Exported for TypeError densify tests (LEG-3146 / LEG-3302). */
 export function formatTacticalThreatError(err: unknown, fallback: string): string {
-  if (err instanceof TypeError) return fallback;
+  const status = httpStatus(err);
   const message = err instanceof Error ? err.message : undefined;
-  if (typeof message === 'string' && message.trim() && !/^API Error: \d+$/.test(message.trim())) {
-    if (isNetworkCollapseMessage(message)) return fallback;
-    return message.trim();
+  const detail =
+    typeof message === 'string' &&
+    message.trim() &&
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNetworkCollapseMessage(message)
+      ? message.trim()
+      : undefined;
+
+  if (status === 403) {
+    if (detail) return detail;
+    return 'You do not have permission to perform this threat action.';
   }
+
+  if (status === 429) {
+    return 'Threat action rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (err instanceof TypeError) return fallback;
+  if (detail) return detail;
   return fallback;
 }
 

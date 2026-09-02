@@ -96,3 +96,24 @@ describe('TeamWarPanel network collapse DOM (LEG-3362)', () => {
     expect(alert?.textContent).not.toMatch(/Network Error/i);
   });
 });
+
+
+describe('TeamWarPanel 403/429 densify (LEG-4091)', () => {
+  const apiRequestError = (status: number, message?: string) => {
+    const err = new Error(message ?? `API Error: ${status}`);
+    (err as { status?: number }).status = status;
+    return err;
+  };
+  it('surfaces 403/429 without raw status codes', () => {
+    expect(formatTeamWarLoadError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatTeamWarLoadError(apiRequestError(403, 'wars_denied'))).toBe('wars_denied');
+    expect(formatTeamWarLoadError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatTeamWarActionError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatTeamWarActionError(apiRequestError(403, 'ceasefire_denied'))).toBe(
+      'ceasefire_denied',
+    );
+    expect(formatTeamWarActionError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatTeamWarActionError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatTeamWarActionError(apiRequestError(403))).not.toMatch(/TypeError/i);
+  });
+});

@@ -88,9 +88,31 @@ function treasuryServerDetail(err: unknown): string | undefined {
   return undefined;
 }
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
 /** Surface gameserver deposit/withdraw/transfer refusal detail (400/403). */
 export function formatTreasuryOpError(err: unknown): string {
-  return treasuryServerDetail(err) ?? 'Operation failed.';
+  const status = httpStatus(err);
+  const detail = treasuryServerDetail(err);
+
+  if (status === 403) {
+    if (detail) return detail;
+    return 'You do not have permission to perform this treasury operation.';
+  }
+
+  if (status === 429) {
+    return 'Treasury operation rate limit exceeded — wait a moment and try again.';
+  }
+
+  return detail ?? 'Operation failed.';
 }
 
 export const ResourceSharing: React.FC<ResourceSharingProps> = ({

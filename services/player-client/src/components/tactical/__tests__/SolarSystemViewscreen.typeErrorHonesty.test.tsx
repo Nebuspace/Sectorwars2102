@@ -194,3 +194,19 @@ describe('SolarSystemViewscreen sector load TypeError densify (LEG-3748)', () =>
     expect(container.textContent).not.toMatch(/TypeError/i);
   });
 });
+
+
+describe('formatPlanetRenameError 403/429 densify (LEG-4089)', () => {
+  const apiRequestError = (status: number, message?: string) => {
+    const err = new Error(message ?? `API Error: ${status}`);
+    (err as { status?: number }).status = status;
+    return err;
+  };
+  it('surfaces 403/429 without raw status codes', () => {
+    expect(formatPlanetRenameError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatPlanetRenameError(apiRequestError(403, 'rename_denied'))).toBe('rename_denied');
+    expect(formatPlanetRenameError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatPlanetRenameError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatPlanetRenameError(apiRequestError(403))).not.toMatch(/TypeError/i);
+  });
+});

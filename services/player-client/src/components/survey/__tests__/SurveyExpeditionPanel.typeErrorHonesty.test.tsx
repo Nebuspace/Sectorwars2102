@@ -129,3 +129,22 @@ describe('SurveyExpeditionPanel integration TypeError densify (LEG-3154)', () =>
     expect(alert?.textContent).not.toMatch(/TypeError/i);
   });
 });
+
+
+describe('formatSurveyExpeditionError 403/429 densify (LEG-4090)', () => {
+  const apiRequestError = (status: number, message?: string) => {
+    const err = new Error(message ?? `API Error: ${status}`);
+    (err as { status?: number }).status = status;
+    return err;
+  };
+  it('surfaces 403/429 without raw status codes', () => {
+    const fallback = 'Failed to launch expedition';
+    expect(formatSurveyExpeditionError(apiRequestError(403), fallback)).toMatch(/permission/i);
+    expect(formatSurveyExpeditionError(apiRequestError(403, 'expedition_denied'), fallback)).toBe(
+      'expedition_denied',
+    );
+    expect(formatSurveyExpeditionError(apiRequestError(429), fallback)).toMatch(/rate limit/i);
+    expect(formatSurveyExpeditionError(apiRequestError(429), fallback)).not.toMatch(/\b429\b/);
+    expect(formatSurveyExpeditionError(apiRequestError(403), fallback)).not.toMatch(/TypeError/i);
+  });
+});

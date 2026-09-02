@@ -36,24 +36,55 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
   );
 };
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
 /** Exported for TypeError/network honesty Vitest (LEG-3273 / LEG-3305). */
 export function formatPlanetRenameError(err: unknown): string {
+  const status = httpStatus(err);
+  let detail: string | undefined;
   if (err && typeof err === 'object') {
-    const detail = (err as { response?: { data?: { detail?: unknown } } }).response?.data?.detail;
-    if (typeof detail === 'string' && detail) return detail;
+    const d = (err as { response?: { data?: { detail?: unknown } } }).response?.data?.detail;
+    if (typeof d === 'string' && d.trim()) detail = d.trim();
   }
-  if (err instanceof TypeError) return RENAME_FAILED_FALLBACK;
-  if (err instanceof Error && err.message) {
-    if (isNetworkCollapseMessage(err.message)) return RENAME_FAILED_FALLBACK;
-    return err.message;
-  }
-  if (err && typeof err === 'object') {
-    const msg = (err as { message?: unknown }).message;
-    if (typeof msg === 'string' && msg) {
-      if (isNetworkCollapseMessage(msg)) return RENAME_FAILED_FALLBACK;
-      return msg;
+  if (!detail && err instanceof Error && err.message) {
+    if (
+      !isNetworkCollapseMessage(err.message) &&
+      !/^API Error: \d+$/.test(err.message.trim())
+    ) {
+      detail = err.message.trim();
     }
   }
+  if (!detail && err && typeof err === 'object') {
+    const msg = (err as { message?: unknown }).message;
+    if (
+      typeof msg === 'string' &&
+      msg.trim() &&
+      !isNetworkCollapseMessage(msg) &&
+      !/^API Error: \d+$/.test(msg.trim())
+    ) {
+      detail = msg.trim();
+    }
+  }
+
+  if (status === 403) {
+    if (detail) return detail;
+    return 'You do not have permission to rename this planet.';
+  }
+
+  if (status === 429) {
+    return 'Planet rename rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (err instanceof TypeError) return RENAME_FAILED_FALLBACK;
+  if (detail) return detail;
   return RENAME_FAILED_FALLBACK;
 }
 
