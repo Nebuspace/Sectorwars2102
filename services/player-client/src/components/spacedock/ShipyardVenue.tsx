@@ -35,6 +35,31 @@ export interface ShipCatalogEntry {
 const normalizeShipType = (shipType?: string | null): string =>
   (shipType || '').toUpperCase().replace(/[\s-]+/g, '_');
 
+/** Transport collapse copy is not gameserver detail (LEG-3772 densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+export const SHIPYARD_CATALOG_LOAD_FALLBACK = 'Connection error. Please try again.';
+
+export function formatShipyardCatalogError(error: unknown, fallback: string): string {
+  if (error instanceof TypeError) return fallback;
+  if (error instanceof Error && error.message) {
+    if (isNetworkCollapseMessage(error.message)) return fallback;
+    return error.message;
+  }
+  if (typeof error === 'string') {
+    if (isNetworkCollapseMessage(error)) return fallback;
+    return error;
+  }
+  return fallback;
+}
+
 interface ShipyardVenueProps {
   shipId: string | undefined;
   shipType: string | undefined;
@@ -121,7 +146,7 @@ const ShipyardVenue: React.FC<ShipyardVenueProps> = ({
             {shipCatalogError && !shipCatalogLoading && (
               <div className="genesis-error-message">
                 <span className="error-icon">❌</span>
-                {shipCatalogError}
+                {formatShipyardCatalogError(shipCatalogError, SHIPYARD_CATALOG_LOAD_FALLBACK)}
                 <button className="action-button" onClick={fetchShipCatalog}>Retry</button>
               </div>
             )}
