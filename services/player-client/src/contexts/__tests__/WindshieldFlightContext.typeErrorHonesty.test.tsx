@@ -96,3 +96,22 @@ describe('WindshieldFlightContext telemetry typeErrorHonesty (LEG-3798)', () => 
     expect(container.textContent).not.toMatch(/Network Error/i);
   });
 });
+
+describe('formatWindshieldFlightTelemetryError 403/429 densify (LEG-4097)', () => {
+  const apiRequestError = (status: number, message?: string) => {
+    const err = new Error(message ?? `API Error: ${status}`);
+    (err as { status?: number }).status = status;
+    return err;
+  };
+  it('surfaces 403/429 without raw status codes', () => {
+    const fallback = WINDSHIELD_FLIGHT_TELEMETRY_FALLBACK;
+    expect(formatWindshieldFlightTelemetryError(apiRequestError(403), fallback)).toMatch(/permission/i);
+    expect(formatWindshieldFlightTelemetryError(apiRequestError(403, 'telemetry_denied'), fallback)).toBe(
+      'telemetry_denied',
+    );
+    expect(formatWindshieldFlightTelemetryError(apiRequestError(429), fallback)).toMatch(/rate limit/i);
+    expect(formatWindshieldFlightTelemetryError(apiRequestError(429), fallback)).not.toMatch(/\b429\b/);
+    expect(formatWindshieldFlightTelemetryError(apiRequestError(403), fallback)).not.toMatch(/TypeError/i);
+  });
+});
+

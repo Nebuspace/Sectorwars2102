@@ -95,3 +95,22 @@ describe('SettingsContext sync typeErrorHonesty (LEG-3797)', () => {
     expect(container.textContent).not.toMatch(/Network Error/i);
   });
 });
+
+describe('formatSettingsPersistenceError 403/429 densify (LEG-4098)', () => {
+  const apiRequestError = (status: number, message?: string) => {
+    const err = new Error(message ?? `API Error: ${status}`);
+    (err as { status?: number }).status = status;
+    return err;
+  };
+  it('surfaces 403/429 without raw status codes', () => {
+    const fallback = SETTINGS_PERSISTENCE_FALLBACKS.load;
+    expect(formatSettingsPersistenceError(apiRequestError(403), fallback)).toMatch(/permission/i);
+    expect(formatSettingsPersistenceError(apiRequestError(403, 'settings_denied'), fallback)).toBe(
+      'settings_denied',
+    );
+    expect(formatSettingsPersistenceError(apiRequestError(429), fallback)).toMatch(/rate limit/i);
+    expect(formatSettingsPersistenceError(apiRequestError(429), fallback)).not.toMatch(/\b429\b/);
+    expect(formatSettingsPersistenceError(apiRequestError(403), fallback)).not.toMatch(/TypeError/i);
+  });
+});
+
