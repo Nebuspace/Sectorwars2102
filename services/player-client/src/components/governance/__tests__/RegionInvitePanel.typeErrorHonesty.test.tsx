@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 /**
  * LEG-3164 Soft-ORDER — RegionInvitePanel TypeError densify.
+ * LEG-4008 Soft-ORDER — 403/429 densify.
  */
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -33,6 +34,12 @@ const invite = {
   status: 'active',
   expires_at: new Date(Date.now() + 3600_000).toISOString(),
   created_at: new Date().toISOString(),
+};
+
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
 };
 
 const flush = async () => {
@@ -71,6 +78,20 @@ describe('formatRegionInviteError TypeError densify (LEG-3164)', () => {
     expect(formatRegionInviteError(new Error('Network Error'), fallback)).toBe(fallback);
     expect(formatRegionInviteError(new Error('Failed to fetch'), fallback)).toBe(fallback);
     expect(formatRegionInviteError(new Error(''), fallback)).toBe(fallback);
+  });
+});
+
+describe('formatRegionInviteError 403/429 densify (LEG-4008)', () => {
+  it('maps 403/429 without raw transport strings', () => {
+    const fallback = 'Invite registry unreachable. Try again.';
+    expect(formatRegionInviteError(apiRequestError(403), fallback)).toMatch(/permission/i);
+    expect(formatRegionInviteError(apiRequestError(403, 'ERR_NOT_REGION_OWNER'), fallback)).toBe(
+      'You are not the owner of this region.',
+    );
+    expect(formatRegionInviteError(apiRequestError(429), fallback)).toMatch(/rate limit/i);
+    expect(formatRegionInviteError(apiRequestError(429), fallback)).not.toMatch(/\b429\b/);
+    expect(formatRegionInviteError(apiRequestError(403), fallback)).not.toMatch(/TypeError/i);
+    expect(formatRegionInviteError(apiRequestError(403), fallback)).not.toMatch(/Network Error/i);
   });
 });
 
