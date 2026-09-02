@@ -44,6 +44,10 @@ from src.services.contract_service import (
     ContractNotFoundError,
     resolve_dispute,
 )
+from src.utils.error_handling import route_internal_error
+
+ERR_ADMIN_CONTRACT_DISPUTES_LIST_FAILED = "ERR_ADMIN_CONTRACT_DISPUTES_LIST_FAILED"
+ERR_ADMIN_CONTRACT_DISPUTES_RESOLVE_FAILED = "ERR_ADMIN_CONTRACT_DISPUTES_RESOLVE_FAILED"
 
 router = APIRouter(prefix="/admin/contracts", tags=["admin-contract-disputes"])
 
@@ -113,9 +117,9 @@ async def list_disputed_contracts(
         return [_serialize_dispute(c) for c in contracts]
     except Exception:
         logger.exception("Failed to fetch contract disputes")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to fetch contract disputes",
+        raise route_internal_error(
+            ERR_ADMIN_CONTRACT_DISPUTES_LIST_FAILED,
+            "Failed to fetch contract disputes",
         )
 
 
@@ -174,7 +178,7 @@ async def resolve_contract_dispute(
             raise
         except Exception:
             logger.exception("Failed to resolve contract dispute")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to resolve contract dispute",
+            raise route_internal_error(
+                ERR_ADMIN_CONTRACT_DISPUTES_RESOLVE_FAILED,
+                "Failed to resolve contract dispute",
             )

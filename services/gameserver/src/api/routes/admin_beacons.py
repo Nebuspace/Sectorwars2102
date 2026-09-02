@@ -16,8 +16,13 @@ from src.core.database import get_db
 from src.models.user import User
 from src.services import message_beacon_service
 from src.services.message_beacon_service import BeaconError, BeaconNotFoundError
+from src.utils.error_handling import route_internal_error
 
 logger = logging.getLogger(__name__)
+
+ERR_ADMIN_BEACONS_LIST_FAILED = "ERR_ADMIN_BEACONS_LIST_FAILED"
+ERR_ADMIN_BEACONS_CLEAR_FLAG_FAILED = "ERR_ADMIN_BEACONS_CLEAR_FLAG_FAILED"
+ERR_ADMIN_BEACONS_CONFIRM_ABUSE_FAILED = "ERR_ADMIN_BEACONS_CONFIRM_ABUSE_FAILED"
 
 router = APIRouter(prefix="/admin/beacons", tags=["admin-beacons"])
 
@@ -33,7 +38,10 @@ async def get_flagged_beacons(
         return message_beacon_service.list_flagged_beacons(db, page=page)
     except Exception:
         logger.exception("Error in get_flagged_beacons")
-        raise HTTPException(status_code=500, detail="Failed to fetch flagged beacons")
+        raise route_internal_error(
+            ERR_ADMIN_BEACONS_LIST_FAILED,
+            "Failed to fetch flagged beacons",
+        )
 
 
 @router.post("/{beacon_id}/clear-flag")
@@ -55,7 +63,7 @@ async def clear_beacon_flag(
     except Exception:
         db.rollback()
         logger.exception("Error in clear_beacon_flag")
-        raise HTTPException(status_code=500, detail="Failed to clear beacon flag")
+        raise route_internal_error(ERR_ADMIN_BEACONS_CLEAR_FLAG_FAILED, "Failed to clear beacon flag")
     return {"success": True, **result}
 
 
@@ -82,5 +90,5 @@ async def confirm_beacon_abuse(
     except Exception:
         db.rollback()
         logger.exception("Error in confirm_beacon_abuse")
-        raise HTTPException(status_code=500, detail="Failed to confirm beacon abuse")
+        raise route_internal_error(ERR_ADMIN_BEACONS_CONFIRM_ABUSE_FAILED, "Failed to confirm beacon abuse")
     return {"success": True, **result}
