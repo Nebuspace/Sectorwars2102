@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { useGame } from '../../contexts/GameContext';
 import { regionOwnerAPI } from '../../services/api';
 import RegionInvitePanel from './RegionInvitePanel';
+import RegionTakeoverEligiblePanel from './RegionTakeoverEligiblePanel';
 import RegionTradeDockPanel from './RegionTradeDockPanel';
 import RegionTreatyPanel from './RegionTreatyPanel';
 
@@ -70,6 +71,7 @@ const RegionOwnerControls: React.FC = () => {
   // probe/state above rather than re-probing — same owner, same region.
   const [showRegionTradeDock, setShowRegionTradeDock] = useState(false);
   const [showRegionTreaties, setShowRegionTreaties] = useState(false);
+  const [showRegionTakeover, setShowRegionTakeover] = useState(false);
   // Pixel a11y REVISE #4 — the probe previously rendered nothing while
   // in-flight (buttons silently appeared/disappeared) and had no error
   // surface on a genuine transient failure, indistinguishable from the
@@ -193,6 +195,16 @@ const RegionOwnerControls: React.FC = () => {
           ◆ TREATIES
         </button>
       )}
+      {!loading && !isRegionOwner && ownedRegionChoices.length === 0 && (
+        <button
+          type="button"
+          className="hud-region-takeover-btn"
+          onClick={() => setShowRegionTakeover(true)}
+          title="View regions eligible for GC-subscription takeover"
+        >
+          ◆ REGION TAKEOVER
+        </button>
+      )}
 
       {/* Region-owner invite control — portal overlay escapes any dropdown's
           stacking context, same pattern as the original chip-hosted modal.
@@ -243,6 +255,18 @@ const RegionOwnerControls: React.FC = () => {
               regionName={ownedRegionName}
               onClose={() => setShowRegionTreaties(false)}
             />
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {showRegionTakeover && !isRegionOwner && createPortal(
+        <div
+          className="region-tradedock-overlay"
+          onClick={() => setShowRegionTakeover(false)}
+        >
+          <div className="region-tradedock-shell" onClick={(e) => e.stopPropagation()}>
+            <RegionTakeoverEligiblePanel onClose={() => setShowRegionTakeover(false)} />
           </div>
         </div>,
         document.body

@@ -1944,6 +1944,45 @@ export const regionOwnerAPI = {
     apiRequest(`/api/v1/regions/treaties/${treatyId}/terminate`, { method: 'POST' }),
 };
 
+/** Suspended/grace region eligible for GC-subscription takeover (LEG-3956/3957). */
+export interface TakeoverEligibleRegion {
+  id: string;
+  name: string;
+  display_name: string;
+  status: string;
+  suspended_at: string | null;
+}
+
+/** POST /regions/{id}/takeover response body (TakeoverIntent, LEG-3764). */
+export interface RegionTakeoverIntent {
+  id: string;
+  region_id: string;
+  caller_user_id: string;
+  approval_url: string;
+  status: string;
+  created_at: string | null;
+  expires_at: string | null;
+  completed_at: string | null;
+}
+
+export const regionTakeoverAPI = {
+  listTakeoverEligible: (): Promise<TakeoverEligibleRegion[]> =>
+    apiRequest('/api/v1/regions/takeover-eligible'),
+
+  beginTakeover: (
+    regionId: string,
+    opts?: { return_url?: string; cancel_url?: string },
+  ): Promise<RegionTakeoverIntent> => {
+    const body: Record<string, string> = {};
+    if (opts?.return_url) body.return_url = opts.return_url;
+    if (opts?.cancel_url) body.cancel_url = opts.cancel_url;
+    return apiRequest(`/api/v1/regions/${regionId}/takeover`, {
+      method: 'POST',
+      body: Object.keys(body).length ? JSON.stringify(body) : undefined,
+    });
+  },
+};
+
 // Ship-construction reservation reads (routes/construction.py — the live
 // slip-rental pipeline). Ownership-gated server-side to the caller's own
 // Player row; a region-funded TradeDock reservation (ship_type
