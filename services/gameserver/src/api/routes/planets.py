@@ -34,6 +34,11 @@ from src.utils.error_handling import route_internal_error
 ERR_PLANETS_SHIELD_UPGRADE_FAILED = "ERR_PLANETS_SHIELD_UPGRADE_FAILED"
 ERR_PLANETS_DEFENSES_FETCH_FAILED = "ERR_PLANETS_DEFENSES_FETCH_FAILED"
 ERR_PLANETS_DEFENSES_UPDATE_FAILED = "ERR_PLANETS_DEFENSES_UPDATE_FAILED"
+ERR_PLANETS_DETAILS_FETCH_FAILED = "ERR_PLANETS_DETAILS_FETCH_FAILED"
+ERR_PLANETS_ALLOCATE_FAILED = "ERR_PLANETS_ALLOCATE_FAILED"
+ERR_PLANETS_BUILDING_UPGRADE_FAILED = "ERR_PLANETS_BUILDING_UPGRADE_FAILED"
+ERR_PLANETS_GENESIS_DEPLOY_FAILED = "ERR_PLANETS_GENESIS_DEPLOY_FAILED"
+ERR_PLANETS_SIEGE_STATUS_FETCH_FAILED = "ERR_PLANETS_SIEGE_STATUS_FETCH_FAILED"
 
 router = APIRouter(prefix="/planets", tags=["planets"])
 
@@ -2056,9 +2061,9 @@ async def get_planet_details(
         raise HTTPException(status_code=404, detail=str(e))
     except Exception:
         logger.exception("Failed to fetch planet details")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to fetch planet details",
+        raise route_internal_error(
+            ERR_PLANETS_DETAILS_FETCH_FAILED,
+            "Failed to fetch planet details",
         )
 
 
@@ -2090,9 +2095,9 @@ async def allocate_colonists(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception:
         logger.exception("Failed to allocate colonists")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to allocate colonists",
+        raise route_internal_error(
+            ERR_PLANETS_ALLOCATE_FAILED,
+            "Failed to allocate colonists",
         )
 
 
@@ -2123,9 +2128,9 @@ async def upgrade_building(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception:
         logger.exception("Failed to upgrade building")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to upgrade building",
+        raise route_internal_error(
+            ERR_PLANETS_BUILDING_UPGRADE_FAILED,
+            "Failed to upgrade building",
         )
 
 
@@ -2220,9 +2225,9 @@ async def deploy_genesis_device(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception:
         logger.exception("Failed to deploy genesis device")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to deploy genesis device",
+        raise route_internal_error(
+            ERR_PLANETS_GENESIS_DEPLOY_FAILED,
+            "Failed to deploy genesis device",
         )
 
 
@@ -2271,6 +2276,12 @@ async def get_siege_status(
         return result
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except Exception:
+        logger.exception("Failed to fetch siege status")
+        raise route_internal_error(
+            ERR_PLANETS_SIEGE_STATUS_FETCH_FAILED,
+            "Failed to fetch siege status",
+        )
 
 
 # Stockpile → ship cargo (taxable for teammates) + Citadel Endpoints
