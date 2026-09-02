@@ -4,6 +4,7 @@ import { formatCredits } from '../../utils/formatters';
 import DeckPageTabs from '../cockpit/DeckPageTabs';
 import StationSecurityMonitoringPane from '../station/StationSecurityMonitoringPane';
 import PortOfficeSyndicatePanel from './PortOfficeSyndicatePanel';
+import PortOfficeTeamPanel from './PortOfficeTeamPanel';
 import './port-office-venue.css';
 
 // =====================================================================
@@ -1281,6 +1282,8 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
             <button className="action-button" onClick={fetchOwner}>Retry</button>
           </div>
         )}
+
+        <PortOfficeTeamPanel stationId={stationId} stationName={stationName} />
 
         {/* Tariff lever */}
         <div className="po-section">

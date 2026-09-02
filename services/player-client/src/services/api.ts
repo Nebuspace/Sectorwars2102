@@ -2724,6 +2724,22 @@ export const portOwnershipAPI = {
       body: JSON.stringify({ defense_pct: defensePct, owner_pct: ownerPct }),
     }),
 
+  // Team ownership (port-ownership.md § Team-owned) — tip GS Soft-ORDER LEG-2033 / LEG-4120.
+  getTeamOwnershipStatus: (stationId: string) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/team`),
+
+  bindStationToTeam: (stationId: string, teamId: string, memberSharePct: number) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/team/bind`, {
+      method: 'POST',
+      body: JSON.stringify({ team_id: teamId, member_share_pct: memberSharePct }),
+    }),
+
+  setTeamMemberShare: (stationId: string, memberSharePct: number) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/team/member-share`, {
+      method: 'POST',
+      body: JSON.stringify({ member_share_pct: memberSharePct }),
+    }),
+
   // Military takeover (port-ownership.md § Military takeover) — tip GS
   // MilitaryActionRequest.action ∈ {declare, siege, occupy}.
   militaryTakeover: (stationId: string, action: 'declare' | 'siege' | 'occupy') =>

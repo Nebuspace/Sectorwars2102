@@ -560,6 +560,23 @@ describe('apiRequest via trade/combat/grey wrappers', () => {
     );
   });
 
+  it('portOwnershipAPI.getTeamOwnershipStatus GETs /stations/{id}/team (LEG-4120)', async () => {
+    get.mockResolvedValue({
+      data: { station_id: 'st-1', mode: 'solo', team_id: null, member_share_pct: null },
+    });
+    const out = await portOwnershipAPI.getTeamOwnershipStatus('st-1');
+    expect(out).toEqual({
+      station_id: 'st-1',
+      mode: 'solo',
+      team_id: null,
+      member_share_pct: null,
+    });
+    expect(get).toHaveBeenCalledWith(
+      '/api/v1/port-ownership/stations/st-1/team',
+      jsonHeaders,
+    );
+  });
+
   it('portOwnershipAPI.inviteShare POSTs invitee_player_id+pct (LEG-4117)', async () => {
     post.mockResolvedValue({
       data: { message: 'Share invite 10% issued', invite: { invite_id: 'inv-1', pct: 10 } },
@@ -576,12 +593,34 @@ describe('apiRequest via trade/combat/grey wrappers', () => {
     );
   });
 
+  it('portOwnershipAPI.bindStationToTeam POSTs team_id+member_share_pct (LEG-4120)', async () => {
+    post.mockResolvedValue({ data: { message: 'bound', mode: 'team', team_id: 'team-1' } });
+    const out = await portOwnershipAPI.bindStationToTeam('st-1', 'team-1', 12);
+    expect(out).toEqual({ message: 'bound', mode: 'team', team_id: 'team-1' });
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/port-ownership/stations/st-1/team/bind',
+      JSON.stringify({ team_id: 'team-1', member_share_pct: 12 }),
+      jsonHeaders,
+    );
+  });
+
   it('portOwnershipAPI.acceptShareInvite POSTs invite_id (LEG-4117)', async () => {
     post.mockResolvedValue({ data: { message: 'accepted', conversion_fee: 100 } });
     await portOwnershipAPI.acceptShareInvite('st-1', 'inv-1');
     expect(post).toHaveBeenCalledWith(
       '/api/v1/port-ownership/stations/st-1/syndicate/accept',
       JSON.stringify({ invite_id: 'inv-1' }),
+      jsonHeaders,
+    );
+  });
+
+  it('portOwnershipAPI.setTeamMemberShare POSTs member_share_pct (LEG-4120)', async () => {
+    post.mockResolvedValue({ data: { message: 'share set', member_share_pct: 20 } });
+    const out = await portOwnershipAPI.setTeamMemberShare('st-1', 20);
+    expect(out).toEqual({ message: 'share set', member_share_pct: 20 });
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/port-ownership/stations/st-1/team/member-share',
+      JSON.stringify({ member_share_pct: 20 }),
       jsonHeaders,
     );
   });
