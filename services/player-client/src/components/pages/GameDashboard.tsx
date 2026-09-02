@@ -35,7 +35,7 @@ import StockpileWithdrawControl from '../cockpit/StockpileWithdrawControl';
 import DeckPageTabs from '../cockpit/DeckPageTabs';
 import type { ProductionLine } from '../cockpit/ProductionPanel';
 import type { PerColonistRates, ProdRole } from '../cockpit/CoupledColonistSliders';
-import SafeVaultPanel from '../cockpit/SafeVaultPanel';
+import SafeVaultPanel, { formatSafeVaultError } from '../cockpit/SafeVaultPanel';
 import StationSecurityBanner from '../station/StationSecurityBanner';
 import BankPanel, { isStarportPrimeStation, shipCargoFree } from '../cockpit/BankPanel';
 import { miningAPI, navAPI, playerAPI, type NavChartResponse, sectorAPI, type SectorWreck } from '../../services/api';
@@ -1747,7 +1747,7 @@ const GameDashboardInner: React.FC = () => {
     } catch (error: unknown) {
       setOpsNotice({
         type: 'error',
-        message: formatGameDashboardOpsError(error, 'Vault transaction failed'),
+        message: formatSafeVaultError(error, 'Vault transaction failed'),
       });
     } finally {
       setSafeBusy(false);

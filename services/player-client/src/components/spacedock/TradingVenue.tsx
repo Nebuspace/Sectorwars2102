@@ -11,6 +11,13 @@ import './spacedock.css';
 // LEG-438: long-term mooring panel (tip GS contract) sits above the desk.
 // =====================================================================
 
+/**
+ * Soft-ORDER invent=0 — Trading Hub API honesty surface (LEG-4068).
+ * Re-exports densified LongTermMooringPanel.errMessage (RefiningVenue →
+ * CrystalRefiningPanel pattern): mooring is this venue's owned fetch path.
+ */
+export { errMessage as formatTradingVenueError } from './LongTermMooringPanel';
+
 interface TradingVenueProps {
   onBack: () => void;
   blackMarketButton: React.ReactNode;

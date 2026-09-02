@@ -24,6 +24,65 @@ export interface ClaimLicenseRow {
 /** Canon catalog cost for first Mining Laser fit (equipment_slots, not module grid). */
 export const MINING_LASER_INSTALL_COST_CR = 35_000;
 
+export const MINING_VENUE_FALLBACK = 'Connection error. Please try again.';
+
+/** Transport collapse copy is not gameserver detail (Soft-ORDER densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+/** Soft-ORDER invent=0 — 403/429 + TypeError densify for Astral Mining API paths (LEG-4067). */
+export function formatMiningVenueError(error: unknown, fallback: string): string {
+  const status = httpStatus(error);
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === 'string'
+        ? error
+        : undefined;
+  const hasServerDetail =
+    !(error instanceof TypeError) &&
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNetworkCollapseMessage(message);
+
+  if (status === 403) {
+    if (hasServerDetail) return message!.trim();
+    return 'You do not have permission to use Astral Mining services.';
+  }
+
+  if (status === 429) {
+    return 'Astral Mining rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (error instanceof TypeError) return fallback;
+  if (error instanceof Error && error.message) {
+    if (isNetworkCollapseMessage(error.message)) return fallback;
+    return error.message;
+  }
+  if (typeof error === 'string') {
+    if (isNetworkCollapseMessage(error)) return fallback;
+    return error;
+  }
+  return fallback;
+}
+
 interface MiningVenueProps {
   shipId: string | undefined;
   /** From GET /player/current-ship — null/undefined when no Mining Laser fitted. */

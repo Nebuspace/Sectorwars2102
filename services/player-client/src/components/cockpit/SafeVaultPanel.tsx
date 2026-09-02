@@ -8,6 +8,60 @@ export interface SafeCommodityDef {
   name: string;
 }
 
+export const SAFE_VAULT_FALLBACK = 'Vault transaction failed';
+
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+/** Soft-ORDER invent=0 — Safe vault credit/commodity honesty (LEG-4075). */
+export function formatSafeVaultError(error: unknown, fallback: string = SAFE_VAULT_FALLBACK): string {
+  const status = httpStatus(error);
+  const e = error as {
+    response?: { data?: { detail?: unknown; message?: unknown } };
+    message?: string;
+    detail?: unknown;
+  };
+  const raw = e?.response?.data?.detail ?? e?.response?.data?.message ?? e?.detail;
+  const detailStr = typeof raw === 'string' && raw.trim() ? raw.trim() : undefined;
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : e?.message;
+  const messageDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNetworkCollapseMessage(message)
+      ? message.trim()
+      : undefined;
+  const serverCopy = detailStr ?? messageDetail;
+
+  if (status === 403) {
+    if (serverCopy) return serverCopy;
+    return 'You do not have permission to use this citadel safe.';
+  }
+  if (status === 429) {
+    return 'Citadel safe rate limit exceeded — wait a moment and try again.';
+  }
+  if (error instanceof TypeError) return fallback;
+  if (serverCopy) return serverCopy;
+  if (typeof message === 'string' && isNetworkCollapseMessage(message)) return fallback;
+  return fallback;
+}
+
 export interface SafeVaultPanelProps {
   /** True when the landed planet is owned by the player (vault gating). */
   isOwned: boolean;
