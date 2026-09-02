@@ -69,7 +69,8 @@ async def refine_crystal(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception:
         db.rollback()
-        raise
+        logger.exception("Failed to refine crystal")
+        raise HTTPException(status_code=500, detail="Failed to refine crystal")
 
 
 @router.post("/refine-lumen/start")
@@ -96,7 +97,8 @@ async def refine_lumen_start(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception:
         db.rollback()
-        raise
+        logger.exception("Failed to start lumen refine")
+        raise HTTPException(status_code=500, detail="Failed to start lumen refine")
 
 
 @router.post("/refine-lumen/collect")
@@ -121,7 +123,8 @@ async def refine_lumen_collect(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception:
         db.rollback()
-        raise
+        logger.exception("Failed to collect lumen refine")
+        raise HTTPException(status_code=500, detail="Failed to collect lumen refine")
 
 
 @router.get("/refine-lumen/status")
