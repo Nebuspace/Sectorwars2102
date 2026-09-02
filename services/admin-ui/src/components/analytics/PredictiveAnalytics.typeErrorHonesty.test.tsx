@@ -9,8 +9,14 @@ vi.mock('../../utils/auth', () => ({
   },
 }));
 
+const axiosError = (status: number, detail?: string) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: detail ? { detail } : {} },
+  });
+
 /**
  * LEG-3631 Soft-ORDER — PredictiveAnalytics TypeError/Network Error densify.
+ * LEG-3895 Soft-ORDER — 429 HTTP honesty densify (403 already present).
  */
 describe('PredictiveAnalytics typeErrorHonesty densify (LEG-3631)', () => {
   beforeEach(() => {
@@ -47,9 +53,7 @@ describe('PredictiveAnalytics typeErrorHonesty densify (LEG-3631)', () => {
   });
 
   it('surfaces 403 with PLAYERS_VIEW scope hint', async () => {
-    vi.mocked(api.get).mockRejectedValue({
-      response: { status: 403, data: {} },
-    });
+    vi.mocked(api.get).mockRejectedValue(axiosError(403));
 
     render(<PredictiveAnalytics />);
 
@@ -59,5 +63,21 @@ describe('PredictiveAnalytics typeErrorHonesty densify (LEG-3631)', () => {
     const alert = screen.getByRole('alert').textContent ?? '';
     expect(alert).toMatch(/PLAYERS_VIEW/i);
     expect(alert).toMatch(/admin players view/i);
+    expect(alert).not.toMatch(/\b403\b/);
+    expect(alert).not.toMatch(/HTTP 403/i);
+  });
+
+  it('surfaces 429 as admin rate-limit copy on predictions load', async () => {
+    vi.mocked(api.get).mockRejectedValue(axiosError(429));
+
+    render(<PredictiveAnalytics />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
+    });
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/rate limit/i);
+    expect(alert).not.toMatch(/\b429\b/);
+    expect(alert).not.toMatch(/HTTP 429/i);
   });
 });

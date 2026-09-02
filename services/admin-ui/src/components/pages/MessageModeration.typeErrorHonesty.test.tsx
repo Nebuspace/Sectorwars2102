@@ -46,8 +46,23 @@ function renderPage() {
   );
 }
 
+const axiosError = (status: number, detail?: string) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: detail ? { detail } : {} },
+  });
+
+function assertNoTransportLeak(text: string) {
+  expect(text).not.toBe('Network Error');
+  expect(text).not.toContain('Network Error');
+  expect(text).not.toMatch(/Failed to fetch/i);
+  expect(text).not.toMatch(/TypeError/i);
+  expect(text).not.toMatch(/^HTTP \d+$/);
+  expect(text).not.toContain('Request failed with status code');
+}
+
 /**
  * LEG-3487 Soft-ORDER — MessageModeration TypeError/Network Error honesty densify.
+ * LEG-3903 Soft-ORDER — 403/429 HTTP honesty densify.
  */
 describe('MessageModeration typeErrorHonesty densify (LEG-3487)', () => {
   beforeEach(() => {
@@ -107,5 +122,52 @@ describe('MessageModeration typeErrorHonesty densify (LEG-3487)', () => {
         .textContent ?? '';
     expect(text).not.toMatch(/TypeError/i);
     expect(text).not.toMatch(/Failed to fetch/i);
+  });
+
+  it('surfaces 403 with messaging moderation scope copy when flagged GET is denied', async () => {
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url.startsWith('/api/v1/admin/messages/flagged')) {
+        return Promise.reject(axiosError(403));
+      }
+      if (url === '/api/v1/admin/messages/stats') {
+        return Promise.resolve({ data: emptyStats });
+      }
+      return Promise.resolve({ data: emptyBeacons });
+    });
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByText(/Access denied|messaging moderation scopes/i)).toBeTruthy();
+    });
+    const text =
+      screen.getByText(/Access denied|messaging moderation scopes/i).textContent ?? '';
+    expect(text).toMatch(/Access denied|messaging moderation scopes/i);
+    expect(text).not.toMatch(/\b403\b/);
+    expect(text).not.toMatch(/HTTP 403/i);
+    assertNoTransportLeak(text);
+  });
+
+  it('surfaces 429 as admin rate-limit copy on flagged messages GET', async () => {
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url.startsWith('/api/v1/admin/messages/flagged')) {
+        return Promise.reject(axiosError(429));
+      }
+      if (url === '/api/v1/admin/messages/stats') {
+        return Promise.resolve({ data: emptyStats });
+      }
+      return Promise.resolve({ data: emptyBeacons });
+    });
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByText(/rate limit/i)).toBeTruthy();
+    });
+    const text = screen.getByText(/rate limit/i).textContent ?? '';
+    expect(text).toMatch(/rate limit/i);
+    expect(text).not.toMatch(/\b429\b/);
+    expect(text).not.toMatch(/HTTP 429/i);
+    assertNoTransportLeak(text);
   });
 });

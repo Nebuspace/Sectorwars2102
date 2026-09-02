@@ -95,8 +95,23 @@ vi.mock('../universe/bang/WipeGalaxyConfirmDialog', () => ({
   ),
 }));
 
+const axiosError = (status: number, detail?: string) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: detail ? { detail } : {} },
+  });
+
+function assertNoTransportLeak(text: string) {
+  expect(text).not.toBe('Network Error');
+  expect(text).not.toContain('Network Error');
+  expect(text).not.toMatch(/Failed to fetch/i);
+  expect(text).not.toMatch(/TypeError/i);
+  expect(text).not.toMatch(/^HTTP \d+$/);
+  expect(text).not.toContain('Request failed with status code');
+}
+
 /**
  * LEG-3664 Soft-ORDER — BangGalaxyPage TypeError/Network Error densify.
+ * LEG-3900 Soft-ORDER — 403/429 HTTP honesty densify.
  */
 describe('BangGalaxyPage typeErrorHonesty densify (LEG-3664)', () => {
   beforeEach(() => {
@@ -206,5 +221,39 @@ describe('BangGalaxyPage typeErrorHonesty densify (LEG-3664)', () => {
     const text = screen.getByText(/bang\.history\.loadFailed/i).textContent ?? '';
     expect(text).not.toMatch(/Failed to fetch/i);
     expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('surfaces 403 with admin.universe.manage scope copy on wipe', async () => {
+    wipeGalaxy.mockRejectedValue(axiosError(403));
+
+    render(<BangGalaxyPage />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open wipe' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm wipe' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+    const text = screen.getByRole('alert').textContent ?? '';
+    expect(text).toMatch(/Access denied|admin\.universe\.manage/i);
+    expect(text).not.toMatch(/\b403\b/);
+    expect(text).not.toMatch(/HTTP 403/i);
+    assertNoTransportLeak(text);
+  });
+
+  it('surfaces 429 as admin rate-limit copy on wipe', async () => {
+    wipeGalaxy.mockRejectedValue(axiosError(429));
+
+    render(<BangGalaxyPage />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open wipe' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm wipe' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
+    });
+    const text = screen.getByRole('alert').textContent ?? '';
+    expect(text).toMatch(/rate limit/i);
+    expect(text).not.toMatch(/\b429\b/);
+    expect(text).not.toMatch(/HTTP 429/i);
+    assertNoTransportLeak(text);
   });
 });
