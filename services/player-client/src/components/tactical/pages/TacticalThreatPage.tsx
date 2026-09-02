@@ -6,6 +6,7 @@ import LimpetTrackerReadout from '../LimpetTrackerReadout';
 import PirateHoldingRaidControl from '../PirateHoldingRaidControl';
 import SectorDroneAttackControl from '../SectorDroneAttackControl';
 import SectorRetreatControl from '../SectorRetreatControl';
+import WarpGateAttackControl from '../WarpGateAttackControl';
 import { useNavThreatRollup } from '../useNavThreatRollup';
 import { NAV_THREAT_BAND_CLASS } from '../navThreat';
 
@@ -349,6 +350,8 @@ const TacticalThreatPage: React.FC = () => {
       <SectorDroneAttackControl />
 
       <PirateHoldingRaidControl />
+
+      <WarpGateAttackControl />
 
       <SectorRetreatControl />
 
