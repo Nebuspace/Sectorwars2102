@@ -550,6 +550,15 @@ async def commit_takeover(
     if intent.status == TakeoverIntentStatus.TRANSFERRED.value:
         return {"ok": True, "code": "ALREADY_TRANSFERRED", "intent_id": str(intent.id)}
 
+    if intent.status == TakeoverIntentStatus.EXPIRED.value:
+        if paypal_subscription_id:
+            await paypal_service.refund_subscription(paypal_subscription_id)
+        return {
+            "ok": False,
+            "code": "ERR_TAKEOVER_INTENT_EXPIRED",
+            "intent_id": str(intent.id),
+        }
+
     if intent.status != TakeoverIntentStatus.PENDING.value:
         return {"ok": False, "code": "ERR_TAKEOVER_INTENT_TERMINAL", "status": intent.status}
 
@@ -622,3 +631,39 @@ async def commit_takeover(
         "old_owner_id": str(old_owner_id) if old_owner_id else None,
         "new_owner_id": str(intent.caller_user_id),
     }
+
+
+def sweep_expired_takeover_intents(
+    db: Session,
+    *,
+    now: Optional[datetime] = None,
+) -> Dict[str, int]:
+    """Mark overdue pending takeover intents ``expired`` (LEG-3791 slice 4).
+
+    Canon: ``SYSTEMS/region-lifecycle.md`` failure modes — periodic sweep
+    marks intents whose PayPal flow window elapsed; a late
+    ``BILLING.SUBSCRIPTION.ACTIVATED`` callback refunds via
+    ``commit_takeover`` when the intent is already ``expired``.
+
+    FLUSH only — the governance-sweep caller owns commit.
+    """
+    now = now or datetime.now(UTC)
+    overdue = (
+        db.query(TakeoverIntent)
+        .filter(
+            TakeoverIntent.status == TakeoverIntentStatus.PENDING.value,
+            TakeoverIntent.expires_at < now,
+        )
+        .all()
+    )
+    for intent in overdue:
+        intent.status = TakeoverIntentStatus.EXPIRED.value
+        intent.completed_at = now
+
+    if overdue:
+        db.flush()
+        logger.info(
+            "region_lifecycle: %d takeover intent(s) marked expired by sweep",
+            len(overdue),
+        )
+    return {"expired": len(overdue)}

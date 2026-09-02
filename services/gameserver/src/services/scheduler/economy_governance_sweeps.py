@@ -348,7 +348,8 @@ def _run_region_lifecycle_advance_gated(db: Session) -> Dict[str, Any]:
     terminated``'s own docstring.
 
     Returns {"region_lifecycle_skipped", "advanced_to_grace",
-    "advanced_to_terminated", "cleanup_eligible", "_outbox"}. ``_outbox``
+    "advanced_to_terminated", "cleanup_eligible", "takeover_intents_expired",
+    "_outbox"}. ``_outbox``
     (ADR-0054 X-V1, may be an empty/no-op RealtimeOutbox on the skipped or
     zero-eligible paths) must only be flushed by the caller AFTER its own
     db.commit() for this phase succeeds -- see dispatch_terminated_
@@ -360,6 +361,7 @@ def _run_region_lifecycle_advance_gated(db: Session) -> Dict[str, Any]:
     result: Dict[str, Any] = {
         "region_lifecycle_skipped": False,
         "advanced_to_grace": 0, "advanced_to_terminated": 0, "cleanup_eligible": 0,
+        "takeover_intents_expired": 0,
         "_outbox": RealtimeOutbox(),
     }
 
@@ -379,9 +381,11 @@ def _run_region_lifecycle_advance_gated(db: Session) -> Dict[str, Any]:
     grace_stats = region_lifecycle_service.advance_to_grace(db)
     terminated_stats = region_lifecycle_service.advance_to_terminated(db)
     cleanup_stats = region_lifecycle_service.dispatch_terminated_cleanup(db)
+    expiry_stats = region_lifecycle_service.sweep_expired_takeover_intents(db)
     result["advanced_to_grace"] = grace_stats["advanced_to_grace"]
     result["advanced_to_terminated"] = terminated_stats["advanced_to_terminated"]
     result["cleanup_eligible"] = cleanup_stats["cleanup_eligible"]
+    result["takeover_intents_expired"] = expiry_stats["expired"]
     result["_outbox"] = cleanup_stats["_outbox"]
 
     if galaxy is not None:

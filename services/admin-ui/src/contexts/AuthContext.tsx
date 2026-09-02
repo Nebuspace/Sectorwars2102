@@ -2,7 +2,7 @@ import React, { createContext, useState, useContext, useEffect, ReactNode } from
 import { api } from '../utils/auth';
 import { formatAdminApiError } from '../utils/adminApiError';
 
-const AUTH_NETWORK_FALLBACKS = {
+export const AUTH_NETWORK_FALLBACKS = {
   login: 'Gameserver unreachable — network error during login',
   refresh: 'Gameserver unreachable — network error refreshing session',
   verifyMFA: 'Gameserver unreachable — network error verifying MFA',
@@ -20,7 +20,7 @@ function isNetworkTransportFailure(err: unknown): boolean {
 }
 
 /** Collapse fetch/network TypeErrors to operator-facing copy; preserve intentional auth errors. */
-function surfaceAuthError(err: unknown, fallback: string): never {
+export function surfaceAuthError(err: unknown, fallback: string): never {
   if (!isNetworkTransportFailure(err)) {
     throw err;
   }
