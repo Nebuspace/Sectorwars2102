@@ -858,6 +858,18 @@ export const teamAPI = {
       method: 'POST',
       body: JSON.stringify({ target_team_id: targetTeamId }),
     }),
+
+  /** One-time bulk share of caller's known warps to other current members (LEG-4118). */
+  shareWarpKnowledge: (
+    teamId: string,
+  ): Promise<{
+    shared_warp_count: number;
+    recipient_count: number;
+    rows_created: number;
+  }> =>
+    apiRequest(`/api/v1/teams/${teamId}/share-warp-knowledge`, {
+      method: 'POST',
+    }),
 };
 
 // Fleet Management APIs
