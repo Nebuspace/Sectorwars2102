@@ -61,6 +61,49 @@
   text-overflow: ellipsis;
 }
 
+/* Law status — tip GET /ranking/rank is_wanted / is_suspect (LEG-4127). */
+.rank-username {
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #ccd;
+}
+
+.rank-username.wanted {
+  color: #ff4444;
+}
+
+.rank-username.suspect {
+  color: #ffaa44;
+}
+
+.rank-law-status {
+  display: inline-block;
+  margin: 2px 0 4px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  line-height: 1.4;
+}
+
+.rank-law-status.wanted {
+  color: #ffcccc;
+  background: rgba(255, 68, 68, 0.25);
+  border: 1px solid #ff4444;
+}
+
+.rank-law-status.suspect {
+  color: #ffe0b0;
+  background: rgba(255, 170, 68, 0.2);
+  border: 1px solid #ffaa44;
+}
+
 .rank-tier {
   font-size: 0.7rem;
   color: #888;
