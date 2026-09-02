@@ -24,8 +24,9 @@ const VALID_OWNER = 'a1b2c3d4-e5f6-4789-a012-3456789abcde';
 
 /**
  * LEG-3967 — RegionTransferOwnershipConfirmDialog TypeError/Network Error/429 honesty.
+ * LEG-4105 Soft-ORDER — HTTP 403 densify (invent=0; sibling of terminate).
  */
-describe('RegionTransferOwnershipConfirmDialog typeErrorHonesty (LEG-3967)', () => {
+describe('RegionTransferOwnershipConfirmDialog typeErrorHonesty (LEG-3967 / LEG-4105)', () => {
   const onCancel = vi.fn();
   const onConfirm = vi.fn();
 
@@ -34,6 +35,15 @@ describe('RegionTransferOwnershipConfirmDialog typeErrorHonesty (LEG-3967)', () 
     onConfirm.mockReset();
     onConfirm.mockResolvedValue(undefined);
     vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('formatRegionTransferError surfaces 403 as admin.regions.transfer_ownership scope copy', () => {
+    const collapsed = formatRegionTransferError(axiosError(403));
+    expect(collapsed).toMatch(/access denied/i);
+    expect(collapsed).toMatch(/admin\.regions\.transfer_ownership/i);
+    expect(collapsed).not.toMatch(/\b403\b/);
+    expect(collapsed).not.toMatch(/HTTP 403/i);
+    assertNoTransportLeak(collapsed);
   });
 
   it('formatRegionTransferError surfaces 429 as admin rate-limit copy', () => {
@@ -111,6 +121,49 @@ describe('RegionTransferOwnershipConfirmDialog typeErrorHonesty (LEG-3967)', () 
     });
     const alert = screen.getByRole('alert').textContent ?? '';
     expect(alert).toBe(HONEST);
+    assertNoTransportLeak(alert);
+  });
+
+  it('parent catch on onConfirm rejection surfaces 403 as transfer_ownership scope copy', async () => {
+    onConfirm.mockRejectedValue(axiosError(403));
+
+    function ParentHarness() {
+      const [error, setError] = useState<string | null>(null);
+      return (
+        <RegionTransferOwnershipConfirmDialog
+          regionId="reg-1"
+          regionDisplayName="Sol Reach"
+          onCancel={onCancel}
+          onConfirm={async (ownerId, reason) => {
+            try {
+              await onConfirm(ownerId, reason);
+            } catch (err) {
+              setError(formatRegionTransferError(err));
+            }
+          }}
+          error={error}
+        />
+      );
+    }
+
+    render(<ParentHarness />);
+
+    fireEvent.change(screen.getByLabelText(/New owner user UUID/i), {
+      target: { value: VALID_OWNER },
+    });
+    fireEvent.change(screen.getByLabelText(/Reason \(required/i), {
+      target: { value: 'ops handoff' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Transfer Ownership' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/access denied/i);
+    expect(alert).toMatch(/admin\.regions\.transfer_ownership/i);
+    expect(alert).not.toMatch(/\b403\b/);
+    expect(alert).not.toMatch(/HTTP 403/i);
     assertNoTransportLeak(alert);
   });
 
