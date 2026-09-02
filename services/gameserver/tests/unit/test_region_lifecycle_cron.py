@@ -32,6 +32,7 @@ from src.models.planet import Planet
 from src.models.region import Region, RegionStatus
 from src.models.sector import Sector
 from src.models.station import Station
+from src.models.takeover_intent import TakeoverIntent
 from src.services import region_lifecycle_service
 from src.services.realtime_outbox import RealtimeOutbox
 from src.services.scheduler import economy_governance_sweeps
@@ -186,6 +187,8 @@ class FakeRegionLifecycleSession:
             return _FakeEmptyQuery(self)
         if owner is Sector:
             return _FakeEmptyQuery(self)
+        if owner is TakeoverIntent:
+            return _FakeEmptyQuery(self)
         raise AssertionError(f"unexpected query owner {owner!r}")
 
     def execute(self, stmt):
@@ -203,6 +206,9 @@ class FakeRegionLifecycleSession:
         self.commits += 1
 
     def rollback(self):
+        pass
+
+    def flush(self):
         pass
 
 
