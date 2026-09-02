@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from src.models.player import Player
+from src.services.law_name_color import apply_law_name_color
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,7 @@ def apply_wanted_event(db: Session, player: Player, *, now: Optional[datetime] =
         player.is_wanted = True
         player.wanted_declared_at = now
     player.wanted_until = now + WANTED_DURATION
+    apply_law_name_color(player)
     return first_acquisition
 
 
@@ -132,20 +134,23 @@ def recompute_is_wanted(db: Session, player: Player, *, now: Optional[datetime] 
     )
     should_be_wanted = bust_active or stolen_active or rep_active
 
+    flipped = False
     if should_be_wanted and not player.is_wanted:
         player.is_wanted = True
         player.wanted_declared_at = now
-        return True
-
-    if not should_be_wanted and player.is_wanted:
+        flipped = True
+    elif not should_be_wanted and player.is_wanted:
         player.is_wanted = False
         player.wanted_declared_at = None
         # wanted_until is left alone here on purpose: a live bust timer is
         # one of the OR terms above, so should_be_wanted is already False
         # only once wanted_until has elapsed (or was never set).
-        return True
+        flipped = True
 
-    return False
+    # Always re-apply: reputation adjust while already-Wanted must keep red
+    # (LEG-4135), and clear paths must restore Suspect amber or tier color.
+    apply_law_name_color(player)
+    return flipped
 
 
 def _maybe_award_survive_wanted_cycle_ss(db: Session, player: Player) -> None:
@@ -222,6 +227,7 @@ def clear_expired_wanted(db: Session, *, now: Optional[datetime] = None) -> int:
         player.is_wanted = False
         player.wanted_until = None
         player.wanted_declared_at = None
+        apply_law_name_color(player)
 
     if expired:
         db.flush()

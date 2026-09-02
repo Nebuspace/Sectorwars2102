@@ -3800,9 +3800,12 @@ def _apply_reputation(db: Session, player_id, amount: int, reason: str) -> None:
     old = player.personal_reputation or 0
     new = max(-1000, min(1000, old + amount))
     player.personal_reputation = new
-    tier, color = PersonalReputationService._get_tier_for_score(new)
+    tier, _color = PersonalReputationService._get_tier_for_score(new)
     player.reputation_tier = tier
-    player.name_color = color
+    # LEG-4135: do not clobber Wanted/Suspect name_color with tier color.
+    from src.services.law_name_color import apply_law_name_color
+
+    apply_law_name_color(player)
     logger.info(
         "Reputation %+d for %s (%s): %d -> %d (%s)",
         amount, player_id, reason, old, new, tier,
