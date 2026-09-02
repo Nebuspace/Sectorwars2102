@@ -1,6 +1,6 @@
-"""LEG-3796 — regions.py takeover HTTP 500 catches must not echo Exception text.
+"""LEG-3796 / LEG-4044 — regions.py takeover HTTP 500 catches must not echo Exception text.
 
-Mirrors LEG-3794 planets / LEG-3734 admin regions list opaque densify.
+Structured densify (LEG-4044) keeps opacity while adding {error_code, detail}.
 """
 
 from __future__ import annotations
@@ -8,7 +8,7 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -40,7 +40,10 @@ async def test_takeover_region_execute_takeover_boom_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to begin region takeover"
+    assert exc.detail == {
+        "error_code": "ERR_REGIONS_TAKEOVER_BEGIN_FAILED",
+        "detail": "Failed to begin region takeover",
+    }
     assert secret not in str(exc.detail)
 
 
@@ -73,12 +76,16 @@ async def test_takeover_region_commit_failure_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to begin region takeover"
+    assert exc.detail == {
+        "error_code": "ERR_REGIONS_TAKEOVER_BEGIN_FAILED",
+        "detail": "Failed to begin region takeover",
+    }
     assert secret not in str(exc.detail)
 
 
 def test_regions_takeover_http500_catches_have_no_detail_str_e():
-    """LEG-3796 — static pin: takeover 500 detail stays opaque."""
+    """LEG-3796/4044 — static pin: takeover 500 detail stays opaque + structured."""
     src = Path(regions_mod.__file__).read_text(encoding="utf-8")
-    assert 'detail="Failed to begin region takeover"' in src
+    assert "ERR_REGIONS_TAKEOVER_BEGIN_FAILED" in src
+    assert "route_internal_error" in src
     assert "Failed to begin region takeover: {str(e)}" not in src
