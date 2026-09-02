@@ -48,6 +48,7 @@ from src.api.routes.mfa import router as mfa_router
 from src.api.routes.paypal import router as paypal_router
 from src.api.routes.nexus import router as nexus_router
 from src.api.routes.regional_governance import router as regional_governance_router
+from src.api.routes.regions import router as regions_router
 from src.api.routes.translation import router as translation_router
 from src.api.routes.enhanced_websocket import router as enhanced_websocket_router
 from src.api.routes.debug import router as debug_router
@@ -160,6 +161,7 @@ api_router.include_router(mfa_router, tags=["mfa"])
 api_router.include_router(paypal_router, tags=["paypal"])
 api_router.include_router(nexus_router, tags=["nexus"])
 api_router.include_router(regional_governance_router, tags=["regional-governance"])
+api_router.include_router(regions_router, tags=["regions"])
 api_router.include_router(translation_router, tags=["translation"])
 api_router.include_router(enhanced_websocket_router, tags=["websocket", "real-time"])
 api_router.include_router(gambling_router, tags=["gambling"])
