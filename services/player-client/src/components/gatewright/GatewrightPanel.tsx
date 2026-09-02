@@ -162,17 +162,39 @@ const RIBBON_STEPS = [
 // --- Helpers ---
 
 // Pull the backend's verbatim detail (axios or apiRequest error shapes).
-const errDetail = (e: unknown, fallback: string): string => {
+// Exported for 403/429 Soft-ORDER densify (LEG-4057).
+export const formatGatewrightError = (e: unknown, fallback: string): string => {
   if (e && typeof e === 'object') {
+    const status =
+      typeof (e as { status?: number }).status === 'number'
+        ? (e as { status: number }).status
+        : (e as { response?: { status?: number } }).response?.status;
     const resp = (e as { response?: { data?: unknown } }).response;
     const data = resp?.data ?? (e as { data?: unknown }).data;
+    let detail: string | undefined;
     if (data && typeof data === 'object') {
-      const detail = (data as Record<string, unknown>).detail;
-      if (typeof detail === 'string' && detail) return detail;
+      const d = (data as Record<string, unknown>).detail;
+      if (typeof d === 'string' && d.trim()) detail = d.trim();
     }
+    const message = e instanceof Error ? e.message : undefined;
+    const messageDetail =
+      typeof message === 'string' &&
+      message.trim().length > 0 &&
+      !/^API Error: \d+$/.test(message.trim())
+        ? message.trim()
+        : undefined;
+    if (status === 403) {
+      return detail ?? messageDetail ?? 'Access denied — you cannot manage warp gates right now.';
+    }
+    if (status === 429) {
+      return 'Gatewright rate limit exceeded — wait a moment and try again.';
+    }
+    if (detail) return detail;
   }
   return fallback;
 };
+
+const errDetail = formatGatewrightError;
 
 // Countdown formatting against a ticking clock
 const fmtCountdown = (

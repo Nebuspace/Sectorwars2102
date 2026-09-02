@@ -54,12 +54,31 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
   );
 };
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
 /** Exported for TypeError densify tests — balance load + withdraw catch paths use this. */
 export function bankErrorMessage(err: unknown): string {
   if (err instanceof TypeError) return 'Bank request failed';
   const e = err as { message?: string; data?: { detail?: unknown } };
   if (typeof e?.message === 'string' && isNetworkCollapseMessage(e.message)) {
     return 'Bank request failed';
+  }
+  const status = httpStatus(err);
+  if (status === 403) {
+    const msg = typeof e?.message === 'string' ? e.message.trim() : '';
+    if (msg && !/^API Error: \d+$/.test(msg)) return msg;
+    return 'Access denied — you cannot use the bank right now.';
+  }
+  if (status === 429) {
+    return 'Bank rate limit exceeded — wait a moment and try again.';
   }
   const detail = e?.data?.detail;
   let extra = '';

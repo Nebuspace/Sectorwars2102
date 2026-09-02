@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 /**
  * LEG-3766 Soft-ORDER — HarvestYieldPreview typeErrorHonesty.
+ * LEG-4059 Soft-ORDER — HTTP 403/429 densify (invent=0).
  */
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -17,6 +18,12 @@ vi.mock('../../../services/api', () => ({
 }));
 
 import HarvestYieldPreview, { harvestGateMessage } from '../HarvestYieldPreview';
+
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
 
 const flush = async () => {
   await act(async () => {
@@ -77,5 +84,18 @@ describe('HarvestYieldPreview load transport collapse densify (LEG-3766)', () =>
     expect(alert?.textContent).not.toMatch(/Failed to fetch/i);
     expect(alert?.textContent).not.toMatch(/TypeError/i);
     expect(alert?.textContent).not.toMatch(/Network Error/i);
+  });
+});
+
+describe('harvestGateMessage 403/429 densify (LEG-4059)', () => {
+  it('maps 403/429 without raw transport leakage', () => {
+    expect(harvestGateMessage(apiRequestError(403))).toBe(
+      'Access denied — you cannot preview harvest yield right now.',
+    );
+    expect(harvestGateMessage(apiRequestError(403, 'no_mining_laser'))).toContain('No mining laser');
+    expect(harvestGateMessage(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(harvestGateMessage(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(harvestGateMessage(apiRequestError(403))).not.toMatch(/API Error/i);
+    expect(harvestGateMessage(apiRequestError(403))).not.toMatch(/TypeError/i);
   });
 });

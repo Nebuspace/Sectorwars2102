@@ -2,11 +2,18 @@
 /**
  * LEG-3138 Soft-ORDER — RefiningVenue / CrystalRefiningPanel TypeError densify.
  * LEG-3556 Soft-ORDER — Network Error densify.
+ * LEG-4064 Soft-ORDER — HTTP 403/429 densify (invent=0).
  */
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import CrystalRefiningPanel, { formatCrystalRefiningError } from '../../quantum/CrystalRefiningPanel';
+
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -135,5 +142,17 @@ describe('CrystalRefiningPanel refine TypeError densify (LEG-3138)', () => {
     expect(errorEl?.textContent).toBe('Crystal refine rejected.');
     expect(errorEl?.textContent).not.toMatch(/Network Error/i);
     expect(errorEl?.textContent).not.toMatch(/Failed to fetch/i);
+  });
+});
+
+describe('formatCrystalRefiningError 403/429 densify (LEG-4064)', () => {
+  const fallback = 'Crystal refine rejected.';
+  it('maps 403/429 without raw transport leakage', () => {
+    expect(formatCrystalRefiningError(apiRequestError(403), fallback)).toMatch(/permission/i);
+    expect(formatCrystalRefiningError(apiRequestError(403, 'refine_denied'), fallback)).toBe('refine_denied');
+    expect(formatCrystalRefiningError(apiRequestError(429), fallback)).toMatch(/rate limit/i);
+    expect(formatCrystalRefiningError(apiRequestError(429), fallback)).not.toMatch(/\b429\b/);
+    expect(formatCrystalRefiningError(apiRequestError(403), fallback)).not.toMatch(/API Error/i);
+    expect(formatCrystalRefiningError(apiRequestError(403), fallback)).not.toMatch(/TypeError/i);
   });
 });

@@ -29,8 +29,22 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
  * TypeError densify Vitest (LEG-3266).
  */
 export const axiosErrorMessage = (error: unknown, fallback: string): string => {
-  const e = error as { response?: { data?: { detail?: unknown; message?: unknown } }; message?: string };
+  const e = error as {
+    response?: { status?: number; data?: { detail?: unknown; message?: unknown } };
+    status?: number;
+    message?: string;
+  };
+  const status = typeof e?.status === 'number' ? e.status : e?.response?.status;
   const raw = e?.response?.data?.detail ?? e?.response?.data?.message;
+  if (status === 403) {
+    if (typeof raw === 'string' && raw.trim()) return raw.trim();
+    const msg = typeof e?.message === 'string' ? e.message.trim() : '';
+    if (msg && !/^API Error: \d+$/.test(msg) && !isNetworkCollapseMessage(msg)) return msg;
+    return 'Access denied — you cannot use the Pioneer Office right now.';
+  }
+  if (status === 429) {
+    return 'Pioneer Office rate limit exceeded — wait a moment and try again.';
+  }
   if (typeof raw === 'string' && raw) return raw;
   if (error instanceof TypeError) return fallback;
   if (!e?.response && typeof e?.message === 'string') {

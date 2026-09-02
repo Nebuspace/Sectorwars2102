@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 /**
  * LEG-3191 Soft-ORDER — GatewrightPanel TypeError/network honesty.
+ * LEG-4057 Soft-ORDER — HTTP 403/429 densify (invent=0).
  */
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -51,7 +52,28 @@ vi.mock('../../../contexts/GameContext', () => ({
   }),
 }));
 
-import GatewrightPanel from '../GatewrightPanel';
+import GatewrightPanel, { formatGatewrightError } from '../GatewrightPanel';
+
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
+
+describe('formatGatewrightError 403/429 densify (LEG-4057)', () => {
+  const fallback = 'Guild registry unreachable. Try again.';
+  it('maps 403/429 without raw transport leakage', () => {
+    expect(formatGatewrightError(apiRequestError(403), fallback)).toBe(
+      'Access denied — you cannot manage warp gates right now.',
+    );
+    expect(formatGatewrightError(apiRequestError(403, 'gate_denied'), fallback)).toBe('gate_denied');
+    expect(formatGatewrightError(apiRequestError(429), fallback)).toMatch(/rate limit/i);
+    expect(formatGatewrightError(apiRequestError(429), fallback)).not.toMatch(/\b429\b/);
+    expect(formatGatewrightError(apiRequestError(403), fallback)).not.toMatch(/API Error/i);
+    expect(formatGatewrightError(apiRequestError(403), fallback)).not.toMatch(/TypeError/i);
+  });
+});
+
 
 const flush = async () => {
   await act(async () => {

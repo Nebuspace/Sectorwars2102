@@ -29,11 +29,19 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
   );
 };
 
-/** Exported for TypeError/network honesty Vitest (LEG-3255 / LEG-3267). */
+/** Exported for TypeError/network honesty Vitest (LEG-3255 / LEG-3267); 403/429 densify LEG-4062. */
 export function errMessage(e: unknown): string {
   if (e instanceof TypeError) return MOORING_FAILED_FALLBACK;
   if (e && typeof e === 'object') {
     const any = e as { message?: string; status?: number; data?: any };
+    if (any.status === 403) {
+      const msg = typeof any.message === 'string' ? any.message.trim() : '';
+      if (msg && !/^API Error: \d+$/.test(msg) && !isNetworkCollapseMessage(msg)) return msg;
+      return 'Access denied — you cannot request long-term mooring right now.';
+    }
+    if (any.status === 429) {
+      return 'Long-term mooring rate limit exceeded — wait a moment and try again.';
+    }
     if (any.status === 409) {
       const slips = any.data?.slips;
       const detail =

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 /**
  * LEG-3760 Soft-ORDER — PioneerOfficeVenue TypeError/network densify.
+ * LEG-4060 Soft-ORDER — HTTP 403/429 densify (invent=0).
  */
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -23,6 +24,12 @@ vi.mock('../../../contexts/GameContext', () => ({
 }));
 
 import PioneerOfficeVenue, { axiosErrorMessage } from '../PioneerOfficeVenue';
+
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
 
 let container: HTMLElement;
 let root: ReturnType<typeof createRoot>;
@@ -199,5 +206,19 @@ describe('PioneerOfficeVenue TypeError densify (LEG-3760)', () => {
     expect(err?.textContent).not.toMatch(/TypeError/i);
     expect(container.textContent).not.toMatch(/Failed to fetch/i);
     expect(container.textContent).not.toMatch(/TypeError/i);
+  });
+});
+
+describe('axiosErrorMessage 403/429 densify (LEG-4060)', () => {
+  const loadFallback = 'Could not reach the Pioneer Office.';
+  it('maps 403/429 without raw transport leakage', () => {
+    expect(axiosErrorMessage(apiRequestError(403), loadFallback)).toBe(
+      'Access denied — you cannot use the Pioneer Office right now.',
+    );
+    expect(axiosErrorMessage(apiRequestError(403, 'office_denied'), loadFallback)).toBe('office_denied');
+    expect(axiosErrorMessage(apiRequestError(429), loadFallback)).toMatch(/rate limit/i);
+    expect(axiosErrorMessage(apiRequestError(429), loadFallback)).not.toMatch(/\b429\b/);
+    expect(axiosErrorMessage(apiRequestError(403), loadFallback)).not.toMatch(/API Error/i);
+    expect(axiosErrorMessage(apiRequestError(403), loadFallback)).not.toMatch(/TypeError/i);
   });
 });
