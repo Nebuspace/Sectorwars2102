@@ -165,6 +165,21 @@ export interface SectorDroneAttackResponse {
   combatLogId?: string | null;
 }
 
+/** POST /combat/attack-warp-gate — destroy gate or Phase-1 beacon (LEG-4116). */
+export interface AttackWarpGateResponse {
+  success: boolean;
+  message: string;
+  destroyed?: boolean;
+  gateHpRemaining?: number | null;
+  salvageGranted?: Record<string, unknown> | null;
+  turnsConsumed?: number | null;
+  turnsRemaining?: number | null;
+}
+
+export type AttackWarpGateTarget =
+  | { gateId: string; beaconId?: never }
+  | { beaconId: string; gateId?: never };
+
 // Combat APIs
 export const combatAPI = {
   engage: (targetType: 'ship' | 'planet' | 'port', targetId: string) =>
@@ -186,6 +201,13 @@ export const combatAPI = {
   /** Attack hostile drones in the current sector; costs 2 turns (LEG-3968). */
   attackSectorDrones: (): Promise<SectorDroneAttackResponse> =>
     apiRequest('/api/v1/combat/attack-sector-drones', { method: 'POST' }),
+
+  /** Attack a warp gate or Phase-1 beacon; body exactly one of gateId|beaconId (LEG-4116). */
+  attackWarpGate: (body: AttackWarpGateTarget): Promise<AttackWarpGateResponse> =>
+    apiRequest('/api/v1/combat/attack-warp-gate', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
 
   /** Paginated own-combat log (LEG-372). Server scopes to current player. */
   getHistory: (opts?: { limit?: number; offset?: number }): Promise<CombatHistoryResponse> => {
