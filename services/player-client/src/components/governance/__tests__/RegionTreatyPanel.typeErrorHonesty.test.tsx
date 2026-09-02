@@ -1,11 +1,18 @@
 // @vitest-environment jsdom
 /**
  * LEG-3153 Soft-ORDER — RegionTreatyPanel TypeError densify.
+ * LEG-4018 Soft-ORDER — 403/429 densify.
  */
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import RegionTreatyPanel, { formatRegionTreatyError } from '../RegionTreatyPanel';
+
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -51,6 +58,25 @@ describe('formatRegionTreatyError TypeError densify (LEG-3153)', () => {
     expect(formatRegionTreatyError(new Error('Network Error'), fallback)).toBe(fallback);
     expect(formatRegionTreatyError(new Error('Failed to fetch'), fallback)).toBe(fallback);
     expect(formatRegionTreatyError(new Error('   '), fallback)).toBe(fallback);
+  });
+});
+
+
+describe('RegionTreatyPanel 403/429 densify (LEG-4018)', () => {
+  it('formatRegionTreatyError maps 403/429 without raw transport strings', () => {
+    const fallback = 'Failed to load treaties.';
+    expect(formatRegionTreatyError(apiRequestError(403), fallback)).toBe(
+      'You do not have permission to manage region treaties.',
+    );
+    expect(formatRegionTreatyError(apiRequestError(403, 'ERR_NOT_REGION_OWNER'), fallback)).toBe(
+      'You are not the owner of the required region.',
+    );
+    expect(formatRegionTreatyError(apiRequestError(429), fallback)).toBe(
+      'Treaty action rate limit exceeded — wait a moment and try again.',
+    );
+    expect(formatRegionTreatyError(apiRequestError(429), fallback)).not.toMatch(/\b429\b/);
+    expect(formatRegionTreatyError(apiRequestError(403), fallback)).not.toMatch(/TypeError/i);
+    expect(formatRegionTreatyError(apiRequestError(403), fallback)).not.toMatch(/Network Error/i);
   });
 });
 

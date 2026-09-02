@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 /**
  * LEG-3777 Soft-ORDER — CommsCrewPage TypeError densify.
+ * LEG-4014 Soft-ORDER — 403/429 densify.
  */
 import { describe, it, expect } from 'vitest';
 import {
@@ -9,6 +10,12 @@ import {
   formatCommsSendError,
   formatCommsPurgeError,
 } from '../CommsCrewPage';
+
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
 
 describe('CommsCrewPage TypeError densify (LEG-3777)', () => {
   it('formatCommsThreadsLoadError falls back on TypeError network collapse', () => {
@@ -64,3 +71,32 @@ describe('CommsCrewPage TypeError densify (LEG-3777)', () => {
     expect(formatCommsFlagError(err403Detail)).toBe('crew_comms_denied');
   });
 });
+
+describe('CommsCrewPage 403/429 densify (LEG-4014)', () => {
+  it('formatCommsFlagError / formatCommsThreadsLoadError map 403/429', () => {
+    expect(formatCommsFlagError(apiRequestError(403))).toBe(
+      'Access denied — you cannot flag transmissions right now.',
+    );
+    expect(formatCommsFlagError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatCommsFlagError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatCommsThreadsLoadError(apiRequestError(403))).toBe(
+      'Access denied — you cannot view threads right now.',
+    );
+    expect(formatCommsThreadsLoadError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatCommsThreadsLoadError(apiRequestError(403))).not.toMatch(/TypeError/i);
+    expect(formatCommsThreadsLoadError(apiRequestError(403))).not.toMatch(/Network Error/i);
+  });
+
+  it('formatCommsSendError / formatCommsPurgeError map 403/429', () => {
+    expect(formatCommsSendError(apiRequestError(403))).toBe(
+      'Access denied — you cannot send transmissions right now.',
+    );
+    expect(formatCommsSendError(apiRequestError(429))).toMatch(/Too many messages|rate limit|5 per 60s/i);
+    expect(formatCommsPurgeError(apiRequestError(403))).toBe(
+      'Access denied — you cannot purge transmissions right now.',
+    );
+    expect(formatCommsPurgeError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatCommsPurgeError(apiRequestError(429))).not.toMatch(/\b429\b/);
+  });
+});
+

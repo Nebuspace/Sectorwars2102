@@ -117,6 +117,19 @@ export function formatSpaceDockRegistryLookupError(
 /** Collapse fetch/transport TypeErrors for spacedock shell actions (LEG-3325). */
 export function formatSpaceDockShellError(error: unknown, fallback: string): string {
   if (error instanceof TypeError) return fallback;
+
+  const status = httpStatus(error);
+  const detail = hasNonBareApiDetail(error);
+
+  if (status === 403) {
+    if (detail) return detail;
+    return 'Access denied — this space-dock action is not available right now.';
+  }
+
+  if (status === 429) {
+    return 'Space-dock rate limit exceeded — wait a moment and try again.';
+  }
+
   if (error instanceof Error && error.message) {
     if (isNetworkCollapseMessage(error.message)) return fallback;
     return error.message;

@@ -37,9 +37,11 @@ describe('formatCitizenshipClaimError (LEG-2922)', () => {
     expect(formatCitizenshipClaimError(err)).toBe('No colony ownership in this region');
   });
 
-  it('falls back when message is bare API Error: 403', () => {
+  it('maps bare API Error: 403 to permission copy (LEG-4017 densify)', () => {
     const err = Object.assign(new Error('API Error: 403'), { status: 403 });
-    expect(formatCitizenshipClaimError(err)).toBe('Claim failed');
+    expect(formatCitizenshipClaimError(err)).toBe(
+      'You do not have permission to claim citizenship here.',
+    );
   });
 });
 

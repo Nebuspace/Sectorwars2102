@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 /**
  * LEG-3461 Soft-ORDER — MyBeaconsTab Network Error densify.
+ * LEG-4019 Soft-ORDER — 403/429 densify.
  */
 import { describe, it, expect } from 'vitest';
 import {
@@ -8,6 +9,12 @@ import {
   formatBeaconLoadError,
   formatBeaconRowActionError,
 } from '../MyBeaconsTab';
+
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
 
 describe('MyBeaconsTab TypeError densify (LEG-3461)', () => {
   it('formatBeaconLoadError falls back on TypeError network collapse', () => {
@@ -47,3 +54,19 @@ describe('MyBeaconsTab TypeError densify (LEG-3461)', () => {
     expect(formatBeaconRowActionError(new Error('salvage_denied'))).toBe('salvage_denied');
   });
 });
+
+describe('MyBeaconsTab 403/429 densify (LEG-4019)', () => {
+  it('formatBeaconDeploy/Load/RowAction map 403/429 without raw transport strings', () => {
+    expect(formatBeaconDeployError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatBeaconDeployError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatBeaconLoadError(apiRequestError(403))).toMatch(/Access denied|permission/i);
+    expect(formatBeaconLoadError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatBeaconRowActionError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatBeaconRowActionError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatBeaconDeployError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatBeaconLoadError(apiRequestError(403))).not.toMatch(/TypeError/i);
+    expect(formatBeaconLoadError(apiRequestError(403))).not.toMatch(/Network Error/i);
+    expect(formatBeaconDeployError(apiRequestError(403, 'deploy_denied'))).toBe('deploy_denied');
+  });
+});
+
