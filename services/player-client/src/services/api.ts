@@ -2731,6 +2731,33 @@ export const portOwnershipAPI = {
       method: 'POST',
       body: JSON.stringify({ action }),
     }),
+
+  // Co-ownership syndicate (port-ownership.md § Forming a syndicate) — tip GS (LEG-4117).
+  getSyndicateStatus: (stationId: string) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/syndicate`),
+
+  inviteShare: (stationId: string, inviteePlayerId: string, pct: number) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/syndicate/invite`, {
+      method: 'POST',
+      body: JSON.stringify({ invitee_player_id: inviteePlayerId, pct }),
+    }),
+
+  acceptShareInvite: (stationId: string, inviteId: string) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/syndicate/accept`, {
+      method: 'POST',
+      body: JSON.stringify({ invite_id: inviteId }),
+    }),
+
+  declineShareInvite: (stationId: string, inviteId: string) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/syndicate/decline`, {
+      method: 'POST',
+      body: JSON.stringify({ invite_id: inviteId }),
+    }),
+
+  syndicateBuyout: (stationId: string) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/syndicate/buyout`, {
+      method: 'POST',
+    }),
 };
 
 // Message beacons (message-beacons.md) -- deploy/read/salvage/recharge/

@@ -536,4 +536,77 @@ describe('apiRequest via trade/combat/grey wrappers', () => {
     );
   });
 
+  it('portOwnershipAPI.getSyndicateStatus GETs /stations/{id}/syndicate (LEG-4117)', async () => {
+    get.mockResolvedValue({
+      data: {
+        station_id: 'st-1',
+        mode: 'solo',
+        shares: [{ player_id: 'p1', pct: 100 }],
+        pending_invites: [],
+        is_primary: true,
+      },
+    });
+    const out = await portOwnershipAPI.getSyndicateStatus('st-1');
+    expect(out).toEqual({
+      station_id: 'st-1',
+      mode: 'solo',
+      shares: [{ player_id: 'p1', pct: 100 }],
+      pending_invites: [],
+      is_primary: true,
+    });
+    expect(get).toHaveBeenCalledWith(
+      '/api/v1/port-ownership/stations/st-1/syndicate',
+      jsonHeaders,
+    );
+  });
+
+  it('portOwnershipAPI.inviteShare POSTs invitee_player_id+pct (LEG-4117)', async () => {
+    post.mockResolvedValue({
+      data: { message: 'Share invite 10% issued', invite: { invite_id: 'inv-1', pct: 10 } },
+    });
+    const out = await portOwnershipAPI.inviteShare('st-1', 'player-9', 10);
+    expect(out).toEqual({
+      message: 'Share invite 10% issued',
+      invite: { invite_id: 'inv-1', pct: 10 },
+    });
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/port-ownership/stations/st-1/syndicate/invite',
+      JSON.stringify({ invitee_player_id: 'player-9', pct: 10 }),
+      jsonHeaders,
+    );
+  });
+
+  it('portOwnershipAPI.acceptShareInvite POSTs invite_id (LEG-4117)', async () => {
+    post.mockResolvedValue({ data: { message: 'accepted', conversion_fee: 100 } });
+    await portOwnershipAPI.acceptShareInvite('st-1', 'inv-1');
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/port-ownership/stations/st-1/syndicate/accept',
+      JSON.stringify({ invite_id: 'inv-1' }),
+      jsonHeaders,
+    );
+  });
+
+  it('portOwnershipAPI.declineShareInvite POSTs invite_id (LEG-4117)', async () => {
+    post.mockResolvedValue({ data: { message: 'declined' } });
+    await portOwnershipAPI.declineShareInvite('st-1', 'inv-1');
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/port-ownership/stations/st-1/syndicate/decline',
+      JSON.stringify({ invite_id: 'inv-1' }),
+      jsonHeaders,
+    );
+  });
+
+  it('portOwnershipAPI.syndicateBuyout POSTs /syndicate/buyout (LEG-4117)', async () => {
+    post.mockResolvedValue({
+      data: { mode: 'solo', fair_value: 100000, total_payout: 40000 },
+    });
+    const out = await portOwnershipAPI.syndicateBuyout('st-1');
+    expect(out).toEqual({ mode: 'solo', fair_value: 100000, total_payout: 40000 });
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/port-ownership/stations/st-1/syndicate/buyout',
+      undefined,
+      jsonHeaders,
+    );
+  });
+
 });
