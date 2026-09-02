@@ -2774,6 +2774,27 @@ export const portOwnershipAPI = {
     apiRequest(`/api/v1/port-ownership/stations/${stationId}/syndicate/buyout`, {
       method: 'POST',
     }),
+
+  // Syndicate co-owner policy vote (port-ownership.md § Syndicate policy votes) — tip GS LEG-301 / LEG-4121.
+  // Path is /api/v1/stations/{id}/governance/vote (NOT under /port-ownership/).
+  castGovernanceVote: (
+    stationId: string,
+    body: {
+      vote_type: string;
+      proposed_value: unknown;
+      voter_stake_pct: number;
+      position: string;
+    },
+  ) =>
+    apiRequest(`/api/v1/stations/${stationId}/governance/vote`, {
+      method: 'POST',
+      body: JSON.stringify({
+        vote_type: body.vote_type,
+        proposed_value: body.proposed_value,
+        voter_stake_pct: body.voter_stake_pct,
+        position: body.position,
+      }),
+    }),
 };
 
 // Message beacons (message-beacons.md) -- deploy/read/salvage/recharge/
