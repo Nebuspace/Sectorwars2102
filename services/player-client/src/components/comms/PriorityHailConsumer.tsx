@@ -15,6 +15,30 @@ const UPLINK_TOAST_DEBOUNCE_MS = 2000;
 // (mount-scoped) newMessageSignal effect.
 const INBOX_REFRESH_DEBOUNCE_MS = 1500;
 
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
+};
+
+/** Inbox refresh failures must not surface transport noise in toast/modal chrome (LEG-3762). */
+export const formatInboxRefreshError = (err: unknown): string => {
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    !(err instanceof TypeError) &&
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !isNetworkCollapseMessage(message);
+
+  if (hasServerDetail) return message!;
+  return 'Inbox refresh failed';
+};
+
 /**
  * PriorityHailConsumer — the cockpit's priority-driven notification surfaces.
  *
@@ -146,7 +170,12 @@ const PriorityHailConsumer: React.FC = () => {
     }
     inboxRefreshTimerRef.current = window.setTimeout(() => {
       inboxRefreshTimerRef.current = null;
-      refreshInbox();
+      refreshInbox().catch((err) =>
+        console.warn(
+          'PriorityHailConsumer: inbox refresh failed:',
+          formatInboxRefreshError(err),
+        ),
+      );
     }, INBOX_REFRESH_DEBOUNCE_MS);
     // refreshInbox is recreated on every GameProvider render (see
     // GameContext.tsx), so it stays out of the dependency list — same

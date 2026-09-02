@@ -97,3 +97,10 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+.professions-panel__cost-preview {
+  flex-basis: 100%;
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.75);
+  margin: 0.25rem 0 0;
+}
