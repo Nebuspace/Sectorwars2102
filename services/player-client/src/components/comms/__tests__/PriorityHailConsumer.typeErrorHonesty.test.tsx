@@ -54,6 +54,22 @@ describe('formatInboxRefreshError (LEG-3762)', () => {
   });
 });
 
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
+
+describe('formatInboxRefreshError 403/429 densify (LEG-4041)', () => {
+  it('surfaces 403/429 without raw status codes', () => {
+    expect(formatInboxRefreshError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatInboxRefreshError(apiRequestError(403, 'inbox_denied'))).toBe('inbox_denied');
+    expect(formatInboxRefreshError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatInboxRefreshError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatInboxRefreshError(apiRequestError(403))).not.toMatch(/TypeError/i);
+  });
+});
+
 describe('PriorityHailConsumer inbox refresh transport collapse densify (LEG-3762)', () => {
   let container: HTMLElement;
   let root: ReturnType<typeof createRoot>;
