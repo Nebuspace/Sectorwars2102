@@ -9,6 +9,20 @@ vi.mock('../../utils/auth', () => ({
   },
 }));
 
+const axiosError = (status: number) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: {} },
+  });
+
+function assertNoTransportLeak(text: string) {
+  expect(text).not.toBe('Network Error');
+  expect(text).not.toContain('Network Error');
+  expect(text).not.toMatch(/Failed to fetch/i);
+  expect(text).not.toMatch(/TypeError/i);
+  expect(text).not.toMatch(/^HTTP \d+$/);
+  expect(text).not.toContain('Request failed with status code');
+}
+
 const planet = {
   id: 'p1',
   name: 'Terra',
@@ -25,6 +39,7 @@ const planet = {
 
 /**
  * LEG-3701 Soft-ORDER — PlanetDetailModal TypeError/Network Error honesty densify.
+ * LEG-3942 Soft-ORDER — HTTP 403/429 densify via formatUniverseAdminError.
  */
 describe('PlanetDetailModal typeErrorHonesty densify (LEG-3701)', () => {
   beforeEach(() => {
@@ -75,5 +90,52 @@ describe('PlanetDetailModal typeErrorHonesty densify (LEG-3701)', () => {
     const text = screen.getByText(/Failed to save planet changes/i).textContent ?? '';
     expect(text).not.toMatch(/Failed to fetch/i);
     expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('surfaces admin.universe.manage on planet save 403 without transport leak', async () => {
+    vi.mocked(api.patch).mockRejectedValue(axiosError(403));
+
+    render(
+      <PlanetDetailModal
+        isOpen
+        planet={planet as any}
+        onClose={() => {}}
+        mode="edit"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Access denied/i)).toBeTruthy();
+    });
+    const text = screen.getByText(/Access denied/i).textContent ?? '';
+    expect(text).toMatch(/admin\.universe\.manage/i);
+    expect(text).not.toMatch(/\b403\b/);
+    expect(text).not.toMatch(/HTTP 403/i);
+    assertNoTransportLeak(text);
+  });
+
+  it('surfaces rate-limit on planet save 429 without transport leak', async () => {
+    vi.mocked(api.patch).mockRejectedValue(axiosError(429));
+
+    render(
+      <PlanetDetailModal
+        isOpen
+        planet={planet as any}
+        onClose={() => {}}
+        mode="edit"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/rate limit/i)).toBeTruthy();
+    });
+    const text = screen.getByText(/rate limit/i).textContent ?? '';
+    expect(text).not.toMatch(/\b429\b/);
+    expect(text).not.toMatch(/HTTP 429/i);
+    assertNoTransportLeak(text);
   });
 });

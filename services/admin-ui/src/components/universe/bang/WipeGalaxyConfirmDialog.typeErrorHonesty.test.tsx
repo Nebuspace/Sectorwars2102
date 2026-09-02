@@ -21,10 +21,18 @@ function assertNoTransportLeak(text: string) {
   expect(text).not.toContain('Network Error');
   expect(text).not.toMatch(/Failed to fetch/i);
   expect(text).not.toMatch(/TypeError/i);
+  expect(text).not.toMatch(/^HTTP \d+$/);
+  expect(text).not.toContain('Request failed with status code');
 }
+
+const axiosError = (status: number) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: {} },
+  });
 
 /**
  * LEG-3814 Soft-ORDER — WipeGalaxyConfirmDialog parent-supplied error TypeError/Network densify.
+ * LEG-3943 Soft-ORDER — HTTP 403/429 densify via formatAdminApiError.
  */
 describe('WipeGalaxyConfirmDialog typeErrorHonesty densify (LEG-3814)', () => {
   const onCancel = vi.fn();
@@ -141,6 +149,45 @@ describe('WipeGalaxyConfirmDialog typeErrorHonesty densify (LEG-3814)', () => {
     });
 
     const text = screen.getByText(/Could not wipe galaxy: request failed/i).textContent ?? '';
+    assertNoTransportLeak(text);
+  });
+
+  it('surfaces parent-collapsed 403 with admin.universe.manage without transport leak', () => {
+    const collapsed = formatAdminApiError(axiosError(403), formatOptions);
+
+    render(
+      <WipeGalaxyConfirmDialog
+        galaxyName={galaxyName}
+        onCancel={onCancel}
+        onConfirm={onConfirm}
+        error={collapsed}
+      />,
+    );
+
+    const text = screen.getByText(collapsed).textContent ?? '';
+    expect(text).toMatch(/Access denied/i);
+    expect(text).toMatch(/admin\.universe\.manage/i);
+    expect(text).not.toMatch(/\b403\b/);
+    expect(text).not.toMatch(/HTTP 403/i);
+    assertNoTransportLeak(text);
+  });
+
+  it('surfaces parent-collapsed 429 rate-limit copy without transport leak', () => {
+    const collapsed = formatAdminApiError(axiosError(429), formatOptions);
+
+    render(
+      <WipeGalaxyConfirmDialog
+        galaxyName={galaxyName}
+        onCancel={onCancel}
+        onConfirm={onConfirm}
+        error={collapsed}
+      />,
+    );
+
+    const text = screen.getByText(collapsed).textContent ?? '';
+    expect(text).toMatch(/rate limit/i);
+    expect(text).not.toMatch(/\b429\b/);
+    expect(text).not.toMatch(/HTTP 429/i);
     assertNoTransportLeak(text);
   });
 });
