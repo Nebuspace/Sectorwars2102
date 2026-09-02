@@ -103,6 +103,9 @@ class PublicLeaderboardEntry(BaseModel):
     rank_tier: Optional[str] = None
     pinned_medal_id: Optional[str] = None
     medal_count: Optional[int] = None
+    # ADR-0004 law standing — same keys as LeaderboardEntry / RankInfoResponse
+    is_suspect: bool = False
+    is_wanted: bool = False
 
 
 class PublicLeaderboardResponse(BaseModel):
@@ -269,6 +272,8 @@ async def get_public_leaderboard(
                 score=p.rank_points or 0,
                 rank_level=rank_info["rank_level"],
                 rank_tier=rank_info["rank_tier"],
+                is_suspect=bool(getattr(p, "is_suspect", False)),
+                is_wanted=bool(getattr(p, "is_wanted", False)),
             ))
 
         # Find requesting player's position
@@ -340,6 +345,8 @@ async def get_public_leaderboard(
                 nickname=p.username,
                 military_rank=p.military_rank,
                 score=row.wins,
+                is_suspect=bool(getattr(p, "is_suspect", False)),
+                is_wanted=bool(getattr(p, "is_wanted", False)),
             ))
             pos += 1
 
@@ -389,6 +396,8 @@ async def get_public_leaderboard(
                 nickname=p.username,
                 military_rank=p.military_rank,
                 score=int(row.total_volume or 0),
+                is_suspect=bool(getattr(p, "is_suspect", False)),
+                is_wanted=bool(getattr(p, "is_wanted", False)),
             ))
             pos += 1
 
@@ -415,6 +424,8 @@ async def get_public_leaderboard(
                 nickname=p.username,
                 military_rank=p.military_rank,
                 score=p.aria_total_interactions or 0,
+                is_suspect=bool(getattr(p, "is_suspect", False)),
+                is_wanted=bool(getattr(p, "is_wanted", False)),
             ))
 
         # Find requesting player's position
