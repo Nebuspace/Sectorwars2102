@@ -14,6 +14,10 @@ export interface SettingsContextType {
   uiScale: number;
   /** Update the UI scale; persists to localStorage and applies live. */
   setUiScale: (n: number) => void;
+  /** Player-safe settings sync failure, if any (LEG-3797). */
+  settingsSyncError: string | null;
+  /** Report a settings load/save API failure for densified copy. */
+  reportSettingsSyncFailure: (err: unknown, context: 'load' | 'save') => void;
 }
 
 const UI_SCALE_STORAGE_KEY = 'uiScale';
@@ -24,6 +28,35 @@ const DEFAULT_UI_SCALE = 1.0;
 // on read so the slider thumb and the % label can't disagree.
 const MIN_UI_SCALE = 0.6;
 const MAX_UI_SCALE = 1.2;
+
+/** Player-safe fallbacks when settings persistence fails (LEG-3797). */
+export const SETTINGS_PERSISTENCE_FALLBACKS = {
+  load: 'Failed to load settings',
+  save: 'Failed to save settings',
+} as const;
+
+const isSettingsNetworkCollapse = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+/** Collapse TypeError/network tokens to caller-provided fallback (LEG-3797). */
+export function formatSettingsPersistenceError(err: unknown, fallback: string): string {
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    !(err instanceof TypeError) &&
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isSettingsNetworkCollapse(message);
+
+  if (hasServerDetail) return message!;
+  return fallback;
+}
 
 /**
  * Read + sanitize the persisted scale. Guards against absent / corrupt /
@@ -51,6 +84,7 @@ const SettingsContext = createContext<SettingsContextType | undefined>(undefined
 export const SettingsProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   // Lazy initializer reads localStorage exactly once on boot.
   const [uiScale, setUiScaleState] = useState<number>(() => readStoredUiScale());
+  const [settingsSyncError, setSettingsSyncError] = useState<string | null>(null);
 
   const setUiScale = useCallback((n: number) => {
     const clamped = Number.isFinite(n)
@@ -64,6 +98,12 @@ export const SettingsProvider: React.FC<{ children: ReactNode }> = ({ children }
     }
   }, []);
 
+  const reportSettingsSyncFailure = useCallback((err: unknown, context: 'load' | 'save') => {
+    setSettingsSyncError(
+      formatSettingsPersistenceError(err, SETTINGS_PERSISTENCE_FALLBACKS[context]),
+    );
+  }, []);
+
   // Apply the scale to the document root as a CSS custom property. The app
   // shell (#root) consumes it via `zoom: var(--ui-scale)` (see index.css).
   // Setting the var here keeps the single source of truth in React state.
@@ -73,7 +113,12 @@ export const SettingsProvider: React.FC<{ children: ReactNode }> = ({ children }
     document.documentElement.style.setProperty('--ui-scale', String(uiScale));
   }, [uiScale]);
 
-  const value: SettingsContextType = { uiScale, setUiScale };
+  const value: SettingsContextType = {
+    uiScale,
+    setUiScale,
+    settingsSyncError,
+    reportSettingsSyncFailure,
+  };
 
   return <SettingsContext.Provider value={value}>{children}</SettingsContext.Provider>;
 };
