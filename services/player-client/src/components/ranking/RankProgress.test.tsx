@@ -36,6 +36,8 @@ const FULL_PROGRESS = {
   next_rank_points_required: 5000,
   progress_percent: 84,
   is_max_rank: false,
+  is_wanted: false,
+  is_suspect: false,
   stats: {
     combat_victories: 12,
     total_trades: 340,
@@ -166,5 +168,55 @@ describe('RankProgress', () => {
 
     expect(container.querySelector('.rank-badge--compact')).toBeNull();
     expect(container.textContent).toContain('Commander');
+  });
+
+  it('shows Wanted law status when is_wanted is true (LEG-4130)', async () => {
+    mockGetProgress.mockResolvedValue({
+      ...FULL_PROGRESS,
+      is_wanted: true,
+      is_suspect: true,
+    });
+    await mount();
+
+    const badge = container.querySelector('[data-testid="rank-law-status"]');
+    expect(badge?.textContent).toBe('Wanted');
+    expect(badge?.classList.contains('wanted')).toBe(true);
+    expect(container.querySelector('[data-testid="rank-progress-username"].wanted')?.textContent).toBe(
+      'TESTPILOT',
+    );
+    // Wanted overrides Suspect — no Suspect chip when both flags true.
+    expect(container.textContent).not.toMatch(/Suspect/);
+  });
+
+  it('shows Suspect law status when is_suspect is true and is_wanted is false (LEG-4130)', async () => {
+    mockGetProgress.mockResolvedValue({
+      ...FULL_PROGRESS,
+      is_wanted: false,
+      is_suspect: true,
+    });
+    await mount();
+
+    const badge = container.querySelector('[data-testid="rank-law-status"]');
+    expect(badge?.textContent).toBe('Suspect');
+    expect(badge?.classList.contains('suspect')).toBe(true);
+    expect(container.querySelector('[data-testid="rank-progress-username"].suspect')?.textContent).toBe(
+      'TESTPILOT',
+    );
+  });
+
+  it('hides law status when is_wanted and is_suspect are false (LEG-4130)', async () => {
+    mockGetProgress.mockResolvedValue({
+      ...FULL_PROGRESS,
+      is_wanted: false,
+      is_suspect: false,
+    });
+    await mount();
+
+    expect(container.querySelector('[data-testid="rank-law-status"]')).toBeNull();
+    expect(container.querySelector('[data-testid="rank-progress-username"].wanted')).toBeNull();
+    expect(container.querySelector('[data-testid="rank-progress-username"].suspect')).toBeNull();
+    expect(container.querySelector('[data-testid="rank-progress-username"]')?.textContent).toBe(
+      'TESTPILOT',
+    );
   });
 });
