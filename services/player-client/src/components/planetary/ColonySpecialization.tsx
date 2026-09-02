@@ -142,8 +142,19 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
   );
 };
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
 /** Surface GS specialize PUT 400 detail (`detail=str(e)`), else stable fallback. */
 export function formatColonySpecializeError(err: unknown): string {
+  const status = httpStatus(err);
   const message = err instanceof Error ? err.message : undefined;
   // Network collapse (fetch TypeError / axios transport) is not gameserver copy — use the fallback.
   const hasServerDetail =
@@ -152,6 +163,15 @@ export function formatColonySpecializeError(err: unknown): string {
     message.trim().length > 0 &&
     !/^API Error: \d+$/.test(message.trim()) &&
     !isNetworkCollapseMessage(message);
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission to specialize this colony.';
+  }
+
+  if (status === 429) {
+    return 'Colony specialization rate limit exceeded — wait a moment and try again.';
+  }
 
   if (hasServerDetail) return message!;
   return 'Failed to specialize colony';

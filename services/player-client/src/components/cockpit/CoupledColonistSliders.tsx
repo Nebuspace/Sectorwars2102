@@ -62,11 +62,40 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
   );
 };
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
 /** Exported for TypeError densify Vitest (LEG-3643). */
 export function formatCoupledColonistAllocError(
   err: unknown,
   fallback = ALLOCATION_PERSIST_FALLBACK,
 ): string {
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail =
+    !(err instanceof TypeError) &&
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNetworkCollapseMessage(message) &&
+    !/not implemented/i.test(message);
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission to update colonist allocation.';
+  }
+
+  if (status === 429) {
+    return 'Colonist allocation rate limit exceeded — wait a moment and try again.';
+  }
+
   if (err instanceof TypeError) return fallback;
   if (err instanceof Error && err.message) {
     if (isNetworkCollapseMessage(err.message)) return fallback;

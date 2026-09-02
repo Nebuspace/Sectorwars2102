@@ -13,6 +13,12 @@ import CoupledColonistSliders, {
 
 const ALLOCATIONS: RoleAllocation = { fuel: 10, organics: 10, equipment: 10 };
 
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
+
 describe('formatCoupledColonistAllocError TypeError densify (LEG-3643)', () => {
   it('falls back on TypeError network collapse', () => {
     const text = formatCoupledColonistAllocError(new TypeError('Failed to fetch'));
@@ -40,6 +46,16 @@ describe('formatCoupledColonistAllocError TypeError densify (LEG-3643)', () => {
 
   it('preserves non-generic server detail when not transport collapse', () => {
     expect(formatCoupledColonistAllocError(new Error('overflow_denied'))).toBe('overflow_denied');
+  });
+});
+
+describe('formatCoupledColonistAllocError 403/429 densify (LEG-4028)', () => {
+  it('surfaces 403/429 without raw status codes', () => {
+    expect(formatCoupledColonistAllocError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatCoupledColonistAllocError(apiRequestError(403, 'alloc_denied'))).toBe('alloc_denied');
+    expect(formatCoupledColonistAllocError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatCoupledColonistAllocError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatCoupledColonistAllocError(apiRequestError(403))).not.toMatch(/TypeError/i);
   });
 });
 
