@@ -6,6 +6,7 @@ Canon target: ``POST /api/v1/regions/{region_id}/takeover`` —
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Optional
 
@@ -25,6 +26,8 @@ from src.services.region_lifecycle_service import (
     ERR_TAKEOVER_INTENT_PENDING,
     execute_takeover,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/regions", tags=["regions"])
 
@@ -64,26 +67,35 @@ async def takeover_region(
     db: AsyncSession = Depends(get_async_session),
 ):
     """Begin GC-subscription takeover of a suspended or grace-period region."""
-    payload = body or RegionTakeoverRequest()
-    return_url, cancel_url = _default_takeover_urls()
-    if payload.return_url:
-        return_url = payload.return_url
-    if payload.cancel_url:
-        cancel_url = payload.cancel_url
+    try:
+        payload = body or RegionTakeoverRequest()
+        return_url, cancel_url = _default_takeover_urls()
+        if payload.return_url:
+            return_url = payload.return_url
+        if payload.cancel_url:
+            cancel_url = payload.cancel_url
 
-    result = await execute_takeover(
-        db,
-        region_id=region_id,
-        caller_user_id=current_user.id,
-        return_url=return_url,
-        cancel_url=cancel_url,
-    )
-    if not result.get("ok"):
-        code = result.get("code", "ERR_TAKEOVER_FAILED")
-        raise HTTPException(
-            status_code=_TAKEOVER_ERROR_STATUS.get(code, 400),
-            detail=code,
+        result = await execute_takeover(
+            db,
+            region_id=region_id,
+            caller_user_id=current_user.id,
+            return_url=return_url,
+            cancel_url=cancel_url,
         )
+        if not result.get("ok"):
+            code = result.get("code", "ERR_TAKEOVER_FAILED")
+            raise HTTPException(
+                status_code=_TAKEOVER_ERROR_STATUS.get(code, 400),
+                detail=code,
+            )
 
-    await db.commit()
-    return result["takeover_intent"]
+        await db.commit()
+        return result["takeover_intent"]
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to begin region takeover")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to begin region takeover",
+        )
