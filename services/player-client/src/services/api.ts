@@ -2643,6 +2643,13 @@ export const portOwnershipAPI = {
       body: JSON.stringify({ amount }),
     }),
 
+  // Owner cash-injection into station treasury (port-ownership.md § Cash-injection) — tip GS LEG-4123.
+  inject: (stationId: string, amount: number) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/inject`, {
+      method: 'POST',
+      body: JSON.stringify({ amount }),
+    }),
+
   // Owner defense_policy levers (port-ownership.md § Defense system).
   // GS DefensePolicyRequest — patrol_radius must stay 0 (deferred).
   getDefensePolicy: (stationId: string) =>

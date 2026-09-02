@@ -648,4 +648,29 @@ describe('apiRequest via trade/combat/grey wrappers', () => {
     );
   });
 
+  it('portOwnershipAPI.inject POSTs amount to /stations/{id}/inject (LEG-4123)', async () => {
+    post.mockResolvedValue({
+      data: {
+        message: 'Injected 1,000 credits into Alpha',
+        station_id: 'st-1',
+        injected: 1000,
+        treasury_balance: 6000,
+        credits: 99000,
+      },
+    });
+    const out = await portOwnershipAPI.inject('st-1', 1000);
+    expect(out).toEqual({
+      message: 'Injected 1,000 credits into Alpha',
+      station_id: 'st-1',
+      injected: 1000,
+      treasury_balance: 6000,
+      credits: 99000,
+    });
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/port-ownership/stations/st-1/inject',
+      JSON.stringify({ amount: 1000 }),
+      jsonHeaders,
+    );
+  });
+
 });

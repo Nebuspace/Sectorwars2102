@@ -450,6 +450,7 @@ interface GameContextType {
   setServiceCharge: (stationId: string, multiplier: number) => Promise<unknown>;
   setStorageRental: (stationId: string, perDay: number) => Promise<unknown>;
   withdrawTreasury: (stationId: string, amount: number) => Promise<unknown>;
+  injectTreasury: (stationId: string, amount: number) => Promise<unknown>;
   getDefensePolicy: (stationId: string) => Promise<unknown>;
   setDefensePolicy: (
     stationId: string,
@@ -1840,6 +1841,20 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
+  // Owner lever: inject personal credits into the station treasury (LEG-4123)
+  const injectTreasury = async (stationId: string, amount: number): Promise<unknown> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      const data = await portOwnershipAPI.inject(stationId, amount);
+      await refreshPlayerState();
+      return data;
+    } catch (error: any) {
+      console.error('Error injecting into station treasury:', error);
+      throw error;
+    }
+  };
+
   // Economic-takeover campaign status. Reading this also lets the server
   // lazily evaluate monthly volume shares and counter-window expiry.
   const getTakeoverStatus = async (stationId: string): Promise<unknown> => {
@@ -2347,6 +2362,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setServiceCharge,
     setStorageRental,
     withdrawTreasury,
+    injectTreasury,
     getDefensePolicy,
     setDefensePolicy,
     getTakeoverStatus,
