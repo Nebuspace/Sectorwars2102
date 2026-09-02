@@ -21,6 +21,12 @@ vi.mock('../../../services/api', () => ({
 
 import HaggleDesk, { formatHaggleError } from '../HaggleDesk';
 
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
+
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 const OPEN_CARD = {
@@ -142,5 +148,33 @@ describe('HaggleDesk TypeError honesty (LEG-3241)', () => {
     const alert = container.querySelector('.haggle-error[role="alert"]');
     expect(alert?.textContent).toBe('The trader turned away.');
     expect(container.textContent).not.toMatch(/Network Error/i);
+  });
+
+  it('surfaces 403/429 status paths and preserves server detail (LEG-3948)', () => {
+    expect(formatHaggleError(apiRequestError(403))).toBe('You cannot haggle at this station right now.');
+    expect(formatHaggleError(apiRequestError(429))).toBe(
+      'Haggle rate limit exceeded — wait a moment and try again.',
+    );
+    expect(formatHaggleError(apiRequestError(403, 'haggle_denied'))).toBe('haggle_denied');
+    expect(formatHaggleError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatHaggleError(apiRequestError(403))).not.toMatch(/TypeError/i);
+    expect(formatHaggleError(apiRequestError(403))).not.toMatch(/Network Error/i);
+  });
+
+  it('open 403 surfaces trader permission copy without raw transport text in DOM (LEG-3948)', async () => {
+    mockOpen.mockRejectedValue(apiRequestError(403));
+
+    await renderDesk();
+
+    await act(async () => {
+      (container.querySelector('.haggle-open-btn') as HTMLButtonElement).click();
+      await flush();
+    });
+
+    const alert = container.querySelector('.haggle-error[role="alert"]');
+    expect(alert?.textContent).toMatch(/cannot haggle at this station/i);
+    expect(container.textContent).not.toMatch(/\b403\b/);
+    expect(container.textContent).not.toMatch(/TypeError/i);
+    expect(container.textContent).not.toMatch(/Failed to fetch/i);
   });
 });
