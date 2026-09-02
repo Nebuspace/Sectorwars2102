@@ -28,6 +28,11 @@ from src.services.planetary_service import (
     defense_unit_price,
     clamp_tax_rate,
 )
+from src.utils.error_handling import route_internal_error
+
+ERR_PLANETS_SHIELD_UPGRADE_FAILED = "ERR_PLANETS_SHIELD_UPGRADE_FAILED"
+ERR_PLANETS_DEFENSES_FETCH_FAILED = "ERR_PLANETS_DEFENSES_FETCH_FAILED"
+ERR_PLANETS_DEFENSES_UPDATE_FAILED = "ERR_PLANETS_DEFENSES_UPDATE_FAILED"
 
 router = APIRouter(prefix="/planets", tags=["planets"])
 
@@ -1927,9 +1932,9 @@ async def upgrade_shield_generator(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception:
         logger.exception("Failed to upgrade shield generator")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to upgrade shield generator",
+        raise route_internal_error(
+            ERR_PLANETS_SHIELD_UPGRADE_FAILED,
+            "Failed to upgrade shield generator",
         )
 
 
@@ -1954,9 +1959,9 @@ async def get_planet_defenses(
         raise HTTPException(status_code=404, detail=str(e))
     except Exception:
         logger.exception("Failed to fetch planet defenses")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to fetch planet defenses",
+        raise route_internal_error(
+            ERR_PLANETS_DEFENSES_FETCH_FAILED,
+            "Failed to fetch planet defenses",
         )
 
 
@@ -2151,9 +2156,9 @@ async def update_defenses(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception:
         logger.exception("Failed to update defenses")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to update defenses",
+        raise route_internal_error(
+            ERR_PLANETS_DEFENSES_UPDATE_FAILED,
+            "Failed to update defenses",
         )
 
 
