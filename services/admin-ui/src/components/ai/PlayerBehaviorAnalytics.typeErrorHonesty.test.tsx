@@ -1,12 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
-import FleetHealthReport from './FleetHealthReport';
+import { PlayerBehaviorAnalytics } from './PlayerBehaviorAnalytics';
 import { api } from '../../utils/auth';
 
 vi.mock('../../utils/auth', () => ({
   api: {
     get: vi.fn(),
   },
+}));
+
+vi.mock('../../contexts/WebSocketContext', () => ({
+  useAIUpdates: () => undefined,
 }));
 
 const axiosError = (status: number, detail?: string) =>
@@ -22,9 +26,9 @@ function assertNoTransportLeak(text: string) {
 }
 
 /**
- * LEG-3761 Soft-ORDER — FleetHealthReport TypeError/network + HTTP honesty densify.
+ * LEG-3746 Soft-ORDER — PlayerBehaviorAnalytics TypeError/network + HTTP honesty densify.
  */
-describe('FleetHealthReport typeErrorHonesty densify (LEG-3761)', () => {
+describe('PlayerBehaviorAnalytics typeErrorHonesty densify (LEG-3746)', () => {
   beforeEach(() => {
     vi.mocked(api.get).mockReset();
     vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -33,86 +37,50 @@ describe('FleetHealthReport typeErrorHonesty densify (LEG-3761)', () => {
   it('collapses axios Network Error without leaking raw transport text', async () => {
     vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
 
-    render(<FleetHealthReport />);
+    render(<PlayerBehaviorAnalytics />);
 
     await waitFor(() => {
       expect(screen.getByRole('alert')).toBeTruthy();
     });
 
     const alert = screen.getByRole('alert').textContent ?? '';
-    expect(alert).toMatch(
-      /Gameserver unreachable — network error fetching fleet health report/i,
-    );
+    expect(alert).toMatch(/Failed to load behavior analytics/i);
     assertNoTransportLeak(alert);
   });
 
   it('collapses TypeError Failed to fetch without leaking transport text', async () => {
     vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
 
-    render(<FleetHealthReport />);
+    render(<PlayerBehaviorAnalytics />);
 
     await waitFor(() => {
       expect(screen.getByRole('alert')).toBeTruthy();
     });
 
     const alert = screen.getByRole('alert').textContent ?? '';
-    expect(alert).toMatch(
-      /Gameserver unreachable — network error fetching fleet health report/i,
-    );
+    expect(alert).toMatch(/Failed to load behavior analytics/i);
     assertNoTransportLeak(alert);
   });
 
-  it('collapses Error Failed to fetch without leaking transport text', async () => {
-    vi.mocked(api.get).mockRejectedValue(new Error('Failed to fetch'));
-
-    render(<FleetHealthReport />);
-
-    await waitFor(() => {
-      expect(screen.getByRole('alert')).toBeTruthy();
-    });
-
-    const alert = screen.getByRole('alert').textContent ?? '';
-    expect(alert).toMatch(
-      /Gameserver unreachable — network error fetching fleet health report/i,
-    );
-    assertNoTransportLeak(alert);
-  });
-
-  it('surfaces 401 with HTTP status suffix when no server detail', async () => {
+  it('surfaces 401 as authentication-required copy', async () => {
     vi.mocked(api.get).mockRejectedValue(axiosError(401));
 
-    render(<FleetHealthReport />);
+    render(<PlayerBehaviorAnalytics />);
 
     await waitFor(() => {
       expect(screen.getByRole('alert')).toBeTruthy();
     });
 
     const alert = screen.getByRole('alert').textContent ?? '';
-    expect(alert).toMatch(/HTTP 401/i);
-    expect(alert).toMatch(/fleet health report/i);
+    expect(alert).toMatch(/Authentication required/i);
+    expect(alert).toMatch(/log in as an admin user/i);
     assertNoTransportLeak(alert);
-  });
-
-  it('surfaces server detail on 401 when provided', async () => {
-    vi.mocked(api.get).mockRejectedValue(
-      axiosError(401, 'Admin session expired'),
-    );
-
-    render(<FleetHealthReport />);
-
-    await waitFor(() => {
-      expect(screen.getByRole('alert')).toBeTruthy();
-    });
-
-    expect(screen.getByRole('alert').textContent ?? '').toMatch(
-      /Admin session expired/i,
-    );
   });
 
   it('surfaces 403 with PLAYERS_VIEW scope hint when no server detail', async () => {
     vi.mocked(api.get).mockRejectedValue(axiosError(403));
 
-    render(<FleetHealthReport />);
+    render(<PlayerBehaviorAnalytics />);
 
     await waitFor(() => {
       expect(screen.getByRole('alert')).toBeTruthy();
@@ -120,7 +88,7 @@ describe('FleetHealthReport typeErrorHonesty densify (LEG-3761)', () => {
 
     const alert = screen.getByRole('alert').textContent ?? '';
     expect(alert).toMatch(/PLAYERS_VIEW/i);
-    expect(alert).toMatch(/fleet health report/i);
+    expect(alert).toMatch(/behavior analytics/i);
     assertNoTransportLeak(alert);
   });
 
@@ -129,7 +97,7 @@ describe('FleetHealthReport typeErrorHonesty densify (LEG-3761)', () => {
       axiosError(403, 'Missing scope admin.players.view (PLAYERS_VIEW)'),
     );
 
-    render(<FleetHealthReport />);
+    render(<PlayerBehaviorAnalytics />);
 
     await waitFor(() => {
       expect(screen.getByRole('alert')).toBeTruthy();
@@ -143,7 +111,7 @@ describe('FleetHealthReport typeErrorHonesty densify (LEG-3761)', () => {
   it('surfaces 429 as admin rate-limit copy', async () => {
     vi.mocked(api.get).mockRejectedValue(axiosError(429));
 
-    render(<FleetHealthReport />);
+    render(<PlayerBehaviorAnalytics />);
 
     await waitFor(() => {
       expect(screen.getByRole('alert')).toBeTruthy();
