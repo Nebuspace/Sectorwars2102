@@ -53,6 +53,12 @@ vi.mock('../../../services/api', async () => {
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
+
 describe('formatDroneFleetError TypeError densify (LEG-3150)', () => {
   const fallback = 'Could not load drone fleet.';
 
@@ -74,6 +80,21 @@ describe('formatDroneFleetError TypeError densify (LEG-3150)', () => {
     expect(formatDroneFleetError(new Error('Failed to fetch'), fallback)).toBe(fallback);
     expect(formatDroneFleetError(new Error(''), fallback)).toBe(fallback);
     expect(formatDroneFleetError({ message: 'Network Error' }, fallback)).toBe(fallback);
+  });
+
+  it('surfaces 403/429 status paths and preserves server detail (LEG-3953)', () => {
+    const actionFallback = 'Drone fleet action failed.';
+    expect(formatDroneFleetError(apiRequestError(403), fallback)).toBe(
+      'You do not have permission for this drone fleet action.',
+    );
+    expect(formatDroneFleetError(apiRequestError(429), actionFallback)).toBe(
+      'Drone fleet rate limit exceeded — wait a moment and try again.',
+    );
+    expect(formatDroneFleetError(apiRequestError(403, 'drone_deploy_denied'), actionFallback)).toBe(
+      'drone_deploy_denied',
+    );
+    expect(formatDroneFleetError(apiRequestError(429), actionFallback)).not.toMatch(/\b429\b/);
+    expect(formatDroneFleetError(apiRequestError(403), fallback)).not.toMatch(/TypeError/i);
   });
 });
 

@@ -91,6 +91,26 @@ const isHaggleNetworkCollapseMessage = (msg: string): boolean => {
   );
 };
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+function hasHaggleServerDetail(err: unknown, message: string | undefined): boolean {
+  if (err instanceof TypeError) return false;
+  if (typeof message === 'string' && isHaggleNetworkCollapseMessage(message)) return false;
+  return (
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim())
+  );
+}
+
 export function formatHaggleError(e: unknown): string {
   const fallback = 'The trader turned away.';
   if (e instanceof TypeError) return fallback;
@@ -102,7 +122,19 @@ export function formatHaggleError(e: unknown): string {
       if (typeof rec.detail === 'string' && rec.detail) return rec.detail;
       if (typeof rec.message === 'string' && rec.message) return rec.message;
     }
+    const status = httpStatus(e);
     const msg = (e as { message?: string }).message;
+    const hasServerDetail = hasHaggleServerDetail(e, msg);
+
+    if (status === 403) {
+      if (hasServerDetail) return msg!;
+      return 'You cannot haggle at this station right now.';
+    }
+
+    if (status === 429) {
+      return 'Haggle rate limit exceeded — wait a moment and try again.';
+    }
+
     if (typeof msg === 'string' && msg) {
       if (isHaggleNetworkCollapseMessage(msg)) return fallback;
       return msg;

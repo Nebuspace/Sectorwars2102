@@ -8,6 +8,12 @@ import { formatRouteHistoryError, formatRouteOptimizeError } from '../RoutePlann
 const OPTIMIZE_FALLBACK = 'Failed to optimize route.';
 const HISTORY_FALLBACK = 'Failed to load recent plans.';
 
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
+
 describe('RoutePlannerPanel TypeError densify (LEG-3735)', () => {
   it('formatRouteOptimizeError falls back on TypeError network collapse', () => {
     const text = formatRouteOptimizeError(new TypeError('Failed to fetch'));
@@ -31,5 +37,21 @@ describe('RoutePlannerPanel TypeError densify (LEG-3735)', () => {
     expect(formatRouteHistoryError(new Error('Network Error'))).toBe(HISTORY_FALLBACK);
     expect(formatRouteHistoryError(new Error('Failed to fetch'))).toBe(HISTORY_FALLBACK);
     expect(formatRouteOptimizeError(new Error('sector unreachable'))).toBe('sector unreachable');
+  });
+
+  it('surfaces 403/429 status paths and preserves server detail (LEG-3952)', () => {
+    expect(formatRouteOptimizeError(apiRequestError(403))).toBe('You do not have permission to optimize routes.');
+    expect(formatRouteOptimizeError(apiRequestError(429))).toBe(
+      'Route optimization rate limit exceeded — wait a moment and try again.',
+    );
+    expect(formatRouteOptimizeError(apiRequestError(403, 'route_opt_denied'))).toBe('route_opt_denied');
+
+    expect(formatRouteHistoryError(apiRequestError(403))).toBe('You do not have permission to load route history.');
+    expect(formatRouteHistoryError(apiRequestError(429))).toBe(
+      'Route history rate limit exceeded — wait a moment and try again.',
+    );
+
+    expect(formatRouteOptimizeError(apiRequestError(403))).not.toMatch(/\b403\b/);
+    expect(formatRouteHistoryError(apiRequestError(429))).not.toMatch(/HTTP 429/i);
   });
 });

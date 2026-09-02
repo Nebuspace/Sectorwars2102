@@ -397,6 +397,31 @@ def admin_execute_region_termination(
     }
 
 
+def _serialize_takeover_eligible_region(region: Region) -> Dict[str, Any]:
+    """JSON-safe region summary for takeover discovery (LEG-3956)."""
+    return {
+        "id": str(region.id),
+        "name": region.name,
+        "display_name": region.display_name,
+        "status": region.status,
+        "suspended_at": region.suspended_at.isoformat() if region.suspended_at else None,
+    }
+
+
+async def list_takeover_eligible_regions(db: AsyncSession) -> list[Dict[str, Any]]:
+    """Return suspended/grace regions available for GC-subscription takeover."""
+    result = await db.execute(
+        select(Region)
+        .where(
+            Region.status.in_(
+                (RegionStatus.SUSPENDED.value, RegionStatus.GRACE.value),
+            ),
+        )
+        .order_by(Region.name)
+    )
+    return [_serialize_takeover_eligible_region(r) for r in result.scalars().all()]
+
+
 def _serialize_takeover_intent(intent: TakeoverIntent) -> Dict[str, Any]:
     """JSON-safe TakeoverIntent payload for the route response."""
     return {

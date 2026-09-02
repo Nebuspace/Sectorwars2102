@@ -55,7 +55,11 @@ function httpStatus(err: unknown): number | undefined {
 function hasGovernanceServerDetail(err: unknown, message: string | undefined): boolean {
   if (err instanceof TypeError) return false;
   if (typeof message === 'string' && isNetworkCollapseMessage(message)) return false;
-  return typeof message === 'string' && message.trim().length > 0;
+  return (
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim())
+  );
 }
 
 /** Surface gameserver detail when governance load fails (LEG-3603 densify). */
@@ -67,6 +71,10 @@ export function formatGovernanceLoadError(err: unknown): string {
   if (status === 403) {
     if (hasServerDetail) return message!;
     return 'You are not a member of this region.';
+  }
+
+  if (status === 429) {
+    return 'Governance lookup rate limit exceeded — wait a moment and try again.';
   }
 
   if (status === 404) {

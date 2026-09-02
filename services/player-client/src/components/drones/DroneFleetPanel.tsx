@@ -77,13 +77,46 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
   );
 };
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+function hasDroneFleetServerDetail(error: unknown, message: string | undefined): boolean {
+  if (error instanceof TypeError) return false;
+  if (typeof message === 'string' && isNetworkCollapseMessage(message)) return false;
+  return (
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim())
+  );
+}
+
 /** TypeError / network collapse → fallback; preserve axios/gameserver detail otherwise. */
 export function formatDroneFleetError(error: unknown, fallback: string): string {
   if (error instanceof TypeError) return fallback;
+  const status = httpStatus(error);
   const e = asRecord(error);
   const response = asRecord(e?.response);
   const data = asRecord(response?.data);
   const raw = data?.detail ?? data?.message ?? e?.message;
+  const message = typeof raw === 'string' ? raw : error instanceof Error ? error.message : undefined;
+  const hasServerDetail = hasDroneFleetServerDetail(error, message);
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission for this drone fleet action.';
+  }
+
+  if (status === 429) {
+    return 'Drone fleet rate limit exceeded — wait a moment and try again.';
+  }
+
   if (typeof raw === 'string' && raw) {
     if (isNetworkCollapseMessage(raw)) return fallback;
     return raw;
