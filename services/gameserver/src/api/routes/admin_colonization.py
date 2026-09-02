@@ -22,9 +22,15 @@ from src.models.sector import Sector
 from src.models.team import Team
 from src.services.admin_action_attempt import admin_action_attempt
 from src.services.planetary_service import storage_cap_for, STARVATION_WARNING_KEY
+from src.utils.error_handling import route_internal_error
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+ERR_ADMIN_COLONIZATION_PRODUCTION_FAILED = "ERR_ADMIN_COLONIZATION_PRODUCTION_FAILED"
+ERR_ADMIN_COLONIZATION_GENESIS_FAILED = "ERR_ADMIN_COLONIZATION_GENESIS_FAILED"
+ERR_ADMIN_COLONIZATION_PLANETS_FAILED = "ERR_ADMIN_COLONIZATION_PLANETS_FAILED"
+ERR_ADMIN_COLONIZATION_TICK_FAILED = "ERR_ADMIN_COLONIZATION_TICK_FAILED"
 
 # Pydantic Models for Responses
 
@@ -314,7 +320,7 @@ async def get_colony_production(
 
     except Exception:
         logger.exception("Error in get_colony_production")
-        raise HTTPException(status_code=500, detail="Failed to fetch production data")
+        raise route_internal_error(ERR_ADMIN_COLONIZATION_PRODUCTION_FAILED, "Failed to fetch production data")
 
 # Genesis Device Tracking Endpoint
 
@@ -520,7 +526,7 @@ async def get_genesis_devices(
 
     except Exception:
         logger.exception("Error in get_genesis_devices")
-        raise HTTPException(status_code=500, detail="Failed to fetch genesis device data")
+        raise route_internal_error(ERR_ADMIN_COLONIZATION_GENESIS_FAILED, "Failed to fetch genesis device data")
 
 # Planetary Management Endpoint
 
@@ -708,7 +714,7 @@ async def get_admin_colonization_planets(
 
     except Exception:
         logger.exception("Error in get_admin_planets")
-        raise HTTPException(status_code=500, detail="Failed to fetch planetary data")
+        raise route_internal_error(ERR_ADMIN_COLONIZATION_PLANETS_FAILED, "Failed to fetch planetary data")
 
 
 # Manual Production Tick Trigger
@@ -791,7 +797,7 @@ async def tick_planet_production(
     except Exception:
         db.rollback()
         logger.exception("Error ticking production for planet %s", planet_id)
-        raise HTTPException(status_code=500, detail="Failed to tick planet production")
+        raise route_internal_error(ERR_ADMIN_COLONIZATION_TICK_FAILED, "Failed to tick planet production")
 
     after = {
         "fuel": planet.fuel_ore or 0,
