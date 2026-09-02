@@ -1,6 +1,8 @@
-"""LEG-3812 — fleets route handlers must not echo Exception text on 500s.
+"""LEG-3914 densify — structured route_internal_error 500 densify.
 
-Mirrors LEG-3794 planets / LEG-3690 admin_fleets opaque densify.
+LEG-3812 — fleets route handlers return structured Exception text on 500s.
+
+Mirrors LEG-3794 planets / LEG-3690 admin_fleets structured densify.
 """
 
 from __future__ import annotations
@@ -109,7 +111,7 @@ def _battle(*, attacker_fleet=None, defender_fleet=None, **overrides) -> FleetBa
 
 
 @pytest.mark.asyncio
-async def test_create_fleet_boom_is_opaque_500():
+async def test_create_fleet_boom_returns_structured_500():
     secret = "secret-create-fleet-should-not-leak"
     player = _player()
     request = CreateFleetRequest(name="Strike Group", formation="standard")
@@ -130,7 +132,7 @@ async def test_create_fleet_boom_is_opaque_500():
 
 
 @pytest.mark.asyncio
-async def test_initiate_battle_boom_is_opaque_500():
+async def test_initiate_battle_boom_returns_structured_500():
     secret = "secret-initiate-battle-should-not-leak"
     player = _player()
     fleet = _fleet(commander_id=player.id)
@@ -158,7 +160,7 @@ async def test_initiate_battle_boom_is_opaque_500():
 
 
 @pytest.mark.asyncio
-async def test_simulate_battle_round_boom_is_opaque_500():
+async def test_simulate_battle_round_boom_returns_structured_500():
     secret = "secret-simulate-round-should-not-leak"
     player = _player()
     attacker_fleet = _fleet()
@@ -195,7 +197,7 @@ async def test_simulate_battle_round_boom_is_opaque_500():
     assert secret not in str(exc.detail)
 
 
-def test_fleets_http500_is_opaque():
+def test_fleets_http500_is_structured():
     """LEG-3812 — static pin: fleet route 500 details stay opaque."""
     src = Path(fleets_mod.__file__).read_text(encoding="utf-8")
     assert "ERR_FLEETS_CREATE_FAILED" in src

@@ -26,6 +26,12 @@ flips the crystal credit at ready_at; the instant path can then become the
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from src.utils.error_handling import route_internal_error
+
+ERR_REFINING_CRYSTAL_FAILED = "ERR_REFINING_CRYSTAL_FAILED"
+ERR_REFINING_LUMEN_START_FAILED = "ERR_REFINING_LUMEN_START_FAILED"
+ERR_REFINING_LUMEN_COLLECT_FAILED = "ERR_REFINING_LUMEN_COLLECT_FAILED"
+
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -70,7 +76,10 @@ async def refine_crystal(
     except Exception:
         db.rollback()
         logger.exception("Failed to refine crystal")
-        raise HTTPException(status_code=500, detail="Failed to refine crystal")
+        raise route_internal_error(
+            ERR_REFINING_CRYSTAL_FAILED,
+            "Failed to refine crystal",
+        )
 
 
 @router.post("/refine-lumen/start")
@@ -98,7 +107,10 @@ async def refine_lumen_start(
     except Exception:
         db.rollback()
         logger.exception("Failed to start lumen refine")
-        raise HTTPException(status_code=500, detail="Failed to start lumen refine")
+        raise route_internal_error(
+            ERR_REFINING_LUMEN_START_FAILED,
+            "Failed to start lumen refine",
+        )
 
 
 @router.post("/refine-lumen/collect")
@@ -124,7 +136,10 @@ async def refine_lumen_collect(
     except Exception:
         db.rollback()
         logger.exception("Failed to collect lumen refine")
-        raise HTTPException(status_code=500, detail="Failed to collect lumen refine")
+        raise route_internal_error(
+            ERR_REFINING_LUMEN_COLLECT_FAILED,
+            "Failed to collect lumen refine",
+        )
 
 
 @router.get("/refine-lumen/status")
