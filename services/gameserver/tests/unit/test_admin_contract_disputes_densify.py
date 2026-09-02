@@ -1,4 +1,4 @@
-"""LEG-3727 — contract dispute arbitration routes must not echo Exception text."""
+"""LEG-3857 — admin_contract_disputes unexpected failures return structured 500s."""
 
 from __future__ import annotations
 
@@ -19,11 +19,6 @@ from src.api.routes.admin_contract_disputes import (
 )
 
 
-class _BoomDB:
-    def query(self, *args, **kwargs):
-        raise RuntimeError("secret-dispute-list-should-not-leak")
-
-
 @contextmanager
 def _noop_admin_action_attempt(*_args, **_kwargs):
     attempt = MagicMock()
@@ -31,12 +26,15 @@ def _noop_admin_action_attempt(*_args, **_kwargs):
 
 
 @pytest.mark.asyncio
-async def test_list_disputed_contracts_boom_is_opaque_500():
+async def test_list_disputed_contracts_unexpected_returns_structured_500():
+    secret = "secret-dispute-list-should-not-leak"
+    db = MagicMock()
+    db.query.return_value.filter.return_value.order_by.return_value.all.side_effect = (
+        RuntimeError(secret)
+    )
+
     with pytest.raises(HTTPException) as excinfo:
-        await list_disputed_contracts(
-            admin=SimpleNamespace(),
-            db=_BoomDB(),
-        )
+        await list_disputed_contracts(admin=SimpleNamespace(), db=db)
 
     exc = excinfo.value
     assert exc.status_code == 500
@@ -44,11 +42,11 @@ async def test_list_disputed_contracts_boom_is_opaque_500():
         "error_code": "ERR_ADMIN_CONTRACT_DISPUTES_LIST_FAILED",
         "detail": "Failed to fetch contract disputes",
     }
-    assert "secret-dispute-list-should-not-leak" not in str(exc.detail)
+    assert secret not in str(exc.detail)
 
 
 @pytest.mark.asyncio
-async def test_resolve_contract_dispute_boom_is_opaque_500():
+async def test_resolve_contract_dispute_unexpected_returns_structured_500():
     secret = "secret-dispute-resolve-should-not-leak"
     body = ResolveDisputeRequest(outcome="full_payout", notes="test")
 
@@ -71,8 +69,8 @@ async def test_resolve_contract_dispute_boom_is_opaque_500():
     assert secret not in str(exc.detail)
 
 
-def test_admin_contract_disputes_http500_is_opaque():
-    """LEG-3727 — static pin: dispute route 500 details stay opaque."""
+def test_admin_contract_disputes_http500_catches_are_structured():
+    """LEG-3857 — static pin: dispute route 500 catch paths emit error_code + detail."""
     src = Path(mod.__file__).read_text(encoding="utf-8")
     for code in (
         "ERR_ADMIN_CONTRACT_DISPUTES_LIST_FAILED",
@@ -80,5 +78,5 @@ def test_admin_contract_disputes_http500_is_opaque():
     ):
         assert code in src
     assert "route_internal_error" in src
-    assert "Failed to fetch contract disputes: {str(e)}" not in src
-    assert "Failed to resolve contract dispute: {str(e)}" not in src
+    assert 'detail="Failed to fetch contract disputes"' not in src
+    assert 'detail="Failed to resolve contract dispute"' not in src

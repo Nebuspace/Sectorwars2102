@@ -23,6 +23,11 @@ from src.core.database import get_db
 from src.models.player_analytics import PlayerReEngagement
 from src.models.user import User
 from src.services.admin_action_log_service import log_admin_action
+from src.utils.error_handling import route_internal_error
+
+ERR_ADMIN_RE_ENGAGEMENT_SUMMARY_FAILED = "ERR_ADMIN_RE_ENGAGEMENT_SUMMARY_FAILED"
+ERR_ADMIN_RE_ENGAGEMENT_LIST_FAILED = "ERR_ADMIN_RE_ENGAGEMENT_LIST_FAILED"
+ERR_ADMIN_RE_ENGAGEMENT_UPDATE_FAILED = "ERR_ADMIN_RE_ENGAGEMENT_UPDATE_FAILED"
 
 router = APIRouter(prefix="/admin/re-engagement", tags=["admin-re-engagement"])
 
@@ -79,9 +84,9 @@ async def re_engagement_summary(
         }
     except Exception:
         logger.exception("Failed to fetch re-engagement summary")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to fetch re-engagement summary",
+        raise route_internal_error(
+            ERR_ADMIN_RE_ENGAGEMENT_SUMMARY_FAILED,
+            "Failed to fetch re-engagement summary",
         )
 
 
@@ -127,9 +132,9 @@ async def list_re_engagement_queue(
         raise
     except Exception:
         logger.exception("Failed to fetch re-engagement queue")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to fetch re-engagement queue",
+        raise route_internal_error(
+            ERR_ADMIN_RE_ENGAGEMENT_LIST_FAILED,
+            "Failed to fetch re-engagement queue",
         )
 
 
@@ -192,7 +197,7 @@ async def update_re_engagement_status(
         raise
     except Exception:
         logger.exception("Failed to update re-engagement status")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to update re-engagement status",
+        raise route_internal_error(
+            ERR_ADMIN_RE_ENGAGEMENT_UPDATE_FAILED,
+            "Failed to update re-engagement status",
         )

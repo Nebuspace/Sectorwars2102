@@ -56,14 +56,17 @@ async def test_get_treasury_balance_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to get treasury balance"
+    assert exc.detail == {
+        "error_code": "ERR_TEAMS_TREASURY_BALANCE_FAILED",
+        "detail": "Failed to get treasury balance",
+    }
     assert secret not in str(exc.detail)
 
 
 def test_teams_http500_catches_have_no_detail_str_e():
-    """LEG-3595 — static pin: all fourteen HTTP 500 catch paths stay opaque."""
+    """LEG-3595 — static pin: all densified HTTP 500 catch paths stay opaque."""
     src = Path(teams_mod.__file__).read_text(encoding="utf-8")
-    for stable in (
+    for code in (
         "ERR_TEAMS_CREATE_FAILED",
         "ERR_TEAMS_UPDATE_FAILED",
         "ERR_TEAMS_DELETE_FAILED",
@@ -71,15 +74,16 @@ def test_teams_http500_catches_have_no_detail_str_e():
         "ERR_TEAMS_JOIN_FAILED",
         "ERR_TEAMS_LEAVE_FAILED",
         "ERR_TEAMS_REMOVE_MEMBER_FAILED",
-        'detail="Failed to update role"',
-        'detail="Failed to transfer leadership"',
-        'detail="Failed to deposit"',
-        'detail="Failed to withdraw"',
-        'detail="Failed to transfer"',
-        'detail="Failed to get treasury balance"',
-        'detail="Failed to get treasury history"',
+        "ERR_TEAMS_UPDATE_ROLE_FAILED",
+        "ERR_TEAMS_TRANSFER_LEADERSHIP_FAILED",
+        "ERR_TEAMS_TREASURY_DEPOSIT_FAILED",
+        "ERR_TEAMS_TREASURY_WITHDRAW_FAILED",
+        "ERR_TEAMS_TREASURY_TRANSFER_FAILED",
+        "ERR_TEAMS_TREASURY_BALANCE_FAILED",
+        "ERR_TEAMS_TREASURY_HISTORY_FAILED",
     ):
-        assert stable in src
+        assert code in src
+    assert "route_internal_error" in src
     assert "Failed to create team: {str(e)}" not in src
     assert "Failed to update team: {str(e)}" not in src
     assert "Failed to delete team: {str(e)}" not in src

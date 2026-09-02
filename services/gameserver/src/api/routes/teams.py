@@ -30,6 +30,13 @@ ERR_TEAMS_INVITE_FAILED = "ERR_TEAMS_INVITE_FAILED"
 ERR_TEAMS_JOIN_FAILED = "ERR_TEAMS_JOIN_FAILED"
 ERR_TEAMS_LEAVE_FAILED = "ERR_TEAMS_LEAVE_FAILED"
 ERR_TEAMS_REMOVE_MEMBER_FAILED = "ERR_TEAMS_REMOVE_MEMBER_FAILED"
+ERR_TEAMS_UPDATE_ROLE_FAILED = "ERR_TEAMS_UPDATE_ROLE_FAILED"
+ERR_TEAMS_TRANSFER_LEADERSHIP_FAILED = "ERR_TEAMS_TRANSFER_LEADERSHIP_FAILED"
+ERR_TEAMS_TREASURY_DEPOSIT_FAILED = "ERR_TEAMS_TREASURY_DEPOSIT_FAILED"
+ERR_TEAMS_TREASURY_WITHDRAW_FAILED = "ERR_TEAMS_TREASURY_WITHDRAW_FAILED"
+ERR_TEAMS_TREASURY_TRANSFER_FAILED = "ERR_TEAMS_TREASURY_TRANSFER_FAILED"
+ERR_TEAMS_TREASURY_BALANCE_FAILED = "ERR_TEAMS_TREASURY_BALANCE_FAILED"
+ERR_TEAMS_TREASURY_HISTORY_FAILED = "ERR_TEAMS_TREASURY_HISTORY_FAILED"
 
 router = APIRouter(prefix="/teams", tags=["teams"])
 
@@ -480,7 +487,7 @@ async def update_member_role(
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         logger.error("Failed to update role: %s", e)
-        raise HTTPException(status_code=500, detail="Failed to update role")
+        raise route_internal_error(ERR_TEAMS_UPDATE_ROLE_FAILED, "Failed to update role")
 
 
 @router.get("/{team_id}/permissions", response_model=PermissionsResponse)
@@ -519,7 +526,10 @@ async def transfer_leadership(
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         logger.error("Failed to transfer leadership: %s", e)
-        raise HTTPException(status_code=500, detail="Failed to transfer leadership")
+        raise route_internal_error(
+            ERR_TEAMS_TRANSFER_LEADERSHIP_FAILED,
+            "Failed to transfer leadership",
+        )
 
 
 # Treasury Management Endpoints
@@ -576,7 +586,7 @@ async def deposit_to_treasury(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error("Failed to deposit: %s", e)
-        raise HTTPException(status_code=500, detail="Failed to deposit")
+        raise route_internal_error(ERR_TEAMS_TREASURY_DEPOSIT_FAILED, "Failed to deposit")
 
 
 @router.post("/{team_id}/treasury/withdraw")
@@ -600,7 +610,7 @@ async def withdraw_from_treasury(
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         logger.error("Failed to withdraw: %s", e)
-        raise HTTPException(status_code=500, detail="Failed to withdraw")
+        raise route_internal_error(ERR_TEAMS_TREASURY_WITHDRAW_FAILED, "Failed to withdraw")
 
 
 @router.post("/{team_id}/treasury/transfer")
@@ -625,7 +635,7 @@ async def transfer_to_player(
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         logger.error("Failed to transfer: %s", e)
-        raise HTTPException(status_code=500, detail="Failed to transfer")
+        raise route_internal_error(ERR_TEAMS_TREASURY_TRANSFER_FAILED, "Failed to transfer")
 
 
 @router.get("/{team_id}/treasury", response_model=TreasuryBalanceResponse)
@@ -647,7 +657,10 @@ async def get_treasury_balance(
         raise HTTPException(status_code=404, detail="Team not found")
     except Exception as e:
         logger.error(f"Failed to get treasury balance: {e}")
-        raise HTTPException(status_code=500, detail="Failed to get treasury balance")
+        raise route_internal_error(
+            ERR_TEAMS_TREASURY_BALANCE_FAILED,
+            "Failed to get treasury balance",
+        )
 
 
 class TreasuryTransactionResponse(BaseModel):
@@ -683,7 +696,10 @@ async def get_treasury_history(
         return [TreasuryTransactionResponse(**row) for row in history]
     except Exception as e:
         logger.error(f"Failed to get treasury history: {e}")
-        raise HTTPException(status_code=500, detail="Failed to get treasury history")
+        raise route_internal_error(
+            ERR_TEAMS_TREASURY_HISTORY_FAILED,
+            "Failed to get treasury history",
+        )
 
 
 # Team Communication Endpoints
