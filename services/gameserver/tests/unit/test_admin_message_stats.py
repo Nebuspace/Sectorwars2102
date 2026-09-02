@@ -167,5 +167,8 @@ def test_stats_unexpected_is_opaque_500():
         assert False, "expected HTTPException"
     except HTTPException as exc:
         assert exc.status_code == 500
-        assert exc.detail == "Failed to load message statistics"
+        assert exc.detail == {
+            "error_code": "ERR_ADMIN_MESSAGES_STATS_FAILED",
+            "detail": "Failed to load message statistics",
+        }
         assert "secret-stats-query-should-not-leak" not in str(exc.detail)

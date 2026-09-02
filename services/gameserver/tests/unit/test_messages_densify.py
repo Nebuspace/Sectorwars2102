@@ -1,4 +1,4 @@
-"""LEG-3805 — messages.py HTTP 500 catches must not echo Exception text.
+"""LEG-3877 densify — messages.py HTTP 500 catches must not echo Exception text.
 
 Mirrors LEG-3794 planets / LEG-3711 admin_messages opaque densify.
 """
@@ -15,6 +15,13 @@ from fastapi import HTTPException
 
 from src.api.routes import messages as messages_mod
 from src.api.routes.messages import (
+    ERR_MESSAGES_CONVERSATIONS_FAILED,
+    ERR_MESSAGES_DELETE_FAILED,
+    ERR_MESSAGES_FLAG_FAILED,
+    ERR_MESSAGES_INBOX_FAILED,
+    ERR_MESSAGES_MARK_READ_FAILED,
+    ERR_MESSAGES_SEND_FAILED,
+    ERR_MESSAGES_TEAM_FAILED,
     MessageCreateRequest,
     delete_message,
     flag_message,
@@ -31,7 +38,7 @@ def _player():
 
 
 @pytest.mark.asyncio
-async def test_send_message_unexpected_is_opaque_500():
+async def test_send_message_returns_structured_500():
     secret = "secret-send-message-should-not-leak"
     request = MessageCreateRequest(
         recipient_id=uuid.uuid4(),
@@ -64,7 +71,7 @@ async def test_send_message_unexpected_is_opaque_500():
 
 
 @pytest.mark.asyncio
-async def test_get_inbox_unexpected_is_opaque_500():
+async def test_get_inbox_returns_structured_500():
     secret = "secret-inbox-should-not-leak"
 
     with patch.object(
@@ -91,7 +98,7 @@ async def test_get_inbox_unexpected_is_opaque_500():
 
 
 @pytest.mark.asyncio
-async def test_get_team_messages_unexpected_is_opaque_500():
+async def test_get_team_messages_returns_structured_500():
     secret = "secret-team-messages-should-not-leak"
 
     with patch.object(
@@ -118,7 +125,7 @@ async def test_get_team_messages_unexpected_is_opaque_500():
 
 
 @pytest.mark.asyncio
-async def test_mark_message_read_unexpected_is_opaque_500():
+async def test_mark_message_read_returns_structured_500():
     secret = "secret-mark-read-should-not-leak"
 
     with patch.object(
@@ -144,7 +151,7 @@ async def test_mark_message_read_unexpected_is_opaque_500():
 
 
 @pytest.mark.asyncio
-async def test_delete_message_unexpected_is_opaque_500():
+async def test_delete_message_returns_structured_500():
     secret = "secret-delete-message-should-not-leak"
 
     with patch.object(
@@ -170,7 +177,7 @@ async def test_delete_message_unexpected_is_opaque_500():
 
 
 @pytest.mark.asyncio
-async def test_get_conversations_unexpected_is_opaque_500():
+async def test_get_conversations_returns_structured_500():
     secret = "secret-conversations-should-not-leak"
 
     with patch.object(
@@ -196,7 +203,7 @@ async def test_get_conversations_unexpected_is_opaque_500():
 
 
 @pytest.mark.asyncio
-async def test_flag_message_unexpected_is_opaque_500():
+async def test_flag_message_returns_structured_500():
     secret = "secret-flag-message-should-not-leak"
 
     with patch.object(
@@ -222,21 +229,17 @@ async def test_flag_message_unexpected_is_opaque_500():
     assert secret not in str(exc.detail)
 
 
-def test_messages_http500_catches_have_no_detail_str_e():
-    """LEG-3805 — static pin: all seven HTTP 500 catch paths stay opaque."""
+def test_messages_http500_catches_are_structured():
     src = Path(messages_mod.__file__).read_text(encoding="utf-8")
-    assert "route_internal_error" in src
-    assert "ERR_MESSAGES_FLAG_FAILED" in src
-    assert "ERR_MESSAGES_CONVERSATIONS_FAILED" in src
-    assert "ERR_MESSAGES_DELETE_FAILED" in src
-    assert "ERR_MESSAGES_MARK_READ_FAILED" in src
-    assert "ERR_MESSAGES_TEAM_FAILED" in src
-    assert "ERR_MESSAGES_INBOX_FAILED" in src
-    assert "ERR_MESSAGES_SEND_FAILED" in src
-    assert "Failed to send message: {str(e)}" not in src
-    assert "Failed to load inbox: {str(e)}" not in src
-    assert "Failed to load team messages: {str(e)}" not in src
-    assert "Failed to mark message as read: {str(e)}" not in src
-    assert "Failed to delete message: {str(e)}" not in src
-    assert "Failed to load conversations: {str(e)}" not in src
-    assert "Failed to flag message: {str(e)}" not in src
+    for code in (
+        ERR_MESSAGES_SEND_FAILED,
+        ERR_MESSAGES_INBOX_FAILED,
+        ERR_MESSAGES_TEAM_FAILED,
+        ERR_MESSAGES_MARK_READ_FAILED,
+        ERR_MESSAGES_DELETE_FAILED,
+        ERR_MESSAGES_CONVERSATIONS_FAILED,
+        ERR_MESSAGES_FLAG_FAILED,
+    ):
+        assert code in src
+    assert src.count("route_internal_error(") >= 7
+    assert 'detail="Failed to send message"' not in src

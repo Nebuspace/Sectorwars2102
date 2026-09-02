@@ -1,4 +1,4 @@
-"""LEG-3704 — admin_players bulk-operation must not echo catastrophic Exception text."""
+"""LEG-3878 densify — admin_players bulk-operation must not echo catastrophic Exception text."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from fastapi import HTTPException
 
 from src.api.routes import admin_players as ap_mod
 from src.api.routes.admin_players import (
+    ERR_ADMIN_PLAYERS_BULK_FAILED,
     BulkOperationParameters,
     BulkOperationRequest,
     bulk_player_operation,
@@ -19,7 +20,7 @@ from src.api.routes.admin_players import (
 
 
 @pytest.mark.asyncio
-async def test_bulk_player_operation_commit_failure_is_opaque_500():
+async def test_bulk_player_operation_commit_failure_returns_structured_500():
     secret = "secret-bulk-commit-should-not-leak"
     player = SimpleNamespace(id=uuid4(), credits=100, turns=10, username="tester")
     player_id = str(player.id)
@@ -52,10 +53,9 @@ async def test_bulk_player_operation_commit_failure_is_opaque_500():
     assert secret not in str(exc.detail)
 
 
-def test_admin_players_bulk_http500_is_opaque():
-    """LEG-3704 — static pin: bulk route 500 detail stays opaque."""
+def test_admin_players_bulk_http500_is_structured():
     src = Path(ap_mod.__file__).read_text(encoding="utf-8")
+    assert ERR_ADMIN_PLAYERS_BULK_FAILED in src
     assert "route_internal_error" in src
-    assert "ERR_ADMIN_PLAYERS_BULK_FAILED" in src
     assert 'detail="Bulk player operation failed"' not in src
     assert "Bulk player operation failed: {str(e)}" not in src
