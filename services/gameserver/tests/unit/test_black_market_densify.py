@@ -1,4 +1,6 @@
-"""LEG-3816 — black_market.py HTTP 500 catches must not echo Exception text.
+"""LEG-3908 densify — structured route_internal_error 500 densify.
+
+LEG-3816 — black_market.py HTTP 500 catches return structured Exception text.
 
 Handlers already use opaque detail; this densifies buy/sell unexpected paths.
 """
@@ -42,7 +44,7 @@ def _trade_request():
 
 
 @pytest.mark.asyncio
-async def test_buy_contraband_unexpected_is_opaque_500():
+async def test_buy_contraband_unexpected_returns_structured_500():
     secret = "secret-black-market-buy-should-not-leak"
     db = MagicMock()
 
@@ -67,7 +69,7 @@ async def test_buy_contraband_unexpected_is_opaque_500():
 
 
 @pytest.mark.asyncio
-async def test_sell_contraband_unexpected_is_opaque_500():
+async def test_sell_contraband_unexpected_returns_structured_500():
     secret = "secret-black-market-sell-should-not-leak"
     db = MagicMock()
 

@@ -3,6 +3,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from src.utils.error_handling import route_internal_error
+
+ERR_TRADING_BUY_FAILED = "ERR_TRADING_BUY_FAILED"
+ERR_TRADING_SELL_FAILED = "ERR_TRADING_SELL_FAILED"
+
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_
@@ -1010,7 +1015,10 @@ async def buy_resource(
     except Exception as e:
         db.rollback()
         logger.error("Trade failed (buy): %s", e)
-        raise HTTPException(status_code=500, detail="Trade failed")
+        raise route_internal_error(
+            ERR_TRADING_BUY_FAILED,
+            "Trade failed",
+        )
 
 
 @router.post("/sell")
@@ -1425,7 +1433,10 @@ async def sell_resource(
     except Exception as e:
         db.rollback()
         logger.error("Trade failed (sell): %s", e)
-        raise HTTPException(status_code=500, detail="Trade failed")
+        raise route_internal_error(
+            ERR_TRADING_SELL_FAILED,
+            "Trade failed",
+        )
 
 
 @router.post("/quote")

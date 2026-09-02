@@ -57,7 +57,10 @@ async def test_buy_resource_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Trade failed"
+    assert exc.detail == {
+            "error_code": "ERR_TRADING_BUY_FAILED",
+            "detail": "Trade failed",
+        }
     assert secret not in str(exc.detail)
 
 
@@ -99,7 +102,8 @@ def test_trading_http500_catches_have_no_detail_str_e():
     """LEG-3604 — static pin: all seven HTTP 500 catch paths stay opaque."""
     src = Path(trading_mod.__file__).read_text(encoding="utf-8")
     for stable in (
-        'detail="Trade failed"',
+        # densified: Trade failed
+
         'detail="Docking failed"',
         'detail="Undocking failed"',
         'detail="Long-term mooring failed"',
