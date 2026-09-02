@@ -130,3 +130,18 @@ describe('EcmSuiteInstallCta typeErrorHonesty densify (LEG-3781)', () => {
     assertNoTransportLeak(alert?.textContent ?? '');
   });
 });
+
+describe('formatEcmSuiteInstallError 403/429 densify (LEG-4078)', () => {
+  const apiRequestError = (status: number, message?: string) => {
+    const err = new Error(message ?? `API Error: ${status}`);
+    (err as { status?: number }).status = status;
+    return err;
+  };
+  it('surfaces 403/429 without raw status codes', () => {
+    expect(formatEcmSuiteInstallError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatEcmSuiteInstallError(apiRequestError(403, 'ecm_denied'))).toBe('ecm_denied');
+    expect(formatEcmSuiteInstallError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatEcmSuiteInstallError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatEcmSuiteInstallError(apiRequestError(403))).not.toMatch(/TypeError/i);
+  });
+});

@@ -132,3 +132,20 @@ describe('StealthModuleInstallCta typeErrorHonesty densify (LEG-3780)', () => {
     assertNoTransportLeak(alert?.textContent ?? '');
   });
 });
+
+describe('formatStealthModuleInstallError 403/429 densify (LEG-4079)', () => {
+  const apiRequestError = (status: number, message?: string) => {
+    const err = new Error(message ?? `API Error: ${status}`);
+    (err as { status?: number }).status = status;
+    return err;
+  };
+  it('surfaces 403/429 without raw status codes', () => {
+    expect(formatStealthModuleInstallError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatStealthModuleInstallError(apiRequestError(403, 'stealth_denied'))).toBe(
+      'stealth_denied',
+    );
+    expect(formatStealthModuleInstallError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatStealthModuleInstallError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatStealthModuleInstallError(apiRequestError(403))).not.toMatch(/TypeError/i);
+  });
+});

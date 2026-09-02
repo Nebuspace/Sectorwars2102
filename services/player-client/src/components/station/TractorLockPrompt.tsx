@@ -54,9 +54,31 @@ function tractorLockServerDetail(err: unknown): string | undefined {
   return undefined;
 }
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
 /** Surface gameserver break/surrender refusal detail. */
 export function formatTractorLockActionError(err: unknown): string {
-  return tractorLockServerDetail(err) ?? 'Action failed';
+  const status = httpStatus(err);
+  const detail = tractorLockServerDetail(err);
+
+  if (status === 403) {
+    if (detail) return detail;
+    return 'You do not have permission to resolve this tractor lock.';
+  }
+
+  if (status === 429) {
+    return 'Tractor lock action rate limit exceeded — wait a moment and try again.';
+  }
+
+  return detail ?? 'Action failed';
 }
 
 const TractorLockPrompt: React.FC = () => {

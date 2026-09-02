@@ -67,9 +67,31 @@ function tractorBeamInstallServerDetail(err: unknown): string | undefined {
   return undefined;
 }
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
 /** Surface gameserver tractor-beam install refusal detail. */
 export function formatTractorBeamInstallError(err: unknown): string {
-  return tractorBeamInstallServerDetail(err) ?? 'Tractor Beam install failed';
+  const status = httpStatus(err);
+  const detail = tractorBeamInstallServerDetail(err);
+
+  if (status === 403) {
+    if (detail) return detail;
+    return 'You do not have permission to install a Tractor Beam.';
+  }
+
+  if (status === 429) {
+    return 'Tractor Beam install rate limit exceeded — wait a moment and try again.';
+  }
+
+  return detail ?? 'Tractor Beam install failed';
 }
 
 export interface TractorBeamInstallCtaProps {

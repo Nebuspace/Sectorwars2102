@@ -143,3 +143,26 @@ describe('MissionPlanner load transport collapse densify (LEG-3752)', () => {
     expect(container.textContent).not.toMatch(/Failed to fetch/i);
   });
 });
+
+describe('MissionPlanner 403/429 densify (LEG-4081)', () => {
+  const apiRequestError = (status: number, message?: string) => {
+    const err = new Error(message ?? `API Error: ${status}`);
+    (err as { status?: number }).status = status;
+    return err;
+  };
+  it('load + mutation formatters surface 403/429 without raw status codes', () => {
+    expect(formatMissionPlannerLoadError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatMissionPlannerLoadError(apiRequestError(403, 'missions_denied'))).toBe(
+      'missions_denied',
+    );
+    expect(formatMissionPlannerLoadError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatMissionPlannerLoadError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(
+      formatMissionPlannerMutationError(apiRequestError(403), 'Failed to join mission'),
+    ).toMatch(/permission/i);
+    expect(
+      formatMissionPlannerMutationError(apiRequestError(429), 'Failed to join mission'),
+    ).toMatch(/rate limit/i);
+    expect(formatMissionPlannerLoadError(apiRequestError(403))).not.toMatch(/TypeError/i);
+  });
+});

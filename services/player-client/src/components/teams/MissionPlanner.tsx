@@ -21,22 +21,62 @@ const isMissionPlannerNetworkCollapse = (msg: string): boolean => {
   );
 };
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
 /** Exported for TypeError/network honesty Vitest (LEG-3752). */
 export function formatMissionPlannerLoadError(err: unknown): string {
-  if (err instanceof TypeError) return MISSION_PLANNER_LOAD_FALLBACK;
+  const status = httpStatus(err);
   const message = err instanceof Error ? err.message : undefined;
-  if (typeof message === 'string' && message.trim() && !isMissionPlannerNetworkCollapse(message)) {
-    return message;
+  const hasServerDetail =
+    !(err instanceof TypeError) &&
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isMissionPlannerNetworkCollapse(message);
+
+  if (status === 403) {
+    if (hasServerDetail) return message!.trim();
+    return 'You do not have permission to view missions.';
   }
+
+  if (status === 429) {
+    return 'Mission planner rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (err instanceof TypeError) return MISSION_PLANNER_LOAD_FALLBACK;
+  if (hasServerDetail) return message!;
   return MISSION_PLANNER_LOAD_FALLBACK;
 }
 
 export function formatMissionPlannerMutationError(err: unknown, fallback: string): string {
-  if (err instanceof TypeError) return fallback;
+  const status = httpStatus(err);
   const message = err instanceof Error ? err.message : undefined;
-  if (typeof message === 'string' && message.trim() && !isMissionPlannerNetworkCollapse(message)) {
-    return message;
+  const hasServerDetail =
+    !(err instanceof TypeError) &&
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isMissionPlannerNetworkCollapse(message);
+
+  if (status === 403) {
+    if (hasServerDetail) return message!.trim();
+    return 'You do not have permission to change this mission.';
   }
+
+  if (status === 429) {
+    return 'Mission action rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (err instanceof TypeError) return fallback;
+  if (hasServerDetail) return message!;
   return fallback;
 }
 
