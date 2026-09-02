@@ -1,6 +1,8 @@
-"""LEG-3831 — refining.py HTTP 500 catches must not echo Exception text.
+"""LEG-3909 densify — structured route_internal_error 500 densify.
 
-Mirrors LEG-3817 expeditions / LEG-3829 regional_governance opaque densify family.
+LEG-3831 — refining.py HTTP 500 catches return structured Exception text.
+
+Mirrors LEG-3817 expeditions / LEG-3829 regional_governance structured densify family.
 """
 
 from __future__ import annotations
@@ -26,7 +28,7 @@ def _player():
 
 
 @pytest.mark.asyncio
-async def test_refine_crystal_unexpected_is_opaque_500():
+async def test_refine_crystal_unexpected_returns_structured_500():
     secret = "secret-refine-crystal-should-not-leak"
     db = MagicMock()
 
@@ -49,7 +51,7 @@ async def test_refine_crystal_unexpected_is_opaque_500():
 
 
 @pytest.mark.asyncio
-async def test_refine_lumen_start_unexpected_is_opaque_500():
+async def test_refine_lumen_start_unexpected_returns_structured_500():
     secret = "secret-refine-lumen-start-should-not-leak"
     db = MagicMock()
 
@@ -72,7 +74,7 @@ async def test_refine_lumen_start_unexpected_is_opaque_500():
 
 
 @pytest.mark.asyncio
-async def test_refine_lumen_collect_unexpected_is_opaque_500():
+async def test_refine_lumen_collect_unexpected_returns_structured_500():
     secret = "secret-refine-lumen-collect-should-not-leak"
     db = MagicMock()
 
