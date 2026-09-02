@@ -47,6 +47,12 @@ import {
   formatPlanetCourseError,
 } from '../PlanetManager';
 
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
+
 const getOwnedPlanets = gameAPI.planetary.getOwnedPlanets as ReturnType<typeof vi.fn>;
 
 describe('PlanetManager Network Error densify (LEG-3602)', () => {
@@ -131,5 +137,25 @@ describe('PlanetManager load + mutation Network Error densify (LEG-3602)', () =>
 
     expect(container.textContent).toMatch(/Failed to set course to colony/i);
     expect(container.textContent).not.toMatch(/Network Error/i);
+  });
+});
+
+describe('PlanetManager 403/429 densify (LEG-4001)', () => {
+  it('formatPlanetLoadError surfaces 403/429 without raw status codes', () => {
+    expect(formatPlanetLoadError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatPlanetLoadError(apiRequestError(403, 'colony_roster_denied'))).toBe(
+      'colony_roster_denied',
+    );
+    expect(formatPlanetLoadError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatPlanetLoadError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatPlanetLoadError(apiRequestError(403))).not.toMatch(/TypeError/i);
+  });
+
+  it('formatPlanetCourseError surfaces 403/429 without raw status codes', () => {
+    expect(formatPlanetCourseError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatPlanetCourseError(apiRequestError(403, 'course_denied'))).toBe('course_denied');
+    expect(formatPlanetCourseError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatPlanetCourseError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatPlanetCourseError(apiRequestError(403))).not.toMatch(/TypeError/i);
   });
 });
