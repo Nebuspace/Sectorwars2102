@@ -23,6 +23,10 @@ from src.models.player import Player
 from src.models.ship import Ship
 from src.services import expedition_service, first_login_service
 from src.services.expedition_service import ExpeditionError
+from src.utils.error_handling import route_internal_error
+
+ERR_EXPEDITIONS_LAUNCH_FAILED = "ERR_EXPEDITIONS_LAUNCH_FAILED"
+ERR_EXPEDITIONS_REROLL_FAILED = "ERR_EXPEDITIONS_REROLL_FAILED"
 
 logger = logging.getLogger(__name__)
 
@@ -89,9 +93,9 @@ async def launch_expedition(
     except Exception:
         db.rollback()
         logger.exception("Failed to launch expedition")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to launch expedition",
+        raise route_internal_error(
+            ERR_EXPEDITIONS_LAUNCH_FAILED,
+            "Failed to launch expedition",
         )
 
 
@@ -155,7 +159,7 @@ async def reroll_expedition(
     except Exception:
         db.rollback()
         logger.exception("Failed to reroll expedition")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to reroll expedition",
+        raise route_internal_error(
+            ERR_EXPEDITIONS_REROLL_FAILED,
+            "Failed to reroll expedition",
         )
