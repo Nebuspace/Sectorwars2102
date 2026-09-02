@@ -18,11 +18,18 @@ from src.models.user import User
 from src.models.combat_log import CombatLog
 from src.models.player import Player
 from src.services.combat_analytics_service import CombatAnalyticsService
+from src.utils.error_handling import route_internal_error
 
 
 router = APIRouter(prefix="/admin/combat", tags=["admin-combat"])
 
 logger = logging.getLogger(__name__)
+
+ERR_ADMIN_COMBAT_FEED_FAILED = "ERR_ADMIN_COMBAT_FEED_FAILED"
+ERR_ADMIN_COMBAT_INTERVENE_FAILED = "ERR_ADMIN_COMBAT_INTERVENE_FAILED"
+ERR_ADMIN_COMBAT_BALANCE_FAILED = "ERR_ADMIN_COMBAT_BALANCE_FAILED"
+ERR_ADMIN_COMBAT_DISPUTES_FAILED = "ERR_ADMIN_COMBAT_DISPUTES_FAILED"
+ERR_ADMIN_COMBAT_DASHBOARD_FAILED = "ERR_ADMIN_COMBAT_DASHBOARD_FAILED"
 
 
 # Request/Response models
@@ -170,10 +177,7 @@ async def get_live_combat_feed(
         return [CombatFeedItem(**combat) for combat in combat_feed]
     except Exception as e:
         logger.error(f"Error retrieving combat feed: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to retrieve combat feed",
-        ) from e
+        raise route_internal_error(ERR_ADMIN_COMBAT_FEED_FAILED, "Failed to retrieve combat feed")
 
 
 @router.post("/{combat_id}/intervene", response_model=InterventionResponse)
@@ -222,10 +226,7 @@ async def intervene_in_combat(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Error performing combat intervention: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to perform combat intervention",
-        ) from e
+        raise route_internal_error(ERR_ADMIN_COMBAT_INTERVENE_FAILED, "Failed to perform combat intervention")
 
 
 @router.get("/balance", response_model=CombatBalanceResponse)
@@ -259,10 +260,7 @@ async def get_combat_balance_analytics(
         return CombatBalanceResponse(**balance_data)
     except Exception as e:
         logger.error(f"Error retrieving balance analytics: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to retrieve balance analytics",
-        ) from e
+        raise route_internal_error(ERR_ADMIN_COMBAT_BALANCE_FAILED, "Failed to retrieve balance analytics")
 
 
 @router.get("/disputes", response_model=List[CombatDisputeResponse])
@@ -295,10 +293,7 @@ async def get_combat_disputes(
         return [CombatDisputeResponse(**dispute) for dispute in disputes]
     except Exception as e:
         logger.error(f"Error retrieving combat disputes: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to retrieve combat disputes",
-        ) from e
+        raise route_internal_error(ERR_ADMIN_COMBAT_DISPUTES_FAILED, "Failed to retrieve combat disputes")
 
 
 # ---------------------------------------------------------------------------
@@ -572,7 +567,4 @@ async def get_combat_dashboard_summary(
         }
     except Exception as e:
         logger.error(f"Error generating combat dashboard summary: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to generate dashboard summary",
-        ) from e
+        raise route_internal_error(ERR_ADMIN_COMBAT_DASHBOARD_FAILED, "Failed to generate dashboard summary")

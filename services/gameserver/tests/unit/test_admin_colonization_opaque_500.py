@@ -32,20 +32,24 @@ def test_get_colony_production_unexpected_is_opaque_500():
         assert False, "expected HTTPException"
     except HTTPException as exc:
         assert exc.status_code == 500
-        assert exc.detail == "Failed to fetch production data"
+        assert exc.detail == {
+            "error_code": "ERR_ADMIN_COLONIZATION_PRODUCTION_FAILED",
+            "detail": "Failed to fetch production data",
+        }
         assert "secret-colonization-query-should-not-leak" not in str(exc.detail)
 
 
 def test_admin_colonization_http500_catches_have_no_detail_str_e():
-    """LEG-3570 — static pin: the four HTTP 500 catch paths stay opaque."""
+    """LEG-3570 — static pin: the four HTTP 500 catch paths stay opaque and structured."""
     src = Path(ac.__file__).read_text(encoding="utf-8")
-    for stable in (
-        'detail="Failed to fetch production data"',
-        'detail="Failed to fetch genesis device data"',
-        'detail="Failed to fetch planetary data"',
-        'detail="Failed to tick planet production"',
+    assert "route_internal_error" in src
+    for err in (
+        "ERR_ADMIN_COLONIZATION_PRODUCTION_FAILED",
+        "ERR_ADMIN_COLONIZATION_GENESIS_FAILED",
+        "ERR_ADMIN_COLONIZATION_PLANETS_FAILED",
+        "ERR_ADMIN_COLONIZATION_TICK_FAILED",
     ):
-        assert stable in src
+        assert err in src
     assert "Failed to fetch production data: {str(e)}" not in src
     assert "Failed to fetch genesis device data: {str(e)}" not in src
     assert "Failed to fetch planetary data: {str(e)}" not in src
