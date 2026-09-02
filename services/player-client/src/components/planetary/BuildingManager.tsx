@@ -34,6 +34,16 @@ interface BuildingInfo {
   };
 }
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
 /** True when message is bare transport collapse, not gameserver upgrade detail. */
 const isBuildingUpgradeNetworkCollapse = (msg: string): boolean => {
   const trimmed = msg.trim();
@@ -46,6 +56,7 @@ const isBuildingUpgradeNetworkCollapse = (msg: string): boolean => {
 
 /** Surface gameserver 400 detail on building upgrade refusal (ownership / unknown type / in-progress). */
 export function formatBuildingUpgradeError(err: unknown): string {
+  const status = httpStatus(err);
   const message = err instanceof Error ? err.message : undefined;
   // Network collapse (fetch TypeError / axios Network Error) is not gameserver copy.
   const hasServerDetail =
@@ -54,6 +65,15 @@ export function formatBuildingUpgradeError(err: unknown): string {
     message.trim().length > 0 &&
     !/^API Error: \d+$/.test(message.trim()) &&
     !isBuildingUpgradeNetworkCollapse(message);
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission to upgrade this building.';
+  }
+
+  if (status === 429) {
+    return 'Building upgrade rate limit exceeded — wait a moment and try again.';
+  }
 
   if (hasServerDetail) return message!;
   return 'Failed to upgrade building';

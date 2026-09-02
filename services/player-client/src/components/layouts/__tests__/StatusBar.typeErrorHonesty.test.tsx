@@ -56,11 +56,20 @@ const basePlayer = {
   reputation_tier: 'Neutral',
 };
 
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
+
 function assertNoTransportLeak(text: string) {
   expect(text).not.toBe('Network Error');
   expect(text).not.toContain('Network Error');
   expect(text).not.toMatch(/Failed to fetch/i);
   expect(text).not.toMatch(/TypeError/i);
+  expect(text).not.toMatch(/\b403\b/);
+  expect(text).not.toMatch(/\b429\b/);
+  expect(text).not.toMatch(/HTTP 429/i);
 }
 
 describe('StatusBar rank load typeErrorHonesty densify (LEG-3782)', () => {
@@ -101,6 +110,21 @@ describe('StatusBar rank load typeErrorHonesty densify (LEG-3782)', () => {
     ['Network Error', new Error('Network Error')],
     ['Failed to fetch', new Error('Failed to fetch')],
   ])('hides raw transport text when getRank rejects with %s', async (_label, err) => {
+    mockGetRank.mockRejectedValue(err);
+
+    await renderBar();
+
+    assertNoTransportLeak(container.textContent ?? '');
+
+    const badge = container.querySelector('.rank-badge--compact');
+    expect(badge).not.toBeNull();
+    expect(badge?.querySelector('.rank-level')?.textContent).toBe('—');
+  });
+
+  it.each([
+    ['HTTP 403', apiRequestError(403)],
+    ['HTTP 429', apiRequestError(429)],
+  ])('hides raw status/transport text when getRank rejects with %s (LEG-3964)', async (_label, err) => {
     mockGetRank.mockRejectedValue(err);
 
     await renderBar();

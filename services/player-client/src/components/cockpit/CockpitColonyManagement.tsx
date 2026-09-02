@@ -22,6 +22,16 @@ const MAX_BUILDING_LEVEL = 10;
 
 export const COCKPIT_COLONY_LOAD_FALLBACK = 'Failed to load colony data';
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
 /** Transport collapse copy is not gameserver detail (LEG-3751 densify). */
 const isCockpitColonyNetworkCollapse = (msg: string): boolean => {
   const trimmed = msg.trim();
@@ -34,11 +44,25 @@ const isCockpitColonyNetworkCollapse = (msg: string): boolean => {
 
 /** Exported for TypeError/network honesty Vitest (LEG-3751). */
 export function formatCockpitColonyLoadError(err: unknown): string {
-  if (err instanceof TypeError) return COCKPIT_COLONY_LOAD_FALLBACK;
+  const status = httpStatus(err);
   const message = err instanceof Error ? err.message : undefined;
-  if (typeof message === 'string' && message.trim() && !isCockpitColonyNetworkCollapse(message)) {
-    return message;
+  const hasServerDetail =
+    !(err instanceof TypeError) &&
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isCockpitColonyNetworkCollapse(message);
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission to view colony data.';
   }
+
+  if (status === 429) {
+    return 'Colony data rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (hasServerDetail) return message!;
   return COCKPIT_COLONY_LOAD_FALLBACK;
 }
 

@@ -43,6 +43,12 @@ import CockpitColonyManagement, {
 } from '../CockpitColonyManagement';
 import { formatBuildingUpgradeError } from '../../planetary/BuildingManager';
 
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
+
 const BASE_PROPS = {
   planetId: 'planet-1',
   playerCredits: 50_000,
@@ -84,6 +90,32 @@ describe('formatCockpitColonyLoadError (LEG-3751)', () => {
   it('formatBuildingUpgradeError falls back on transport collapse for mutation path', () => {
     expect(formatBuildingUpgradeError(new TypeError('Failed to fetch'))).toBe('Failed to upgrade building');
     expect(formatBuildingUpgradeError(new Error('Network Error'))).toBe('Failed to upgrade building');
+  });
+
+  it('surfaces 403/429 status paths on load and mutation formatters (LEG-3963)', () => {
+    expect(formatCockpitColonyLoadError(apiRequestError(403))).toBe(
+      'You do not have permission to view colony data.',
+    );
+    expect(formatCockpitColonyLoadError(apiRequestError(429))).toBe(
+      'Colony data rate limit exceeded — wait a moment and try again.',
+    );
+    expect(formatCockpitColonyLoadError(apiRequestError(403, 'colony_load_denied'))).toBe(
+      'colony_load_denied',
+    );
+    expect(formatCockpitColonyLoadError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatCockpitColonyLoadError(apiRequestError(403))).not.toMatch(/TypeError/i);
+
+    expect(formatBuildingUpgradeError(apiRequestError(403))).toBe(
+      'You do not have permission to upgrade this building.',
+    );
+    expect(formatBuildingUpgradeError(apiRequestError(429))).toBe(
+      'Building upgrade rate limit exceeded — wait a moment and try again.',
+    );
+    expect(formatBuildingUpgradeError(apiRequestError(403, 'building_upgrade_denied'))).toBe(
+      'building_upgrade_denied',
+    );
+    expect(formatBuildingUpgradeError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatBuildingUpgradeError(apiRequestError(403))).not.toMatch(/Network Error/i);
   });
 });
 
