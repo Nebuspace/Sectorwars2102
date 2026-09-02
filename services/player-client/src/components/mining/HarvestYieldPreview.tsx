@@ -28,11 +28,31 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
   );
 };
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
 export function harvestGateMessage(
   reason: unknown,
   fallback = 'Yield preview failed. Please try again.',
 ): string {
   if (reason instanceof TypeError) return fallback;
+  const status = httpStatus(reason);
+  if (status === 403) {
+    if (reason instanceof Error && reason.message.trim() && !/^API Error: \d+$/.test(reason.message.trim())) {
+      return HARVEST_GATE_COPY[reason.message] || reason.message;
+    }
+    return 'Access denied — you cannot preview harvest yield right now.';
+  }
+  if (status === 429) {
+    return 'Harvest yield preview rate limit exceeded — wait a moment and try again.';
+  }
   if (reason instanceof Error && reason.message.length > 0) {
     if (isNetworkCollapseMessage(reason.message)) return fallback;
     const key = reason.message;

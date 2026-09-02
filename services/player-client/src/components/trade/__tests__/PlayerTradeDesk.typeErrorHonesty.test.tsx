@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 /**
  * LEG-3621 Soft-ORDER — PlayerTradeDesk TypeError / Network Error densify.
+ * LEG-4055 Soft-ORDER — HTTP 429 densify (invent=0).
  */
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -73,6 +74,22 @@ describe('formatTradeError TypeError densify (LEG-3621)', () => {
   it('preserves gameserver detail on 403 when present', () => {
     const err = Object.assign(new Error('not_co_located'), { status: 403 });
     expect(formatTradeError(err, 'trade_open_failed')).toBe('You must be in the same location to trade.');
+  });
+
+  it('maps 429 to player-safe rate-limit copy without raw transport leakage (LEG-4055)', () => {
+    const err = Object.assign(new Error('API Error: 429'), { status: 429 });
+    expect(formatTradeError(err, 'trade_open_failed')).toBe(
+      'Trade rate limit exceeded — wait a moment and try again.',
+    );
+    expect(formatTradeError(err, 'trade_open_failed')).toMatch(/rate limit/i);
+    expect(formatTradeError(err, 'trade_open_failed')).not.toMatch(/\b429\b/);
+    expect(formatTradeError(err, 'trade_open_failed')).not.toMatch(/API Error/i);
+    expect(formatTradeError(err, 'trade_open_failed')).not.toMatch(/Network Error/i);
+    const denied = Object.assign(new Error('API Error: 403'), { status: 403 });
+    expect(formatTradeError(denied, 'trade_open_failed')).toBe(
+      'Access denied — you cannot trade right now.',
+    );
+    expect(formatTradeError(denied, 'trade_open_failed')).not.toMatch(/TypeError/i);
   });
 });
 
