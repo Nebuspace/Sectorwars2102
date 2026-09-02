@@ -175,6 +175,10 @@ export function formatProfessionsLoadError(err: unknown): string {
     return 'You do not own this planet.';
   }
 
+  if (status === 429) {
+    return 'Profession load rate limit exceeded — wait a moment and try again.';
+  }
+
   if (status === 404) {
     if (hasServerDetail) return message!;
     return 'Planet not found.';

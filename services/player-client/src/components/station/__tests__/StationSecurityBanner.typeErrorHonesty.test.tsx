@@ -96,3 +96,27 @@ describe('StationSecurityBanner load transport collapse densify (LEG-3750)', () 
     expect(container.textContent).not.toMatch(/Failed to fetch/i);
   });
 });
+
+describe('formatStationSecurityBannerLoadError 403/429 densify (LEG-4102)', () => {
+  const apiRequestError = (status: number, message?: string) => {
+    const err = new Error(message ?? `API Error: ${status}`);
+    (err as { status?: number }).status = status;
+    return err;
+  };
+
+  it('surfaces 403/429 without raw status codes', () => {
+    expect(formatStationSecurityBannerLoadError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatStationSecurityBannerLoadError(apiRequestError(403, 'security_denied'))).toBe(
+      'security_denied',
+    );
+    expect(formatStationSecurityBannerLoadError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatStationSecurityBannerLoadError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatStationSecurityBannerLoadError(apiRequestError(403))).not.toMatch(/TypeError/i);
+  });
+
+  it('collapses bare API Error: 404 to load fallback', () => {
+    expect(formatStationSecurityBannerLoadError(new Error('API Error: 404'))).toBe(
+      STATION_SECURITY_BANNER_LOAD_FALLBACK,
+    );
+  });
+});

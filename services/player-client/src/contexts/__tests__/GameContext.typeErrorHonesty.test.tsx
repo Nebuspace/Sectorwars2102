@@ -406,3 +406,24 @@ describe('GameContext Error Network Error densify (LEG-3401)', () => {
     expect(text).not.toMatch(/Network Error/i);
   });
 });
+
+describe('formatSetActiveShipError / formatGetAvailableMovesError 403/429 densify (LEG-4100)', () => {
+  const apiRequestError = (status: number, message?: string) => {
+    const err = new Error(message ?? `API Error: ${status}`);
+    (err as { status?: number }).status = status;
+    return err;
+  };
+
+  it('surfaces 403/429 without raw status codes', () => {
+    expect(formatSetActiveShipError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatSetActiveShipError(apiRequestError(403, 'ship_denied'))).toBe('ship_denied');
+    expect(formatSetActiveShipError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatSetActiveShipError(apiRequestError(429))).not.toMatch(/\b429\b/);
+
+    expect(formatGetAvailableMovesError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatGetAvailableMovesError(apiRequestError(403, 'moves_denied'))).toBe('moves_denied');
+    expect(formatGetAvailableMovesError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatGetAvailableMovesError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatGetAvailableMovesError(apiRequestError(403))).not.toMatch(/TypeError/i);
+  });
+});

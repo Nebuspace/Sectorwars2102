@@ -41,22 +41,50 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
   );
 };
 
-/** Exported for TypeError densify tests — fetch/upgrade/downgrade catch paths use this. */
+function httpStatusStationSecurity(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+/** Exported for TypeError densify tests — fetch/upgrade/downgrade catch paths use this (LEG-4102). */
 export function formatStationSecurityError(err: unknown, fallback: string): string {
-  if (err instanceof TypeError) return fallback;
+  const status = httpStatusStationSecurity(err);
+  let detail: string | undefined;
   if (err && typeof err === 'object') {
     const resp = (err as { response?: { data?: unknown } }).response;
     const data = resp?.data ?? (err as { data?: unknown }).data;
     if (data && typeof data === 'object') {
-      const detail = (data as Record<string, unknown>).detail;
-      if (typeof detail === 'string' && detail) return detail;
+      const d = (data as Record<string, unknown>).detail;
+      if (typeof d === 'string' && d.trim()) detail = d.trim();
     }
-    const msg = (err as { message?: string }).message;
-    if (typeof msg === 'string' && msg) {
-      if (isNetworkCollapseMessage(msg)) return fallback;
-      return msg;
+    if (!detail) {
+      const msg = (err as { message?: string }).message;
+      if (
+        typeof msg === 'string' &&
+        msg.trim() &&
+        !/^API Error: \d+$/.test(msg.trim()) &&
+        !isNetworkCollapseMessage(msg)
+      ) {
+        detail = msg.trim();
+      }
     }
   }
+
+  if (status === 403) {
+    if (detail) return detail;
+    return 'You do not have permission to manage station security.';
+  }
+  if (status === 429) {
+    return 'Station security action rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (err instanceof TypeError) return fallback;
+  if (detail) return detail;
   return fallback;
 }
 

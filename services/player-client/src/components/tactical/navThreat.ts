@@ -10,14 +10,39 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
   );
 };
 
-/** Hide fetch TypeError / network-collapse noise — stable fallback for GET /nav/threat consumers. */
-export function formatNavThreatError(err: unknown, fallback = 'Threat data unavailable — check your connection.'): string {
-  if (err instanceof TypeError) return fallback;
-  const message = err instanceof Error ? err.message : undefined;
-  if (typeof message === 'string' && message.trim() && !/^API Error: \d+$/.test(message.trim())) {
-    if (isNetworkCollapseMessage(message)) return fallback;
-    return message.trim();
+function httpStatusNavThreat(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
   }
+  return undefined;
+}
+
+/** Hide fetch TypeError / network-collapse noise — stable fallback for GET /nav/threat consumers (LEG-4101). */
+export function formatNavThreatError(err: unknown, fallback = 'Threat data unavailable — check your connection.'): string {
+  const status = httpStatusNavThreat(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const detail =
+    !(err instanceof TypeError) &&
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNetworkCollapseMessage(message)
+      ? message.trim()
+      : undefined;
+
+  if (status === 403) {
+    if (detail) return detail;
+    return 'You do not have permission to load threat data.';
+  }
+  if (status === 429) {
+    return 'Threat data rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (err instanceof TypeError) return fallback;
+  if (detail) return detail;
   return fallback;
 }
 
