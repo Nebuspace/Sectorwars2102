@@ -37,6 +37,12 @@ function captureAuthError(run: () => Promise<unknown>): Promise<string> {
   );
 }
 
+function httpErr(status: number) {
+  return Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: {} },
+  });
+}
+
 /**
  * LEG-3789 Soft-ORDER — AuthContext TypeError/Network Error densify.
  */
@@ -162,5 +168,52 @@ describe('AuthContext typeErrorHonesty densify (LEG-3789)', () => {
     const message = await captureAuthError(() => result.current.refreshToken());
     expect(message).toBe(AUTH_NETWORK_FALLBACKS.refresh);
     assertNoTransportLeak(message);
+  });
+
+  it('initial auth/me 429 preserves tokens without clearing auth data (LEG-3824)', async () => {
+    localStorage.setItem('accessToken', 'access-token');
+    localStorage.setItem('refreshToken', 'refresh-token');
+    vi.mocked(api.get).mockRejectedValue(httpErr(429));
+
+    const warnSpy = vi.spyOn(console, 'warn');
+
+    const { result } = renderHook(() => useAuth(), {
+      wrapper: ({ children }) => <AuthProvider>{children}</AuthProvider>,
+    });
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    expect(localStorage.getItem('accessToken')).toBe('access-token');
+    expect(localStorage.getItem('refreshToken')).toBe('refresh-token');
+    expect(result.current.user).toBeNull();
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Rate limit hit during auth check - will retry in a moment',
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('refreshToken fetch 429 rejects and clears stored tokens (LEG-3824 invent=0)', async () => {
+    localStorage.setItem('refreshToken', 'refresh-token');
+    localStorage.setItem('accessToken', 'access-token');
+    vi.mocked(api.get).mockRejectedValue(httpErr(401));
+
+    const { result } = renderHook(() => useAuth(), {
+      wrapper: ({ children }) => <AuthProvider>{children}</AuthProvider>,
+    });
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    localStorage.setItem('refreshToken', 'refresh-token');
+    localStorage.setItem('accessToken', 'access-token');
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 429,
+      text: async () => 'Too Many Requests',
+    });
+
+    const message = await captureAuthError(() => result.current.refreshToken());
+    expect(message).toBe('Server returned status 429');
+    expect(localStorage.getItem('accessToken')).toBeNull();
+    expect(localStorage.getItem('refreshToken')).toBeNull();
   });
 });
