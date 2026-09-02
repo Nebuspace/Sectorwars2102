@@ -28,11 +28,21 @@ function assertNoTransportLeak(text: string) {
 /**
  * LEG-3484 Soft-ORDER — RegionTerminateConfirmDialog TypeError/Network Error honesty densify.
  * LEG-3916 Soft-ORDER — HTTP 429 densify (invent=0).
+ * LEG-4105 Soft-ORDER — HTTP 403 densify (invent=0).
  */
-describe('RegionTerminateConfirmDialog typeErrorHonesty densify (LEG-3484 / LEG-3916)', () => {
+describe('RegionTerminateConfirmDialog typeErrorHonesty densify (LEG-3484 / LEG-3916 / LEG-4105)', () => {
   beforeEach(() => {
     vi.mocked(regionTerminateApi.fetchRegionTerminatePreview).mockReset();
     vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('formatRegionTerminateError surfaces 403 as admin.regions.terminate scope copy', () => {
+    const collapsed = formatRegionTerminateError(axiosError(403));
+    expect(collapsed).toMatch(/access denied/i);
+    expect(collapsed).toMatch(/admin\.regions\.terminate/i);
+    expect(collapsed).not.toMatch(/\b403\b/);
+    expect(collapsed).not.toMatch(/HTTP 403/i);
+    assertNoTransportLeak(collapsed);
   });
 
   it('formatRegionTerminateError surfaces 429 as admin rate-limit copy', () => {
@@ -86,6 +96,30 @@ describe('RegionTerminateConfirmDialog typeErrorHonesty densify (LEG-3484 / LEG-
     expect(alert).toBe(HONEST);
     expect(alert).not.toMatch(/TypeError/i);
     expect(alert).not.toMatch(/Failed to fetch/i);
+  });
+
+  it('surfaces 403 as admin.regions.terminate scope copy on terminate preview', async () => {
+    vi.mocked(regionTerminateApi.fetchRegionTerminatePreview).mockRejectedValue(
+      axiosError(403),
+    );
+
+    render(
+      <RegionTerminateConfirmDialog
+        regionId="reg-1"
+        onCancel={() => {}}
+        onConfirm={async () => {}}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/access denied/i);
+    expect(alert).toMatch(/admin\.regions\.terminate/i);
+    expect(alert).not.toMatch(/\b403\b/);
+    expect(alert).not.toMatch(/HTTP 403/i);
+    assertNoTransportLeak(alert);
   });
 
   it('surfaces 429 as admin rate-limit copy on terminate preview', async () => {
