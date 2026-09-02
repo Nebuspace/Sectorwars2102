@@ -67,6 +67,9 @@ const { getPlanetProfessions, trainPlanetProfession, assignPlanetProfession, OWN
       TRADE_SPECIALISTS: true,
       INDUSTRIAL_MANAGERS: true,
     },
+    training_costs_per_100: undefined as
+      | Record<string, { credits: number; equipment?: number; organics?: number }>
+      | undefined,
   };
   return {
     OWNER_STATE: state,
@@ -142,7 +145,43 @@ describe('ProfessionsPanel', () => {
     expect(container.querySelector('[data-testid="professions-cost-blocked"]')?.textContent).toContain(
       'DECISION-NEEDED',
     );
+    expect(container.querySelector('[data-testid="professions-training-cost-preview"]')).toBeNull();
     expect(container.textContent).not.toMatch(/\d+\s*cr/i);
+  });
+
+  it('shows scaled training cost preview when cost_blocked is false (LEG-3759)', async () => {
+    getPlanetProfessions.mockResolvedValueOnce({
+      ...OWNER_STATE,
+      cost_blocked: false,
+      training_costs_per_100: {
+        SPACE_ENGINEERS: { credits: 50_000, equipment: 1_000 },
+        STRUCTURAL_ENGINEERS: { credits: 50_000, equipment: 1_000 },
+        MINING_ENGINEERS: { credits: 50_000, equipment: 1_000 },
+        RESEARCH_SCIENTISTS: { credits: 75_000, equipment: 1_500 },
+        AGRICULTURAL_SCIENTISTS: { credits: 50_000, organics: 500 },
+        MEDICAL_PROFESSIONALS: { credits: 50_000, equipment: 1_000 },
+        TERRAFORM_ENGINEERS: { credits: 75_000, organics: 500, equipment: 1_000 },
+        COMBAT_PILOTS: { credits: 50_000, equipment: 1_000 },
+        DEFENSE_COORDINATORS: { credits: 50_000, equipment: 1_000 },
+        STRATEGIC_ANALYSTS: { credits: 50_000 },
+        TRADE_SPECIALISTS: { credits: 50_000 },
+        INDUSTRIAL_MANAGERS: { credits: 50_000, equipment: 1_000 },
+      },
+    });
+
+    await act(async () => {
+      root.render(<ProfessionsPanel planetId="planet-1" citadelLevel={3} />);
+    });
+    await act(async () => {
+      await flush();
+    });
+
+    expect(container.querySelector('[data-testid="professions-cost-blocked"]')).toBeNull();
+    const preview = container.querySelector('[data-testid="professions-training-cost-preview"]');
+    expect(preview?.textContent).toContain('50,000');
+    expect(preview?.textContent).toContain('1,000');
+    expect(preview?.textContent).toMatch(/equipment/i);
+    expect(preview?.textContent).toMatch(/charged when queued/i);
   });
 
   it('hides the panel when the server rejects non-owner access', async () => {

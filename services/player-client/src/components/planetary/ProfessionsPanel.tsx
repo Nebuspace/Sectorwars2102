@@ -46,6 +46,12 @@ interface TrainingQueueRow {
   training_days?: number | null;
 }
 
+interface TrainingCostRecipe {
+  credits: number;
+  equipment?: number;
+  organics?: number;
+}
+
 interface PlanetProfessionsState {
   planet_id: string;
   generic_colonists: number;
@@ -55,6 +61,8 @@ interface PlanetProfessionsState {
   active_professions?: Record<string, number>;
   training_queue: TrainingQueueRow[];
   training_durations_days?: Record<string, number>;
+  /** Per-100 provisional recipe from gameserver (LEG-3084 / ADR-0093 item 35). */
+  training_costs_per_100?: Record<string, TrainingCostRecipe>;
   /** Per-profession training gates from gameserver (LEG-2697 / LEG-2698). */
   training_eligibility?: Record<string, boolean>;
 }
@@ -88,6 +96,26 @@ const formatCompletesAt = (iso: string | null | undefined): string => {
   const ms = Date.parse(iso);
   if (Number.isNaN(ms)) return iso;
   return new Date(ms).toLocaleString();
+};
+
+/** Scale per-100 recipe to trainee count (matches gameserver TrainingCostPer100.scale). */
+export const scaleTrainingCost = (
+  recipe: TrainingCostRecipe,
+  traineeCount: number,
+): TrainingCostRecipe => {
+  const scale = (n: number) => Math.floor((n * traineeCount) / 100);
+  const scaled: TrainingCostRecipe = { credits: scale(recipe.credits) };
+  if (recipe.equipment) scaled.equipment = scale(recipe.equipment);
+  if (recipe.organics) scaled.organics = scale(recipe.organics);
+  return scaled;
+};
+
+/** Human-readable queue cost line for the train form preview (LEG-3759). */
+export const formatTrainingCostPreview = (cost: TrainingCostRecipe): string => {
+  const parts = [`${cost.credits.toLocaleString()} cr`];
+  if (cost.organics) parts.push(`${cost.organics.toLocaleString()} organics`);
+  if (cost.equipment) parts.push(`${cost.equipment.toLocaleString()} equipment`);
+  return parts.join(' + ');
 };
 
 const isNotOwnerError = (message: string): boolean =>
@@ -370,6 +398,11 @@ const ProfessionsPanel: React.FC<ProfessionsPanelProps> = ({
 
   const durations = state.training_durations_days ?? {};
   const queue = state.training_queue ?? [];
+  const per100Recipe = state.training_costs_per_100?.[selectedProfession];
+  const scaledTrainingCost =
+    !state.cost_blocked && per100Recipe
+      ? scaleTrainingCost(per100Recipe, traineeCount)
+      : null;
 
   return (
     <section className="professions-panel" aria-label="Colonist professions">
@@ -387,7 +420,7 @@ const ProfessionsPanel: React.FC<ProfessionsPanelProps> = ({
       {state.cost_blocked && (
         <p className="professions-panel__notice" data-testid="professions-cost-blocked">
           {state.cost_block_reason ??
-            'DECISION-NEEDED: profession training costs are not yet ruled — training queues without charge; no prices are shown.'}
+            'Training cost preview is unavailable — charges may not be shown until costs are enabled.'}
         </p>
       )}
 
@@ -509,6 +542,15 @@ const ProfessionsPanel: React.FC<ProfessionsPanelProps> = ({
         >
           {actionLoading ? 'Queueing…' : 'Queue training'}
         </button>
+        {scaledTrainingCost && (
+          <p
+            className="professions-panel__cost-preview"
+            data-testid="professions-training-cost-preview"
+          >
+            Estimated cost (provisional): {formatTrainingCostPreview(scaledTrainingCost)} — charged
+            when queued.
+          </p>
+        )}
       </div>
 
       {actionMessage && <p className="professions-panel__notice">{actionMessage}</p>}
