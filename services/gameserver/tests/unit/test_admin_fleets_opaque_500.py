@@ -38,13 +38,18 @@ async def test_get_all_fleets_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to fetch fleets"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_FLEETS_LIST_FAILED",
+        "detail": "Failed to fetch fleets",
+    }
     assert secret not in str(exc.detail)
 
 
 def test_admin_fleets_get_all_fleets_http500_is_opaque():
     """LEG-3690 — static pin: get_all_fleets 500 detail stays opaque."""
     src = Path(af_mod.__file__).read_text(encoding="utf-8")
-    assert 'detail="Failed to fetch fleets"' in src
+    assert "ERR_ADMIN_FLEETS_LIST_FAILED" in src
+    assert "route_internal_error" in src
+    assert 'detail="Failed to fetch fleets"' not in src
     assert 'detail=f"Failed to fetch fleets: {e}"' not in src
     assert "Failed to fetch fleets: {str(e)}" not in src

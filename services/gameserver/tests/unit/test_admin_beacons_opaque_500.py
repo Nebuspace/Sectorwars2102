@@ -33,7 +33,10 @@ async def test_get_flagged_beacons_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to fetch flagged beacons"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_BEACONS_LIST_FAILED",
+        "detail": "Failed to fetch flagged beacons",
+    }
     assert secret not in str(exc.detail)
 
 
@@ -55,7 +58,10 @@ async def test_clear_beacon_flag_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to clear beacon flag"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_BEACONS_CLEAR_FLAG_FAILED",
+        "detail": "Failed to clear beacon flag",
+    }
     assert secret not in str(exc.detail)
     db.rollback.assert_called_once()
 
@@ -63,12 +69,13 @@ async def test_clear_beacon_flag_unexpected_is_opaque_500():
 def test_admin_beacons_http500_catches_have_no_detail_str_e():
     """LEG-3688 — static pin: beacon moderation 500 details stay opaque."""
     src = Path(ab_mod.__file__).read_text(encoding="utf-8")
-    for stable in (
-        'detail="Failed to fetch flagged beacons"',
-        'detail="Failed to clear beacon flag"',
-        'detail="Failed to confirm beacon abuse"',
+    for code in (
+        "ERR_ADMIN_BEACONS_LIST_FAILED",
+        "ERR_ADMIN_BEACONS_CLEAR_FLAG_FAILED",
+        "ERR_ADMIN_BEACONS_CONFIRM_ABUSE_FAILED",
     ):
-        assert stable in src
+        assert code in src
+    assert "route_internal_error" in src
     assert "Failed to fetch flagged beacons: {str(e)}" not in src
     assert "Failed to clear beacon flag: {str(e)}" not in src
     assert "Failed to confirm beacon abuse: {str(e)}" not in src
