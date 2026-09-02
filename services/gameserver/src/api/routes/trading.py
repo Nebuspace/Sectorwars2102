@@ -413,14 +413,20 @@ def _peek_agreed_haggle_price(
     read failure degrades to None (posted price)."""
     try:
         from src.services.haggle_service import HaggleService
-        status = HaggleService(db).get_status(player, station, commodity, side)
+        svc = HaggleService(db)
+        status = svc.get_status(player, station, commodity, side)
         session = status.get("session")
-        if not session or session.get("status") != "accepted":
-            return None
-        agreed = session.get("agreed_price")
-        if agreed is None:
-            return None
-        return float(agreed)
+        if session and session.get("status") == "accepted":
+            agreed = session.get("agreed_price")
+            if agreed is not None:
+                return float(agreed)
+        narrative = svc.get_narrative_status(player, station, commodity, side)
+        nsession = narrative.get("session")
+        if nsession and nsession.get("status") == "accepted":
+            agreed = nsession.get("agreed_price")
+            if agreed is not None:
+                return float(agreed)
+        return None
     except Exception:
         logger.warning("haggle price peek failed (quote); using posted price", exc_info=True)
         return None
