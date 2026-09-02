@@ -3,7 +3,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { axiosResponseStatus, detailFromResponse, formatAdminApiError } from '../../utils/adminApiError';
 import { MFAVerification } from './MFAVerification';
 
-const loginApiError = (err: unknown): string => {
+export const loginApiError = (err: unknown): string => {
   const status = axiosResponseStatus(err);
   if (status === 401) {
     return 'Invalid username or password';

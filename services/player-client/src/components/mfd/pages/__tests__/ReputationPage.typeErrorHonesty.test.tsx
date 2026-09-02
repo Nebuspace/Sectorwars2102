@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 /**
- * LEG-3463 Soft-ORDER — ReputationPage Network Error densify.
+ * LEG-3778 Soft-ORDER — ReputationPage TypeError/network densify.
  */
 import { describe, it, expect } from 'vitest';
-import { formatReputationLoadError } from './ReputationPage';
+import { formatReputationLoadError } from '../ReputationPage';
 
-describe('ReputationPage TypeError densify (LEG-3463)', () => {
+describe('ReputationPage TypeError densify (LEG-3778)', () => {
   it('formatReputationLoadError falls back on TypeError network collapse', () => {
     const text = formatReputationLoadError(new TypeError('Failed to fetch'));
     expect(text).toBe('Failed to load faction standings');
