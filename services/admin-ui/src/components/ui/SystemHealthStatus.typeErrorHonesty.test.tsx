@@ -9,6 +9,20 @@ vi.mock('../../utils/auth', () => ({
   },
 }));
 
+const axiosError = (status: number) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: {} },
+  });
+
+function assertNoTransportLeak(text: string) {
+  expect(text).not.toBe('Network Error');
+  expect(text).not.toContain('Network Error');
+  expect(text).not.toMatch(/Failed to fetch/i);
+  expect(text).not.toMatch(/TypeError/i);
+  expect(text).not.toMatch(/^HTTP \d+$/);
+  expect(text).not.toContain('Request failed with status code');
+}
+
 function mockSuccessfulProbes() {
   return (url: string) => {
     if (url === '/api/v1/status/') {
@@ -43,6 +57,7 @@ function mockSuccessfulProbes() {
 
 /**
  * LEG-3700 Soft-ORDER — SystemHealthStatus probe TypeError/Network Error densify.
+ * LEG-3944 Soft-ORDER — HTTP 403/429 densify via classifyProbeError / formatAdminApiError.
  */
 describe('SystemHealthStatus typeErrorHonesty densify (LEG-3700)', () => {
   beforeEach(() => {
@@ -125,5 +140,45 @@ describe('SystemHealthStatus typeErrorHonesty densify (LEG-3700)', () => {
     expect(alert).toMatch(/Gameserver unreachable|database health/i);
     expect(alert).not.toMatch(/Failed to fetch/i);
     expect(alert).not.toMatch(/TypeError/i);
+  });
+
+  it('surfaces 403 access-denied copy on server-status probe without transport leak', async () => {
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url === '/api/v1/status/') {
+        return Promise.reject(axiosError(403));
+      }
+      return mockSuccessfulProbes()(url);
+    });
+
+    render(<SystemHealthStatus />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Access denied/i);
+    expect(alert).not.toMatch(/\b403\b/);
+    expect(alert).not.toMatch(/HTTP 403/i);
+    assertNoTransportLeak(alert);
+  });
+
+  it('surfaces 429 rate-limit copy on server-status probe without transport leak', async () => {
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url === '/api/v1/status/') {
+        return Promise.reject(axiosError(429));
+      }
+      return mockSuccessfulProbes()(url);
+    });
+
+    render(<SystemHealthStatus />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/rate limit/i);
+    expect(alert).not.toMatch(/\b429\b/);
+    expect(alert).not.toMatch(/HTTP 429/i);
+    assertNoTransportLeak(alert);
   });
 });

@@ -4,6 +4,7 @@ import GenerationLogPanel, {
   formatGenerationLogStreamError,
 } from './GenerationLogPanel';
 import type { BangJobStatus } from './types';
+import { formatAdminApiError } from '../../../utils/adminApiError';
 
 const mockStream = vi.fn();
 
@@ -38,10 +39,18 @@ function assertNoTransportLeak(text: string) {
   expect(text).not.toContain('Network Error');
   expect(text).not.toMatch(/Failed to fetch/i);
   expect(text).not.toMatch(/TypeError/i);
+  expect(text).not.toMatch(/^HTTP \d+$/);
+  expect(text).not.toContain('Request failed with status code');
 }
+
+const axiosError = (status: number) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: {} },
+  });
 
 /**
  * LEG-3767 Soft-ORDER invent=0 — GenerationLogPanel stream TypeError/Network Error densify.
+ * LEG-3943 Soft-ORDER — HTTP 403/429 densify (stream surfaces pre-collapsed admin copy).
  */
 describe('GenerationLogPanel typeErrorHonesty densify (LEG-3767)', () => {
   beforeEach(() => {
@@ -94,6 +103,49 @@ describe('GenerationLogPanel typeErrorHonesty densify (LEG-3767)', () => {
 
     const alert = screen.getByRole('alert').textContent ?? '';
     expect(alert).toMatch(/Generation log stream unavailable/i);
+    assertNoTransportLeak(alert);
+  });
+
+  it('surfaces stream 403 denial copy without transport leak', () => {
+    const denial = formatAdminApiError(axiosError(403), {
+      fallback: 'Generation log stream unavailable',
+      scopeHint: 'admin.universe.manage',
+    });
+    mockStream.mockReturnValue(
+      stubStream({
+        error: denial,
+        status: 'FAILED',
+      }),
+    );
+
+    render(<GenerationLogPanel jobId="job-1" />);
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Access denied/i);
+    expect(alert).toMatch(/admin\.universe\.manage/i);
+    expect(alert).not.toMatch(/\b403\b/);
+    expect(alert).not.toMatch(/HTTP 403/i);
+    assertNoTransportLeak(alert);
+  });
+
+  it('surfaces stream 429 rate-limit copy without transport leak', () => {
+    const rateLimited = formatAdminApiError(axiosError(429), {
+      fallback: 'Generation log stream unavailable',
+      scopeHint: 'admin.universe.manage',
+    });
+    mockStream.mockReturnValue(
+      stubStream({
+        error: rateLimited,
+        status: 'FAILED',
+      }),
+    );
+
+    render(<GenerationLogPanel jobId="job-1" />);
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/rate limit/i);
+    expect(alert).not.toMatch(/\b429\b/);
+    expect(alert).not.toMatch(/HTTP 429/i);
     assertNoTransportLeak(alert);
   });
 });
