@@ -238,3 +238,27 @@ describe('ProfessionsPanel assign TypeError densify (LEG-3719)', () => {
     );
   });
 });
+
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
+
+describe('ProfessionsPanel train/assign 403/429 densify (LEG-3971)', () => {
+  it('formatProfessionsTrainError surfaces 403/429 without raw status codes', () => {
+    expect(formatProfessionsTrainError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatProfessionsTrainError(apiRequestError(403, 'train_denied'))).toBe('train_denied');
+    expect(formatProfessionsTrainError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatProfessionsTrainError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatProfessionsTrainError(apiRequestError(403))).not.toMatch(/TypeError/i);
+  });
+
+  it('formatProfessionsAssignError surfaces 403/429 without raw status codes', () => {
+    expect(formatProfessionsAssignError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatProfessionsAssignError(apiRequestError(403, 'assign_denied'))).toBe('assign_denied');
+    expect(formatProfessionsAssignError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatProfessionsAssignError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatProfessionsAssignError(apiRequestError(403))).not.toMatch(/TypeError/i);
+  });
+});

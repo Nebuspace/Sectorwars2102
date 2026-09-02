@@ -152,6 +152,19 @@ export interface SectorRetreatResponse {
   turnsRemaining: number;
 }
 
+/** POST /combat/attack-sector-drones — clear hostile deployed drones (LEG-3968). */
+export interface SectorDroneAttackResponse {
+  success: boolean;
+  message: string;
+  combatResult?: string | null;
+  combatDetails?: unknown[] | null;
+  dronesDestroyed?: number | null;
+  dronesRemaining?: number | null;
+  turnsConsumed?: number | null;
+  turnsRemaining?: number | null;
+  combatLogId?: string | null;
+}
+
 // Combat APIs
 export const combatAPI = {
   engage: (targetType: 'ship' | 'planet' | 'port', targetId: string) =>
@@ -169,6 +182,10 @@ export const combatAPI = {
   /** Sector flee — random connected warp; costs 3 turns (LEG-3107). */
   retreatFromSector: (): Promise<SectorRetreatResponse> =>
     apiRequest('/api/v1/combat/retreat', { method: 'POST' }),
+
+  /** Attack hostile drones in the current sector; costs 2 turns (LEG-3968). */
+  attackSectorDrones: (): Promise<SectorDroneAttackResponse> =>
+    apiRequest('/api/v1/combat/attack-sector-drones', { method: 'POST' }),
 
   /** Paginated own-combat log (LEG-372). Server scopes to current player. */
   getHistory: (opts?: { limit?: number; offset?: number }): Promise<CombatHistoryResponse> => {
@@ -265,6 +282,10 @@ export const droneFleetAPI = {
   /** Recall a deployed drone by drone id (POST /drones/{id}/recall). */
   recall: (droneId: string) =>
     apiRequest(`/api/v1/drones/${droneId}/recall`, { method: 'POST' }),
+
+  /** Active drones in a sector (tactical intel — LEG-3968 hostile count). */
+  getSectorDrones: (sectorId: string) =>
+    apiRequest(`/api/v1/drones/sector/${sectorId}`),
 };
 
 // Armory — sector mine laying (open space). Distinct from combatAPI.deployDrones.

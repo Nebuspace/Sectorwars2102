@@ -170,6 +170,8 @@ export function formatProfessionsLoadError(err: unknown): string {
 
 /** Surface gameserver detail when training queue mutation fails. */
 export function formatProfessionsTrainError(err: unknown): string {
+  if (err instanceof TypeError) return 'Training failed';
+  const status = httpStatus(err);
   const message = err instanceof Error ? err.message : undefined;
   const hasServerDetail =
     !(err instanceof TypeError) &&
@@ -177,6 +179,15 @@ export function formatProfessionsTrainError(err: unknown): string {
     message.trim().length > 0 &&
     !/^API Error: \d+$/.test(message.trim()) &&
     !isNetworkCollapseMessage(message);
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission to train professions on this planet.';
+  }
+
+  if (status === 429) {
+    return 'Profession training rate limit exceeded — wait a moment and try again.';
+  }
 
   if (hasServerDetail) return message!;
   return 'Training failed';
@@ -184,6 +195,8 @@ export function formatProfessionsTrainError(err: unknown): string {
 
 /** Surface gameserver detail when active profession assignment fails. */
 export function formatProfessionsAssignError(err: unknown): string {
+  if (err instanceof TypeError) return 'Active assignment failed';
+  const status = httpStatus(err);
   const message = err instanceof Error ? err.message : undefined;
   const hasServerDetail =
     !(err instanceof TypeError) &&
@@ -191,6 +204,15 @@ export function formatProfessionsAssignError(err: unknown): string {
     message.trim().length > 0 &&
     !/^API Error: \d+$/.test(message.trim()) &&
     !isNetworkCollapseMessage(message);
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission to assign professions on this planet.';
+  }
+
+  if (status === 429) {
+    return 'Profession assignment rate limit exceeded — wait a moment and try again.';
+  }
 
   if (hasServerDetail) return message!;
   return 'Active assignment failed';
