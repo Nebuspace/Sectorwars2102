@@ -37,7 +37,10 @@ async def test_get_live_combat_feed_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to retrieve combat feed"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_COMBAT_FEED_FAILED",
+        "detail": "Failed to retrieve combat feed",
+    }
     assert secret not in str(exc.detail)
 
 
@@ -56,7 +59,10 @@ async def test_get_combat_balance_analytics_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to retrieve balance analytics"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_COMBAT_BALANCE_FAILED",
+        "detail": "Failed to retrieve balance analytics",
+    }
     assert secret not in str(exc.detail)
 
 
@@ -81,21 +87,25 @@ async def test_intervene_in_combat_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to perform combat intervention"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_COMBAT_INTERVENE_FAILED",
+        "detail": "Failed to perform combat intervention",
+    }
     assert secret not in str(exc.detail)
 
 
 def test_admin_combat_http500_catches_have_no_detail_str_e():
-    """LEG-3629 — static pin: admin_combat 500 details stay opaque."""
+    """LEG-3629 — static pin: admin_combat 500 details stay opaque and structured."""
     src = Path(ac_mod.__file__).read_text(encoding="utf-8")
-    for stable in (
-        'detail="Failed to retrieve combat feed"',
-        'detail="Failed to retrieve balance analytics"',
-        'detail="Failed to retrieve combat disputes"',
-        'detail="Failed to generate dashboard summary"',
-        'detail="Failed to perform combat intervention"',
+    assert "route_internal_error" in src
+    for err in (
+        "ERR_ADMIN_COMBAT_FEED_FAILED",
+        "ERR_ADMIN_COMBAT_BALANCE_FAILED",
+        "ERR_ADMIN_COMBAT_DISPUTES_FAILED",
+        "ERR_ADMIN_COMBAT_DASHBOARD_FAILED",
+        "ERR_ADMIN_COMBAT_INTERVENE_FAILED",
     ):
-        assert stable in src
+        assert err in src
     assert "Failed to retrieve combat feed: {str(e)}" not in src
     assert "Failed to retrieve balance analytics: {str(e)}" not in src
     assert "Failed to retrieve combat disputes: {str(e)}" not in src
