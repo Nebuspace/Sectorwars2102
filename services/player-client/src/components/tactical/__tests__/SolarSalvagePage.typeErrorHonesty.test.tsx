@@ -100,3 +100,19 @@ describe('SolarSalvagePage salvage transport collapse densify (LEG-3741)', () =>
     expect(container.textContent).not.toMatch(/TypeError/i);
   });
 });
+
+
+describe('formatSalvageError 403/429 densify (LEG-4094)', () => {
+  const apiRequestError = (status: number, message?: string) => {
+    const err = new Error(message ?? `API Error: ${status}`);
+    (err as { status?: number }).status = status;
+    return err;
+  };
+  it('surfaces 403/429 without raw status codes', () => {
+    expect(formatSalvageError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatSalvageError(apiRequestError(403, 'salvage_denied'))).toBe('salvage_denied');
+    expect(formatSalvageError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatSalvageError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatSalvageError(apiRequestError(403))).not.toMatch(/TypeError/i);
+  });
+});

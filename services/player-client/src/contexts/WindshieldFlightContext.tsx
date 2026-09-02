@@ -22,17 +22,39 @@ const isWindshieldFlightNetworkCollapse = (msg: string): boolean => {
   );
 };
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
 /** Collapse TypeError/network tokens to caller-provided fallback (LEG-3798). */
 export function formatWindshieldFlightTelemetryError(err: unknown, fallback: string): string {
+  const status = httpStatus(err);
   const message = err instanceof Error ? err.message : undefined;
-  const hasServerDetail =
+  const detail =
     !(err instanceof TypeError) &&
     typeof message === 'string' &&
     message.trim().length > 0 &&
     !/^API Error: \d+$/.test(message.trim()) &&
-    !isWindshieldFlightNetworkCollapse(message);
+    !isWindshieldFlightNetworkCollapse(message)
+      ? message.trim()
+      : undefined;
 
-  if (hasServerDetail) return message!;
+  if (status === 403) {
+    if (detail) return detail;
+    return 'You do not have permission to load flight telemetry.';
+  }
+
+  if (status === 429) {
+    return 'Flight telemetry rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (detail) return detail;
   return fallback;
 }
 

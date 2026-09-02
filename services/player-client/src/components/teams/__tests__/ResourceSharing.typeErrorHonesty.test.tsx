@@ -25,3 +25,19 @@ describe('ResourceSharing TypeError densify (LEG-3079)', () => {
     expect(formatTreasuryOpError(new Error('treasury_denied'))).toBe('treasury_denied');
   });
 });
+
+
+describe('formatTreasuryOpError 403/429 densify (LEG-4092)', () => {
+  const apiRequestError = (status: number, message?: string) => {
+    const err = new Error(message ?? `API Error: ${status}`);
+    (err as { status?: number }).status = status;
+    return err;
+  };
+  it('surfaces 403/429 without raw status codes', () => {
+    expect(formatTreasuryOpError(apiRequestError(403))).toMatch(/permission/i);
+    expect(formatTreasuryOpError(apiRequestError(403, 'treasury_denied'))).toBe('treasury_denied');
+    expect(formatTreasuryOpError(apiRequestError(429))).toMatch(/rate limit/i);
+    expect(formatTreasuryOpError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatTreasuryOpError(apiRequestError(403))).not.toMatch(/TypeError/i);
+  });
+});

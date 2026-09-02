@@ -107,6 +107,7 @@ describe('StationSecurityBanner', () => {
 
     const error = container.querySelector('[data-testid="station-security-banner-error"]');
     expect(error?.getAttribute('role')).toBe('alert');
+    // Soft-ORDER densify collapses bare "API Error: NNN" to player-safe fallback.
     expect(error?.textContent).toBe(STATION_SECURITY_BANNER_LOAD_FALLBACK);
     expect(container.querySelector('[data-testid="station-security-banner"]')).toBeNull();
   });

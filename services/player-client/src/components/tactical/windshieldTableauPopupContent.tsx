@@ -285,6 +285,15 @@ export function formatBeaconPopupError(err: unknown): string {
     return detail;
   }
 
+  if (status === 403) {
+    if (detail) return detail;
+    return 'You do not have permission to perform this beacon action.';
+  }
+
+  if (status === 429) {
+    return 'Beacon action rate limit exceeded — wait a moment and try again.';
+  }
+
   if (status === 404) {
     if (detail) return detail;
     return 'Beacon not found';

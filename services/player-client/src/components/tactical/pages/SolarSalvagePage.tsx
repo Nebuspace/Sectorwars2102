@@ -52,20 +52,50 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
   );
 };
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
 /** Exported for TypeError/network honesty Vitest (LEG-3260 / LEG-3303). */
 export function formatSalvageError(err: unknown): string {
-  if (err instanceof TypeError) return SALVAGE_FAILED_FALLBACK;
+  const status = httpStatus(err);
+  let detail: string | undefined;
   if (err instanceof Error && err.message) {
-    if (isNetworkCollapseMessage(err.message)) return SALVAGE_FAILED_FALLBACK;
-    return err.message;
-  }
-  if (err && typeof err === 'object') {
+    if (
+      !isNetworkCollapseMessage(err.message) &&
+      !/^API Error: \d+$/.test(err.message.trim())
+    ) {
+      detail = err.message.trim();
+    }
+  } else if (err && typeof err === 'object') {
     const msg = (err as { message?: unknown }).message;
-    if (typeof msg === 'string' && msg) {
-      if (isNetworkCollapseMessage(msg)) return SALVAGE_FAILED_FALLBACK;
-      return msg;
+    if (
+      typeof msg === 'string' &&
+      msg.trim() &&
+      !isNetworkCollapseMessage(msg) &&
+      !/^API Error: \d+$/.test(msg.trim())
+    ) {
+      detail = msg.trim();
     }
   }
+
+  if (status === 403) {
+    if (detail) return detail;
+    return 'You do not have permission to salvage this wreck.';
+  }
+
+  if (status === 429) {
+    return 'Salvage rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (err instanceof TypeError) return SALVAGE_FAILED_FALLBACK;
+  if (detail) return detail;
   return SALVAGE_FAILED_FALLBACK;
 }
 
