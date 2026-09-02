@@ -85,19 +85,22 @@ function parseStatus(raw: unknown): SyndicateStatus | null {
     })
     .filter((s): s is SyndicateShare => s !== null);
   const pending_invites: SyndicateInvite[] = invitesRaw
-    .map((row) => {
+    .map((row): SyndicateInvite | null => {
       const r = asRecord(row);
       if (!r || typeof r.invite_id !== 'string' || typeof r.invitee_player_id !== 'string') {
         return null;
       }
       const pct = typeof r.pct === 'number' ? r.pct : Number(r.pct);
       if (!Number.isFinite(pct)) return null;
-      return {
+      const invite: SyndicateInvite = {
         invite_id: r.invite_id,
         invitee_player_id: r.invitee_player_id,
         pct,
-        expires_at: typeof r.expires_at === 'string' ? r.expires_at : undefined,
       };
+      if (typeof r.expires_at === 'string') {
+        invite.expires_at = r.expires_at;
+      }
+      return invite;
     })
     .filter((i): i is SyndicateInvite => i !== null);
   return {
