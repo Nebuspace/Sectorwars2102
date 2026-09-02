@@ -16,6 +16,14 @@ from src.models.user import User
 from src.models.warp_tunnel import WarpTunnel
 from src.services.admin_action_attempt import admin_action_attempt
 
+from src.utils.error_handling import route_internal_error
+
+ERR_ADMIN_ENHANCED_UPDATE_SECTOR_FAILED = "ERR_ADMIN_ENHANCED_UPDATE_SECTOR_FAILED"
+ERR_ADMIN_ENHANCED_CREATE_PORT_FAILED = "ERR_ADMIN_ENHANCED_CREATE_PORT_FAILED"
+ERR_ADMIN_ENHANCED_CREATE_PLANET_FAILED = "ERR_ADMIN_ENHANCED_CREATE_PLANET_FAILED"
+ERR_ADMIN_ENHANCED_CREATE_WARP_FAILED = "ERR_ADMIN_ENHANCED_CREATE_WARP_FAILED"
+ERR_ADMIN_ENHANCED_FETCH_SECTORS_FAILED = "ERR_ADMIN_ENHANCED_FETCH_SECTORS_FAILED"
+
 logger = logging.getLogger(__name__)
 
 # Enhanced request schemas
@@ -123,7 +131,10 @@ async def update_sector(
         raise
     except Exception:
         logger.exception("Error in update_sector")
-        raise HTTPException(status_code=500, detail="Failed to update sector")
+        raise route_internal_error(
+            ERR_ADMIN_ENHANCED_UPDATE_SECTOR_FAILED,
+            "Failed to update sector",
+        )
 
 
 @router.post("/port/create", response_model=dict)
@@ -195,7 +206,10 @@ async def create_port(
         raise
     except Exception:
         logger.exception("Error in create_port")
-        raise HTTPException(status_code=500, detail="Failed to create port")
+        raise route_internal_error(
+            ERR_ADMIN_ENHANCED_CREATE_PORT_FAILED,
+            "Failed to create port",
+        )
 
 
 @router.post("/planet/create", response_model=dict)
@@ -264,7 +278,10 @@ async def create_planet(
         raise
     except Exception:
         logger.exception("Error in create_planet")
-        raise HTTPException(status_code=500, detail="Failed to create planet")
+        raise route_internal_error(
+            ERR_ADMIN_ENHANCED_CREATE_PLANET_FAILED,
+            "Failed to create planet",
+        )
 
 
 @router.post("/warp-tunnel/create-enhanced", response_model=dict)
@@ -361,7 +378,10 @@ async def create_enhanced_warp_tunnel(
         raise
     except Exception:
         logger.exception("Error in create_enhanced_warp_tunnel")
-        raise HTTPException(status_code=500, detail="Failed to create warp tunnel")
+        raise route_internal_error(
+            ERR_ADMIN_ENHANCED_CREATE_WARP_FAILED,
+            "Failed to create warp tunnel",
+        )
 
 
 @router.get("/sectors/enhanced", response_model=dict)
@@ -461,4 +481,7 @@ async def get_enhanced_sectors(
         raise
     except Exception:
         logger.exception("Error in get_enhanced_sectors")
-        raise HTTPException(status_code=500, detail="Failed to fetch enhanced sectors")
+        raise route_internal_error(
+            ERR_ADMIN_ENHANCED_FETCH_SECTORS_FAILED,
+            "Failed to fetch enhanced sectors",
+        )

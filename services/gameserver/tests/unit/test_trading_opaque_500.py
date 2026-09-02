@@ -93,23 +93,32 @@ async def test_undock_from_port_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Undocking failed"
+    assert exc.detail == {
+        "error_code": "ERR_TRADING_UNDOCKING_FAILED",
+        "detail": "Undocking failed",
+    }
     assert secret not in str(exc.detail)
     db.rollback.assert_called_once()
 
 
 def test_trading_http500_catches_have_no_detail_str_e():
-    """LEG-3604 — static pin: all seven HTTP 500 catch paths stay opaque."""
+    """LEG-3604 / LEG-3875 / LEG-3911 — buy/sell + dock/moor are structured densify."""
     src = Path(trading_mod.__file__).read_text(encoding="utf-8")
-    for stable in (
-        # densified: Trade failed
-
-        'detail="Docking failed"',
-        'detail="Undocking failed"',
-        'detail="Long-term mooring failed"',
-        'detail="Releasing long-term mooring failed"',
+    for code in (
+        "ERR_TRADING_BUY_FAILED",
+        "ERR_TRADING_SELL_FAILED",
+        "ERR_TRADING_DOCKING_FAILED",
+        "ERR_TRADING_UNDOCKING_FAILED",
+        "ERR_TRADING_MOORING_FAILED",
+        "ERR_TRADING_RELEASE_MOORING_FAILED",
     ):
-        assert stable in src
+        assert code in src
+    assert "route_internal_error" in src
+    assert 'detail="Trade failed"' not in src
+    assert 'detail="Docking failed"' not in src
+    assert 'detail="Undocking failed"' not in src
+    assert 'detail="Long-term mooring failed"' not in src
+    assert 'detail="Releasing long-term mooring failed"' not in src
     assert "Trade failed: {str(e)}" not in src
     assert "Docking failed: {str(e)}" not in src
     assert "Undocking failed: {str(e)}" not in src

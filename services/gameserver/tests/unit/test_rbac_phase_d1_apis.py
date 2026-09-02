@@ -78,7 +78,9 @@ class TestAdminActionLogListEndpoint:
     def test_actions_page_is_bounded_and_errors_are_generic(self):
         block = _extract_route_block(_AUDIT_SRC, '@router.get("/actions"')
         assert "le=10000" in block or "le = 10000" in block
-        assert 'detail="Failed to list admin actions"' in block
+        assert "route_internal_error" in block
+        assert "ERR_AUDIT_LIST_ACTIONS_FAILED" in block
+        assert 'detail="Failed to list admin actions"' not in block
         assert "detail=str(e)" not in block
 
     def test_legacy_audit_logs_endpoints_untouched(self):

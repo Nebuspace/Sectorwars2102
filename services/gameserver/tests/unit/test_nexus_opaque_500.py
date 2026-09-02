@@ -55,7 +55,10 @@ async def test_generate_central_nexus_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to start generation"
+    assert exc.detail == {
+        "error_code": "ERR_NEXUS_GENERATE_FAILED",
+        "detail": "Failed to start generation",
+    }
     assert secret not in str(exc.detail)
 
 
@@ -71,7 +74,10 @@ async def test_get_nexus_status_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to get status"
+    assert exc.detail == {
+        "error_code": "ERR_NEXUS_STATUS_FAILED",
+        "detail": "Failed to get status",
+    }
     assert secret not in str(exc.detail)
 
 
@@ -87,7 +93,10 @@ async def test_get_nexus_statistics_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to get statistics"
+    assert exc.detail == {
+        "error_code": "ERR_NEXUS_STATISTICS_FAILED",
+        "detail": "Failed to get statistics",
+    }
     assert secret not in str(exc.detail)
 
 
@@ -103,7 +112,10 @@ async def test_get_clusters_info_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to get clusters information"
+    assert exc.detail == {
+        "error_code": "ERR_NEXUS_CLUSTERS_FAILED",
+        "detail": "Failed to get clusters information",
+    }
     assert secret not in str(exc.detail)
 
 
@@ -120,21 +132,22 @@ async def test_get_cluster_details_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to get cluster details"
+    assert exc.detail == {
+        "error_code": "ERR_NEXUS_CLUSTER_DETAILS_FAILED",
+        "detail": "Failed to get cluster details",
+    }
     assert secret not in str(exc.detail)
 
 
 def test_nexus_http500_catches_have_no_detail_str_e():
     """LEG-3806 — static pin: all five HTTP 500 catch paths stay opaque."""
     src = Path(nexus_mod.__file__).read_text(encoding="utf-8")
-    for stable in (
-        'detail="Failed to start generation"',
-        'detail="Failed to get status"',
-        'detail="Failed to get statistics"',
-        'detail="Failed to get clusters information"',
-        'detail="Failed to get cluster details"',
-    ):
-        assert stable in src
+    assert "route_internal_error" in src
+    assert "ERR_NEXUS_CLUSTER_DETAILS_FAILED" in src
+    assert "ERR_NEXUS_CLUSTERS_FAILED" in src
+    assert "ERR_NEXUS_STATISTICS_FAILED" in src
+    assert "ERR_NEXUS_STATUS_FAILED" in src
+    assert "ERR_NEXUS_GENERATE_FAILED" in src
     assert "Failed to start generation: {str(e)}" not in src
     assert "Failed to get status: {str(e)}" not in src
     assert "Failed to get statistics: {str(e)}" not in src

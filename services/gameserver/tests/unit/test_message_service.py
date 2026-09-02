@@ -196,5 +196,7 @@ def test_messages_route_maps_message_delivery_error_not_generic_500():
     assert "except MessageDeliveryError" in src
     assert '"code": e.code' in src
     assert "status_code=503" in src
-    assert 'detail="Failed to send message"' in src
+    assert "ERR_MESSAGES_SEND_FAILED" in src
+    assert "route_internal_error" in src
+    assert 'detail="Failed to send message"' not in src
     assert "Failed to send message: {str(e)}" not in src
