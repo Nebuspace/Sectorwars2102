@@ -9,6 +9,18 @@ vi.mock('../../utils/auth', () => ({
   },
 }));
 
+const axiosError = (status: number, detail?: string) =>
+  Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: detail ? { detail } : {} },
+  });
+
+function assertNoTransportLeak(text: string) {
+  expect(text).not.toBe('Network Error');
+  expect(text).not.toContain('Network Error');
+  expect(text).not.toMatch(/Failed to fetch/i);
+  expect(text).not.toMatch(/TypeError/i);
+}
+
 /**
  * LEG-3440 Soft-ORDER — AuditLogViewer TypeError/Network Error honesty densify.
  */
@@ -49,5 +61,36 @@ describe('AuditLogViewer typeErrorHonesty densify (LEG-3440)', () => {
     expect(alert).not.toMatch(/Failed to fetch/i);
     expect(alert).not.toMatch(/TypeError/i);
     expect(alert).not.toContain('not implemented');
+  });
+
+  it('surfaces 403 with AUDIT_VIEW scope hint when audit log GET is denied', async () => {
+    vi.mocked(api.get).mockRejectedValue(axiosError(403));
+
+    render(<AuditLogViewer />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/AUDIT_VIEW|Access denied/i);
+    expect(alert).toMatch(/audit log/i);
+    expect(alert).not.toMatch(/HTTP 403/i);
+    assertNoTransportLeak(alert);
+  });
+
+  it('surfaces 429 as admin rate-limit copy on audit log load', async () => {
+    vi.mocked(api.get).mockRejectedValue(axiosError(429));
+
+    render(<AuditLogViewer />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/rate limit/i);
+    expect(alert).not.toMatch(/HTTP 429/i);
+    assertNoTransportLeak(alert);
   });
 });
