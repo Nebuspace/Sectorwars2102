@@ -196,6 +196,10 @@ interface MyStationView {
   dockingFeeEnabled: boolean | null;
   serviceChargeMultiplier: number | null;
   storageRentalPerDay: number | null;
+  /** LEG-4125 — tip revenue_summary / my-stations insolvency advance */
+  insolvencyMonths: number | null;
+  insolvencyPending: boolean | null;
+  insolvencySellAt: string | null;
 }
 
 interface MonthView {
@@ -263,6 +267,12 @@ const normalizeMyStation = (raw: unknown): MyStationView => {
       return { label: pickString(e.month, e.label) ?? `Month ${idx + 1}`, amount };
     })
     .filter((e): e is { label: string; amount: number } => e !== null);
+  // Tip nests insolvency_* on revenue_summary; also accept top-level twins.
+  const insolvencyMonths = pickNumber(revenue.insolvency_months, o.insolvency_months);
+  const insolvencyPending =
+    pickBool(revenue.insolvency_pending) ?? pickBool(o.insolvency_pending);
+  const insolvencySellAt =
+    pickString(revenue.insolvency_sell_at) ?? pickString(o.insolvency_sell_at);
   return {
     taxRate: pickNumber(o.tax_rate),
     treasury: pickNumber(o.treasury_balance, o.treasury),
@@ -276,8 +286,14 @@ const normalizeMyStation = (raw: unknown): MyStationView => {
     dockingFeeEnabled: pickBool(o.docking_fee_enabled),
     serviceChargeMultiplier: pickNumber(o.service_charge_multiplier),
     storageRentalPerDay: pickNumber(o.storage_rental_per_day),
+    insolvencyMonths,
+    insolvencyPending,
+    insolvencySellAt,
   };
 };
+
+/** Exported for LEG-4125 Vitest — tip my-stations insolvency hydrate. */
+export { normalizeMyStation };
 
 // Find this station inside the my-stations payload (bare array or {stations})
 const findMyStation = (raw: unknown, stationId: string): MyStationView | null => {
@@ -1438,6 +1454,48 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
         {/* Treasury vault — citadel vault gauge visual language */}
         <div className="po-section">
           <h3 className="po-section-title">🔐 Station Vault</h3>
+          {myStation?.insolvencyPending === true && myStation.insolvencySellAt && (
+            <div
+              className="genesis-error-message"
+              role="alert"
+              data-testid="po-insolvency-advance-banner"
+            >
+              <span className="error-icon">⚠️</span>
+              <div>
+                <strong>Insolvency advance — auto-sale pending.</strong>{' '}
+                Operating shortfalls have triggered the 7-day notice window. This station is
+                scheduled to auto-list at depreciated value at{' '}
+                <time dateTime={myStation.insolvencySellAt} data-testid="po-insolvency-sell-at">
+                  {myStation.insolvencySellAt}
+                </time>
+                {typeof myStation.insolvencyMonths === 'number'
+                  ? ` (${myStation.insolvencyMonths} shortfall month${
+                      myStation.insolvencyMonths === 1 ? '' : 's'
+                    } on the ledger).`
+                  : '.'}{' '}
+                Inject personal credits into the vault below to recover before the sale —
+                rescue offers and compel-injection votes are not available here.
+              </div>
+              <button
+                type="button"
+                className="action-button"
+                data-testid="po-insolvency-focus-vault"
+                onClick={() => {
+                  const inject = document.querySelector(
+                    '[data-testid="po-vault-inject-input"]',
+                  ) as HTMLInputElement | null;
+                  const withdraw = document.querySelector(
+                    'input[aria-label="Credits to withdraw from the station vault"]',
+                  ) as HTMLInputElement | null;
+                  const target = inject ?? withdraw;
+                  target?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                  target?.focus();
+                }}
+              >
+                Go to vault
+              </button>
+            </div>
+          )}
           {vault === null ? (
             <p className="section-description">The vault ledger has not arrived from the registry yet.</p>
           ) : (
