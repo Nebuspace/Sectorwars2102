@@ -9,6 +9,12 @@ import {
   formatSiegeHailError,
 } from '../SiegeStatusMonitor';
 
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
+
 describe('SiegeStatusMonitor TypeError densify (LEG-3074)', () => {
   it('formatSiegeAidError falls back on TypeError network collapse', () => {
     const text = formatSiegeAidError(new TypeError('Failed to fetch'));
