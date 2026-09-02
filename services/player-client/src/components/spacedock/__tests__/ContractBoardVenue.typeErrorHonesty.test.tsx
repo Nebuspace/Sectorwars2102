@@ -70,6 +70,12 @@ const CONTRACT_POSTED = {
   insurance_claim_filed: false,
 };
 
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
+
 describe('formatContractBoardVenueError TypeError densify (LEG-3139)', () => {
   it('falls back on TypeError network collapse', () => {
     const text = formatContractBoardVenueError(
@@ -95,6 +101,19 @@ describe('formatContractBoardVenueError TypeError densify (LEG-3139)', () => {
     expect(formatContractBoardVenueError(new Error('Network Error'), fallback)).toBe(fallback);
     expect(formatContractBoardVenueError(new Error('Failed to fetch'), fallback)).toBe(fallback);
     expect(formatContractBoardVenueError(new Error('   '), fallback)).toBe(fallback);
+  });
+});
+
+describe('formatContractBoardVenueError 403/429 densify (LEG-4027)', () => {
+  it('surfaces 403/429 without raw status codes', () => {
+    const fallback = 'The contract board terminal is not responding. Please try again.';
+    expect(formatContractBoardVenueError(apiRequestError(403), fallback)).toMatch(/permission/i);
+    expect(formatContractBoardVenueError(apiRequestError(403, 'board_denied'), fallback)).toBe(
+      'board_denied',
+    );
+    expect(formatContractBoardVenueError(apiRequestError(429), fallback)).toMatch(/rate limit/i);
+    expect(formatContractBoardVenueError(apiRequestError(429), fallback)).not.toMatch(/\b429\b/);
+    expect(formatContractBoardVenueError(apiRequestError(403), fallback)).not.toMatch(/TypeError/i);
   });
 });
 
