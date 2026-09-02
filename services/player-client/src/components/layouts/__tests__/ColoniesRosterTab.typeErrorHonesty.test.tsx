@@ -5,6 +5,12 @@
 import { describe, it, expect } from 'vitest';
 import { formatColoniesRosterLoadError } from '../ColoniesRosterTab';
 
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
+
 const FALLBACK = 'Failed to load colonies';
 
 describe('ColoniesRosterTab TypeError densify (LEG-3458)', () => {
@@ -27,5 +33,17 @@ describe('ColoniesRosterTab TypeError densify (LEG-3458)', () => {
     expect(formatColoniesRosterLoadError(new Error('colonies_unavailable'), FALLBACK)).toBe(
       'colonies_unavailable',
     );
+  });
+});
+
+describe('ColoniesRosterTab 403/429 densify (LEG-3996)', () => {
+  it('formatColoniesRosterLoadError surfaces 403/429 without raw status codes', () => {
+    expect(formatColoniesRosterLoadError(apiRequestError(403), FALLBACK)).toMatch(/permission/i);
+    expect(formatColoniesRosterLoadError(apiRequestError(403, 'colonies_denied'), FALLBACK)).toBe(
+      'colonies_denied',
+    );
+    expect(formatColoniesRosterLoadError(apiRequestError(429), FALLBACK)).toMatch(/rate limit/i);
+    expect(formatColoniesRosterLoadError(apiRequestError(429), FALLBACK)).not.toMatch(/\b429\b/);
+    expect(formatColoniesRosterLoadError(apiRequestError(403), FALLBACK)).not.toMatch(/TypeError/i);
   });
 });

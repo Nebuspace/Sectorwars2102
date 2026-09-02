@@ -33,12 +33,46 @@ const isShipSelectorNetworkCollapse = (msg: string): boolean => {
   );
 };
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+function hasShipSelectorServerDetail(err: unknown): boolean {
+  if (err instanceof TypeError) return false;
+  const message = err instanceof Error ? err.message : undefined;
+  if (typeof message === 'string' && isShipSelectorNetworkCollapse(message)) return false;
+  return (
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim())
+  );
+}
+
 /** Exported for TypeError/network honesty Vitest (LEG-3316). */
 export function formatShipSelectorError(err: unknown): string {
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail = hasShipSelectorServerDetail(err);
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission to change ships right now.';
+  }
+
+  if (status === 429) {
+    return 'Ship change rate limit exceeded — wait a moment and try again.';
+  }
+
   if (err instanceof TypeError) return SHIP_CHANGE_FAILED_FALLBACK;
   if (err instanceof Error && err.message) {
     if (isShipSelectorNetworkCollapse(err.message)) return SHIP_CHANGE_FAILED_FALLBACK;
-    return err.message;
+    if (hasServerDetail) return message!;
   }
   return SHIP_CHANGE_FAILED_FALLBACK;
 }

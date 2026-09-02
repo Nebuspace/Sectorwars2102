@@ -30,16 +30,60 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
   );
 };
 
-/** Surface gameserver 400 detail on defenses update refusal. */
-export function formatDefenseUpdateError(err: unknown): string {
-  const message = err instanceof Error ? err.message : undefined;
-  // Network collapse (fetch TypeError / axios transport) is not gameserver copy — use the caller fallback.
-  const hasServerDetail =
-    !(err instanceof TypeError) &&
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+function hasDefenseServerDetail(err: unknown, message: string | undefined): boolean {
+  if (err instanceof TypeError) return false;
+  if (typeof message === 'string' && isNetworkCollapseMessage(message)) return false;
+  return (
     typeof message === 'string' &&
     message.trim().length > 0 &&
-    !/^API Error: \d+$/.test(message.trim()) &&
-    !isNetworkCollapseMessage(message);
+    !/^API Error: \d+$/.test(message.trim())
+  );
+}
+
+/** Surface gameserver detail on defense pricing load refusal. */
+export function formatDefensePricingLoadError(err: unknown): string {
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail = hasDefenseServerDetail(err, message);
+  const fallback = 'Defense pricing is unavailable right now — try reopening this panel.';
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission to view defense pricing for this colony.';
+  }
+
+  if (status === 429) {
+    return 'Defense pricing rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (hasServerDetail) return message!;
+  return fallback;
+}
+
+/** Surface gameserver 400 detail on defenses update refusal. */
+export function formatDefenseUpdateError(err: unknown): string {
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail = hasDefenseServerDetail(err, message);
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission to update defenses on this colony.';
+  }
+
+  if (status === 429) {
+    return 'Defense update rate limit exceeded — wait a moment and try again.';
+  }
 
   if (hasServerDetail) return message!;
   return 'Failed to update defenses';

@@ -100,20 +100,68 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
   );
 };
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+function hasPlanetServerDetail(err: unknown): boolean {
+  if (err instanceof TypeError) return false;
+  const message = err instanceof Error ? err.message : undefined;
+  if (typeof message === 'string' && isNetworkCollapseMessage(message)) return false;
+  return (
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim())
+  );
+}
+
 /** Transport collapse copy is not gameserver detail (LEG-3602 densify). */
 export function formatPlanetLoadError(err: unknown): string {
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail = hasPlanetServerDetail(err);
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission to view your colony roster.';
+  }
+
+  if (status === 429) {
+    return 'Colony roster rate limit exceeded — wait a moment and try again.';
+  }
+
   if (err instanceof TypeError) return 'Failed to load planets';
   if (err instanceof Error && isNetworkCollapseMessage(err.message)) return 'Failed to load planets';
+  if (hasServerDetail) return message!;
   return 'Failed to load planets';
 }
 
 /** Transport collapse copy is not gameserver detail (LEG-3602 densify). */
 export function formatPlanetCourseError(err: unknown): string {
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail = hasPlanetServerDetail(err);
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission to set course to this colony.';
+  }
+
+  if (status === 429) {
+    return 'Colony course rate limit exceeded — wait a moment and try again.';
+  }
+
   if (err instanceof TypeError) return 'Failed to set course to colony';
   if (err instanceof Error && isNetworkCollapseMessage(err.message)) {
     return 'Failed to set course to colony';
   }
-  if (err instanceof Error && err.message.trim()) return err.message;
+  if (hasServerDetail) return message!;
   return 'Failed to set course to colony';
 }
 
