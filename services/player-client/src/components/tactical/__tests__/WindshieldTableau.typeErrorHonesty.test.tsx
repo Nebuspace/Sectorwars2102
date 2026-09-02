@@ -39,6 +39,21 @@ import { WindshieldFlightProvider } from '../../../contexts/WindshieldFlightCont
 const SECTOR_ID = 77;
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
+
+const assertNoTransportLeak = (text: string) => {
+  expect(text).not.toMatch(/TypeError/i);
+  expect(text).not.toMatch(/Failed to fetch/i);
+  expect(text).not.toMatch(/Network Error/i);
+  expect(text).not.toMatch(/\b403\b/);
+  expect(text).not.toMatch(/\b429\b/);
+  expect(text).not.toMatch(/HTTP 429/i);
+};
+
 describe('WindshieldTableau load transport collapse densify (LEG-3769)', () => {
   let container: HTMLElement;
   let root: ReturnType<typeof createRoot>;
@@ -83,8 +98,41 @@ describe('WindshieldTableau load transport collapse densify (LEG-3769)', () => {
   ])('sector contents %s surfaces acquisition-failed fallback without raw transport text', async (_label, err) => {
     await mountWithContentsError(err);
     expect(container.textContent).toContain('SCAN ACQUISITION FAILED');
-    expect(container.textContent).not.toMatch(/TypeError/i);
-    expect(container.textContent).not.toMatch(/Failed to fetch/i);
-    expect(container.textContent).not.toMatch(/Network Error/i);
+    assertNoTransportLeak(container.textContent ?? '');
+  });
+
+  it.each([
+    ['HTTP 403', apiRequestError(403)],
+    ['HTTP 429', apiRequestError(429)],
+  ])('sector contents %s surfaces acquisition-failed fallback without raw status text (LEG-3962)', async (_label, err) => {
+    await mountWithContentsError(err);
+    expect(container.textContent).toContain('SCAN ACQUISITION FAILED');
+    assertNoTransportLeak(container.textContent ?? '');
+  });
+
+  it.each([
+    ['HTTP 403', apiRequestError(403)],
+    ['HTTP 429', apiRequestError(429)],
+  ])('helm pose %s stays silent without raw status text when sector contents load (LEG-3962)', async (_label, err) => {
+    mockGetContents.mockResolvedValue({
+      bodies: [],
+      stations: [],
+      engage_range_em: 50,
+    });
+    mockGetPose.mockRejectedValue(err);
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await act(async () => {
+      root.render(
+        <WindshieldFlightProvider>
+          <WindshieldTableau sectorId={SECTOR_ID} />
+        </WindshieldFlightProvider>,
+      );
+    });
+    await act(async () => {
+      await flush();
+    });
+    errSpy.mockRestore();
+    assertNoTransportLeak(container.textContent ?? '');
+    expect(container.textContent).not.toContain('SCAN ACQUISITION FAILED');
   });
 });
