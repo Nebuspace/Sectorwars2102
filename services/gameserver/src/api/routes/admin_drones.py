@@ -20,8 +20,12 @@ from src.models.drone import Drone, DroneDeployment, DroneCombat
 from src.models.user import User
 from src.services.drone_service import DroneService
 from src.services.admin_action_log_service import log_admin_action
+from src.utils.error_handling import route_internal_error
 
 logger = logging.getLogger(__name__)
+
+ERR_ADMIN_DRONES_LIST_FAILED = "ERR_ADMIN_DRONES_LIST_FAILED"
+ERR_ADMIN_DRONES_STATISTICS_FAILED = "ERR_ADMIN_DRONES_STATISTICS_FAILED"
 
 router = APIRouter(prefix="/admin/drones", tags=["admin-drones"])
 
@@ -116,7 +120,7 @@ async def get_all_drones(
         raise
     except Exception:
         logger.exception("Error in get_all_drones")
-        raise HTTPException(status_code=500, detail="Failed to list drones")
+        raise route_internal_error(ERR_ADMIN_DRONES_LIST_FAILED, "Failed to list drones")
 
 
 @router.get("/statistics", response_model=DroneStatistics)
@@ -194,7 +198,10 @@ async def get_drone_statistics(
         raise
     except Exception:
         logger.exception("Error in get_drone_statistics")
-        raise HTTPException(status_code=500, detail="Failed to fetch drone statistics")
+        raise route_internal_error(
+            ERR_ADMIN_DRONES_STATISTICS_FAILED,
+            "Failed to fetch drone statistics",
+        )
 
 
 def _parse_combat_log(raw: Optional[str]) -> Optional[list]:

@@ -38,7 +38,10 @@ async def test_get_all_drones_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to list drones"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_DRONES_LIST_FAILED",
+        "detail": "Failed to list drones",
+    }
     assert "secret-drones-query-should-not-leak" not in str(exc.detail)
 
 
@@ -53,17 +56,21 @@ async def test_get_drone_statistics_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Failed to fetch drone statistics"
+    assert exc.detail == {
+        "error_code": "ERR_ADMIN_DRONES_STATISTICS_FAILED",
+        "detail": "Failed to fetch drone statistics",
+    }
     assert "secret-drones-query-should-not-leak" not in str(exc.detail)
 
 
 def test_admin_drones_http500_catches_have_no_detail_str_e():
     """LEG-3691 — static pin: list + statistics 500 details stay opaque."""
     src = Path(drones_mod.__file__).read_text(encoding="utf-8")
-    for stable in (
-        'detail="Failed to list drones"',
-        'detail="Failed to fetch drone statistics"',
+    for code in (
+        "ERR_ADMIN_DRONES_LIST_FAILED",
+        "ERR_ADMIN_DRONES_STATISTICS_FAILED",
     ):
-        assert stable in src
+        assert code in src
+    assert "route_internal_error" in src
     assert "Failed to list drones: {str(e)}" not in src
     assert "Failed to fetch drone statistics: {str(e)}" not in src

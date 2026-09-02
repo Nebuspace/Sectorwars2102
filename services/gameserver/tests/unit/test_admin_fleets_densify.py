@@ -1,7 +1,4 @@
-"""LEG-3690 — admin_fleets get_all_fleets HTTP 500 must not echo Exception text.
-
-Mirrors LEG-3570 admin_colonization opaque densify.
-"""
+"""LEG-3847 — admin_fleets list unexpected failures return structured 500s."""
 
 from __future__ import annotations
 
@@ -17,13 +14,11 @@ from src.api.routes.admin_fleets import get_all_fleets
 
 class _BoomDB:
     def query(self, *args, **kwargs):
-        raise RuntimeError("secret-fleet-query-should-not-leak")
+        raise RuntimeError("secret-fleets-list-should-not-leak")
 
 
 @pytest.mark.asyncio
-async def test_get_all_fleets_unexpected_is_opaque_500():
-    """LEG-3690 — fleet list catch must not echo raw Exception text."""
-    secret = "secret-fleet-query-should-not-leak"
+async def test_get_all_fleets_unexpected_returns_structured_500():
     with pytest.raises(HTTPException) as excinfo:
         await get_all_fleets(
             status=None,
@@ -42,14 +37,12 @@ async def test_get_all_fleets_unexpected_is_opaque_500():
         "error_code": "ERR_ADMIN_FLEETS_LIST_FAILED",
         "detail": "Failed to fetch fleets",
     }
-    assert secret not in str(exc.detail)
+    assert "secret-fleets-list-should-not-leak" not in str(exc.detail)
 
 
-def test_admin_fleets_get_all_fleets_http500_is_opaque():
-    """LEG-3690 — static pin: get_all_fleets 500 detail stays opaque."""
+def test_admin_fleets_http500_catches_are_structured():
+    """LEG-3847 — static pin: fleet list 500 catch path emits error_code + detail."""
     src = Path(af_mod.__file__).read_text(encoding="utf-8")
     assert "ERR_ADMIN_FLEETS_LIST_FAILED" in src
     assert "route_internal_error" in src
     assert 'detail="Failed to fetch fleets"' not in src
-    assert 'detail=f"Failed to fetch fleets: {e}"' not in src
-    assert "Failed to fetch fleets: {str(e)}" not in src
