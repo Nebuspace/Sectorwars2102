@@ -73,4 +73,5 @@ async def gc_emergency_relocation(
         raise _gc_lapse_http_error(e) from e
     except Exception:
         db.rollback()
-        raise
+        logger.exception("Failed to perform emergency relocation")
+        raise HTTPException(status_code=500, detail="Failed to perform emergency relocation")
