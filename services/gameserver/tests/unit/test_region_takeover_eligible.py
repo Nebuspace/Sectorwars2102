@@ -142,12 +142,17 @@ class TestTakeoverEligibleRoute:
 
         exc = excinfo.value
         assert exc.status_code == 500
-        assert exc.detail == "Failed to list takeover-eligible regions"
+        assert exc.detail == {
+            "error_code": "ERR_REGIONS_TAKEOVER_ELIGIBLE_LIST_FAILED",
+            "detail": "Failed to list takeover-eligible regions",
+        }
         assert secret not in str(exc.detail)
 
 
 def test_regions_takeover_eligible_http500_catches_have_no_detail_str_e():
-    """LEG-3956 — static pin: list route 500 detail stays opaque."""
+    """LEG-3956/LEG-4044 — static pin: list route 500 is structured + opaque."""
     src = Path(regions_mod.__file__).read_text(encoding="utf-8")
-    assert 'detail="Failed to list takeover-eligible regions"' in src
+    assert "ERR_REGIONS_TAKEOVER_ELIGIBLE_LIST_FAILED" in src
+    assert "route_internal_error" in src
+    assert 'detail="Failed to list takeover-eligible regions"' not in src
     assert "Failed to list takeover-eligible regions: {str(e)}" not in src
