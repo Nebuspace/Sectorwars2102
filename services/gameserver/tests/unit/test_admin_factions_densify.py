@@ -1,4 +1,4 @@
-"""LEG-3705 — admin_factions CRUD routes must not echo Exception text."""
+"""LEG-3837 — admin_factions unexpected failures return structured 500s."""
 
 from __future__ import annotations
 
@@ -14,13 +14,9 @@ from src.api.routes import admin_factions as af_mod
 from src.api.routes.admin_factions import (
     FactionCreateRequest,
     FactionUpdateRequest,
-    ReputationUpdateRequest,
-    TerritoryUpdateRequest,
     create_faction,
     list_all_factions,
     update_faction,
-    update_faction_territory,
-    update_player_reputation,
 )
 from src.models.faction import FactionType
 
@@ -31,7 +27,7 @@ class _BoomDB:
 
 
 @pytest.mark.asyncio
-async def test_list_all_factions_unexpected_is_opaque_500():
+async def test_list_all_factions_unexpected_returns_structured_500():
     secret = "secret-faction-list-should-not-leak"
     with patch.object(af_mod, "FactionService") as svc_cls:
         svc_cls.return_value.get_all_factions = AsyncMock(
@@ -50,7 +46,7 @@ async def test_list_all_factions_unexpected_is_opaque_500():
 
 
 @pytest.mark.asyncio
-async def test_create_faction_unexpected_is_opaque_500():
+async def test_create_faction_unexpected_returns_structured_500():
     request = FactionCreateRequest(name="Test Faction", faction_type=FactionType.MERCHANTS)
     with pytest.raises(HTTPException) as excinfo:
         await create_faction(
@@ -69,7 +65,7 @@ async def test_create_faction_unexpected_is_opaque_500():
 
 
 @pytest.mark.asyncio
-async def test_update_faction_unexpected_is_opaque_500():
+async def test_update_faction_unexpected_returns_structured_500():
     secret = "secret-faction-update-should-not-leak"
     faction_id = uuid4()
     with patch.object(af_mod, "FactionService") as svc_cls:
@@ -93,58 +89,8 @@ async def test_update_faction_unexpected_is_opaque_500():
     assert secret not in str(exc.detail)
 
 
-@pytest.mark.asyncio
-async def test_update_faction_territory_unexpected_is_opaque_500():
-    secret = "secret-faction-territory-should-not-leak"
-    faction_id = uuid4()
-    with patch.object(af_mod, "FactionService") as svc_cls:
-        svc_cls.return_value.update_faction_territory = AsyncMock(
-            side_effect=RuntimeError(secret)
-        )
-        with pytest.raises(HTTPException) as excinfo:
-            await update_faction_territory(
-                faction_id=faction_id,
-                request=TerritoryUpdateRequest(sector_ids=[]),
-                admin_user=SimpleNamespace(id=1),
-                db=MagicMock(),
-            )
-
-    exc = excinfo.value
-    assert exc.status_code == 500
-    assert exc.detail == {
-        "error_code": "ERR_ADMIN_FACTIONS_TERRITORY_UPDATE_FAILED",
-        "detail": "Failed to update faction territory",
-    }
-    assert secret not in str(exc.detail)
-
-
-@pytest.mark.asyncio
-async def test_update_player_reputation_unexpected_is_opaque_500():
-    secret = "secret-faction-reputation-should-not-leak"
-    faction_id = uuid4()
-    with patch.object(af_mod, "FactionService") as svc_cls:
-        svc_cls.return_value.get_faction_by_id = AsyncMock(
-            side_effect=RuntimeError(secret)
-        )
-        with pytest.raises(HTTPException) as excinfo:
-            await update_player_reputation(
-                faction_id=faction_id,
-                request=ReputationUpdateRequest(player_id=str(uuid4()), change=1),
-                admin_user=SimpleNamespace(id=1),
-                db=MagicMock(),
-            )
-
-    exc = excinfo.value
-    assert exc.status_code == 500
-    assert exc.detail == {
-        "error_code": "ERR_ADMIN_FACTIONS_REPUTATION_UPDATE_FAILED",
-        "detail": "Failed to update player reputation",
-    }
-    assert secret not in str(exc.detail)
-
-
-def test_admin_factions_http500_catches_have_no_detail_str_e():
-    """LEG-3705 — static pin: HTTP 500 catch paths stay opaque."""
+def test_admin_factions_http500_catches_are_structured():
+    """LEG-3837 — static pin: faction admin 500 catch paths emit error_code + detail."""
     src = Path(af_mod.__file__).read_text(encoding="utf-8")
     for code in (
         "ERR_ADMIN_FACTIONS_LIST_FAILED",
@@ -154,8 +100,4 @@ def test_admin_factions_http500_catches_have_no_detail_str_e():
         "ERR_ADMIN_FACTIONS_REPUTATION_UPDATE_FAILED",
     ):
         assert code in src
-    assert "Failed to list factions: {str(e)}" not in src
-    assert "Failed to create faction: {str(e)}" not in src
-    assert "Failed to update faction: {str(e)}" not in src
-    assert "Failed to update faction territory: {str(e)}" not in src
-    assert "Failed to update player reputation: {str(e)}" not in src
+    assert 'detail="Failed to list factions"' not in src

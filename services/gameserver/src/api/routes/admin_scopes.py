@@ -31,6 +31,7 @@ from src.core.database import get_db
 from src.models.admin_scope_grant import AdminScopeGrant
 from src.models.user import User
 from src.services.admin_action_attempt import admin_action_attempt
+from src.utils.error_handling import route_internal_error
 
 router = APIRouter(prefix="/admin/scopes", tags=["admin-scopes"])
 
@@ -380,13 +381,7 @@ async def grant_scope(
             raise
         except Exception:
             logger.exception("Grant scope failed")
-            raise HTTPException(
-                status_code=500,
-                detail={
-                    "error_code": ERR_SCOPE_GRANT_FAILED,
-                    "detail": "Grant failed",
-                },
-            )
+            raise route_internal_error(ERR_SCOPE_GRANT_FAILED, "Grant failed")
 
     return ScopeMutationResponse(
         user_id=target.id,
@@ -428,13 +423,7 @@ async def revoke_scope(
             raise
         except Exception:
             logger.exception("Revoke scope failed")
-            raise HTTPException(
-                status_code=500,
-                detail={
-                    "error_code": ERR_SCOPE_REVOKE_FAILED,
-                    "detail": "Revoke failed",
-                },
-            )
+            raise route_internal_error(ERR_SCOPE_REVOKE_FAILED, "Revoke failed")
 
     still = (
         db.query(AdminScopeGrant.id)

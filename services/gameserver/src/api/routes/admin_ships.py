@@ -27,6 +27,7 @@ from src.models.player import Player
 from src.models.sector import Sector
 from src.services.admin_action_attempt import admin_action_attempt
 from src.services.audit_service import AuditService, AuditAction
+from src.utils.error_handling import route_internal_error
 
 router = APIRouter(prefix="/admin/ships", tags=["admin", "ships"])
 
@@ -109,7 +110,7 @@ async def get_ships(
         raise
     except Exception:
         logger.exception("Error in get_ships")
-        raise HTTPException(status_code=500, detail="Failed to list ships")
+        raise route_internal_error("ERR_ADMIN_SHIPS_LIST_FAILED", "Failed to list ships")
 
 
 def _get_ships_impl(
@@ -349,7 +350,10 @@ async def emergency_ship_action(
         raise
     except Exception:
         logger.exception("Error in emergency_ship_action")
-        raise HTTPException(status_code=500, detail="Failed to perform emergency ship action")
+        raise route_internal_error(
+            "ERR_ADMIN_SHIPS_EMERGENCY_FAILED",
+            "Failed to perform emergency ship action",
+        )
 
 
 @router.get("/health-report", response_model=HealthReportResponse)
@@ -449,7 +453,10 @@ async def get_fleet_health_report(
         raise
     except Exception:
         logger.exception("Error in get_fleet_health_report")
-        raise HTTPException(status_code=500, detail="Failed to fetch fleet health report")
+        raise route_internal_error(
+            "ERR_ADMIN_SHIPS_FLEET_HEALTH_FAILED",
+            "Failed to fetch fleet health report",
+        )
 
 @router.post("/create", response_model=Dict[str, Any])
 async def create_ship(
@@ -604,5 +611,5 @@ async def create_ship(
         raise
     except Exception:
         logger.exception("Error in create_ship")
-        raise HTTPException(status_code=500, detail="Failed to create ship")
+        raise route_internal_error("ERR_ADMIN_SHIPS_CREATE_FAILED", "Failed to create ship")
 

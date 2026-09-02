@@ -37,7 +37,10 @@ async def test_claim_ship_unexpected_is_opaque_500():
 
     exc = excinfo.value
     assert exc.status_code == 500
-    assert exc.detail == "Internal server error"
+    assert exc.detail == {
+        "error_code": "ERR_FIRST_LOGIN_CLAIM_SHIP_FAILED",
+        "detail": "Failed to claim ship",
+    }
     assert secret not in str(exc.detail)
 
 
@@ -71,7 +74,8 @@ async def test_claim_ship_record_failure_is_opaque_500():
 def test_claim_ship_http500_catches_have_no_detail_str_e():
     """Static pin: claim_ship 500 details stay opaque (no str(e) interpolation)."""
     src = Path(fl.__file__).read_text(encoding="utf-8")
-    assert 'detail="Internal server error"' in src
+    assert "ERR_FIRST_LOGIN_CLAIM_SHIP_FAILED" in src
+    assert 'detail="Internal server error"' not in src
     assert 'detail="Failed to record ship claim"' in src
     assert "Internal server error: {str(e)}" not in src
     assert "Failed to record ship claim: {str(record_error)}" not in src

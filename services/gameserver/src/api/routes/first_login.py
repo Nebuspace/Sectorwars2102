@@ -14,6 +14,7 @@ from src.models.first_login import ShipChoice, FirstLoginSession
 from src.services.first_login_service import FirstLoginService, FirstLoginCompletionError
 from src.services.ai_dialogue_service import get_ai_dialogue_service, AIDialogueService
 from src.services.ai_security_service import get_security_service, AISecurityService
+from src.utils.error_handling import route_internal_error
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -328,9 +329,10 @@ async def claim_ship(
         raise
     except Exception:
         logger.exception("Unexpected error in claim_ship")
-        raise HTTPException(
+        raise route_internal_error(
+            "ERR_FIRST_LOGIN_CLAIM_SHIP_FAILED",
+            "Failed to claim ship",
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Internal server error",
         )
 
 

@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 from src.auth.admin_scopes import AUDIT_VIEW
 from src.auth.dependencies import require_scope
 from src.core.database import get_db
+from src.utils.error_handling import route_internal_error
 from src.models.combat_log import CombatLog
 from src.models.market_transaction import MarketTransaction
 from src.models.player import Player
@@ -311,7 +312,7 @@ def generate_report(
         raise
     except Exception:
         logger.exception("Error in generate_report")
-        raise HTTPException(status_code=500, detail="Failed to generate report")
+        raise route_internal_error("ERR_ADMIN_REPORTS_GENERATE_FAILED", "Failed to generate report")
 
 # Endpoint 4: GET /admin/analytics/export
 # ---------------------------------------------------------------------------
@@ -492,7 +493,7 @@ def export_data(
         raise
     except Exception:
         logger.exception("Error in export_data")
-        raise HTTPException(status_code=500, detail="Failed to export analytics data")
+        raise route_internal_error("ERR_ADMIN_REPORTS_EXPORT_FAILED", "Failed to export analytics data")
 
 # Endpoint 5: GET /admin/performance/metrics
 # ---------------------------------------------------------------------------
@@ -767,4 +768,7 @@ def get_performance_metrics(
         raise
     except Exception:
         logger.exception("Error in get_performance_metrics")
-        raise HTTPException(status_code=500, detail="Failed to fetch performance metrics")
+        raise route_internal_error(
+            "ERR_ADMIN_REPORTS_PERFORMANCE_FAILED",
+            "Failed to fetch performance metrics",
+        )

@@ -88,8 +88,8 @@ def test_admin_scopes_grant_revoke_densify_is_structured():
     src = Path(mod.__file__).read_text(encoding="utf-8")
     assert ERR_SCOPE_GRANT_FAILED in src
     assert ERR_SCOPE_REVOKE_FAILED in src
-    assert '"error_code": ERR_SCOPE_GRANT_FAILED' in src
-    assert '"error_code": ERR_SCOPE_REVOKE_FAILED' in src
+    assert "route_internal_error(ERR_SCOPE_GRANT_FAILED" in src
+    assert "route_internal_error(ERR_SCOPE_REVOKE_FAILED" in src
     assert 'detail="Grant failed"' not in src
     assert 'detail="Revoke failed"' not in src
     assert ') from exc' not in src

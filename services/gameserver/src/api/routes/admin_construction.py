@@ -22,6 +22,7 @@ from src.models.user import User
 from src.services import construction_service
 from src.services.admin_action_log_service import log_admin_action
 from src.services.construction_service import ConstructionError
+from src.utils.error_handling import route_internal_error
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,10 @@ async def list_tradedocks(
         return construction_service.admin_list_tradedocks(db)
     except Exception:
         logger.exception("Error in list_tradedocks")
-        raise HTTPException(status_code=500, detail="Failed to list tradedocks")
+        raise route_internal_error(
+            "ERR_ADMIN_CONSTRUCTION_TRADEDOCKS_LIST_FAILED",
+            "Failed to list tradedocks",
+        )
 
 
 @router.get("/tradedocks/{station_id}")
@@ -58,7 +62,10 @@ async def get_tradedock_overview(
     except Exception:
         db.rollback()
         logger.exception("Error in get_tradedock_overview")
-        raise HTTPException(status_code=500, detail="Failed to get tradedock overview")
+        raise route_internal_error(
+            "ERR_ADMIN_CONSTRUCTION_TRADEDOCK_OVERVIEW_FAILED",
+            "Failed to get tradedock overview",
+        )
 
 
 @router.get("/reservations/{reservation_id}")
@@ -78,7 +85,10 @@ async def get_reservation_admin(
     except Exception:
         db.rollback()
         logger.exception("Error in get_reservation_admin")
-        raise HTTPException(status_code=500, detail="Failed to get reservation detail")
+        raise route_internal_error(
+            "ERR_ADMIN_CONSTRUCTION_RESERVATION_DETAIL_FAILED",
+            "Failed to get reservation detail",
+        )
 
 
 @router.post("/reservations/{reservation_id}/force-cancel")
@@ -122,4 +132,7 @@ async def force_cancel_reservation(
     except Exception:
         db.rollback()
         logger.exception("Error in force_cancel_reservation")
-        raise HTTPException(status_code=500, detail="Failed to force-cancel reservation")
+        raise route_internal_error(
+            "ERR_ADMIN_CONSTRUCTION_FORCE_CANCEL_FAILED",
+            "Failed to force-cancel reservation",
+        )
