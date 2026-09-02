@@ -3,6 +3,32 @@ import { useWebSocket } from '../../contexts/WebSocketContext';
 import { useGame } from '../../contexts/GameContext';
 import './npc-combat-banner.css';
 
+export const NPC_COMBAT_BANNER_LOAD_FALLBACK = 'Combat alert unavailable';
+
+/** Transport collapse copy is not gameserver detail (LEG-3753 densify). */
+const isNpcCombatNetworkCollapse = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+/**
+ * Exported for TypeError/network honesty Vitest (LEG-3753).
+ * NpcCombatBanner is WS-driven (no REST load); this helper pins the densify
+ * contract for any future REST prefetch or defensive error surfacing.
+ */
+export function formatNpcCombatBannerError(err: unknown): string {
+  if (err instanceof TypeError) return NPC_COMBAT_BANNER_LOAD_FALLBACK;
+  const message = err instanceof Error ? err.message : undefined;
+  if (typeof message === 'string' && message.trim() && !isNpcCombatNetworkCollapse(message)) {
+    return message;
+  }
+  return NPC_COMBAT_BANNER_LOAD_FALLBACK;
+}
+
 /**
  * NpcCombatBanner — the cockpit surface for the `npc_combat_initiated` WS
  * event (WO-CMB-NPC-INITIATED-1 lane D): an NPC — a Federation patrol

@@ -94,7 +94,7 @@ describe('StationSecurityBanner', () => {
     expect(banner?.textContent).toBe('Security tier: Standard');
   });
 
-  it('hides on fetch failure without breaking the dock shell', async () => {
+  it('shows load error on fetch failure without breaking the dock shell', async () => {
     getSecurityStatus.mockRejectedValue(new Error('API Error: 404'));
 
     await act(async () => {
@@ -104,6 +104,9 @@ describe('StationSecurityBanner', () => {
       await Promise.resolve();
     });
 
+    const error = container.querySelector('[data-testid="station-security-banner-error"]');
+    expect(error?.getAttribute('role')).toBe('alert');
+    expect(error?.textContent).toBe('API Error: 404');
     expect(container.querySelector('[data-testid="station-security-banner"]')).toBeNull();
   });
 });

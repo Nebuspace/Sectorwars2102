@@ -9,6 +9,37 @@ interface MissionPlannerProps {
   canStartMissions: boolean;
 }
 
+export const MISSION_PLANNER_LOAD_FALLBACK = 'Failed to load missions';
+
+/** Transport collapse copy is not gameserver detail (LEG-3752 densify). */
+const isMissionPlannerNetworkCollapse = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+/** Exported for TypeError/network honesty Vitest (LEG-3752). */
+export function formatMissionPlannerLoadError(err: unknown): string {
+  if (err instanceof TypeError) return MISSION_PLANNER_LOAD_FALLBACK;
+  const message = err instanceof Error ? err.message : undefined;
+  if (typeof message === 'string' && message.trim() && !isMissionPlannerNetworkCollapse(message)) {
+    return message;
+  }
+  return MISSION_PLANNER_LOAD_FALLBACK;
+}
+
+export function formatMissionPlannerMutationError(err: unknown, fallback: string): string {
+  if (err instanceof TypeError) return fallback;
+  const message = err instanceof Error ? err.message : undefined;
+  if (typeof message === 'string' && message.trim() && !isMissionPlannerNetworkCollapse(message)) {
+    return message;
+  }
+  return fallback;
+}
+
 export const MissionPlanner: React.FC<MissionPlannerProps> = ({ 
   teamId, 
   playerId, 
@@ -19,6 +50,8 @@ export const MissionPlanner: React.FC<MissionPlannerProps> = ({
   const [members, setMembers] = useState<TeamMember[]>([]);
   const [creatingMission, setCreatingMission] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [mutationError, setMutationError] = useState<string | null>(null);
   
   const [newMission, setNewMission] = useState({
     name: '',
@@ -34,6 +67,7 @@ export const MissionPlanner: React.FC<MissionPlannerProps> = ({
   const loadData = async () => {
     try {
       setLoading(true);
+      setLoadError(null);
       const [missionData, memberData] = await Promise.all([
         teamAPI.getMissions(teamId),
         teamAPI.getMembers(teamId)
@@ -45,6 +79,7 @@ export const MissionPlanner: React.FC<MissionPlannerProps> = ({
       }
     } catch (error) {
       console.error('Failed to load data:', error);
+      setLoadError(formatMissionPlannerLoadError(error));
     } finally {
       setLoading(false);
     }
@@ -57,6 +92,7 @@ export const MissionPlanner: React.FC<MissionPlannerProps> = ({
     }
 
     try {
+      setMutationError(null);
       const mission = await teamAPI.createMission(teamId, {
         ...newMission,
         objectives: newMission.objectives.map((obj, index) => ({
@@ -78,11 +114,13 @@ export const MissionPlanner: React.FC<MissionPlannerProps> = ({
       });
     } catch (error) {
       console.error('Failed to create mission:', error);
+      setMutationError(formatMissionPlannerMutationError(error, 'Failed to create mission'));
     }
   };
 
   const handleJoinMission = async (missionId: string) => {
     try {
+      setMutationError(null);
       await teamAPI.joinMission(teamId, missionId);
       const updatedMission = missions.find(m => m.id === missionId);
       if (updatedMission && !updatedMission.participants.includes(playerId)) {
@@ -91,11 +129,13 @@ export const MissionPlanner: React.FC<MissionPlannerProps> = ({
       }
     } catch (error) {
       console.error('Failed to join mission:', error);
+      setMutationError(formatMissionPlannerMutationError(error, 'Failed to join mission'));
     }
   };
 
   const handleLeaveMission = async (missionId: string) => {
     try {
+      setMutationError(null);
       await teamAPI.leaveMission(teamId, missionId);
       const updatedMission = missions.find(m => m.id === missionId);
       if (updatedMission) {
@@ -104,6 +144,7 @@ export const MissionPlanner: React.FC<MissionPlannerProps> = ({
       }
     } catch (error) {
       console.error('Failed to leave mission:', error);
+      setMutationError(formatMissionPlannerMutationError(error, 'Failed to leave mission'));
     }
   };
 
@@ -111,6 +152,7 @@ export const MissionPlanner: React.FC<MissionPlannerProps> = ({
     if (!canStartMissions) return;
     
     try {
+      setMutationError(null);
       const mission = missions.find(m => m.id === missionId);
       if (!mission) return;
       
@@ -123,6 +165,7 @@ export const MissionPlanner: React.FC<MissionPlannerProps> = ({
       setSelectedMission(updatedMission);
     } catch (error) {
       console.error('Failed to start mission:', error);
+      setMutationError(formatMissionPlannerMutationError(error, 'Failed to start mission'));
     }
   };
 
@@ -180,8 +223,19 @@ export const MissionPlanner: React.FC<MissionPlannerProps> = ({
     return <div className="mission-planner loading">Loading missions...</div>;
   }
 
+  if (loadError) {
+    return (
+      <div className="mission-planner">
+        <div className="mp-error" role="alert">{loadError}</div>
+      </div>
+    );
+  }
+
   return (
     <div className="mission-planner">
+      {mutationError && (
+        <div className="mp-error" role="alert">{mutationError}</div>
+      )}
       <div className="planner-header">
         <h3>Mission Planner</h3>
         {canStartMissions && (
