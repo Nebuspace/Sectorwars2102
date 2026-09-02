@@ -3,19 +3,36 @@ import { useAuth } from '../../contexts/AuthContext';
 import apiClient from '../../services/apiClient';
 import './paypal-subscription.css';
 
-// Pull the backend's verbatim detail string out of an axios error (mirrors
-// the established FETCH-CONVERGE idiom, e.g. GatewrightPanel.tsx's errDetail).
-const errDetail = (e: unknown, fallback: string): string => {
-  if (e && typeof e === 'object') {
-    const resp = (e as { response?: { data?: unknown } }).response;
-    const data = resp?.data;
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+export const PAYPAL_SUBSCRIPTION_CREATE_FALLBACK = 'Failed to create subscription';
+export const PAYPAL_SUBSCRIPTION_CANCEL_FALLBACK = 'Failed to cancel subscription';
+
+/** Exported for TypeError/network honesty Vitest (LEG-3800). */
+export function formatPayPalSubscriptionError(err: unknown, fallback: string): string {
+  if (err instanceof TypeError) return fallback;
+  if (err && typeof err === 'object') {
+    const resp = (err as { response?: { data?: unknown } }).response;
+    const data = resp?.data ?? (err as { data?: unknown }).data;
     if (data && typeof data === 'object') {
       const detail = (data as Record<string, unknown>).detail;
       if (typeof detail === 'string' && detail) return detail;
     }
+    const msg = (err as { message?: string }).message;
+    if (typeof msg === 'string' && msg) {
+      if (isNetworkCollapseMessage(msg)) return fallback;
+      return msg;
+    }
   }
   return fallback;
-};
+}
 
 interface SubscriptionPlan {
   id: string;
@@ -143,7 +160,7 @@ const PayPalSubscription: React.FC<PayPalSubscriptionProps> = ({
 
       onSubscriptionCreated?.(response.data.subscription_id);
     } catch (err) {
-      setError(errDetail(err, 'Failed to create subscription'));
+      setError(formatPayPalSubscriptionError(err, PAYPAL_SUBSCRIPTION_CREATE_FALLBACK));
       console.error('Subscription creation error:', err);
     } finally {
       setLoading(false);
@@ -165,7 +182,7 @@ const PayPalSubscription: React.FC<PayPalSubscriptionProps> = ({
       await loadUserSubscriptions(); // Refresh the list
       onSubscriptionCancelled?.(subscriptionId);
     } catch (err) {
-      setError(errDetail(err, 'Failed to cancel subscription'));
+      setError(formatPayPalSubscriptionError(err, PAYPAL_SUBSCRIPTION_CANCEL_FALLBACK));
       console.error('Subscription cancellation error:', err);
     } finally {
       setLoading(false);

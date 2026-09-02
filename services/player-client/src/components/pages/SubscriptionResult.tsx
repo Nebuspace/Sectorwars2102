@@ -4,19 +4,35 @@ import { useAuth } from '../../contexts/AuthContext';
 import apiClient from '../../services/apiClient';
 import './subscription-result.css';
 
-// Pull the backend's verbatim detail string out of an axios error (mirrors
-// the established FETCH-CONVERGE idiom, e.g. GatewrightPanel.tsx's errDetail).
-const errDetail = (e: unknown, fallback: string): string => {
-  if (e && typeof e === 'object') {
-    const resp = (e as { response?: { data?: unknown } }).response;
-    const data = resp?.data;
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+export const SUBSCRIPTION_RESULT_FETCH_FALLBACK = 'Failed to retrieve subscription details';
+
+/** Exported for TypeError/network honesty Vitest (LEG-3801). */
+export function formatSubscriptionResultError(err: unknown, fallback: string): string {
+  if (err instanceof TypeError) return fallback;
+  if (err && typeof err === 'object') {
+    const resp = (err as { response?: { data?: unknown } }).response;
+    const data = resp?.data ?? (err as { data?: unknown }).data;
     if (data && typeof data === 'object') {
       const detail = (data as Record<string, unknown>).detail;
       if (typeof detail === 'string' && detail) return detail;
     }
+    const msg = (err as { message?: string }).message;
+    if (typeof msg === 'string' && msg) {
+      if (isNetworkCollapseMessage(msg)) return fallback;
+      return msg;
+    }
   }
   return fallback;
-};
+}
 
 interface SubscriptionDetails {
   subscription_id: string;
@@ -61,7 +77,7 @@ const SubscriptionResult: React.FC = () => {
       const response = await apiClient.get(`/api/v1/paypal/subscriptions/${subscriptionId}`);
       setSubscriptionDetails(response.data);
     } catch (err) {
-      setError(errDetail(err, 'Failed to retrieve subscription details'));
+      setError(formatSubscriptionResultError(err, SUBSCRIPTION_RESULT_FETCH_FALLBACK));
       console.error('Error fetching subscription details:', err);
     } finally {
       setLoading(false);
