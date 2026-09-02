@@ -1,9 +1,16 @@
 // @vitest-environment jsdom
 /**
  * LEG-3778 Soft-ORDER — ReputationPage TypeError/network densify.
+ * LEG-4016 Soft-ORDER — 403/429 densify.
  */
 import { describe, it, expect } from 'vitest';
 import { formatReputationLoadError } from '../ReputationPage';
+
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
 
 describe('ReputationPage TypeError densify (LEG-3778)', () => {
   it('formatReputationLoadError falls back on TypeError network collapse', () => {
@@ -29,3 +36,21 @@ describe('ReputationPage TypeError densify (LEG-3778)', () => {
     );
   });
 });
+
+describe('ReputationPage 403/429 densify (LEG-4016)', () => {
+  it('formatReputationLoadError maps 403/429 without raw transport strings', () => {
+    expect(formatReputationLoadError(apiRequestError(403))).toBe(
+      'Access denied — faction standings are not available right now.',
+    );
+    expect(formatReputationLoadError(apiRequestError(403, 'standings_denied'))).toBe(
+      'standings_denied',
+    );
+    expect(formatReputationLoadError(apiRequestError(429))).toBe(
+      'Faction standings rate limit exceeded — wait a moment and try again.',
+    );
+    expect(formatReputationLoadError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatReputationLoadError(apiRequestError(403))).not.toMatch(/TypeError/i);
+    expect(formatReputationLoadError(apiRequestError(403))).not.toMatch(/Network Error/i);
+  });
+});
+

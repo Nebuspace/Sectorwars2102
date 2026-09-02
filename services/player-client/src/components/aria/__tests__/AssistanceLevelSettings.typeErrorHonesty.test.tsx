@@ -3,6 +3,7 @@
  * LEG-3071 Soft-ORDER — formatAssistanceLevelError TypeError densify.
  * LEG-3557 Soft-ORDER — Network Error densify.
  * Load/update must not surface raw Failed to fetch / TypeError / Network Error.
+  * LEG-4015 Soft-ORDER — 403/429 densify.
  */
 import { describe, it, expect } from 'vitest';
 import { formatAssistanceLevelError } from '../AssistanceLevelSettings';
@@ -44,3 +45,28 @@ describe('formatAssistanceLevelError (LEG-3071)', () => {
     );
   });
 });
+
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
+
+describe('AssistanceLevelSettings 403/429 densify (LEG-4015)', () => {
+  it('maps 403/429 to context fallback without transport strings', () => {
+    expect(formatAssistanceLevelError(apiRequestError(403), 'load')).toBe(
+      'Failed to load ARIA assistance level',
+    );
+    expect(formatAssistanceLevelError(apiRequestError(429), 'update')).toBe(
+      'Failed to update ARIA assistance level',
+    );
+    expect(formatAssistanceLevelError(apiRequestError(403), 'load')).not.toMatch(/\b403\b/);
+    expect(formatAssistanceLevelError(apiRequestError(429), 'update')).not.toMatch(/\b429\b/);
+    expect(formatAssistanceLevelError(apiRequestError(403), 'load')).not.toMatch(/TypeError/i);
+    expect(formatAssistanceLevelError(apiRequestError(403), 'load')).not.toMatch(/Network Error/i);
+    expect(
+      formatAssistanceLevelError(apiRequestError(403, 'assistance_denied'), 'load'),
+    ).toBe('assistance_denied');
+  });
+});
+

@@ -1,11 +1,22 @@
 // @vitest-environment jsdom
 /**
  * LEG-3325 Soft-ORDER — SpaceDockInterface shell TypeError densify.
+ * LEG-4013 Soft-ORDER — 403/429 densify.
  */
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import SpaceDockInterface, { formatSpaceDockShellError } from '../SpaceDockInterface';
+import SpaceDockInterface, {
+  formatSpaceDockShellError,
+  formatSpaceDockMarketIntelError,
+  formatSpaceDockRegistryLookupError,
+} from '../SpaceDockInterface';
+
+const apiRequestError = (status: number, message?: string) => {
+  const err = new Error(message ?? `API Error: ${status}`);
+  (err as { status?: number }).status = status;
+  return err;
+};
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -127,6 +138,46 @@ describe('formatSpaceDockShellError TypeError densify (LEG-3325)', () => {
     expect(formatSpaceDockShellError(new Error('Insufficient credits.'), fallback)).toBe(
       'Insufficient credits.',
     );
+  });
+});
+
+
+describe('SpaceDockInterface 403/429 densify (LEG-4013)', () => {
+  it('formatSpaceDockMarketIntelError maps 403/429 without raw transport strings', () => {
+    expect(formatSpaceDockMarketIntelError(apiRequestError(403))).toBe(
+      'Access denied — you cannot view market intelligence right now.',
+    );
+    expect(formatSpaceDockMarketIntelError(apiRequestError(403, 'market_intel_denied'))).toBe(
+      'market_intel_denied',
+    );
+    expect(formatSpaceDockMarketIntelError(apiRequestError(429))).toBe(
+      'Market intelligence rate limit exceeded — wait a moment and try again.',
+    );
+    expect(formatSpaceDockMarketIntelError(apiRequestError(429))).not.toMatch(/\b429\b/);
+    expect(formatSpaceDockMarketIntelError(apiRequestError(403))).not.toMatch(/TypeError/i);
+    expect(formatSpaceDockMarketIntelError(apiRequestError(403))).not.toMatch(/Network Error/i);
+  });
+
+  it('formatSpaceDockRegistryLookupError maps 403/429 without raw transport strings', () => {
+    expect(formatSpaceDockRegistryLookupError(apiRequestError(403))).toBe(
+      'Access denied — registry lookup is not available right now.',
+    );
+    expect(formatSpaceDockRegistryLookupError(apiRequestError(429))).toBe(
+      'Registry lookup rate limit exceeded — wait a moment and try again.',
+    );
+    expect(formatSpaceDockRegistryLookupError(apiRequestError(429))).not.toMatch(/\b429\b/);
+  });
+
+  it('formatSpaceDockShellError maps 403/429 without raw transport strings', () => {
+    const fallback = 'Mining laser install failed';
+    expect(formatSpaceDockShellError(apiRequestError(403), fallback)).toBe(
+      'Access denied — this space-dock action is not available right now.',
+    );
+    expect(formatSpaceDockShellError(apiRequestError(429), fallback)).toBe(
+      'Space-dock rate limit exceeded — wait a moment and try again.',
+    );
+    expect(formatSpaceDockShellError(apiRequestError(429), fallback)).not.toMatch(/\b429\b/);
+    expect(formatSpaceDockShellError(apiRequestError(403), fallback)).not.toMatch(/TypeError/i);
   });
 });
 

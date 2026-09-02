@@ -147,6 +147,11 @@ export function formatCommsSendError(err: unknown): string {
   const status = httpStatus(err);
   const detail = serverDetail(err);
 
+  if (status === 403) {
+    if (detail) return detail;
+    return 'Access denied — you cannot send transmissions right now.';
+  }
+
   if (status === 429) {
     if (detail) return detail;
     return 'Too many messages — limit is 5 per 60s. Wait a moment and try again.';
@@ -169,6 +174,16 @@ export function formatCommsPurgeError(err: unknown): string {
   if (status === 404) {
     if (detail) return detail;
     return 'Message not found';
+  }
+
+  if (status === 403) {
+    if (detail) return detail;
+    return 'Access denied — you cannot purge transmissions right now.';
+  }
+
+  if (status === 429) {
+    if (detail) return detail;
+    return 'Purge rate limit exceeded — wait a moment and try again.';
   }
 
   if (detail) return detail;

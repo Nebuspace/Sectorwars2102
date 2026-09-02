@@ -80,9 +80,32 @@ function citizenshipClaimServerDetail(err: unknown): string | undefined {
   return undefined;
 }
 
-/** Surface gameserver colony-citizenship claim refusal detail. */
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+/** Surface gameserver colony-citizenship claim refusal detail (403/429 densify LEG-4017). */
 export function formatCitizenshipClaimError(err: unknown): string {
-  return citizenshipClaimServerDetail(err) ?? 'Claim failed';
+  const status = httpStatus(err);
+  const detail = citizenshipClaimServerDetail(err);
+
+  if (status === 403) {
+    if (detail) return detail;
+    return 'You do not have permission to claim citizenship here.';
+  }
+
+  if (status === 429) {
+    if (detail) return detail;
+    return 'Citizenship claim rate limit exceeded — wait a moment and try again.';
+  }
+
+  return detail ?? 'Claim failed';
 }
 
 const CitizenshipBadge: React.FC<CitizenshipBadgeProps> = ({ regionId, regionName }) => {
