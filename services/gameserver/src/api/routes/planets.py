@@ -28,6 +28,11 @@ from src.services.planetary_service import (
     defense_unit_price,
     clamp_tax_rate,
 )
+from src.utils.error_handling import route_internal_error
+
+ERR_PLANETS_DETAILS_FETCH_FAILED = "ERR_PLANETS_DETAILS_FETCH_FAILED"
+ERR_PLANETS_ALLOCATE_FAILED = "ERR_PLANETS_ALLOCATE_FAILED"
+ERR_PLANETS_BUILDING_UPGRADE_FAILED = "ERR_PLANETS_BUILDING_UPGRADE_FAILED"
 
 router = APIRouter(prefix="/planets", tags=["planets"])
 
@@ -2050,9 +2055,9 @@ async def get_planet_details(
         raise HTTPException(status_code=404, detail=str(e))
     except Exception:
         logger.exception("Failed to fetch planet details")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to fetch planet details",
+        raise route_internal_error(
+            ERR_PLANETS_DETAILS_FETCH_FAILED,
+            "Failed to fetch planet details",
         )
 
 
@@ -2084,9 +2089,9 @@ async def allocate_colonists(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception:
         logger.exception("Failed to allocate colonists")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to allocate colonists",
+        raise route_internal_error(
+            ERR_PLANETS_ALLOCATE_FAILED,
+            "Failed to allocate colonists",
         )
 
 
@@ -2117,9 +2122,9 @@ async def upgrade_building(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception:
         logger.exception("Failed to upgrade building")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to upgrade building",
+        raise route_internal_error(
+            ERR_PLANETS_BUILDING_UPGRADE_FAILED,
+            "Failed to upgrade building",
         )
 
 
