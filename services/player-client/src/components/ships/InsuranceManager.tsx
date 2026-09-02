@@ -51,11 +51,20 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
   );
 };
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
 /** True when err.message looks like gameserver detail (not bare API Error: N / TypeError noise). */
-function hasInsuranceServerDetail(err: unknown): boolean {
+function hasInsuranceServerDetail(err: unknown, message: string | undefined): boolean {
   // Network collapse (fetch TypeError / axios transport) is not gameserver copy — use the caller fallback.
   if (err instanceof TypeError) return false;
-  const message = err instanceof Error ? err.message : undefined;
   if (typeof message === 'string' && isNetworkCollapseMessage(message)) return false;
   return (
     typeof message === 'string' &&
@@ -66,17 +75,40 @@ function hasInsuranceServerDetail(err: unknown): boolean {
 
 /** Preserve gameserver detail on insurance status load refusal. */
 export function formatInsuranceLoadError(err: unknown): string {
-  if (hasInsuranceServerDetail(err)) {
-    return (err as Error).message;
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail = hasInsuranceServerDetail(err, message);
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission to view insurance for this ship.';
   }
+
+  if (status === 429) {
+    return 'Insurance rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (hasServerDetail) return message!;
   return 'Insurance is unavailable right now.';
 }
 
 /** Preserve gameserver detail on insurance purchase/upgrade refusal. */
 export function formatInsurancePurchaseError(err: unknown): string {
-  if (hasInsuranceServerDetail(err)) {
-    return (err as Error).message;
+  if (err instanceof TypeError) return 'Purchase failed.';
+  const status = httpStatus(err);
+  const message = err instanceof Error ? err.message : undefined;
+  const hasServerDetail = hasInsuranceServerDetail(err, message);
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission to purchase insurance for this ship.';
   }
+
+  if (status === 429) {
+    return 'Insurance purchase rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (hasServerDetail) return message!;
   return 'Purchase failed.';
 }
 

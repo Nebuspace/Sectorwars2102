@@ -35,6 +35,16 @@ const isNetworkCollapseMessage = (msg: string): boolean => {
   );
 };
 
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
 /** True when err looks like gameserver detail (not bare API Error: N / TypeError noise). */
 function hasShipRegistryServerDetail(err: unknown, message: string | undefined): boolean {
   // Network collapse (fetch TypeError / axios transport) is not gameserver copy.
@@ -51,6 +61,7 @@ function hasShipRegistryServerDetail(err: unknown, message: string | undefined):
 export function formatShipRegistryActionError(err: unknown): string {
   let message = err instanceof Error ? err.message : undefined;
   let code: string | undefined;
+  const status = httpStatus(err);
   if (err && typeof err === 'object') {
     const typed = err as {
       code?: unknown;
@@ -74,6 +85,20 @@ export function formatShipRegistryActionError(err: unknown): string {
   }
 
   const hasServerDetail = hasShipRegistryServerDetail(err, message);
+
+  if (status === 403) {
+    if (hasServerDetail) {
+      if (code && !message!.includes(code)) {
+        return `${message} [${code}]`;
+      }
+      return message!;
+    }
+    return 'You do not have permission to perform this registry action.';
+  }
+
+  if (status === 429) {
+    return 'Ship registry rate limit exceeded — wait a moment and try again.';
+  }
 
   if (hasServerDetail) {
     if (code && !message!.includes(code)) {
