@@ -1325,6 +1325,22 @@ class CombatService:
                             "+ police skipped (WO-CMB-SUSPECT-LIFE-1)",
                             attacker.id, defender.id,
                         )
+                    # LEG-4165: +15 Federation rep for killing a Wanted/Suspect
+                    # player in Fed-controlled space (factions-and-teams.md
+                    # Federation trigger table). Best-effort, flush-only —
+                    # exception logged but kill still resolves.
+                    if defender_is_live_wanted or defender_is_live_suspect:
+                        try:
+                            from src.services.emergent_reputation_service import apply_emergent_action
+                            apply_emergent_action(
+                                self.db, attacker, "KILL_WANTED_PLAYER_FED",
+                            )
+                        except Exception:
+                            logger.warning(
+                                "KILL_WANTED_PLAYER_FED rep hook failed for "
+                                "attacker %s; kill still resolves",
+                                attacker.id, exc_info=True,
+                            )
                 else:
                     rep_service.adjust_reputation(attacker.id, -100, "attack_innocent")
                     attacked_innocent = True

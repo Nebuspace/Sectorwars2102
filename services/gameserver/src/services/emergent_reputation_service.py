@@ -631,6 +631,18 @@ EMERGENT_ACTIONS: Dict[str, EmergentAction] = {
             "drifting/escape-pod ship across ≥2 sectors (+15)"
         ),
     ),
+    # LEG-4165 — Federation: "Kill a player with active Wanted/Suspect status
+    # in Fed-Controlled space | +15" (factions-and-teams.md Federation trigger
+    # table). Wired in combat_service.py kill-resolution block when
+    # defender_is_live_wanted or defender_is_live_suspect.
+    "KILL_WANTED_PLAYER_FED": EmergentAction(
+        name="KILL_WANTED_PLAYER_FED",
+        deltas=[FactionDelta(FactionType.FEDERATION, 15)],
+        doc_source=(
+            "factions-and-teams.md Federation table: Kill a player with active "
+            "Wanted/Suspect status in Fed-Controlled space (+15)"
+        ),
+    ),
 }
 
 
