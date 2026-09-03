@@ -162,7 +162,10 @@ def test_clear_expired_suspects_restores_tier_color():
 
 
 @pytest.mark.unit
-def test_reputation_adjust_while_wanted_keeps_red():
+def test_reputation_adjust_while_wanted_keeps_red(monkeypatch):
+    # recompute_is_wanted inside adjust_reputation uses wall clock unless
+    # _now is patched — freeze so wanted_until stays live (LEG-4140).
+    monkeypatch.setattr(wanted_service, "_now", lambda now=None: FROZEN_NOW)
     player = _player(
         is_wanted=True,
         wanted_until=FROZEN_NOW + timedelta(hours=12),
