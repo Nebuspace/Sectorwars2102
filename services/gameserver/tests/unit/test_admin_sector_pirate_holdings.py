@@ -1,4 +1,4 @@
-"""LEG-4176 — GET /admin/sectors/{sector_id}/pirate-holdings."""
+"""LEG-4176 / LEG-4197 — GET /admin/sectors/{sector_id}/pirate-holdings."""
 from __future__ import annotations
 
 import inspect
@@ -27,6 +27,7 @@ def _holding(**overrides):
     owner_team_id = overrides.pop("owner_team_id", None)
     captured_at = overrides.pop("captured_at", None)
     combat_lock_held_by = overrides.pop("combat_lock_held_by", None)
+    outlaw_base_id = overrides.pop("outlaw_base_id", None)
     return SimpleNamespace(
         id=hid,
         tier=overrides.pop("tier", PirateHoldingTier.OUTPOST),
@@ -37,6 +38,7 @@ def _holding(**overrides):
         captured_at=captured_at,
         combat_lock_held_by=combat_lock_held_by,
         current_strength=overrides.pop("current_strength", 0.75),
+        outlaw_base_id=outlaw_base_id,
         **overrides,
     )
 
@@ -81,6 +83,7 @@ async def test_present_holdings_committed_columns_only():
     owner = uuid.uuid4()
     team = uuid.uuid4()
     locker = uuid.uuid4()
+    outlaw_base = uuid.uuid4()
     captured = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
     holding = _holding(
         id=hid,
@@ -92,7 +95,7 @@ async def test_present_holdings_committed_columns_only():
         combat_lock_held_by=locker,
         current_strength=0.4,
         tier=PirateHoldingTier.CAMP,
-        outlaw_base_id=uuid.uuid4(),
+        outlaw_base_id=outlaw_base,
     )
     db = _FakeSession([holding])
 
@@ -106,7 +109,6 @@ async def test_present_holdings_committed_columns_only():
     assert len(result["holdings"]) == 1
     item = result["holdings"][0]
     assert set(item.keys()) == set(_ADMIN_PIRATE_HOLDING_FIELDS)
-    assert "outlaw_base_id" not in item
     assert item == {
         "id": str(hid),
         "tier": "CAMP",
@@ -117,12 +119,21 @@ async def test_present_holdings_committed_columns_only():
         "captured_at": captured.isoformat(),
         "combat_lock_held_by": str(locker),
         "current_strength": 0.4,
+        "outlaw_base_id": str(outlaw_base),
     }
 
 
-def test_payload_helper_omits_outlaw_base_id():
-    payload = _admin_pirate_holding_payload(_holding(outlaw_base_id=uuid.uuid4()))
-    assert "outlaw_base_id" not in payload
+def test_payload_helper_includes_outlaw_base_id_when_set():
+    base_id = uuid.uuid4()
+    payload = _admin_pirate_holding_payload(_holding(outlaw_base_id=base_id))
+    assert payload["outlaw_base_id"] == str(base_id)
+    assert set(payload.keys()) == set(_ADMIN_PIRATE_HOLDING_FIELDS)
+
+
+def test_payload_helper_null_outlaw_base_id_when_unset():
+    payload = _admin_pirate_holding_payload(_holding())
+    assert "outlaw_base_id" in payload
+    assert payload["outlaw_base_id"] is None
     assert set(payload.keys()) == set(_ADMIN_PIRATE_HOLDING_FIELDS)
 
 
@@ -144,8 +155,9 @@ def test_route_registered_and_gated_players_view():
     assert PLAYERS_VIEW in closed
 
 
-def test_no_migration_and_no_outlaw_base_in_route_source():
+def test_route_source_includes_outlaw_base_id_and_stays_gated():
     src = Path(admin_mod.__file__).read_text()
-    assert "outlaw_base_id" not in src
+    assert "outlaw_base_id" in src
+    assert "_admin_pirate_holding_payload" in src
     assert "/sectors/{sector_id}/pirate-holdings" in src
     assert "require_scope(PLAYERS_VIEW)" in src
