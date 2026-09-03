@@ -946,7 +946,7 @@ class TestGenerateAcquisitionBountyContracts:
             id=uuid.uuid4(), sector_uuid=sec.id,
             faction_affiliation=None,
             commodities={"ore": {"buys": True, "sells": True, "quantity": 100, "base_price": 20, "capacity": 200}},
-            type=StationType.FEDERATION_HUB,
+            type=StationType.TRADING,
         )
         return _FakeSession(sectors=[sec]), station
 
@@ -973,7 +973,7 @@ class TestGenerateAcquisitionBountyContracts:
             id=uuid.uuid4(), sector_uuid=sec.id,
             faction_affiliation=None,
             commodities={"ore": {"sells": True, "quantity": 100}},
-            type=StationType.FEDERATION_HUB,
+            type=StationType.TRADING,
         )
         db = _FakeSession(sectors=[sec])
 

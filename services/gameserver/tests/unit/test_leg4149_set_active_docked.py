@@ -11,7 +11,7 @@ import pathlib
 import pytest
 
 ROUTE_SRC = (
-    pathlib.Path(__file__).parents[3]
+    pathlib.Path(__file__).parents[2]
     / "src/api/routes/ship_upgrades.py"
 )
 

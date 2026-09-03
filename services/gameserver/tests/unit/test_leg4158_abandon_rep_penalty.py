@@ -1,99 +1,135 @@
-"""LEG-4158: contract abandon() reputation_penalty application.
+"""LEG-4158: abandon() applies reputation_penalty via apply_faction_rep_delta.
 
-Unit tests for the reputation_penalty hook wired in abandon() by LEG-4158.
-DB-free: patches apply_faction_rep_delta and db.query to avoid needing a DB.
+contracts.md §Reputation effects: abandoning an NPC contract with a
+reputation_penalty and faction_id must apply a negative delta.
 """
-from __future__ import annotations
-
 import uuid
 from decimal import Decimal
-from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-
-def _make_contract(
-    *,
-    reputation_penalty=None,
-    faction_id=None,
-    issuer_type=None,
-):
-    from src.models.contract import ContractIssuerType, ContractStatus, ContractType
-
-    return SimpleNamespace(
-        id=uuid.uuid4(),
-        contract_type=ContractType.CARGO_DELIVERY,
-        status=ContractStatus.ACCEPTED,
-        acceptor_player_id=uuid.uuid4(),
-        issuer_type=issuer_type or ContractIssuerType.NPC,
-        issuer_id=uuid.uuid4(),
-        faction_id=faction_id,
-        reputation_penalty=reputation_penalty,
-        reputation_reward=None,
-        payment=Decimal("1000"),
-        penalty=Decimal("100"),
-        escrow_amount=Decimal("0"),
-        insurance_coverage_tier=None,
-    )
+from src.models.contract import Contract, ContractIssuerType, ContractStatus, ContractType
 
 
-@pytest.mark.unit
 class TestAbandonRepPenalty:
-    """apply_faction_rep_delta is called with a negative delta on abandon
-    when reputation_penalty is set and faction_id resolves to a Faction with a faction_type."""
+    """abandon() applies reputation_penalty -> apply_faction_rep_delta."""
 
-    def test_rep_penalty_applied_on_npc_contract_abandon(self) -> None:
-        """A contract with reputation_penalty=20 and valid faction_id applies -20 delta."""
-        from src.models.faction import FactionType
+    def _make_db(self) -> MagicMock:
+        db = MagicMock()
+        db.flush = MagicMock()
+        return db
 
+    def _make_player(self, player_id: uuid.UUID) -> MagicMock:
+        player = MagicMock()
+        player.id = player_id
+        player.credits = 5000
+        player.team_id = None
+        return player
+
+    def _make_contract(
+        self,
+        player_id: uuid.UUID,
+        reputation_penalty=None,
+        faction_id=None,
+    ) -> MagicMock:
+        contract = MagicMock(spec=Contract)
+        contract.id = uuid.uuid4()
+        contract.acceptor_player_id = player_id
+        contract.status = ContractStatus.ACCEPTED
+        contract.issuer_type = ContractIssuerType.NPC
+        contract.issuer_id = uuid.uuid4()
+        contract.penalty = Decimal("100")
+        contract.payment = Decimal("1000")
+        contract.quantity = 100
+        contract.escrow_amount = Decimal("0")
+        contract.escrow_state = None
+        contract.insurance_coverage_tier = None
+        contract.contract_type = ContractType.CARGO_DELIVERY
+        contract.reputation_penalty = reputation_penalty
+        contract.faction_id = faction_id
+        return contract
+
+    def test_abandon_applies_rep_penalty_when_set(self):
+        """abandon() with reputation_penalty=20 and valid faction_id calls apply_faction_rep_delta(-20)."""
         faction_id = uuid.uuid4()
-        contract = _make_contract(reputation_penalty=20, faction_id=faction_id)
-        player_id = contract.acceptor_player_id
+        player_id = uuid.uuid4()
+        contract = self._make_contract(player_id, reputation_penalty=20, faction_id=faction_id)
+        db = self._make_db()
+        player = self._make_player(player_id)
 
-        mock_faction = SimpleNamespace(
-            id=faction_id,
-            faction_type=FactionType.FRONTIER_COALITION,
-            name="Frontier Coalition",
-        )
+        with patch("src.services.contract_service._load_contract", return_value=contract), \
+             patch("src.services.contract_service._load_player", return_value=player), \
+             patch("src.services.contract_service._guarded_transition"), \
+             patch("src.services.contract_service._refresh_contract_insurance_snapshot"), \
+             patch("src.services.contract_service._to_credits_int", return_value=100), \
+             patch("src.services.contract_service._round_credits", return_value=Decimal("100")), \
+             patch("src.services.contract_service._as_decimal", return_value=Decimal("100")), \
+             patch("src.services.contract_service.apply_faction_rep_delta") as mock_rep:
+            from src.services.contract_service import abandon
+            abandon(db, contract.id, player_id)
+            mock_rep.assert_called_once_with(
+                db, player_id, faction_id, -20, reason="npc_contract_abandon"
+            )
 
-        with patch(
-            "src.services.contract_service.apply_faction_rep_delta"
-        ) as mock_rep_delta:
-            # Patch the Faction query inside the function
-            mock_db = MagicMock()
-            mock_db.query.return_value.filter.return_value.first.return_value = mock_faction
+    def test_abandon_no_rep_change_when_penalty_is_none(self):
+        """abandon() with reputation_penalty=None applies no rep change."""
+        player_id = uuid.uuid4()
+        contract = self._make_contract(player_id, reputation_penalty=None, faction_id=uuid.uuid4())
+        db = self._make_db()
+        player = self._make_player(player_id)
 
-            # Call the internal logic directly
-            # Since abandon() has many dependencies, we test just the rep-penalty
-            # logic path via a minimal extraction.
-            rep_penalty = getattr(contract, "reputation_penalty", None)
-            if rep_penalty is not None and contract.faction_id is not None:
-                faction = mock_db.query(None).filter().first()
-                if faction is not None and getattr(faction, "faction_type", None) is not None:
-                    from src.services.contract_service import apply_faction_rep_delta
-                    apply_faction_rep_delta(
-                        mock_db, player_id, faction.faction_type,
-                        -abs(int(rep_penalty)),
-                        reason="contract_abandon_reputation_penalty",
-                        faction_name=getattr(faction, "name", None),
-                    )
+        with patch("src.services.contract_service._load_contract", return_value=contract), \
+             patch("src.services.contract_service._load_player", return_value=player), \
+             patch("src.services.contract_service._guarded_transition"), \
+             patch("src.services.contract_service._refresh_contract_insurance_snapshot"), \
+             patch("src.services.contract_service._to_credits_int", return_value=0), \
+             patch("src.services.contract_service._round_credits", return_value=Decimal("0")), \
+             patch("src.services.contract_service._as_decimal", return_value=Decimal("0")), \
+             patch("src.services.contract_service.apply_faction_rep_delta") as mock_rep:
+            from src.services.contract_service import abandon
+            abandon(db, contract.id, player_id)
+            mock_rep.assert_not_called()
 
-            mock_rep_delta.assert_called_once()
-            call_args = mock_rep_delta.call_args
-            assert call_args[0][3] == -20  # negative delta
-            assert call_args[1]["reason"] == "contract_abandon_reputation_penalty"
+    def test_abandon_no_rep_change_when_no_faction_id(self):
+        """abandon() with reputation_penalty set but faction_id=None applies no rep change."""
+        player_id = uuid.uuid4()
+        contract = self._make_contract(player_id, reputation_penalty=20, faction_id=None)
+        db = self._make_db()
+        player = self._make_player(player_id)
 
-    def test_no_rep_penalty_when_penalty_is_none(self) -> None:
-        """Abandoning with reputation_penalty=None applies no rep change."""
-        contract = _make_contract(reputation_penalty=None, faction_id=uuid.uuid4())
-        rep_penalty = getattr(contract, "reputation_penalty", None)
-        # The guard should prevent any call
-        assert rep_penalty is None  # guard fires: no delta applied
+        with patch("src.services.contract_service._load_contract", return_value=contract), \
+             patch("src.services.contract_service._load_player", return_value=player), \
+             patch("src.services.contract_service._guarded_transition"), \
+             patch("src.services.contract_service._refresh_contract_insurance_snapshot"), \
+             patch("src.services.contract_service._to_credits_int", return_value=0), \
+             patch("src.services.contract_service._round_credits", return_value=Decimal("0")), \
+             patch("src.services.contract_service._as_decimal", return_value=Decimal("0")), \
+             patch("src.services.contract_service.apply_faction_rep_delta") as mock_rep:
+            from src.services.contract_service import abandon
+            abandon(db, contract.id, player_id)
+            mock_rep.assert_not_called()
 
-    def test_no_rep_penalty_when_faction_id_is_none(self) -> None:
-        """Abandoning with no faction_id applies no rep change."""
-        contract = _make_contract(reputation_penalty=20, faction_id=None)
-        rep_penalty = getattr(contract, "reputation_penalty", None)
-        assert rep_penalty is not None
-        assert contract.faction_id is None  # guard fires: no delta applied
+    def test_abandon_rep_penalty_exception_does_not_abort(self):
+        """If apply_faction_rep_delta raises, abandon() still succeeds (best-effort)."""
+        faction_id = uuid.uuid4()
+        player_id = uuid.uuid4()
+        contract = self._make_contract(player_id, reputation_penalty=20, faction_id=faction_id)
+        db = self._make_db()
+        player = self._make_player(player_id)
+
+        with patch("src.services.contract_service._load_contract", return_value=contract), \
+             patch("src.services.contract_service._load_player", return_value=player), \
+             patch("src.services.contract_service._guarded_transition"), \
+             patch("src.services.contract_service._refresh_contract_insurance_snapshot"), \
+             patch("src.services.contract_service._to_credits_int", return_value=100), \
+             patch("src.services.contract_service._round_credits", return_value=Decimal("100")), \
+             patch("src.services.contract_service._as_decimal", return_value=Decimal("100")), \
+             patch("src.services.contract_service.apply_faction_rep_delta", side_effect=RuntimeError("db error")) as mock_rep:
+            from src.services.contract_service import abandon
+            # abandon() should NOT raise even when rep delta fails
+            result = abandon(db, contract.id, player_id)
+            # The function returns normally (exception swallowed by best-effort try/except)
+            assert "penalty_charged" in result
+            # apply_faction_rep_delta WAS attempted (exception proves it was called)
+            mock_rep.assert_called_once()
