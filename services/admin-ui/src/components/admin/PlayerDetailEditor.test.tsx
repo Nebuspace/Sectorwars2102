@@ -348,10 +348,15 @@ describe('PlayerDetailEditor pirate holdings (LEG-4195)', () => {
     );
   });
 
-  it('renders honest holding rows without inventing outlaw_base_id', async () => {
+  it('renders honest holding rows and shows outlaw_base_id when GET includes a non-null value', async () => {
     mockMetaLoads({
       holdings: [
-        { id: 'h1', tier: 'outpost', owner_player_id: 'p9' },
+        {
+          id: 'h1',
+          tier: 'outpost',
+          owner_player_id: 'p9',
+          outlaw_base_id: 'base-uuid-111',
+        },
         { id: 'h2', tier: null, owner_player_id: null },
       ],
     });
@@ -366,10 +371,15 @@ describe('PlayerDetailEditor pirate holdings (LEG-4195)', () => {
     expect(screen.getByTestId('pirate-holding-row-h1')).toHaveTextContent(
       /owner: p9/,
     );
+    expect(screen.getByTestId('pirate-holding-row-h1')).toHaveTextContent(
+      /outlaw_base_id: base-uuid-111/,
+    );
     expect(screen.getByTestId('pirate-holding-row-h2')).toHaveTextContent(
       /owner: pirate-controlled/,
     );
-    expect(screen.queryByText(/outlaw_base/i)).toBeNull();
+    expect(screen.getByTestId('pirate-holding-row-h2')).toHaveTextContent(
+      /outlaw_base_id: —/,
+    );
     expect(screen.queryByTestId('pirate-holdings-empty')).toBeNull();
   });
 
