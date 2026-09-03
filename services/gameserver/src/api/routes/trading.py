@@ -1302,6 +1302,23 @@ async def sell_resource(
                 apply_trade_volume_rep(
                     db, current_player, "TRADE_VOLUME_AM_ORE", total_earnings, tv_ctx
                 )
+            # LEG-4159: Frontier colony port luxury sell (+2/10k cr = +1/5k block).
+            # [OPEN] "colony port" = station in a Frontier-zone sector (provisional).
+            if trade_request.resource_type in ("gourmet_food", "luxury_goods"):
+                try:
+                    from src.models.sector import Sector
+                    from src.models.zone import ZoneType
+                    sec = db.query(Sector).filter(Sector.id == station.sector_uuid).first()
+                    if (
+                        sec is not None
+                        and sec.zone is not None
+                        and sec.zone.zone_type == ZoneType.FRONTIER
+                    ):
+                        apply_trade_volume_rep(
+                            db, current_player, "SELL_LUXURY_FC", total_earnings, tv_ctx
+                        )
+                except Exception:
+                    logger.warning("SELL_LUXURY_FC rep hook failed (sell)", exc_info=True)
         except Exception:
             logger.warning("emergent trade-volume faction rep failed (sell)", exc_info=True)
 

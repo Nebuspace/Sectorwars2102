@@ -591,6 +591,22 @@ EMERGENT_ACTIONS: Dict[str, EmergentAction] = {
             "Fringe-controlled port (+25 / transaction)"
         ),
     ),
+    # LEG-4159 — Frontier Coalition: "Sell gourmet_food or luxury_goods to a
+    # Frontier colony port | +2 / 10,000 cr | luxury-starved colonies"
+    # (factions-and-teams.md FC table, line 118). Equivalent to +1 / 5,000 cr
+    # (same rate) — reuses apply_trade_volume_rep's 5,000-cr block accumulator.
+    # [OPEN] "Frontier colony port" qualifier: canon does not formally define this
+    # as a specific StationType; implemented as any station in a Frontier-zone
+    # sector. Pending a DECISIONS.md ruling if a more precise definition is needed.
+    # Wired in trading.py sell path.
+    "SELL_LUXURY_FC": EmergentAction(
+        name="SELL_LUXURY_FC",
+        deltas=[FactionDelta(FactionType.INDEPENDENTS, 1)],
+        doc_source=(
+            "factions-and-teams.md FC line 118: Sell gourmet_food/luxury_goods "
+            "to a Frontier colony port (+2 / 10,000 cr = +1 / 5,000 cr block)"
+        ),
+    ),
     # LEG-4156 — Frontier Coalition: "Establish a colony in a Frontier-zone
     # sector | +50 | their core mission" (factions-and-teams.md FC table,
     # line 115). Wired in genesis_service.py after successful planet formation
