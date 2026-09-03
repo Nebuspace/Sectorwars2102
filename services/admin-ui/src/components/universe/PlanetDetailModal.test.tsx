@@ -5,6 +5,7 @@ import { api } from '../../utils/auth';
 
 vi.mock('../../utils/auth', () => ({
   api: {
+    get: vi.fn(),
     patch: vi.fn(),
   },
 }));
@@ -25,6 +26,8 @@ const planet = {
 describe('PlanetDetailModal scope errors (LEG-1214)', () => {
   beforeEach(() => {
     vi.mocked(api.patch).mockReset();
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.get).mockResolvedValue({ data: { holdings: [] } });
   });
 
   it('surfaces admin.universe.manage on save 403', async () => {
@@ -96,6 +99,8 @@ describe('PlanetDetailModal Soft-ORDER defense_level (LEG-1462)', () => {
   beforeEach(() => {
     vi.mocked(api.patch).mockReset();
     vi.mocked(api.patch).mockResolvedValue({ data: {} });
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.get).mockResolvedValue({ data: { holdings: [] } });
   });
 
   it('includes defense_level in PATCH payload', async () => {
@@ -123,6 +128,8 @@ describe('PlanetDetailModal Soft-ORDER demote non-PATCHABLE (LEG-1471)', () => {
   beforeEach(() => {
     vi.mocked(api.patch).mockReset();
     vi.mocked(api.patch).mockResolvedValue({ data: {} });
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.get).mockResolvedValue({ data: { holdings: [] } });
   });
 
   it('keeps population/max_population/atmosphere display-only and omits them from PATCH', async () => {
@@ -155,5 +162,106 @@ describe('PlanetDetailModal Soft-ORDER demote non-PATCHABLE (LEG-1471)', () => {
         defense_level: 1,
       }),
     );
+  });
+});
+
+const axiosError = (status: number) =>
+  Object.assign(new Error(`HTTP ${status}`), { response: { status } });
+
+const holdingPlanet = {
+  ...planet,
+  sector_id: 42,
+};
+
+function renderHoldingsModal() {
+  return render(
+    <PlanetDetailModal
+      isOpen
+      planet={holdingPlanet as any}
+      onClose={() => {}}
+      mode="view"
+    />,
+  );
+}
+
+describe('PlanetDetailModal pirate holdings (LEG-4190)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.patch).mockReset();
+  });
+
+  it('fetches admin pirate-holdings using planet.sector_id', async () => {
+    vi.mocked(api.get).mockResolvedValue({ data: { holdings: [] } });
+    renderHoldingsModal();
+
+    await waitFor(() => {
+      expect(vi.mocked(api.get)).toHaveBeenCalledWith(
+        '/api/v1/admin/sectors/42/pirate-holdings',
+      );
+    });
+    expect(
+      vi.mocked(api.get).mock.calls.every(
+        ([url]) => url === '/api/v1/admin/sectors/42/pirate-holdings',
+      ),
+    ).toBe(true);
+  });
+
+  it('shows an honest empty state when holdings is empty', async () => {
+    vi.mocked(api.get).mockResolvedValue({ data: { holdings: [] } });
+    renderHoldingsModal();
+
+    expect(await screen.findByTestId('pirate-holdings-empty')).toHaveTextContent(
+      'No pirate holdings in this sector.',
+    );
+    expect(screen.queryByTestId(/pirate-holding-row-/)).toBeNull();
+    expect(screen.queryByText(/outlaw_base_id/i)).toBeNull();
+    expect(screen.queryByRole('button', { name: /capture|initiate/i })).toBeNull();
+  });
+
+  it('treats omitted holdings key as empty without fabricating rows', async () => {
+    vi.mocked(api.get).mockResolvedValue({ data: {} });
+    renderHoldingsModal();
+
+    expect(await screen.findByTestId('pirate-holdings-empty')).toBeTruthy();
+    expect(screen.queryByTestId(/pirate-holding-row-/)).toBeNull();
+  });
+
+  it('lists present holdings without inventing outlaw_base_id', async () => {
+    vi.mocked(api.get).mockResolvedValue({
+      data: {
+        holdings: [
+          {
+            id: 'hold-1',
+            tier: 'OUTPOST',
+            owner_player_id: null,
+            outlaw_base_id: 'must-not-render',
+          },
+          { id: 'hold-2', owner_player_id: 'player-3' },
+        ],
+      },
+    });
+    renderHoldingsModal();
+
+    const row1 = await screen.findByTestId('pirate-holding-row-hold-1');
+    expect(row1).toHaveTextContent('id: hold-1');
+    expect(row1).toHaveTextContent('tier: OUTPOST');
+    expect(row1).toHaveTextContent('owner: pirate-controlled');
+    expect(row1).not.toHaveTextContent('must-not-render');
+    expect(row1).not.toHaveTextContent('outlaw_base_id');
+
+    const row2 = screen.getByTestId('pirate-holding-row-hold-2');
+    expect(row2).toHaveTextContent('owner: player-3');
+    expect(row2).toHaveTextContent('tier: —');
+    expect(screen.queryByRole('button', { name: /capture|initiate/i })).toBeNull();
+  });
+
+  it('surfaces holdings load 403 via formatUniverseAdminError', async () => {
+    vi.mocked(api.get).mockRejectedValue(axiosError(403));
+    renderHoldingsModal();
+
+    await waitFor(() => {
+      expect(screen.getByText(/admin\.universe\.manage|Access denied/i)).toBeTruthy();
+    });
+    expect(await screen.findByTestId('pirate-holdings-empty')).toBeTruthy();
   });
 });
