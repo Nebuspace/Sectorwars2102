@@ -36,7 +36,11 @@ const UniverseManager: React.FC = () => {
   const [hoveredSector, setHoveredSector] = useState<any>(null);
   const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
   const mapContainerRef = useRef<HTMLDivElement>(null);
+  const [filterHasPirateHolding, setFilterHasPirateHolding] = useState(false);
 
+  const visibleSectors = filterHasPirateHolding
+    ? sectors.filter((s: { has_pirate_holding?: boolean }) => s.has_pirate_holding === true)
+    : sectors;
 
   // Load data on mount
   useEffect(() => {
@@ -234,12 +238,52 @@ const UniverseManager: React.FC = () => {
     setIsDragging(false);
   }, []);
 
+  const renderHoldingFilter = () => (
+    <div className="universe-holding-filter" role="group" aria-labelledby="universe-holding-filter-label">
+      <span className="form-label" id="universe-holding-filter-label">Has Holding</span>
+      <div className="btn-group">
+        <button
+          type="button"
+          aria-pressed={filterHasPirateHolding}
+          aria-label="Has Holding Yes"
+          className={`btn btn-sm ${filterHasPirateHolding ? 'btn-primary' : 'btn-secondary'}`}
+          onClick={() => setFilterHasPirateHolding(true)}
+        >
+          Yes
+        </button>
+        <button
+          type="button"
+          aria-pressed={!filterHasPirateHolding}
+          aria-label="Has Holding Any"
+          className={`btn btn-sm ${!filterHasPirateHolding ? 'btn-primary' : 'btn-secondary'}`}
+          onClick={() => setFilterHasPirateHolding(false)}
+        >
+          Any
+        </button>
+      </div>
+    </div>
+  );
+
   // Render galaxy map visualization
   const renderGalaxyMap = () => {
     if (sectors.length === 0) {
       return (
-        <div className="no-sectors">
-          <p>No sectors found. Generate a galaxy first!</p>
+        <div className="galaxy-map-container">
+          {renderHoldingFilter()}
+          <div className="no-sectors">
+            <p>No sectors found. Generate a galaxy first!</p>
+          </div>
+        </div>
+      );
+    }
+
+    if (visibleSectors.length === 0) {
+      return (
+        <div className="galaxy-map-container">
+          {renderHoldingFilter()}
+          <div className="no-sectors" data-testid="universe-holding-filter-empty">
+            <p>No sectors with pirate holdings.</p>
+          </div>
         </div>
       );
     }
@@ -248,8 +292,8 @@ const UniverseManager: React.FC = () => {
     const mapHeight = 600;
 
     // Calculate bounds from sector coordinates
-    const xCoords = sectors.map((s: any) => s.x_coord);
-    const yCoords = sectors.map((s: any) => s.y_coord);
+    const xCoords = visibleSectors.map((s: any) => s.x_coord);
+    const yCoords = visibleSectors.map((s: any) => s.y_coord);
     const minX = Math.min(...xCoords);
     const maxX = Math.max(...xCoords);
     const minY = Math.min(...yCoords);
@@ -275,11 +319,12 @@ const UniverseManager: React.FC = () => {
 
     return (
       <div className="galaxy-map-container" ref={mapContainerRef}>
+        {renderHoldingFilter()}
         <div className="galaxy-map-controls">
           <button onClick={() => setMapZoom(prev => Math.min(10, prev * 1.3))} className="map-control-btn">+</button>
           <button onClick={() => setMapZoom(prev => Math.max(0.1, prev * 0.7))} className="map-control-btn">-</button>
           <button onClick={() => { setMapZoom(1); setMapOffset({ x: 0, y: 0 }); }} className="map-control-btn">Reset</button>
-          <span className="map-info">{sectors.length} sectors | Zoom: {mapZoom.toFixed(1)}x</span>
+          <span className="map-info">{visibleSectors.length} sectors | Zoom: {mapZoom.toFixed(1)}x</span>
         </div>
         <div className="galaxy-map-legend">
           <span className="legend-item"><span className="legend-dot" style={{ background: '#3b82f6' }}></span> Standard</span>
@@ -322,7 +367,7 @@ const UniverseManager: React.FC = () => {
             })}
 
             {/* Sector dots */}
-            {sectors.map((sector: any) => {
+            {visibleSectors.map((sector: any) => {
               const cx = toSvgX(sector.x_coord);
               const cy = toSvgY(sector.y_coord);
               const color = getSectorColor(sector.type);
@@ -401,13 +446,18 @@ const UniverseManager: React.FC = () => {
   const renderSectorsGrid = () => {
     return (
       <div className="sectors-grid-container">
+        {renderHoldingFilter()}
         {sectors.length === 0 ? (
           <div className="no-sectors">
             <p>No sectors found. Generate a galaxy first!</p>
           </div>
+        ) : visibleSectors.length === 0 ? (
+          <div className="no-sectors" data-testid="universe-holding-filter-empty">
+            <p>No sectors with pirate holdings.</p>
+          </div>
         ) : (
           <div className="sectors-grid">
-            {sectors.map(sector => (
+            {visibleSectors.map(sector => (
               <div 
                 key={sector.id} 
                 className={`sector-card ${sector.has_port ? 'has-port' : ''} ${sector.has_planet ? 'has-planet' : ''} ${sector.has_pirate_holding === true ? 'has-holding' : ''}`}
