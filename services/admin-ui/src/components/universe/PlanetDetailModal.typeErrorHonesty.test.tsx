@@ -5,6 +5,7 @@ import { api } from '../../utils/auth';
 
 vi.mock('../../utils/auth', () => ({
   api: {
+    get: vi.fn(),
     patch: vi.fn(),
   },
 }));
@@ -44,6 +45,8 @@ const planet = {
 describe('PlanetDetailModal typeErrorHonesty densify (LEG-3701)', () => {
   beforeEach(() => {
     vi.mocked(api.patch).mockReset();
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.get).mockResolvedValue({ data: { holdings: [] } });
     vi.spyOn(console, 'error').mockImplementation(() => {});
   });
 
