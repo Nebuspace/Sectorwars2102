@@ -231,3 +231,71 @@ describe('PlanetsManager axios Network Error densify (LEG-3391)', () => {
   });
 });
 
+describe('PlanetsManager Holding badge from sector has_pirate_holding (LEG-4199)', () => {
+  const mockListLoad = (sectors: Array<Record<string, unknown>>) => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/planets/comprehensive')) {
+        return { data: { planets: [samplePlanet], total_count: 1 } };
+      }
+      if (String(url).includes('/sectors')) {
+        return { data: { sectors, total: sectors.length } };
+      }
+      return { data: {} };
+    });
+  };
+
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.delete).mockReset();
+  });
+
+  it('shows a Holding badge when the planet sector has has_pirate_holding true', async () => {
+    mockListLoad([{ id: 'sec-s1', sector_id: 's1', name: 'Alpha', has_pirate_holding: true }]);
+
+    render(<PlanetsManager />);
+
+    expect(await screen.findByText('Test Planet')).toBeTruthy();
+    expect(screen.getByTitle('Pirate Holding')).toHaveTextContent('Holding');
+    const urls = vi.mocked(api.get).mock.calls.map((c) => String(c[0]));
+    expect(urls.filter((u) => u.includes('/admin/sectors')).length).toBe(1);
+    expect(urls.some((u) => u.includes('pirate-holdings'))).toBe(false);
+  });
+
+  it('does not show a Holding badge when has_pirate_holding is false', async () => {
+    mockListLoad([{ id: 'sec-s1', sector_id: 's1', name: 'Alpha', has_pirate_holding: false }]);
+
+    render(<PlanetsManager />);
+
+    expect(await screen.findByText('Test Planet')).toBeTruthy();
+    expect(screen.queryByTitle('Pirate Holding')).toBeNull();
+    expect(screen.queryByText('Holding')).toBeNull();
+  });
+
+  it('does not show a Holding badge when has_pirate_holding is omitted', async () => {
+    mockListLoad([{ id: 'sec-s1', sector_id: 's1', name: 'Alpha' }]);
+
+    render(<PlanetsManager />);
+
+    expect(await screen.findByText('Test Planet')).toBeTruthy();
+    expect(screen.queryByTitle('Pirate Holding')).toBeNull();
+    expect(screen.queryByText('Holding')).toBeNull();
+  });
+
+  it('still lists planets when the sectors fetch fails (no invented holdings)', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/planets/comprehensive')) {
+        return { data: { planets: [samplePlanet], total_count: 1 } };
+      }
+      if (String(url).includes('/sectors')) {
+        throw axiosError(500);
+      }
+      return { data: {} };
+    });
+
+    render(<PlanetsManager />);
+
+    expect(await screen.findByText('Test Planet')).toBeTruthy();
+    expect(screen.queryByTitle('Pirate Holding')).toBeNull();
+  });
+});
+
