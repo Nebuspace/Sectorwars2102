@@ -530,6 +530,28 @@ def scan(
     ship.quantum_scan_cooldown_until = _now() + timedelta(hours=SCAN_COOLDOWN_HOURS)
     db.commit()
 
+    # LEG-4166: +1 Nova Scientific rep per Quantum Jump scan, cap 5/day.
+    # Best-effort after charge/cooldown; must not change the scan result.
+    try:
+        from datetime import date
+        _today = date.today().isoformat()
+        _cap_key = f"quantum_scan_nova_rep_{_today}"
+        _settings = dict(player.settings or {})
+        _count = int(_settings.get(_cap_key, 0) or 0)
+        _NOVA_SCAN_DAILY_CAP = 5
+        if _count < _NOVA_SCAN_DAILY_CAP:
+            apply_emergent_action(db, player, "QUANTUM_SCAN_NOVA")
+            _settings[_cap_key] = _count + 1
+            player.settings = _settings
+            flag_modified(player, "settings")
+            db.commit()
+    except Exception:
+        logger.warning(
+            "QUANTUM_SCAN_NOVA rep hook failed for player %s; scan still returned",
+            player.id,
+            exc_info=True,
+        )
+
     # Expiry is 10 REAL minutes (canon: real-minutes; deliberately unscaled)
     expires_at = _now() + timedelta(minutes=SCAN_RESULT_TTL_MINUTES)
 

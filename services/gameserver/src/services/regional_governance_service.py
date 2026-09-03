@@ -27,6 +27,35 @@ from src.services.multi_account_service import blocks_vote
 logger = logging.getLogger(__name__)
 
 
+def _dispatch_vote_frontier_gov_rep(sync_db, player_id, region_id) -> None:
+    """LEG-4172: +2 FC (Independents) rep per Frontier-zone policy vote.
+
+    Sync twin for AsyncSession callers via ``await db.run_sync(...)``.
+    A region is Frontier-aligned when any of its zones is ZoneType.FRONTIER.
+    Best-effort — never roll back a recorded vote.
+    """
+    try:
+        from src.models.zone import Zone, ZoneType
+        from src.services.emergent_reputation_service import apply_emergent_action
+
+        frontier = (
+            sync_db.query(Zone)
+            .filter(
+                Zone.region_id == region_id,
+                Zone.zone_type == ZoneType.FRONTIER,
+            )
+            .first()
+        )
+        if frontier is None:
+            return
+        player = sync_db.query(Player).filter(Player.id == player_id).first()
+        if player is None:
+            return
+        apply_emergent_action(sync_db, player, "VOTE_FRONTIER_GOV")
+    except Exception as e:
+        logger.warning("VOTE_FRONTIER_GOV rep hook failed: %s", e)
+
+
 def _dispatch_first_citizen_medal(sync_db, player_id) -> None:
     """Fire diplomatic.first_citizen after a governance vote is flushed.
 
@@ -1653,6 +1682,9 @@ class RegionalGovernanceService:
         try:
             await db.flush()
             await db.run_sync(_dispatch_first_citizen_medal, voter.id)
+            await db.run_sync(
+                _dispatch_vote_frontier_gov_rep, voter.id, region.id
+            )
         except Exception as e:
             logger.error("First-citizen medal pre-commit hook failed: %s", e)
         try:
