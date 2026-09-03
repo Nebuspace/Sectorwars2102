@@ -2930,6 +2930,27 @@ class MovementService:
                             "Failed NOVA_FIRST_SCAN_RESEARCH_SECTOR emergent-rep "
                             "hook: %s", e
                         )
+                # LEG-4167: first-visit a Federation-zone sector | +10 Fed.
+                # Same new-row branch — subsequent arrivals never re-award.
+                try:
+                    from src.models.zone import ZoneType
+                    if (
+                        destination_sector.zone is not None
+                        and destination_sector.zone.zone_type == ZoneType.FEDERATION
+                    ):
+                        from src.services.emergent_reputation_service import (
+                            apply_emergent_action,
+                        )
+                        apply_emergent_action(
+                            self.db,
+                            player,
+                            "DISCOVER_SECTOR_FED",
+                            {"sector_id": destination_sector.sector_id},
+                        )
+                except Exception as e:
+                    logger.error(
+                        "Failed DISCOVER_SECTOR_FED emergent-rep hook: %s", e
+                    )
                 # Award rank points for discovering a new sector (first visit only).
                 # Idempotent by construction: this is the new-row branch, which
                 # fires exactly once per (player, sector) pair — the `if visit:`
@@ -2976,28 +2997,7 @@ class MovementService:
         try:
             from src.services.discovery_service import mark_sector_discovered
             with self.db.begin_nested():
-                _newly_discovered = mark_sector_discovered(
-                    self.db, destination_sector, player.id
-                )
-            # LEG-4167: +10 Fed rep on first-discovery of Fed-zone sector.
-            # Canon: factions-and-teams.md Federation table line 91.
-            # Best-effort, flush-only — exception logged, move still completes.
-            if _newly_discovered:
-                try:
-                    from src.models.zone import ZoneType
-                    from src.services.emergent_reputation_service import apply_emergent_action
-                    if (
-                        getattr(destination_sector, "zone_type", None)
-                        == ZoneType.FEDERATION
-                    ):
-                        apply_emergent_action(
-                            self.db, player, "DISCOVER_FED_SECTOR",
-                        )
-                except Exception:
-                    logger.warning(
-                        "DISCOVER_FED_SECTOR rep hook failed during movement",
-                        exc_info=True,
-                    )
+                mark_sector_discovered(self.db, destination_sector, player.id)
         except Exception as e:
             logger.error("Sector first-discoverer hook failed during movement: %s", e)
 

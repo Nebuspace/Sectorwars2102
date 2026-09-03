@@ -591,20 +591,14 @@ EMERGENT_ACTIONS: Dict[str, EmergentAction] = {
             "Fringe-controlled port (+25 / transaction)"
         ),
     ),
-    # LEG-4159 — Frontier Coalition: "Sell gourmet_food or luxury_goods to a
-    # Frontier colony port | +2 / 10,000 cr | luxury-starved colonies"
-    # (factions-and-teams.md FC table, line 118). Equivalent to +1 / 5,000 cr
-    # (same rate) — reuses apply_trade_volume_rep's 5,000-cr block accumulator.
-    # [OPEN] "Frontier colony port" qualifier: canon does not formally define this
-    # as a specific StationType; implemented as any station in a Frontier-zone
-    # sector. Pending a DECISIONS.md ruling if a more precise definition is needed.
-    # Wired in trading.py sell path.
-    "SELL_LUXURY_FC": EmergentAction(
-        name="SELL_LUXURY_FC",
-        deltas=[FactionDelta(FactionType.INDEPENDENTS, 1)],
+    # LEG-4163 — Frontier Coalition: gourmet_food / luxury_goods at an FC
+    # station | +2 / 10,000 cr floor (one apply_emergent_action per block).
+    "TRADE_LUXURY_FC": EmergentAction(
+        name="TRADE_LUXURY_FC",
+        deltas=[FactionDelta(FactionType.INDEPENDENTS, 2)],
         doc_source=(
-            "factions-and-teams.md FC line 118: Sell gourmet_food/luxury_goods "
-            "to a Frontier colony port (+2 / 10,000 cr = +1 / 5,000 cr block)"
+            "factions-and-teams.md FC: Sell gourmet_food/luxury_goods to a "
+            "Frontier colony port (+2 / 10,000 cr)"
         ),
     ),
     # LEG-4156 — Frontier Coalition: "Establish a colony in a Frontier-zone
@@ -631,10 +625,7 @@ EMERGENT_ACTIONS: Dict[str, EmergentAction] = {
             "drifting/escape-pod ship across ≥2 sectors (+15)"
         ),
     ),
-    # LEG-4165 — Federation: "Kill a player with active Wanted/Suspect status
-    # in Fed-Controlled space | +15" (factions-and-teams.md Federation trigger
-    # table). Wired in combat_service.py kill-resolution block when
-    # defender_is_live_wanted or defender_is_live_suspect.
+    # LEG-4165 — Federation: kill Wanted/Suspect player | +15
     "KILL_WANTED_PLAYER_FED": EmergentAction(
         name="KILL_WANTED_PLAYER_FED",
         deltas=[FactionDelta(FactionType.FEDERATION, 15)],
@@ -643,28 +634,68 @@ EMERGENT_ACTIONS: Dict[str, EmergentAction] = {
             "Wanted/Suspect status in Fed-Controlled space (+15)"
         ),
     ),
-    # LEG-4167 — Federation: "Discover a sector inside or adjacent to Fed
-    # territory | +10" (factions-and-teams.md Federation trigger table line 91).
-    # Wired in quantum_service.py and movement_service.py at first-discovery
-    # of a ZoneType.FEDERATION sector (first-wins via mark_sector_discovered).
-    "DISCOVER_FED_SECTOR": EmergentAction(
-        name="DISCOVER_FED_SECTOR",
-        deltas=[FactionDelta(FactionType.FEDERATION, 10)],
-        doc_source=(
-            "factions-and-teams.md Federation table line 91: Discover a sector "
-            "inside or adjacent to Fed territory (+10)"
-        ),
-    ),
-    # LEG-4166 — Nova Scientific: "+1 NS rep per Quantum Jump scan, cap 5/day"
-    # (factions-and-teams.md Nova Scientific trigger table). Wired in
-    # quantum_service.py scan() after db.commit(). The 5/day per-action cap is
-    # enforced via player.settings["quantum_scan_ns_rep_<today>"].
-    "QUANTUM_SCAN_NS": EmergentAction(
-        name="QUANTUM_SCAN_NS",
+    # LEG-4166 — Nova Scientific: Quantum Jump scan | +1 / scan, cap 5/day
+    "QUANTUM_SCAN_NOVA": EmergentAction(
+        name="QUANTUM_SCAN_NOVA",
         deltas=[FactionDelta(FactionType.EXPLORERS, 1)],
         doc_source=(
-            "factions-and-teams.md Nova Scientific table: +1 NS rep per "
-            "Quantum Jump scan (cap 5/day)"
+            "factions-and-teams.md Nova table: long-range Quantum Jump scan "
+            "+1/scan cap 5/day"
+        ),
+    ),
+    # LEG-4167 — Federation: first-visit a Fed-zone sector | +10
+    "DISCOVER_SECTOR_FED": EmergentAction(
+        name="DISCOVER_SECTOR_FED",
+        deltas=[FactionDelta(FactionType.FEDERATION, 10)],
+        doc_source=(
+            "factions-and-teams.md Federation table: discover sector in/"
+            "adjacent to Fed territory +10"
+        ),
+    ),
+    # LEG-4171 — Federation: kill system-bounty target in Fed space | +25
+    "KILL_BOUNTY_TARGET_FED": EmergentAction(
+        name="KILL_BOUNTY_TARGET_FED",
+        deltas=[FactionDelta(FactionType.FEDERATION, 25)],
+        doc_source=(
+            "factions-and-teams.md Fed table: kill system-bounty target in "
+            "fedspace +25"
+        ),
+    ),
+    # LEG-4172 — Frontier Coalition: vote on Frontier-aligned governance | +2
+    "VOTE_FRONTIER_GOV": EmergentAction(
+        name="VOTE_FRONTIER_GOV",
+        deltas=[FactionDelta(FactionType.INDEPENDENTS, 2)],
+        doc_source=(
+            "factions-and-teams.md FC table: vote in Frontier-aligned "
+            "governance +2/vote"
+        ),
+    ),
+    # LEG-4173 — Nova Scientific: sell exotic_technology at Nova station
+    # | +2 / 5,000 cr (apply_trade_volume_rep per-block)
+    "SELL_EXOTIC_TECH_NOVA": EmergentAction(
+        name="SELL_EXOTIC_TECH_NOVA",
+        deltas=[FactionDelta(FactionType.EXPLORERS, 2)],
+        doc_source=(
+            "factions-and-teams.md Nova table: sell exotic_technology at "
+            "Nova station +2/5k cr"
+        ),
+    ),
+    # LEG-4174 — Federation: drone defense survives in Fed space | +20
+    "DEFEND_FED_SECTOR": EmergentAction(
+        name="DEFEND_FED_SECTOR",
+        deltas=[FactionDelta(FactionType.FEDERATION, 20)],
+        doc_source=(
+            "factions-and-teams.md Federation table: Defend a Fed-Controlled "
+            "sector (drone defense survives an attack) +20"
+        ),
+    ),
+    # LEG-4175 — Federation: pay region tax | +1 / 25,000 cr
+    "PAY_REGION_TAX_FED": EmergentAction(
+        name="PAY_REGION_TAX_FED",
+        deltas=[FactionDelta(FactionType.FEDERATION, 1)],
+        doc_source=(
+            "factions-and-teams.md Federation table: Pay region tax "
+            "cumulatively +1 / 25,000 cr taxed"
         ),
     ),
 }

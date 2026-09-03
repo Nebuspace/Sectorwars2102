@@ -115,4 +115,31 @@ describe('SectorDetail load scope errors (LEG-2820)', () => {
     expect(alert).not.toMatch(/Failed to fetch/i);
     expect(alert).not.toMatch(/TypeError/i);
   });
+
+  it('surfaces pirate-holdings load 403 via noteLoadFailure', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.endsWith('/pirate-holdings')) {
+        throw axiosError(403);
+      }
+      if (url.endsWith('/ships')) {
+        return { data: { ships: [] } };
+      }
+      throw Object.assign(new Error('HTTP 404'), { response: { status: 404 } });
+    });
+
+    render(
+      <SectorDetail
+        sector={sector}
+        onBack={() => undefined}
+        onPortClick={() => undefined}
+        onPlanetClick={() => undefined}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/admin\.universe\.manage|Access denied/i);
+  });
 });

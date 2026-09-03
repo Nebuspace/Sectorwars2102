@@ -1279,6 +1279,31 @@ class CombatService:
             if bounty_result.get("total_collected", 0) > 0:
                 # Bounty paid out — heroic bounty hunting.
                 rep_service.adjust_reputation(attacker.id, 100, "defeat_bounty_target")
+                # LEG-4171: +25 Federation faction-rep when the kill sector
+                # is Fed-controlled. Best-effort; kill + personal rep stand.
+                try:
+                    from src.models.zone import ZoneType
+                    from src.services.emergent_reputation_service import (
+                        apply_emergent_action,
+                    )
+                    kill_sector = self.db.query(Sector).filter(
+                        Sector.sector_id == defender.current_sector_id
+                    ).first()
+                    if (
+                        kill_sector is not None
+                        and getattr(kill_sector, "zone", None) is not None
+                        and kill_sector.zone.zone_type == ZoneType.FEDERATION
+                    ):
+                        apply_emergent_action(
+                            self.db, attacker, "KILL_BOUNTY_TARGET_FED"
+                        )
+                except Exception:
+                    logger.warning(
+                        "KILL_BOUNTY_TARGET_FED rep hook failed for "
+                        "attacker %s; kill still resolves",
+                        attacker.id,
+                        exc_info=True,
+                    )
                 # Medal: combat.bounty_hunter (bounties_collected). Fires only
                 # on a genuine paying collection, inside this combat unit of
                 # work; idempotent on the medals side. Defensive dispatch —
@@ -1326,12 +1351,13 @@ class CombatService:
                             attacker.id, defender.id,
                         )
                     # LEG-4165: +15 Federation rep for killing a Wanted/Suspect
-                    # player in Fed-controlled space (factions-and-teams.md
-                    # Federation trigger table). Best-effort, flush-only —
-                    # exception logged but kill still resolves.
+                    # player. Frozen contract does not require a zone gate.
+                    # Grey-flag-only exemption (no wanted/suspect) must not fire.
                     if defender_is_live_wanted or defender_is_live_suspect:
                         try:
-                            from src.services.emergent_reputation_service import apply_emergent_action
+                            from src.services.emergent_reputation_service import (
+                                apply_emergent_action,
+                            )
                             apply_emergent_action(
                                 self.db, attacker, "KILL_WANTED_PLAYER_FED",
                             )
@@ -1339,7 +1365,8 @@ class CombatService:
                             logger.warning(
                                 "KILL_WANTED_PLAYER_FED rep hook failed for "
                                 "attacker %s; kill still resolves",
-                                attacker.id, exc_info=True,
+                                attacker.id,
+                                exc_info=True,
                             )
                 else:
                     rep_service.adjust_reputation(attacker.id, -100, "attack_innocent")
@@ -2538,6 +2565,39 @@ class CombatService:
                 )
             except Exception as e:
                 logger.error("Failed sector-drone defense influence hook: %s", e)
+
+            # LEG-4174: +20 Federation rep to the surviving drone owner when
+            # the sector is Fed-controlled. Award the owner, never the attacker.
+            try:
+                from src.models.zone import ZoneType
+                from src.services.emergent_reputation_service import (
+                    apply_emergent_action,
+                )
+                # Frozen contract: sector.zone_type == ZoneType.FEDERATION
+                # (Sector persists this on sector.zone.zone_type).
+                zone_type = getattr(sector, "zone_type", None)
+                if zone_type is None and getattr(sector, "zone", None) is not None:
+                    zone_type = sector.zone.zone_type
+                if zone_type == ZoneType.FEDERATION:
+                    owner_player = None
+                    for d in target_drones:
+                        owner_id = getattr(d, "player_id", None)
+                        if owner_id is None or getattr(d, "health", 0) <= 0:
+                            continue
+                        owner_player = self.db.query(Player).filter(
+                            Player.id == owner_id
+                        ).first()
+                        if owner_player is not None:
+                            break
+                    if owner_player is not None:
+                        apply_emergent_action(
+                            self.db, owner_player, "DEFEND_FED_SECTOR"
+                        )
+            except Exception:
+                logger.warning(
+                    "DEFEND_FED_SECTOR rep hook failed; combat still commits",
+                    exc_info=True,
+                )
 
         # Commit changes
         self.db.commit()

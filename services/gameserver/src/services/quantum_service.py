@@ -531,28 +531,25 @@ def scan(
     db.commit()
 
     # LEG-4166: +1 Nova Scientific rep per Quantum Jump scan, cap 5/day.
-    # Canon: factions-and-teams.md Nova Scientific trigger table.
-    # Per-action daily cap tracked in player.settings["quantum_scan_ns_rep_<date>"].
-    # Best-effort, rides a separate nested commit — failure never blocks the scan.
+    # Best-effort after charge/cooldown; must not change the scan result.
     try:
         from datetime import date
-        from sqlalchemy.orm.attributes import flag_modified as _flag_modified
-        from src.services.emergent_reputation_service import apply_emergent_action
         _today = date.today().isoformat()
-        _cap_key = f"quantum_scan_ns_rep_{_today}"
+        _cap_key = f"quantum_scan_nova_rep_{_today}"
         _settings = dict(player.settings or {})
         _count = int(_settings.get(_cap_key, 0) or 0)
-        _NS_DAILY_CAP = 5  # [OPEN] — provisional cap per WO LEG-4166
-        if _count < _NS_DAILY_CAP:
-            apply_emergent_action(db, player, "QUANTUM_SCAN_NS")
+        _NOVA_SCAN_DAILY_CAP = 5
+        if _count < _NOVA_SCAN_DAILY_CAP:
+            apply_emergent_action(db, player, "QUANTUM_SCAN_NOVA")
             _settings[_cap_key] = _count + 1
             player.settings = _settings
-            _flag_modified(player, "settings")
+            flag_modified(player, "settings")
             db.commit()
     except Exception:
         logger.warning(
-            "QUANTUM_SCAN_NS rep hook failed for player %s; scan still returned",
-            player.id, exc_info=True,
+            "QUANTUM_SCAN_NOVA rep hook failed for player %s; scan still returned",
+            player.id,
+            exc_info=True,
         )
 
     # Expiry is 10 REAL minutes (canon: real-minutes; deliberately unscaled)
@@ -912,16 +909,15 @@ def jump(
                 # Best-effort, flush-only (rides outer commit).
                 try:
                     from src.models.zone import ZoneType
-                    from src.services.emergent_reputation_service import apply_emergent_action
                     if (
                         destination_sector is not None
-                        and getattr(destination_sector, "zone_type", None)
-                        == ZoneType.FEDERATION
+                        and getattr(destination_sector, "zone", None) is not None
+                        and destination_sector.zone.zone_type == ZoneType.FEDERATION
                     ):
-                        apply_emergent_action(db, player, "DISCOVER_FED_SECTOR")
+                        apply_emergent_action(db, player, "DISCOVER_SECTOR_FED")
                 except Exception:
                     logger.warning(
-                        "DISCOVER_FED_SECTOR rep hook failed; QJ still completes",
+                        "DISCOVER_SECTOR_FED rep hook failed; QJ still completes",
                         exc_info=True,
                     )
         except Exception as e:
