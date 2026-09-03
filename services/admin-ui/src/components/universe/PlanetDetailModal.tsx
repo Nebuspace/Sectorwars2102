@@ -91,7 +91,7 @@ const PlanetDetailModal: React.FC<PlanetDetailModalProps> = ({
 
   useEffect(() => {
     const fetchPirateHoldings = async () => {
-      if (!planet?.sector_id && planet?.sector_id !== 0) {
+      if (planet?.sector_id == null || planet.sector_id === '') {
         setPirateHoldings([]);
         return;
       }
