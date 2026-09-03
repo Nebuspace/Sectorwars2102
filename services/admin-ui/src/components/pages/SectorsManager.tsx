@@ -56,6 +56,8 @@ const SectorsManager: React.FC = () => {
   const [filterHasPort, setFilterHasPort] = useState<boolean | null>(null);
   const [filterHasPlanet, setFilterHasPlanet] = useState<boolean | null>(null);
   const [filterDiscovered, setFilterDiscovered] = useState<boolean | null>(null);
+  /** LEG-4185 — Holding filter; null=Any. */
+  const [filterHasPirateHolding, setFilterHasPirateHolding] = useState<boolean | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>('');
   
   // Pagination - Ultra-optimized for 1,000+ sectors  
@@ -90,6 +92,9 @@ const SectorsManager: React.FC = () => {
             filter_has_port: filterHasPort !== null ? filterHasPort : undefined,
             filter_has_planet: filterHasPlanet !== null ? filterHasPlanet : undefined,
             filter_discovered: filterDiscovered !== null ? filterDiscovered : undefined,
+            // Forward-compat: GS may ignore until server filter ships; client also filters below.
+            filter_has_pirate_holding:
+              filterHasPirateHolding !== null ? filterHasPirateHolding : undefined,
             search: searchQuery.trim() || undefined,
             page: currentPage,
             limit: itemsPerPage
@@ -97,8 +102,20 @@ const SectorsManager: React.FC = () => {
         });
         
         const data = response.data as { sectors: Sector[]; total?: number; total_count?: number; };
-        setSectors(data.sectors || []);
-        setTotalSectors(data.total ?? data.total_count ?? (data.sectors || []).length);
+        let nextSectors = data.sectors || [];
+        // Client-side honesty while GS may not honor filter_has_pirate_holding yet (LEG-4185).
+        // Uses list-level has_pirate_holding only — never per-row pirate-holdings GET.
+        if (filterHasPirateHolding === true) {
+          nextSectors = nextSectors.filter((s) => s.has_pirate_holding === true);
+        } else if (filterHasPirateHolding === false) {
+          nextSectors = nextSectors.filter((s) => s.has_pirate_holding !== true);
+        }
+        setSectors(nextSectors);
+        setTotalSectors(
+          filterHasPirateHolding !== null
+            ? nextSectors.length
+            : (data.total ?? data.total_count ?? nextSectors.length),
+        );
         setSectorFetchError(null);
       } catch (error: unknown) {
         console.error('Error fetching sectors:', error);
@@ -124,7 +141,8 @@ const SectorsManager: React.FC = () => {
     selectedCluster, 
     filterHasPort, 
     filterHasPlanet, 
-    filterDiscovered, 
+    filterDiscovered,
+    filterHasPirateHolding,
     searchQuery, 
     currentPage,
     sectorRetryKey
@@ -169,7 +187,10 @@ const SectorsManager: React.FC = () => {
   };
   
   // Handle filter changes
-  const handleFilterChange = (filter: 'port' | 'planet' | 'discovered', value: boolean | null) => {
+  const handleFilterChange = (
+    filter: 'port' | 'planet' | 'discovered' | 'holding',
+    value: boolean | null,
+  ) => {
     switch (filter) {
       case 'port':
         setFilterHasPort(value);
@@ -179,6 +200,9 @@ const SectorsManager: React.FC = () => {
         break;
       case 'discovered':
         setFilterDiscovered(value);
+        break;
+      case 'holding':
+        setFilterHasPirateHolding(value);
         break;
     }
     setCurrentPage(1);
@@ -191,6 +215,7 @@ const SectorsManager: React.FC = () => {
     setFilterHasPort(null);
     setFilterHasPlanet(null);
     setFilterDiscovered(null);
+    setFilterHasPirateHolding(null);
     setSearchQuery('');
     setCurrentPage(1);
   };
@@ -361,6 +386,45 @@ const SectorsManager: React.FC = () => {
                     <button 
                       className={`btn btn-sm ${filterDiscovered === null ? 'btn-primary' : 'btn-secondary'}`}
                       onClick={() => handleFilterChange('discovered', null)}
+                    >
+                      Any
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-4 mb-4">
+                <div className="form-group" data-testid="filter-has-pirate-holding">
+                  <label className="form-label">Has Pirate Holding</label>
+                  <div className="btn-group">
+                    <button
+                      type="button"
+                      className={`btn btn-sm ${filterHasPirateHolding === true ? 'btn-primary' : 'btn-secondary'}`}
+                      onClick={() =>
+                        handleFilterChange(
+                          'holding',
+                          filterHasPirateHolding === true ? null : true,
+                        )
+                      }
+                    >
+                      Yes
+                    </button>
+                    <button
+                      type="button"
+                      className={`btn btn-sm ${filterHasPirateHolding === false ? 'btn-primary' : 'btn-secondary'}`}
+                      onClick={() =>
+                        handleFilterChange(
+                          'holding',
+                          filterHasPirateHolding === false ? null : false,
+                        )
+                      }
+                    >
+                      No
+                    </button>
+                    <button
+                      type="button"
+                      className={`btn btn-sm ${filterHasPirateHolding === null ? 'btn-primary' : 'btn-secondary'}`}
+                      onClick={() => handleFilterChange('holding', null)}
                     >
                       Any
                     </button>
