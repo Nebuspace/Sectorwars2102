@@ -367,7 +367,7 @@ describe('PlanetDetail pirate holdings (LEG-4191)', () => {
     expect(screen.queryByTestId(/pirate-holding-row-/)).toBeNull();
   });
 
-  it('lists present holdings without inventing outlaw_base_id', async () => {
+  it('lists present holdings and shows outlaw_base_id when GET includes a non-null value', async () => {
     vi.mocked(api.get).mockResolvedValue({
       data: {
         holdings: [
@@ -375,7 +375,7 @@ describe('PlanetDetail pirate holdings (LEG-4191)', () => {
             id: 'hold-1',
             tier: 'OUTPOST',
             owner_player_id: null,
-            outlaw_base_id: 'must-not-render',
+            outlaw_base_id: 'base-uuid-111',
           },
           { id: 'hold-2', owner_player_id: 'player-3' },
         ],
@@ -387,12 +387,13 @@ describe('PlanetDetail pirate holdings (LEG-4191)', () => {
     expect(row1).toHaveTextContent('id: hold-1');
     expect(row1).toHaveTextContent('tier: OUTPOST');
     expect(row1).toHaveTextContent('owner: pirate-controlled');
+    expect(row1).toHaveTextContent('outlaw_base_id: base-uuid-111');
     expect(row1).not.toHaveTextContent('must-not-render');
-    expect(row1).not.toHaveTextContent('outlaw_base_id');
 
     const row2 = screen.getByTestId('pirate-holding-row-hold-2');
     expect(row2).toHaveTextContent('owner: player-3');
     expect(row2).toHaveTextContent('tier: —');
+    expect(row2).toHaveTextContent('outlaw_base_id: —');
     expect(screen.queryByRole('button', { name: /capture|initiate/i })).toBeNull();
   });
 
