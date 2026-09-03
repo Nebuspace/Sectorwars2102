@@ -859,3 +859,240 @@ class TestNpcInsurancePoolReserve:
 
         assert offset["pool_draw"] > 0
         assert offset["acceptor_debit"] < contract.payment
+
+
+# --- LEG-4142: refugee_transport / acquisition_bounty / escort generators ---
+
+@pytest.mark.unit
+class TestGenerateRefugeeTransportContracts:
+    """generate_refugee_transport_contracts: produces refugee_transport contracts
+    for long-distance station pairs (>= REFUGEE_MIN_HOPS = 3 hops)."""
+
+    def _make_long_hop_session(self) -> tuple:
+        """4-hop chain: sec_a -> sec_b -> sec_c -> sec_d -> sec_e."""
+        secs = [_sector(i) for i in range(1, 6)]
+        edges = [_edge(secs[i], secs[i + 1]) for i in range(4)]
+        origin = SimpleNamespace(
+            id=uuid.uuid4(), sector_uuid=secs[0].id,
+            faction_affiliation=None, commodities={},
+        )
+        destination = SimpleNamespace(
+            id=uuid.uuid4(), sector_uuid=secs[4].id,
+            faction_affiliation=None, commodities={},
+        )
+        db = _FakeSession(sectors=secs, edges=edges)
+        return db, origin, destination, secs
+
+    def test_generates_refugee_contract_for_long_hop_pair(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(contract_generator, "pick_deadline_hours", lambda: 5.0)
+        db, origin, destination, _secs = self._make_long_hop_session()
+
+        generated = contract_generator.generate_refugee_transport_contracts(
+            db, now=_NOW, stations=[origin, destination]
+        )
+
+        assert generated == 1
+        assert len(db.added) == 1
+        c = db.added[0]
+        assert c.contract_type == ContractType.REFUGEE_TRANSPORT
+        assert c.commodity_type == "colonists"
+        assert c.issuer_type == ContractIssuerType.NPC
+        assert c.quantity >= 20
+        assert c.payment > 0
+        assert c.penalty >= 0
+
+    def test_skips_short_hop_pair(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A 1-hop pair (< REFUGEE_MIN_HOPS=3) should not generate a refugee contract."""
+        monkeypatch.setattr(contract_generator, "pick_deadline_hours", lambda: 5.0)
+        sec_a, sec_b = _sector(1), _sector(2)
+        edge = _edge(sec_a, sec_b)
+        origin = SimpleNamespace(id=uuid.uuid4(), sector_uuid=sec_a.id, faction_affiliation=None, commodities={})
+        dest = SimpleNamespace(id=uuid.uuid4(), sector_uuid=sec_b.id, faction_affiliation=None, commodities={})
+        db = _FakeSession(sectors=[sec_a, sec_b], edges=[edge])
+
+        generated = contract_generator.generate_refugee_transport_contracts(
+            db, now=_NOW, stations=[origin, dest]
+        )
+
+        assert generated == 0
+
+    def test_pool_cap_respected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """If a station already has MAX_ACTIVE_NPC_CONTRACTS_PER_STATION refugee contracts, skip it."""
+        monkeypatch.setattr(contract_generator, "pick_deadline_hours", lambda: 5.0)
+        db, origin, destination, _secs = self._make_long_hop_session()
+        # Pre-fill the pool for origin.
+        for _ in range(contract_generator.MAX_ACTIVE_NPC_CONTRACTS_PER_STATION):
+            db.contracts.append(SimpleNamespace(
+                issuer_id=origin.id,
+                contract_type=ContractType.REFUGEE_TRANSPORT,
+                status=ContractStatus.POSTED,
+            ))
+
+        generated = contract_generator.generate_refugee_transport_contracts(
+            db, now=_NOW, stations=[origin, destination]
+        )
+
+        assert generated == 0
+
+
+@pytest.mark.unit
+class TestGenerateAcquisitionBountyContracts:
+    """generate_acquisition_bounty_contracts: posts bounty contracts for
+    commodities a station buys; origin_station_id is None."""
+
+    def _make_buying_station(self) -> tuple:
+        sec = _sector(10)
+        station = SimpleNamespace(
+            id=uuid.uuid4(), sector_uuid=sec.id,
+            faction_affiliation=None,
+            commodities={"ore": {"buys": True, "sells": True, "quantity": 100, "base_price": 20, "capacity": 200}},
+            type=StationType.TRADING,
+        )
+        return _FakeSession(sectors=[sec]), station
+
+    def test_generates_bounty_for_buying_station(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(contract_generator, "pick_deadline_hours", lambda: 3.0)
+        db, station = self._make_buying_station()
+
+        generated = contract_generator.generate_acquisition_bounty_contracts(
+            db, now=_NOW, stations=[station]
+        )
+
+        assert generated == 1
+        c = db.added[0]
+        assert c.contract_type == ContractType.ACQUISITION_BOUNTY
+        assert c.origin_station_id is None  # no fixed origin
+        assert c.destination_station_id == station.id
+        assert c.issuer_type == ContractIssuerType.NPC
+        assert c.payment > 0
+
+    def test_skips_station_with_no_buying_commodities(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(contract_generator, "pick_deadline_hours", lambda: 3.0)
+        sec = _sector(11)
+        sell_only = SimpleNamespace(
+            id=uuid.uuid4(), sector_uuid=sec.id,
+            faction_affiliation=None,
+            commodities={"ore": {"sells": True, "quantity": 100}},
+            type=StationType.TRADING,
+        )
+        db = _FakeSession(sectors=[sec])
+
+        generated = contract_generator.generate_acquisition_bounty_contracts(
+            db, now=_NOW, stations=[sell_only]
+        )
+
+        assert generated == 0
+
+    def test_pool_cap_respected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(contract_generator, "pick_deadline_hours", lambda: 3.0)
+        db, station = self._make_buying_station()
+        for _ in range(contract_generator.MAX_ACTIVE_NPC_CONTRACTS_PER_STATION):
+            db.contracts.append(SimpleNamespace(
+                issuer_id=station.id,
+                contract_type=ContractType.ACQUISITION_BOUNTY,
+                status=ContractStatus.POSTED,
+            ))
+
+        generated = contract_generator.generate_acquisition_bounty_contracts(
+            db, now=_NOW, stations=[station]
+        )
+
+        assert generated == 0
+
+
+@pytest.mark.unit
+class TestGenerateEscortContracts:
+    """generate_escort_contracts: produces escort contracts (no commodity, no
+    quantity) between reachable station pairs."""
+
+    def test_generates_escort_contract_for_reachable_pair(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(contract_generator, "pick_deadline_hours", lambda: 4.0)
+        sec_a, sec_b = _sector(20), _sector(21)
+        edge = _edge(sec_a, sec_b)
+        origin = SimpleNamespace(id=uuid.uuid4(), sector_uuid=sec_a.id, faction_affiliation=None, commodities={})
+        dest = SimpleNamespace(id=uuid.uuid4(), sector_uuid=sec_b.id, faction_affiliation=None, commodities={})
+        db = _FakeSession(sectors=[sec_a, sec_b], edges=[edge])
+
+        generated = contract_generator.generate_escort_contracts(
+            db, now=_NOW, stations=[origin, dest]
+        )
+
+        assert generated == 1
+        c = db.added[0]
+        assert c.contract_type == ContractType.ESCORT
+        assert c.commodity_type is None
+        assert c.quantity is None
+        assert c.issuer_type == ContractIssuerType.NPC
+        assert c.payment > 0
+
+    def test_payment_scales_with_hops(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """4-hop escort should pay more than 1-hop escort."""
+        monkeypatch.setattr(contract_generator, "pick_deadline_hours", lambda: 4.0)
+        # 1-hop
+        sec_a, sec_b = _sector(30), _sector(31)
+        edge1 = _edge(sec_a, sec_b)
+        o1 = SimpleNamespace(id=uuid.uuid4(), sector_uuid=sec_a.id, faction_affiliation=None, commodities={})
+        d1 = SimpleNamespace(id=uuid.uuid4(), sector_uuid=sec_b.id, faction_affiliation=None, commodities={})
+        db1 = _FakeSession(sectors=[sec_a, sec_b], edges=[edge1])
+        contract_generator.generate_escort_contracts(db1, now=_NOW, stations=[o1, d1])
+        pay_1hop = db1.added[0].payment
+
+        # 3-hop chain
+        secs = [_sector(40 + i) for i in range(4)]
+        edges = [_edge(secs[i], secs[i + 1]) for i in range(3)]
+        o2 = SimpleNamespace(id=uuid.uuid4(), sector_uuid=secs[0].id, faction_affiliation=None, commodities={})
+        d2 = SimpleNamespace(id=uuid.uuid4(), sector_uuid=secs[3].id, faction_affiliation=None, commodities={})
+        db2 = _FakeSession(sectors=secs, edges=edges)
+        contract_generator.generate_escort_contracts(db2, now=_NOW, stations=[o2, d2])
+        pay_3hop = db2.added[0].payment
+
+        assert pay_3hop > pay_1hop
+
+    def test_pool_cap_respected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(contract_generator, "pick_deadline_hours", lambda: 4.0)
+        sec_a, sec_b = _sector(50), _sector(51)
+        edge = _edge(sec_a, sec_b)
+        origin = SimpleNamespace(id=uuid.uuid4(), sector_uuid=sec_a.id, faction_affiliation=None, commodities={})
+        dest = SimpleNamespace(id=uuid.uuid4(), sector_uuid=sec_b.id, faction_affiliation=None, commodities={})
+        db = _FakeSession(sectors=[sec_a, sec_b], edges=[edge])
+        for _ in range(contract_generator.MAX_ACTIVE_NPC_ESCORT_CONTRACTS_PER_STATION):
+            db.contracts.append(SimpleNamespace(
+                issuer_id=origin.id,
+                contract_type=ContractType.ESCORT,
+                status=ContractStatus.POSTED,
+            ))
+
+        generated = contract_generator.generate_escort_contracts(
+            db, now=_NOW, stations=[origin, dest]
+        )
+
+        assert generated == 0
+
+
+@pytest.mark.unit
+class TestNewPaymentHelpers:
+    """compute_refugee_transport_payment / compute_acquisition_bounty_payment /
+    compute_escort_payment — pure helpers, no DB needed."""
+
+    def test_refugee_payment_positive(self) -> None:
+        payment, penalty = contract_generator.compute_refugee_transport_payment(
+            quantity=50, hops=4, deadline_hours=Decimal("5.0")
+        )
+        assert payment > 0
+        assert penalty >= 0
+
+    def test_acquisition_bounty_payment_positive(self) -> None:
+        payment, penalty = contract_generator.compute_acquisition_bounty_payment(
+            unit_price=Decimal("25.0"), quantity=100, hops=2, deadline_hours=Decimal("3.0")
+        )
+        assert payment > 0
+        assert penalty >= 0
+
+    def test_escort_payment_scales_with_hops(self) -> None:
+        pay_1, _ = contract_generator.compute_escort_payment(hops=1)
+        pay_4, _ = contract_generator.compute_escort_payment(hops=4)
+        assert pay_4 == pay_1 * 4
+
+    def test_escort_penalty_is_half_payment(self) -> None:
+        payment, penalty = contract_generator.compute_escort_payment(hops=2)
+        assert penalty == (payment * Decimal("0.5")).quantize(Decimal("0.01"))
