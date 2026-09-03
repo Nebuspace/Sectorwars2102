@@ -350,6 +350,20 @@ const UniverseManager: React.FC = () => {
                   {sector.has_port && (
                     <circle cx={cx} cy={cy} r={dotRadius + 5} fill="none" stroke="#eab308" strokeWidth="1" opacity="0.7" />
                   )}
+                  {/* Pirate holding ring — only when list flag is explicitly true */}
+                  {sector.has_pirate_holding === true && (
+                    <circle
+                      cx={cx}
+                      cy={cy}
+                      r={dotRadius + 7}
+                      fill="none"
+                      stroke="#f97316"
+                      strokeWidth="1.25"
+                      strokeDasharray="3 2"
+                      opacity="0.85"
+                      data-testid={`pirate-holding-ring-${sector.id}`}
+                    />
+                  )}
                   {/* Sector dot */}
                   <circle cx={cx} cy={cy} r={dotRadius} fill={color} opacity="0.85" />
                 </g>
@@ -372,6 +386,11 @@ const UniverseManager: React.FC = () => {
             {hoveredSector.has_port && <div className="tooltip-feature">Has Port</div>}
             {hoveredSector.has_planet && <div className="tooltip-feature">Has Planet</div>}
             {hoveredSector.has_warp_tunnel && <div className="tooltip-feature">Has Warp Tunnel</div>}
+            {hoveredSector.has_pirate_holding === true && (
+              <div className="tooltip-feature" data-testid="tooltip-has-holding">
+                Has Holding
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -391,7 +410,7 @@ const UniverseManager: React.FC = () => {
             {sectors.map(sector => (
               <div 
                 key={sector.id} 
-                className={`sector-card ${sector.has_port ? 'has-port' : ''} ${sector.has_planet ? 'has-planet' : ''}`}
+                className={`sector-card ${sector.has_port ? 'has-port' : ''} ${sector.has_planet ? 'has-planet' : ''} ${sector.has_pirate_holding === true ? 'has-holding' : ''}`}
                 onClick={() => handleSectorClick(sector)}
               >
                 <div className="sector-header">
@@ -407,6 +426,11 @@ const UniverseManager: React.FC = () => {
                   {sector.has_port && <span className="feature-badge port">🏪 Port</span>}
                   {sector.has_planet && <span className="feature-badge planet">🌍 Planet</span>}
                   {sector.has_warp_tunnel && <span className="feature-badge warp">🌀 Warp</span>}
+                  {sector.has_pirate_holding === true && (
+                    <span className="feature-badge holding" title="Pirate Holding">
+                      Holding
+                    </span>
+                  )}
                 </div>
               </div>
             ))}

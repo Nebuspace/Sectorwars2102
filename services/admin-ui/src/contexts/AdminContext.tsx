@@ -156,6 +156,7 @@ export interface SectorData {
   is_discovered: boolean;
   has_port: boolean;
   has_planet: boolean;
+  has_pirate_holding?: boolean;
   has_warp_tunnel: boolean;
   resource_richness: string;
   controlling_faction: string | null;
