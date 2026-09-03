@@ -4,7 +4,7 @@ LEG-4147: Research Scientists bonus wired into RP faucet rate.
 Verifies that research_multiplier returns RESEARCH_SCIENTIST_MULTIPLIER (1.40)
 when the planet has ≥1 Research Scientist, and 1.0 otherwise.
 """
-from src.models.profession import ProfessionType
+from src.models.colonist_profession import ProfessionType
 from src.services.profession_service import (
     RESEARCH_SCIENTIST_MULTIPLIER,
     research_multiplier,
