@@ -173,3 +173,76 @@ describe('SectorsManager axios Network Error densify (LEG-3392)', () => {
   });
 });
 
+function listSector(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 's1',
+    sector_id: 1,
+    name: 'Alpha',
+    type: 'normal',
+    cluster_id: 'c1',
+    x_coord: 0,
+    y_coord: 0,
+    z_coord: 0,
+    hazard_level: 0,
+    is_discovered: true,
+    has_port: false,
+    has_planet: false,
+    has_warp_tunnel: true,
+    player_count: 0,
+    controlling_faction: null,
+    ...overrides,
+  };
+}
+
+describe('SectorsManager pirate holding badge (LEG-4181)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('shows a Holding badge only when has_pirate_holding is true', async () => {
+    vi.mocked(api.get).mockResolvedValue({
+      data: { sectors: [listSector({ name: 'Corsair', has_pirate_holding: true })], total: 1 },
+    });
+
+    render(<SectorsManager />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Corsair')).toBeTruthy();
+    });
+    expect(screen.getByTitle('Pirate Holding')).toHaveTextContent('Holding');
+    expect(vi.mocked(api.get).mock.calls.every(([url]) => !String(url).includes('pirate-holdings'))).toBe(
+      true,
+    );
+  });
+
+  it('does not show a Holding badge when has_pirate_holding is false', async () => {
+    vi.mocked(api.get).mockResolvedValue({
+      data: { sectors: [listSector({ name: 'Beta', has_pirate_holding: false })], total: 1 },
+    });
+
+    render(<SectorsManager />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Beta')).toBeTruthy();
+    });
+    expect(screen.queryByTitle('Pirate Holding')).toBeNull();
+    expect(screen.queryByText('Holding')).toBeNull();
+  });
+
+  it('does not show a Holding badge when has_pirate_holding is omitted', async () => {
+    vi.mocked(api.get).mockResolvedValue({
+      data: { sectors: [listSector({ name: 'Gamma' })], total: 1 },
+    });
+
+    render(<SectorsManager />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Gamma')).toBeTruthy();
+    });
+    expect(screen.queryByTitle('Pirate Holding')).toBeNull();
+    expect(screen.queryByText('Holding')).toBeNull();
+  });
+});
+
+
