@@ -72,6 +72,10 @@ from src.models.migration_contract import MigrationContract, MigrationContractSt
 # SQLAlchemy's declarative class registry to resolve at mapper-configure
 # time, so this WO adds the missing registration as a necessary byproduct.
 from src.models.contract import Contract
+from src.models.player_direct_relationship import (
+    PlayerDirectRelationship,
+    ContractPostingBlock,
+)
 from src.models.npc_character import (
     NPCCharacter,
     NPCArchetype,

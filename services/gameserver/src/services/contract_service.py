@@ -160,6 +160,7 @@ from src.services.contract_escrow_core import (
     PLAYER_POST_MIN_DEADLINE_HOURS,
     ContractConflictError,
     ContractError,
+    ContractForbiddenError,
     _as_decimal,
     _guarded_transition,
     _load_contract,
@@ -203,18 +204,44 @@ def _is_valid_commodity(db: Session, commodity_type: str) -> bool:
     )
 
 
-def _is_player_blocklisted(db: Session, issuer_player_id: uuid.UUID) -> bool:
-    """[NO-CANON] contracts.md:245 requires "caller not blocklisted" at
-    POST time (a platform-level posting gate on the issuer themselves --
-    distinct from the ACCEPT-time pairwise hostility check in
-    :func:`_acceptor_hostile_to_issuer`). No blocklist/suspension model
-    exists ANYWHERE in this codebase (verified: no Blocklist/BlockedPlayer
-    model, no block_list column). This is a documented NO-OP SEAM, not a
-    silently invented mechanism -- always returns False (never blocks)
-    until a real blocklist model exists for a future WO to wire here.
-    Exercised by a monkeypatch-to-True test to prove the seam is actually
-    consulted, not decorative."""
-    return False
+def _is_player_blocklisted(
+    db: Session,
+    issuer_player_id: uuid.UUID,
+    acceptor_player_id: Optional[uuid.UUID] = None,
+) -> bool:
+    """contracts.md Anti-griefing / POST validation — blocklist gates.
+
+    Two shapes share this seam (LEG-3994):
+
+    * **Accept / pairwise** (``acceptor_player_id`` set): True when the
+      acceptor has blocked the issuer
+      (``PlayerDirectRelationship.is_blocked``). Frozen WO assertion #1.
+    * **Post / platform** (``acceptor_player_id`` omitted): True when the
+      issuer has a ``ContractPostingBlock`` row — platform posting
+      suspension (contracts.md POST: "caller not blocklisted").
+    """
+    from src.models.player_direct_relationship import (
+        ContractPostingBlock,
+        PlayerDirectRelationship,
+    )
+
+    if acceptor_player_id is not None:
+        row = (
+            db.query(PlayerDirectRelationship)
+            .filter(
+                PlayerDirectRelationship.viewer_player_id == acceptor_player_id,
+                PlayerDirectRelationship.subject_player_id == issuer_player_id,
+            )
+            .first()
+        )
+        return bool(row is not None and row.is_blocked)
+
+    return (
+        db.query(ContractPostingBlock)
+        .filter(ContractPostingBlock.player_id == issuer_player_id)
+        .first()
+        is not None
+    )
 
 
 def _acceptor_hostile_to_issuer(
@@ -224,19 +251,21 @@ def _acceptor_hostile_to_issuer(
     players the acceptor has active hostility with (negative
     direct-relationship reputation between the two parties)."
 
-    WO-BUILD-CONTRACT-ACCEPTOR-PAIRWISE-HOSTILITY-CHECK verify-first:
-    there is NO player↔player relationship / standing model in this
-    codebase. ``emergent_reputation_service`` "direct" means a
-    non-cascade faction delta, not a pairwise player standing (audit
-    misread). Faction ``Reputation.is_hostile`` is player↔faction only.
-
-    Documented NO-OP SEAM (mirrors ``_is_player_blocklisted``): always
-    returns False until a real pairwise standing lands. Call site is
-    wired in ``accept()`` for PLAYER-issuer contracts so the gate is
-    exercised (monkeypatch-to-True test), not decorative. NPC issuers
-    skip this check — hostility is player↔player only.
+    Reads ``PlayerDirectRelationship.reputation`` for acceptor→issuer.
+    Missing row ⇒ neutral (not hostile). ``reputation < 0`` ⇒ hostile
+    (mirrors faction ``Reputation.is_hostile``).
     """
-    return False
+    from src.models.player_direct_relationship import PlayerDirectRelationship
+
+    row = (
+        db.query(PlayerDirectRelationship)
+        .filter(
+            PlayerDirectRelationship.viewer_player_id == acceptor_player_id,
+            PlayerDirectRelationship.subject_player_id == issuer_player_id,
+        )
+        .first()
+    )
+    return bool(row is not None and row.reputation < 0)
 
 
 def _active_player_postings_in_region(db: Session, issuer_player_id: uuid.UUID, region_id: uuid.UUID) -> int:
@@ -285,9 +314,19 @@ def accept(
     if (
         contract.issuer_type == ContractIssuerType.PLAYER
         and contract.issuer_id is not None
+        and _is_player_blocklisted(
+            db, contract.issuer_id, acceptor_player_id=acceptor_player_id,
+        )
+    ):
+        raise ContractForbiddenError(
+            "blocklisted: cannot accept a contract from a player you have blocked"
+        )
+    if (
+        contract.issuer_type == ContractIssuerType.PLAYER
+        and contract.issuer_id is not None
         and _acceptor_hostile_to_issuer(db, acceptor_player_id, contract.issuer_id)
     ):
-        raise ContractError(
+        raise ContractForbiddenError(
             "hostility: cannot accept a contract from a player you have "
             "active hostility with"
         )
@@ -2021,7 +2060,9 @@ def post_player_contract(
 
     issuer = _load_player(db, issuer_player_id, for_update=True)
     if _is_player_blocklisted(db, issuer_player_id):
-        raise ContractError("You are blocklisted from posting contracts")
+        raise ContractForbiddenError(
+            "blocklisted: you are blocklisted from posting contracts"
+        )
 
     region_id = destination.region_id
     if region_id is not None:
