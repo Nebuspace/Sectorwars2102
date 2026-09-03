@@ -53,9 +53,13 @@ const axiosError = (status: number, detail?: string) =>
 function mockMetaLoads({
   teamsReject,
   regionsReject,
+  holdingsReject,
+  holdings,
 }: {
   teamsReject?: unknown;
   regionsReject?: unknown;
+  holdingsReject?: unknown;
+  holdings?: unknown[];
 } = {}) {
   vi.mocked(api.get).mockImplementation(async (url: string) => {
     if (url === '/api/v1/admin/teams') {
@@ -69,6 +73,12 @@ function mockMetaLoads({
         throw regionsReject;
       }
       return { data: { regions: [] } };
+    }
+    if (url.endsWith('/pirate-holdings')) {
+      if (holdingsReject) {
+        throw holdingsReject;
+      }
+      return { data: { holdings: holdings ?? [] } };
     }
     return { data: {} };
   });
@@ -299,5 +309,121 @@ describe('PlayerDetailEditor axios Network Error densify (LEG-3508)', () => {
     expect(text).not.toMatch(/TypeError/i);
     expect(onSave).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
+  });
+});
+
+describe('PlayerDetailEditor pirate holdings (LEG-4195)', () => {
+  const onClose = vi.fn();
+  const onSave = vi.fn();
+
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.patch).mockReset();
+    onClose.mockReset();
+    onSave.mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('fetches admin pirate-holdings once using player.current_sector_id', async () => {
+    mockMetaLoads();
+
+    render(
+      <PlayerDetailEditor player={basePlayer} onClose={onClose} onSave={onSave} />,
+    );
+
+    await waitFor(() => {
+      expect(api.get).toHaveBeenCalledWith(
+        '/api/v1/admin/sectors/1/pirate-holdings',
+      );
+    });
+
+    const holdingsCalls = vi
+      .mocked(api.get)
+      .mock.calls.filter(
+        ([url]) => url === '/api/v1/admin/sectors/1/pirate-holdings',
+      );
+    expect(holdingsCalls).toHaveLength(1);
+    expect(await screen.findByTestId('pirate-holdings-empty')).toHaveTextContent(
+      'No pirate holdings in this sector.',
+    );
+  });
+
+  it('renders honest holding rows without inventing outlaw_base_id', async () => {
+    mockMetaLoads({
+      holdings: [
+        { id: 'h1', tier: 'outpost', owner_player_id: 'p9' },
+        { id: 'h2', tier: null, owner_player_id: null },
+      ],
+    });
+
+    render(
+      <PlayerDetailEditor player={basePlayer} onClose={onClose} onSave={onSave} />,
+    );
+
+    expect(await screen.findByTestId('pirate-holding-row-h1')).toHaveTextContent(
+      /id: h1/,
+    );
+    expect(screen.getByTestId('pirate-holding-row-h1')).toHaveTextContent(
+      /owner: p9/,
+    );
+    expect(screen.getByTestId('pirate-holding-row-h2')).toHaveTextContent(
+      /owner: pirate-controlled/,
+    );
+    expect(screen.queryByText(/outlaw_base/i)).toBeNull();
+    expect(screen.queryByTestId('pirate-holdings-empty')).toBeNull();
+  });
+
+  it('shows unavailable copy and skips GET when current_sector_id is null', async () => {
+    mockMetaLoads();
+
+    render(
+      <PlayerDetailEditor
+        player={{ ...basePlayer, current_sector_id: null }}
+        onClose={onClose}
+        onSave={onSave}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(api.get).toHaveBeenCalledWith('/api/v1/admin/teams');
+    });
+
+    expect(screen.getByTestId('pirate-holdings-unavailable')).toHaveTextContent(
+      /no resolvable current sector id/i,
+    );
+    expect(
+      vi
+        .mocked(api.get)
+        .mock.calls.some(([url]) => String(url).includes('/pirate-holdings')),
+    ).toBe(false);
+    expect(screen.queryByTestId('pirate-holdings-empty')).toBeNull();
+  });
+
+  it('surfaces pirate-holdings 403 via formatAdminApiError', async () => {
+    mockMetaLoads({
+      holdingsReject: axiosError(403, 'Missing scope admin.universe.manage'),
+    });
+
+    render(
+      <PlayerDetailEditor player={basePlayer} onClose={onClose} onSave={onSave} />,
+    );
+
+    const alert = await screen.findByTestId('pirate-holdings-error');
+    expect(alert.textContent ?? '').toMatch(
+      /Missing scope admin\.universe\.manage|admin\.universe\.manage|Access denied/i,
+    );
+    expect(screen.queryByTestId('pirate-holdings-empty')).toBeNull();
+    expect(screen.queryByTestId(/pirate-holding-row-/)).toBeNull();
+  });
+
+  it('treats pirate-holdings 404 as honest empty', async () => {
+    mockMetaLoads({ holdingsReject: axiosError(404) });
+
+    render(
+      <PlayerDetailEditor player={basePlayer} onClose={onClose} onSave={onSave} />,
+    );
+
+    expect(await screen.findByTestId('pirate-holdings-empty')).toBeTruthy();
+    expect(screen.queryByTestId('pirate-holdings-error')).toBeNull();
   });
 });

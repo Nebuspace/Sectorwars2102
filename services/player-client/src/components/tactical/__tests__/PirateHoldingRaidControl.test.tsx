@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const listBySector = vi.fn();
 const initiateRaid = vi.fn();
+const captureHolding = vi.fn();
 const refreshPlayerState = vi.fn();
 
 let mockPlayerState: {
@@ -27,6 +28,7 @@ vi.mock('../../../services/api', () => ({
   pirateHoldingsAPI: {
     listBySector: (...args: unknown[]) => listBySector(...args),
     initiateRaid: (...args: unknown[]) => initiateRaid(...args),
+    captureHolding: (...args: unknown[]) => captureHolding(...args),
   },
 }));
 
@@ -86,6 +88,7 @@ describe('PirateHoldingRaidControl', () => {
   beforeEach(() => {
     listBySector.mockReset();
     initiateRaid.mockReset();
+    captureHolding.mockReset();
     refreshPlayerState.mockReset();
     refreshPlayerState.mockResolvedValue(undefined);
     mockPlayerState = { id: 'player-1', is_docked: false, is_landed: false };
@@ -117,6 +120,7 @@ describe('PirateHoldingRaidControl', () => {
     expect(
       container.querySelector(`[data-testid="pirate-holding-raid-initiate-${HOLDING_ID}"]`),
     ).toBeTruthy();
+    expect(container.querySelector('[data-testid="pirate-holding-capture-control"]')).toBeNull();
     expect(container.textContent).toMatch(/pirate holding/i);
     expect(container.textContent).toMatch(/Outpost/i);
   });
@@ -152,6 +156,38 @@ describe('PirateHoldingRaidControl', () => {
     expect(container.querySelector('[data-testid="pirate-holding-raid-msg"]')?.textContent).toMatch(
       /Raid initiated/i,
     );
+    expect(container.querySelector('[data-testid="pirate-holding-capture-control"]')).toBeTruthy();
+    expect(captureHolding).not.toHaveBeenCalled();
+  });
+
+  it('does not mount capture control when initiate succeeds without a combat lock', async () => {
+    initiateRaid.mockResolvedValue({
+      holding_id: HOLDING_ID,
+      tier: 'OUTPOST',
+      initiated: true,
+      lock_applied: false,
+      combat_lock_held_by: null,
+      combat_lock_team_snapshot: null,
+    });
+    listBySector
+      .mockResolvedValueOnce([{ id: HOLDING_ID, tier: 'OUTPOST', sector_id: 42 }])
+      .mockResolvedValueOnce([{ id: HOLDING_ID, tier: 'OUTPOST', sector_id: 42 }]);
+
+    await act(async () => {
+      root.render(<PirateHoldingRaidControl />);
+      await flush();
+    });
+
+    const btn = container.querySelector(
+      `[data-testid="pirate-holding-raid-initiate-${HOLDING_ID}"]`,
+    ) as HTMLButtonElement;
+    await act(async () => {
+      btn.click();
+      await flush();
+    });
+
+    expect(initiateRaid).toHaveBeenCalledWith(HOLDING_ID);
+    expect(container.querySelector('[data-testid="pirate-holding-capture-control"]')).toBeNull();
   });
 
   it('surfaces 403 initiate errors with player-safe copy', async () => {
