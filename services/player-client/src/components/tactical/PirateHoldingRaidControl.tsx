@@ -4,6 +4,7 @@ import {
   pirateHoldingsAPI,
   type PirateHoldingDiscovery,
 } from '../../services/api';
+import PirateHoldingCaptureControl from './PirateHoldingCaptureControl';
 
 /** Transport collapse copy is not gameserver detail (network-collapse densify). */
 const isNetworkCollapseMessage = (msg: string): boolean => {
@@ -68,6 +69,7 @@ const PirateHoldingRaidControl: React.FC = () => {
   const [busyId, setBusyId] = React.useState<string | null>(null);
   const [msg, setMsg] = React.useState<{ ok: boolean; text: string } | null>(null);
   const [holdings, setHoldings] = React.useState<PirateHoldingDiscovery[] | null>(null);
+  const [activeLockHoldingId, setActiveLockHoldingId] = React.useState<string | null>(null);
 
   const inOpenSpace = !!playerState && !playerState.is_docked && !playerState.is_landed;
   const sectorId =
@@ -132,6 +134,9 @@ const PirateHoldingRaidControl: React.FC = () => {
           ? `Raid initiated on ${tier} holding.${lockNote}`
           : 'Raid initiate returned without confirmation.',
       });
+      if (result.lock_applied) {
+        setActiveLockHoldingId(holdingId);
+      }
       await refreshPlayerState();
       await reloadHoldings();
     } catch (e: unknown) {
@@ -197,6 +202,15 @@ const PirateHoldingRaidControl: React.FC = () => {
         >
           {msg.text}
         </div>
+      )}
+      {activeLockHoldingId && (
+        <PirateHoldingCaptureControl
+          holdingId={activeLockHoldingId}
+          onCaptured={() => {
+            setActiveLockHoldingId(null);
+            void reloadHoldings();
+          }}
+        />
       )}
     </div>
   );
