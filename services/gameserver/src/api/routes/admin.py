@@ -39,6 +39,7 @@ from src.models.station import Station
 from src.models.planet import Planet
 from src.models.team import Team
 from src.models.game_event import GameEvent, EventEffect, EventParticipation, EventType, EventStatus
+from src.models.pirate_holding import PirateHolding
 
 # Request schemas for universe management
 class SectorAddRequest(BaseModel):
@@ -1413,6 +1414,14 @@ async def get_all_sectors(
         # Check for planet in this sector
         has_planet = db.query(Planet).filter(Planet.sector_id == sector.sector_id).first() is not None
 
+        # LEG-4182: pirate holding presence (global sectors.sector_id).
+        has_pirate_holding = (
+            db.query(PirateHolding)
+            .filter(PirateHolding.sector_id == sector.sector_id)
+            .first()
+            is not None
+        )
+
         # Check for warp tunnels from this sector (using UUID sector.id, not integer sector_id)
         has_warp_tunnel = db.query(WarpTunnel).filter(
             (WarpTunnel.origin_sector_id == sector.id) |
@@ -1441,6 +1450,7 @@ async def get_all_sectors(
             "is_navigable": True,  # Default to True, override if nav_hazards exist
             "has_port": has_port,
             "has_planet": has_planet,
+            "has_pirate_holding": has_pirate_holding,
             "has_warp_tunnel": has_warp_tunnel,
             # Real richness derived from the resources JSONB: rich when this
             # sector has scanned asteroid yields, otherwise null (no canonical
