@@ -33,6 +33,41 @@ interface PlanetDetailModalProps {
   mode: 'view' | 'edit';
 }
 
+type PirateHoldingRow = {
+  id: string;
+  tier?: string | null;
+  owner_player_id?: string | null;
+};
+
+function asPirateHoldings(data: unknown): PirateHoldingRow[] {
+  const holdings = (data as { holdings?: unknown } | null)?.holdings;
+  if (!Array.isArray(holdings)) return [];
+  return holdings.filter(
+    (row): row is PirateHoldingRow =>
+      row !== null &&
+      typeof row === 'object' &&
+      typeof (row as PirateHoldingRow).id === 'string',
+  );
+}
+
+function formatHoldingOwner(holding: PirateHoldingRow): string {
+  const owner = holding.owner_player_id;
+  if (owner === null || owner === undefined || String(owner).trim() === '') {
+    return 'pirate-controlled';
+  }
+  return String(owner);
+}
+
+function formatHoldingTier(tier: unknown): string {
+  if (tier === null || tier === undefined) return '—';
+  const s = String(tier).trim();
+  return s === '' ? '—' : s;
+}
+
+function httpStatus(err: unknown): number | undefined {
+  return (err as { response?: { status?: number } })?.response?.status;
+}
+
 const PlanetDetailModal: React.FC<PlanetDetailModalProps> = ({
   planet,
   isOpen,
@@ -44,14 +79,40 @@ const PlanetDetailModal: React.FC<PlanetDetailModalProps> = ({
   const [isEditing, setIsEditing] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pirateHoldings, setPirateHoldings] = useState<PirateHoldingRow[]>([]);
+  const [loadingHoldings, setLoadingHoldings] = useState(false);
 
   useEffect(() => {
     if (planet) {
       setEditedPlanet({ ...planet });
     }
     setIsEditing(mode === 'edit');
-    setError(null);
   }, [planet, mode]);
+
+  useEffect(() => {
+    const fetchPirateHoldings = async () => {
+      if (!planet?.sector_id && planet?.sector_id !== 0) {
+        setPirateHoldings([]);
+        return;
+      }
+      setLoadingHoldings(true);
+      setError(null);
+      try {
+        const holdingsResponse = await api.get(
+          `/api/v1/admin/sectors/${planet.sector_id}/pirate-holdings`,
+        );
+        setPirateHoldings(asPirateHoldings(holdingsResponse.data));
+      } catch (err) {
+        setPirateHoldings([]);
+        if (httpStatus(err) !== 404) {
+          setError(formatUniverseAdminError(err, 'Failed to load pirate holdings'));
+        }
+      } finally {
+        setLoadingHoldings(false);
+      }
+    };
+    fetchPirateHoldings();
+  }, [planet]);
 
   const handleSave = async () => {
     if (!editedPlanet) return;
@@ -169,6 +230,28 @@ const PlanetDetailModal: React.FC<PlanetDetailModalProps> = ({
                 </span>
               </div>
             </div>
+          </div>
+
+          <div className="section" data-testid="pirate-holdings-panel">
+            <h3>Pirate holdings</h3>
+            {loadingHoldings ? (
+              <p>Loading pirate holdings...</p>
+            ) : pirateHoldings.length === 0 ? (
+              <p data-testid="pirate-holdings-empty">No pirate holdings in this sector.</p>
+            ) : (
+              <ul>
+                {pirateHoldings.map((holding) => (
+                  <li
+                    key={holding.id}
+                    data-testid={`pirate-holding-row-${holding.id}`}
+                  >
+                    <span>id: {holding.id}</span>
+                    <span>tier: {formatHoldingTier(holding.tier)}</span>
+                    <span>owner: {formatHoldingOwner(holding)}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
 
           {/* Population & Colonization */}
