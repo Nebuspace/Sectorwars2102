@@ -16,6 +16,73 @@ interface OwnedAssets {
   ports: any[];
 }
 
+function asIntegerSectorId(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const n = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(n) || !Number.isInteger(n)) return null;
+  return n;
+}
+
+/** Collect unique integer sector ids from owned planets/ports (LEG-4193). */
+function collectAssetSectorIds(planets: any[], ports: any[]): number[] {
+  const ids = new Set<number>();
+  for (const asset of [...planets, ...ports]) {
+    const sid = asIntegerSectorId(asset?.sector_id);
+    if (sid !== null) ids.add(sid);
+  }
+  return [...ids];
+}
+
+/**
+ * One paginated GET /admin/sectors scan — uses list-level has_pirate_holding.
+ * Never N+1 GET /admin/sectors/{id}/pirate-holdings per asset row.
+ */
+async function resolveHoldingSectorIds(sectorIds: number[]): Promise<{
+  held: Set<number>;
+  error: string | null;
+}> {
+  const pending = new Set(sectorIds);
+  const held = new Set<number>();
+  if (pending.size === 0) {
+    return { held, error: null };
+  }
+
+  const limit = 100;
+  try {
+    for (let page = 1; page <= 50 && pending.size > 0; page += 1) {
+      const response = await api.get('/api/v1/admin/sectors', {
+        params: { page, limit },
+      });
+      const data = response.data as {
+        sectors?: Array<{ sector_id?: unknown; has_pirate_holding?: unknown }>;
+        total?: number;
+        total_count?: number;
+      };
+      const sectors = data.sectors || [];
+      for (const sector of sectors) {
+        const sid = asIntegerSectorId(sector.sector_id);
+        if (sid === null || !pending.has(sid)) continue;
+        pending.delete(sid);
+        if (sector.has_pirate_holding === true) {
+          held.add(sid);
+        }
+      }
+      const total = data.total ?? data.total_count;
+      if (sectors.length < limit) break;
+      if (typeof total === 'number' && page * limit >= total) break;
+    }
+    return { held, error: null };
+  } catch (err: unknown) {
+    return {
+      held,
+      error: formatAdminApiError(err, {
+        fallback: 'Failed to load pirate-holding sector flags',
+        scopeHint: 'admin.galaxy.manage scope required to list sectors',
+      }),
+    };
+  }
+}
+
 /**
  * Honesty: assign/remove backend routes do not exist.
  * Keep owned-asset reads; do not invent selection / assign / remove chrome
@@ -35,6 +102,8 @@ const PlayerAssetManager: React.FC<PlayerAssetManagerProps> = ({
   const [activeTab, setActiveTab] = useState<'ships' | 'planets' | 'ports'>('ships');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [holdingSectorIds, setHoldingSectorIds] = useState<Set<number>>(new Set());
+  const [holdingsError, setHoldingsError] = useState<string | null>(null);
 
   const ASSET_ASSIGN_ENDPOINT = 'POST /api/v1/admin/players/{id}/assets/assign';
   const ASSET_REMOVE_ENDPOINT = 'POST /api/v1/admin/players/{id}/assets/remove';
@@ -46,6 +115,7 @@ const PlayerAssetManager: React.FC<PlayerAssetManagerProps> = ({
   const loadPlayerAssets = async () => {
     setLoading(true);
     setError(null);
+    setHoldingsError(null);
     try {
       const [shipsRes, planetsRes, portsRes] = await Promise.all([
         api.get(`/api/v1/admin/ships?ownerId=${player.id}`),
@@ -53,11 +123,18 @@ const PlayerAssetManager: React.FC<PlayerAssetManagerProps> = ({
         api.get(`/api/v1/admin/ports?owner_id=${player.id}`)
       ]);
 
+      const planets = (planetsRes.data as any)?.planets || [];
+      const ports = (portsRes.data as any)?.ports || [];
       setAssets({
         ships: (shipsRes.data as any)?.ships || [],
-        planets: (planetsRes.data as any)?.planets || [],
-        ports: (portsRes.data as any)?.ports || []
+        planets,
+        ports
       });
+
+      const sectorIds = collectAssetSectorIds(planets, ports);
+      const { held, error: holdingsLoadError } = await resolveHoldingSectorIds(sectorIds);
+      setHoldingSectorIds(held);
+      setHoldingsError(holdingsLoadError);
     } catch (err: unknown) {
       console.error('Failed to load player assets:', err);
       setError(
@@ -67,6 +144,7 @@ const PlayerAssetManager: React.FC<PlayerAssetManagerProps> = ({
             'loading player assets requires the admin players view scope (PLAYERS_VIEW).',
         })
       );
+      setHoldingSectorIds(new Set());
     } finally {
       setLoading(false);
     }
@@ -83,52 +161,69 @@ const PlayerAssetManager: React.FC<PlayerAssetManagerProps> = ({
 
     return (
       <div className="asset-list">
-        {assetList.map((asset) => (
-          <div key={asset.id} className="asset-item">
-            <div className="asset-info">
-              <div className="asset-header">
-                <h4>{asset.name}</h4>
-                <span className="asset-type">
-                  {activeTab === 'ships' && asset.ship_type}
-                  {activeTab === 'planets' && asset.planet_type}
-                  {activeTab === 'ports' && `Class ${asset.port_class}`}
-                </span>
+        {assetList.map((asset) => {
+          const sectorId = asIntegerSectorId(asset.sector_id);
+          const showHolding =
+            (activeTab === 'planets' || activeTab === 'ports') &&
+            sectorId !== null &&
+            holdingSectorIds.has(sectorId);
+
+          return (
+            <div key={asset.id} className="asset-item" data-testid={`asset-row-${asset.id}`}>
+              <div className="asset-info">
+                <div className="asset-header">
+                  <h4>{asset.name}</h4>
+                  <span className="asset-type">
+                    {activeTab === 'ships' && asset.ship_type}
+                    {activeTab === 'planets' && asset.planet_type}
+                    {activeTab === 'ports' && `Class ${asset.port_class}`}
+                  </span>
+                  {showHolding ? (
+                    <span
+                      className="badge badge-warning"
+                      data-testid={`pirate-holding-badge-${asset.id}`}
+                      title="Pirate holding in this sector"
+                    >
+                      Holding
+                    </span>
+                  ) : null}
+                </div>
+
+                <div className="asset-details">
+                  {activeTab === 'ships' && (
+                    <>
+                      <span>Location: Sector {asset.current_sector_id || 'Unknown'}</span>
+                      <span>Condition: {asset.condition || 100}%</span>
+                      <span>Cargo: {asset.cargo_used || 0}/{asset.cargo_capacity || 0}</span>
+                    </>
+                  )}
+
+                  {activeTab === 'planets' && (
+                    <>
+                      <span>Sector: {asset.sector_id || 'Unknown'}</span>
+                      <span>Citadel: Level {asset.citadel_level || 0}</span>
+                      <span>Population: {(asset.total_colonists || 0).toLocaleString()}</span>
+                    </>
+                  )}
+
+                  {activeTab === 'ports' && (
+                    <>
+                      <span>Sector: {asset.sector_id || 'Unknown'}</span>
+                      <span>Tax Rate: {asset.tax_rate || 0}%</span>
+                      <span>Drones: {asset.defense_fighters || 0}</span>
+                    </>
+                  )}
+                </div>
               </div>
 
-              <div className="asset-details">
-                {activeTab === 'ships' && (
-                  <>
-                    <span>Location: Sector {asset.current_sector_id || 'Unknown'}</span>
-                    <span>Condition: {asset.condition || 100}%</span>
-                    <span>Cargo: {asset.cargo_used || 0}/{asset.cargo_capacity || 0}</span>
-                  </>
-                )}
-
-                {activeTab === 'planets' && (
-                  <>
-                    <span>Sector: {asset.sector_id || 'Unknown'}</span>
-                    <span>Citadel: Level {asset.citadel_level || 0}</span>
-                    <span>Population: {(asset.total_colonists || 0).toLocaleString()}</span>
-                  </>
-                )}
-
-                {activeTab === 'ports' && (
-                  <>
-                    <span>Sector: {asset.sector_id || 'Unknown'}</span>
-                    <span>Tax Rate: {asset.tax_rate || 0}%</span>
-                    <span>Drones: {asset.defense_fighters || 0}</span>
-                  </>
+              <div className="asset-value">
+                {asset.estimated_value && (
+                  <span className="value">{asset.estimated_value.toLocaleString()} credits</span>
                 )}
               </div>
             </div>
-
-            <div className="asset-value">
-              {asset.estimated_value && (
-                <span className="value">{asset.estimated_value.toLocaleString()} credits</span>
-              )}
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     );
   };
@@ -185,6 +280,17 @@ const PlayerAssetManager: React.FC<PlayerAssetManagerProps> = ({
         <code style={{ color: '#fde68a' }}>{ASSET_REMOVE_ENDPOINT}</code> are not implemented.
         Owned listings below are read-only — this panel does not invent selection or assign/remove controls.
       </div>
+
+      {holdingsError ? (
+        <div
+          role="alert"
+          className="error-banner"
+          data-testid="pirate-holdings-flag-error"
+          style={{ margin: '12px 16px 0' }}
+        >
+          {holdingsError}
+        </div>
+      ) : null}
 
       <div className="asset-tabs">
         <button
