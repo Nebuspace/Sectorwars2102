@@ -443,11 +443,31 @@ class TowService:
                             and hauler_team == towed_team
                         )
                         if not is_teammate:
-                            from src.services.emergent_reputation_service import apply_emergent_action
-                            apply_emergent_action(
-                                self.db, hauler_pilot, "TOW_RESCUE_FC",
-                                context={"towed_ship_id": towed_id, "sectors_towed": hops_towed},
-                            )
+                            # LEG-4164: FC-member guard — only FC members earn
+                            # TOW_RESCUE_FC rep. Canon (factions-and-teams.md
+                            # FC line 116) states this is a Frontier Coalition
+                            # trigger; a non-FC hauler must not earn FC rep.
+                            from src.models.faction import Faction, FactionType
+                            from src.models.reputation import Reputation as _Rep
+                            _fc_row = self.db.query(Faction).filter(
+                                Faction.faction_type == FactionType.INDEPENDENTS
+                            ).first()
+                            _is_fc_member = False
+                            if _fc_row is not None:
+                                _fc_rep = self.db.query(_Rep).filter(
+                                    _Rep.player_id == hauler_pilot.id,
+                                    _Rep.faction_id == _fc_row.id,
+                                ).first()
+                                _is_fc_member = (
+                                    _fc_rep is not None
+                                    and (_fc_rep.current_value or 0) > 0
+                                )
+                            if _is_fc_member:
+                                from src.services.emergent_reputation_service import apply_emergent_action
+                                apply_emergent_action(
+                                    self.db, hauler_pilot, "TOW_RESCUE_FC",
+                                    context={"towed_ship_id": towed_id, "sectors_towed": hops_towed},
+                                )
             except Exception:
                 logger.exception(
                     "TOW_RESCUE_FC rep hook failed for hauler %s; detach still proceeds",
