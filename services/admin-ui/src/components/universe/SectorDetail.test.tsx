@@ -105,6 +105,10 @@ describe('SectorDetail pirate holdings (LEG-4178)', () => {
           combat_lock_held_by: 'player-9',
           captured_at: '2026-09-03T12:00:00Z',
           outlaw_base_id: 'must-not-render',
+          current_strength: 18,
+          owner_team_id: 'team-7',
+          region_id: 3,
+          sector_id: 42,
         },
         {
           id: 'hold-2',
@@ -131,6 +135,10 @@ describe('SectorDetail pirate holdings (LEG-4178)', () => {
     expect(row1).toHaveTextContent('owner: pirate-controlled');
     expect(row1).toHaveTextContent('combat lock: player-9');
     expect(row1).toHaveTextContent('captured_at: 2026-09-03T12:00:00Z');
+    expect(row1).toHaveTextContent('current_strength: 18');
+    expect(row1).toHaveTextContent('owner_team_id: team-7');
+    expect(row1).toHaveTextContent('region_id: 3');
+    expect(row1).toHaveTextContent('sector_id: 42');
     expect(row1).not.toHaveTextContent('must-not-render');
     expect(row1).not.toHaveTextContent('outlaw_base_id');
 
@@ -138,7 +146,42 @@ describe('SectorDetail pirate holdings (LEG-4178)', () => {
     expect(row2).toHaveTextContent('owner: player-3');
     expect(row2).toHaveTextContent('combat lock: none');
     expect(row2).toHaveTextContent('captured_at: —');
+    expect(row2).toHaveTextContent('current_strength: —');
+    expect(row2).toHaveTextContent('owner_team_id: —');
+    expect(row2).toHaveTextContent('region_id: —');
+    expect(row2).toHaveTextContent('sector_id: —');
     expect(screen.queryByRole('button', { name: /capture|initiate/i })).toBeNull();
+  });
+
+  it('uses honest placeholders when inspect keys are null (does not copy sector.sector_id)', async () => {
+    mockLoads({
+      holdings: [
+        {
+          id: 'hold-nulls',
+          current_strength: null,
+          owner_team_id: null,
+          region_id: null,
+          sector_id: null,
+        },
+      ],
+    });
+
+    render(
+      <SectorDetail
+        sector={sector}
+        onBack={() => undefined}
+        onPortClick={() => undefined}
+        onPlanetClick={() => undefined}
+      />,
+    );
+
+    const row = await screen.findByTestId('pirate-holding-row-hold-nulls');
+    expect(row).toHaveTextContent('current_strength: —');
+    expect(row).toHaveTextContent('owner_team_id: —');
+    expect(row).toHaveTextContent('region_id: —');
+    expect(row).toHaveTextContent('sector_id: —');
+    expect(row).not.toHaveTextContent('sector_id: 42');
+    expect(screen.queryByText(/outlaw_base_id/i)).toBeNull();
   });
 
   it('treats 404 as empty without a loadError alert', async () => {

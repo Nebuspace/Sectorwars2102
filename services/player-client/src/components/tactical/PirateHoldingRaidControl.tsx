@@ -62,7 +62,7 @@ function formatTierLabel(tier: string | null): string {
 /**
  * Pirate-holding raid initiate — GET discovery + POST .../raid/initiate (LEG-4107).
  * Mounted on the TACTICAL monitor THREAT page; disabled when docked or landed.
- * Capture UI deliberately omitted (no tip HTTP — invent=0).
+ * Capture UI mounts when lock_applied is true after initiate (LEG-4154).
  */
 const PirateHoldingRaidControl: React.FC = () => {
   const { currentSector, playerState, refreshPlayerState } = useGame();
