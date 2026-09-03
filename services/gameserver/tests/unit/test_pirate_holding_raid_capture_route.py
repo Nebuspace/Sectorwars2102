@@ -130,6 +130,7 @@ class TestCapturePirateHoldingRaid:
         app, db = _make_app(holding, player)
 
         def _fake_capture(session, h, p, *, kill_log_entry_kwargs):
+            h.owner_player_id = p.id
             h.owner_team_id = p.team.id
             h.captured_at = _CAPTURED_AT
             h.combat_lock_held_by = None
@@ -142,6 +143,7 @@ class TestCapturePirateHoldingRaid:
         assert resp.status_code == 200
         body = resp.json()
         assert body["holding_id"] == str(holding.id)
+        assert body["owner_player_id"] == str(_PLAYER_ID)
         assert body["owner_team_id"] == str(_TEAM_ID)
         assert body["captured_at"] is not None
         assert db.committed is True
@@ -218,6 +220,7 @@ class TestCapturePirateHoldingRaid:
         app, _ = _make_app(holding, player)
 
         def _fake_capture(session, h, p, *, kill_log_entry_kwargs):
+            h.owner_player_id = p.id
             h.owner_team_id = p.team.id
             h.captured_at = _CAPTURED_AT
             h.combat_lock_held_by = None
@@ -229,6 +232,7 @@ class TestCapturePirateHoldingRaid:
 
         assert resp.status_code == 200
         assert resp.json()["holding_id"] == str(holding.id)
+        assert resp.json()["owner_player_id"] == str(teammate_id)
 
     @pytest.mark.asyncio
     async def test_capture_passes_correct_kill_log_kwargs(self):
@@ -242,6 +246,7 @@ class TestCapturePirateHoldingRaid:
 
         def _fake_capture(session, h, p, *, kill_log_entry_kwargs):
             captured_kwargs.update(kill_log_entry_kwargs)
+            h.owner_player_id = p.id
             h.owner_team_id = p.team.id
             h.captured_at = _CAPTURED_AT
 

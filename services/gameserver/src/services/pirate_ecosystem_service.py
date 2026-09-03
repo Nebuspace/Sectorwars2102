@@ -1349,20 +1349,24 @@ def capture_holding(
     module-section note above.
 
     Inserts a ``PirateKillLog`` row (``disposition=CAPTURED``) and mutates
-    ``holding.owner_team_id`` / ``holding.captured_at`` / releases the
-    combat lock, all inside ONE savepoint -- mirrors this file's own
-    established multi-write-atomicity idiom (npc_spawn_service.py's
-    PirateKillLog feeder, ``with db.begin_nested(): ... db.flush()``) rather
-    than inventing a new transaction pattern. A flush failure inside the
-    savepoint rolls back only this capture, never the caller's open unit of
-    work.
+    ``holding.owner_player_id`` / ``holding.owner_team_id`` /
+    ``holding.captured_at`` / releases the combat lock, all inside ONE
+    savepoint -- mirrors this file's own established multi-write-atomicity
+    idiom (npc_spawn_service.py's PirateKillLog feeder,
+    ``with db.begin_nested(): ... db.flush()``) rather than inventing a new
+    transaction pattern. A flush failure inside the savepoint rolls back
+    only this capture, never the caller's open unit of work.
+
+    ``owner_player_id`` is always the capturer (canon attempt_capture /
+    ADR-0047). ``owner_team_id`` resolves from ``.team.id`` when a live
+    team relationship exists, else the bare ``.team_id`` attribute (null
+    when the capturer has no team).
 
     ``kill_log_entry_kwargs`` supplies the row's remaining fields
     (region_id, region_id_snapshot, holding_id, tier, kill_weight,
     attacker_player_id, attacker_team_id) -- left to the caller rather than
-    re-derived here, since ECO-3's real raid-resolution call site is the
-    one with the actual combat context (kill_weight per TIER_WEIGHT,
-    attacker identity, etc.), not this dormant kernel.
+    re-derived here, since the route owns the combat context
+    (kill_weight per TIER_WEIGHT, attacker identity, etc.).
     """
     with db.begin_nested():
         kill_log = PirateKillLog(
@@ -1372,6 +1376,7 @@ def capture_holding(
         db.add(kill_log)
 
         team = getattr(capturer_player, "team", None)
+        holding.owner_player_id = capturer_player.id
         holding.owner_team_id = team.id if team is not None else getattr(
             capturer_player, "team_id", None
         )

@@ -247,7 +247,8 @@ class TestCaptureHolding:
         assert kill_log.disposition == PirateKillDisposition.CAPTURED
         assert kill_log.holding_id == holding.id
 
-        # 2. ownership flip
+        # 2. ownership flip (player always; team when present)
+        assert holding.owner_player_id == capturer.id
         assert holding.owner_team_id == team.id
         assert holding.captured_at is not None
         assert isinstance(holding.captured_at, datetime)
@@ -285,7 +286,30 @@ class TestCaptureHolding:
             ),
         )
 
+        assert holding.owner_player_id == capturer.id
         assert holding.owner_team_id == team_id
+
+    def test_capture_sets_owner_player_id_when_capturer_has_no_team(self):
+        """Solo capturer: owner_player_id set, owner_team_id stays null."""
+        holding = _holding(combat_lock_held_by=uuid.uuid4())
+        db = _FakeSession()
+        capturer = SimpleNamespace(id=uuid.uuid4(), team=None, team_id=None)
+
+        pes.capture_holding(
+            db, holding, capturer,
+            kill_log_entry_kwargs=dict(
+                region_id=holding.region_id,
+                region_id_snapshot=holding.region_id,
+                holding_id=holding.id,
+                tier=holding.tier,
+                kill_weight=10,
+                attacker_player_id=capturer.id,
+                attacker_team_id=None,
+            ),
+        )
+
+        assert holding.owner_player_id == capturer.id
+        assert holding.owner_team_id is None
 
     def test_capture_emits_holding_captured_exactly_once(self, monkeypatch):
         calls = []
