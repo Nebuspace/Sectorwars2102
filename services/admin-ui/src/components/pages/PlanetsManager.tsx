@@ -40,23 +40,45 @@ const PlanetsManager: React.FC = () => {
   const [selectedPlanet, setSelectedPlanet] = useState<Planet | null>(null);
   const [modalMode, setModalMode] = useState<'view' | 'edit'>('view');
   const [isModalOpen, setIsModalOpen] = useState(false);
+  /** Sector ids with has_pirate_holding === true (from one sectors list fetch — no N+1). */
+  const [holdingSectorIds, setHoldingSectorIds] = useState<Set<string>>(() => new Set());
 
   const fetchPlanets = useCallback(async () => {
     try {
       setLoading(true);
-      const response = await api.get('/api/v1/admin/planets/comprehensive', {
-        params: {
-          page: currentPage,
-          limit: itemsPerPage,
-          filter_type: filterType !== 'all' ? filterType : undefined,
-          filter_colonized: filterType === 'colonized' ? true : filterType === 'uncolonized' ? false : undefined,
-          search: searchTerm || undefined
-        }
-      });
+      const [response, sectorsResult] = await Promise.all([
+        api.get('/api/v1/admin/planets/comprehensive', {
+          params: {
+            page: currentPage,
+            limit: itemsPerPage,
+            filter_type: filterType !== 'all' ? filterType : undefined,
+            filter_colonized: filterType === 'colonized' ? true : filterType === 'uncolonized' ? false : undefined,
+            search: searchTerm || undefined
+          }
+        }),
+        api
+          .get('/api/v1/admin/sectors', { params: { limit: 1000 } })
+          .then((res) => res)
+          .catch(() => null),
+      ]);
 
       setPlanets(response.data.planets || []);
       setTotalPlanets(response.data.total_count || 0);
       setError(null);
+
+      if (sectorsResult) {
+        const sectors: Array<{ sector_id?: number | string; has_pirate_holding?: boolean }> =
+          sectorsResult.data.sectors || [];
+        const next = new Set<string>();
+        for (const sector of sectors) {
+          if (sector.has_pirate_holding === true && sector.sector_id != null) {
+            next.add(String(sector.sector_id));
+          }
+        }
+        setHoldingSectorIds(next);
+      } else {
+        setHoldingSectorIds(new Set());
+      }
     } catch (err: unknown) {
       setError(
         formatAdminApiError(err, {
@@ -213,6 +235,12 @@ const PlanetsManager: React.FC = () => {
               <tr key={planet.id}>
                 <td className="name-cell">
                   <strong>{planet.name}</strong>
+                  {holdingSectorIds.has(String(planet.sector_id)) && (
+                    <>
+                      {' '}
+                      <span className="badge badge-warning" title="Pirate Holding">Holding</span>
+                    </>
+                  )}
                 </td>
                 <td>{planet.sector_name || planet.sector_id}</td>
                 <td>

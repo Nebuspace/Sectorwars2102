@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
@@ -169,7 +169,6 @@ describe('UniverseManager pirate holding badge/ring (LEG-4184)', () => {
 
     expect(screen.getByText('Beta')).toBeTruthy();
     expect(screen.queryByTitle('Pirate Holding')).toBeNull();
-    expect(screen.queryByText('Holding')).toBeNull();
   });
 
   it('does not show a Holding grid badge when has_pirate_holding is omitted', async () => {
@@ -181,7 +180,6 @@ describe('UniverseManager pirate holding badge/ring (LEG-4184)', () => {
 
     expect(screen.getByText('Gamma')).toBeTruthy();
     expect(screen.queryByTitle('Pirate Holding')).toBeNull();
-    expect(screen.queryByText('Holding')).toBeNull();
   });
 
   it('shows map ring + tooltip Holding line only when has_pirate_holding is true', async () => {
@@ -213,6 +211,88 @@ describe('UniverseManager pirate holding badge/ring (LEG-4184)', () => {
     expect(sectorGroups.length).toBeGreaterThan(0);
     fireEvent.mouseEnter(sectorGroups[sectorGroups.length - 1]);
     expect(screen.queryByTestId('tooltip-has-holding')).toBeNull();
-    expect(screen.queryByText(/Has Holding/i)).toBeNull();
+  });
+});
+
+describe('UniverseManager pirate holding filter (LEG-4194)', () => {
+  beforeEach(() => {
+    mockAdmin.galaxyState = { ...sampleGalaxyState };
+    mockAdmin.regions = [];
+    mockAdmin.sectors = [];
+    mockAdmin.isLoading = false;
+    mockAdmin.error = null;
+    mockAdmin.loadGalaxyInfo.mockReset();
+    mockAdmin.loadSectors.mockReset();
+    mockAdmin.loadRegions.mockReset();
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({}),
+    } as Response);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('hides false and omitted holdings when Has Holding Yes is enabled', async () => {
+    const user = userEvent.setup();
+    mockAdmin.sectors = [
+      listSector({ id: 's1', sector_id: 1, name: 'Corsair', has_pirate_holding: true }),
+      listSector({ id: 's2', sector_id: 2, name: 'Beta', has_pirate_holding: false }),
+      listSector({ id: 's3', sector_id: 3, name: 'Gamma' }),
+    ];
+
+    renderUniverse();
+    await user.click(screen.getByRole('button', { name: /Sectors/i }));
+    expect(screen.getByText('Corsair')).toBeTruthy();
+    expect(screen.getByText('Beta')).toBeTruthy();
+    expect(screen.getByText('Gamma')).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: 'Has Holding Yes' }));
+
+    expect(screen.getByText('Corsair')).toBeTruthy();
+    expect(screen.queryByText('Beta')).toBeNull();
+    expect(screen.queryByText('Gamma')).toBeNull();
+    expect(vi.mocked(globalThis.fetch).mock.calls.every(([url]) => !String(url).includes('pirate-holdings'))).toBe(
+      true,
+    );
+  });
+
+  it('shows honest empty when the filter is on and none match', async () => {
+    const user = userEvent.setup();
+    mockAdmin.sectors = [
+      listSector({ id: 's2', sector_id: 2, name: 'Beta', has_pirate_holding: false }),
+      listSector({ id: 's3', sector_id: 3, name: 'Gamma' }),
+    ];
+
+    renderUniverse();
+    await user.click(screen.getByRole('button', { name: /Sectors/i }));
+    await user.click(screen.getByRole('button', { name: 'Has Holding Yes' }));
+
+    expect(screen.getByTestId('universe-holding-filter-empty')).toHaveTextContent(
+      'No sectors with pirate holdings.',
+    );
+    expect(screen.queryByText(/Generate a galaxy first/i)).toBeNull();
+    expect(screen.queryByText('Beta')).toBeNull();
+  });
+
+  it('hides non-holding map dots when Has Holding Yes is enabled', async () => {
+    const user = userEvent.setup();
+    mockAdmin.sectors = [
+      listSector({ id: 's1', sector_id: 1, name: 'Corsair', has_pirate_holding: true }),
+      listSector({ id: 's2', sector_id: 2, name: 'Quiet', x_coord: 10, y_coord: 10 }),
+    ];
+
+    renderUniverse();
+    await user.click(screen.getByRole('button', { name: /Galaxy Map/i }));
+    expect(screen.getByTestId('pirate-holding-ring-s1')).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: 'Has Holding Yes' }));
+
+    expect(screen.getByTestId('pirate-holding-ring-s1')).toBeTruthy();
+    expect(screen.getByText(/1 sectors/)).toBeTruthy();
+    expect(vi.mocked(globalThis.fetch).mock.calls.every(([url]) => !String(url).includes('pirate-holdings'))).toBe(
+      true,
+    );
   });
 });
