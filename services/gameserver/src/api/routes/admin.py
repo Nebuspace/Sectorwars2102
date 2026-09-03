@@ -37,6 +37,7 @@ from src.models.sector import Sector
 from src.models.warp_tunnel import WarpTunnel
 from src.models.station import Station
 from src.models.planet import Planet
+from src.models.pirate_holding import PirateHolding
 from src.models.team import Team
 from src.models.game_event import GameEvent, EventEffect, EventParticipation, EventType, EventStatus
 
@@ -1817,6 +1818,58 @@ async def get_sector_ships(
     ]
     
     return {"ships": ship_list}
+
+
+_ADMIN_PIRATE_HOLDING_FIELDS = (
+    "id",
+    "tier",
+    "sector_id",
+    "region_id",
+    "owner_player_id",
+    "owner_team_id",
+    "captured_at",
+    "combat_lock_held_by",
+    "current_strength",
+)
+
+
+def _admin_pirate_holding_payload(holding: PirateHolding) -> dict:
+    """Operator inspect payload — committed columns only (LEG-4176)."""
+    return {
+        "id": str(holding.id),
+        "tier": holding.tier.value if holding.tier is not None else None,
+        "sector_id": holding.sector_id,
+        "region_id": str(holding.region_id) if holding.region_id is not None else None,
+        "owner_player_id": (
+            str(holding.owner_player_id) if holding.owner_player_id is not None else None
+        ),
+        "owner_team_id": (
+            str(holding.owner_team_id) if holding.owner_team_id is not None else None
+        ),
+        "captured_at": holding.captured_at.isoformat() if holding.captured_at else None,
+        "combat_lock_held_by": (
+            str(holding.combat_lock_held_by)
+            if holding.combat_lock_held_by is not None
+            else None
+        ),
+        "current_strength": holding.current_strength,
+    }
+
+
+@router.get("/sectors/{sector_id}/pirate-holdings", response_model=dict)
+async def get_sector_pirate_holdings(
+    sector_id: int,
+    _: User = Depends(require_scope(PLAYERS_VIEW)),
+    db: Session = Depends(get_db),
+):
+    """List pirate holdings anchored on a sector (global sectors.sector_id)."""
+    rows = (
+        db.query(PirateHolding)
+        .filter(PirateHolding.sector_id == sector_id)
+        .all()
+    )
+    return {"holdings": [_admin_pirate_holding_payload(h) for h in rows]}
+
 
 @router.get("/alliances", response_model=dict)
 async def get_all_alliances(
