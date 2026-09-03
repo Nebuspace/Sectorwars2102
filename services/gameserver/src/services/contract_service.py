@@ -753,6 +753,25 @@ def abandon(
             player.credits = (player.credits or 0) + insurance_refund
     db.flush()
 
+    # LEG-4158: apply reputation_penalty on abandon (contracts.md §Reputation effects).
+    # Mirror the complete()-path's pattern exactly (contract_service.py:517-527):
+    # flush-only, best-effort — exception is logged but abandon still commits.
+    # Player-posted contracts (issuer_type=PLAYER) may have no faction_id — the
+    # null checks guard both axes.
+    try:
+        _rep_penalty = getattr(contract, "reputation_penalty", None)
+        _faction_id = getattr(contract, "faction_id", None)
+        if _rep_penalty is not None and _faction_id is not None:
+            apply_faction_rep_delta(
+                db, player.id, _faction_id, -int(_rep_penalty),
+                reason="npc_contract_abandon",
+            )
+    except Exception:
+        logger.exception(
+            "rep-penalty hook failed for abandon of contract %s; abandon still commits",
+            contract.id,
+        )
+
     logger.info(
         "Player %s abandoned contract %s (penalty %d, insurance refund %d)",
         player_id, contract.id, penalty, insurance_refund,
