@@ -527,6 +527,21 @@ h2, h3, h4 {
   padding: 20px;
 }
 
+.universe-holding-filter {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.universe-holding-filter .form-label {
+  color: #94a3b8;
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 .no-sectors {
   text-align: center;
   padding: 60px;
