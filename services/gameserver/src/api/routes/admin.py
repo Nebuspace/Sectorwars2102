@@ -1341,6 +1341,7 @@ async def get_all_sectors(
     filter_cluster: Optional[str] = None,
     filter_has_port: Optional[bool] = None,
     filter_has_planet: Optional[bool] = None,
+    filter_has_pirate_holding: Optional[bool] = None,
     filter_discovered: Optional[bool] = None,
     search: Optional[str] = None,
     page: int = 1,
@@ -1368,10 +1369,10 @@ async def get_all_sectors(
             conditions.append(Sector.sector_id == int(search.strip()))
         query = query.filter(or_(*conditions))
 
-    # has_port / has_planet require per-row presence checks; apply them after
-    # fetching the page candidates so the count stays a single query for the
-    # column-level filters. When those filters are requested we restrict the
-    # base query via subquery to keep totals honest.
+    # has_port / has_planet / has_pirate_holding require per-row presence
+    # checks; apply them after fetching the page candidates so the count stays
+    # a single query for the column-level filters. When those filters are
+    # requested we restrict the base query via subquery to keep totals honest.
     if filter_has_port is not None:
         port_subq = db.query(Station.sector_id).distinct().subquery()
         port_sectors = db.query(port_subq.c.sector_id)
@@ -1387,6 +1388,15 @@ async def get_all_sectors(
             query = query.filter(Sector.sector_id.in_(planet_sectors))
         else:
             query = query.filter(~Sector.sector_id.in_(planet_sectors))
+
+    # LEG-4198: mirror port/planet — PirateHolding.sector_id is the global int.
+    if filter_has_pirate_holding is not None:
+        holding_subq = db.query(PirateHolding.sector_id).distinct().subquery()
+        holding_sectors = db.query(holding_subq.c.sector_id)
+        if filter_has_pirate_holding:
+            query = query.filter(Sector.sector_id.in_(holding_sectors))
+        else:
+            query = query.filter(~Sector.sector_id.in_(holding_sectors))
 
     total = query.count()
 
