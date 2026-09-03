@@ -875,6 +875,30 @@ const GameDashboardInner: React.FC = () => {
     setHarvestPreviewBlocked(blocked);
     setHarvestPreviewGateMessage(message);
   }, []);
+
+  // Client-side pre-click grey-out for the HARVEST button (LEG-4146).
+  // These four gates use already-available player/ship state so the button
+  // can grey out immediately — before the HarvestYieldPreview round-trip.
+  // no_mining_laser and unlicensed are server-side (via harvestPreviewBlocked).
+  const harvestClientGateMessage = useMemo((): string | null => {
+    if (!currentShip) return null;
+    // Gate 1 (docked): mining requires undocked open space.
+    if (playerState?.is_docked) {
+      return 'You must be undocked and in open space to deploy the mining laser.';
+    }
+    // Gate 2 (cargo full): need at least 1 free cargo unit.
+    const cargoUsed = Object.values(
+      typeof currentShip.cargo === 'object' && currentShip.cargo !== null
+        ? (currentShip.cargo as Record<string, number>)
+        : {},
+    ).reduce((sum, qty) => sum + (Number.isFinite(qty) ? (qty as number) : 0), 0);
+    const cargoCapacity = typeof currentShip.cargo_capacity === 'number' ? currentShip.cargo_capacity : 0;
+    if (cargoCapacity > 0 && cargoUsed >= cargoCapacity) {
+      return 'Cargo hold is full — no room for ore. Sell or jettison before mining.';
+    }
+    return null;
+  }, [playerState?.is_docked, currentShip]);
+
   const harvestPollRef = useRef<number | null>(null);
 
   const clearHarvestPoll = useCallback(() => {
@@ -4362,26 +4386,43 @@ const GameDashboardInner: React.FC = () => {
                                 🛑 HALT ▸
                               </button>
                             ) : (
-                              <button
-                                className="planetary-harvest-btn"
-                                onClick={handleHarvest}
-                                disabled={helmBusy || harvestBusy || harvestPreviewBlocked}
-                                aria-disabled={helmBusy || harvestBusy || harvestPreviewBlocked}
-                                aria-label={
-                                  harvestPreviewBlocked && harvestPreviewGateMessage
-                                    ? harvestPreviewGateMessage
-                                    : helmBusy
-                                      ? 'Harvest unavailable — helm is busy'
-                                      : 'Deploy the mining laser to harvest ore from the asteroid field'
-                                }
-                                title={
-                                  harvestPreviewBlocked && harvestPreviewGateMessage
-                                    ? harvestPreviewGateMessage
-                                    : 'Deploy the mining laser to harvest ore from the asteroid field'
-                                }
-                              >
-                                {harvestBusy ? '⛏️ MINING…' : helmBusy ? '⛏️ HARVEST (busy)' : '⛏️ HARVEST'}
-                              </button>
+                              <>
+                                <button
+                                  className="planetary-harvest-btn"
+                                  onClick={handleHarvest}
+                                  disabled={helmBusy || harvestBusy || !!harvestClientGateMessage || harvestPreviewBlocked}
+                                  aria-disabled={helmBusy || harvestBusy || !!harvestClientGateMessage || harvestPreviewBlocked}
+                                  aria-label={
+                                    harvestClientGateMessage
+                                      ? harvestClientGateMessage
+                                      : harvestPreviewBlocked && harvestPreviewGateMessage
+                                        ? harvestPreviewGateMessage
+                                        : helmBusy
+                                          ? 'Harvest unavailable — helm is busy'
+                                          : 'Deploy the mining laser to harvest ore from the asteroid field'
+                                  }
+                                  title={
+                                    harvestClientGateMessage
+                                      ? harvestClientGateMessage
+                                      : harvestPreviewBlocked && harvestPreviewGateMessage
+                                        ? harvestPreviewGateMessage
+                                        : 'Deploy the mining laser to harvest ore from the asteroid field'
+                                  }
+                                >
+                                  {harvestBusy ? '⛏️ MINING…' : helmBusy ? '⛏️ HARVEST (busy)' : '⛏️ HARVEST'}
+                                </button>
+                                {/* Visible gate reason text (LEG-4146) — client-side gates take
+                                    precedence; server gate message shown as fallback. */}
+                                {(harvestClientGateMessage || (harvestPreviewBlocked && harvestPreviewGateMessage)) && (
+                                  <p
+                                    className="harvest-gate-reason"
+                                    role="status"
+                                    data-testid="harvest-gate-reason"
+                                  >
+                                    {harvestClientGateMessage ?? harvestPreviewGateMessage}
+                                  </p>
+                                )}
+                              </>
                             )}
                           </div>
                         ) : (
