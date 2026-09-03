@@ -1,9 +1,17 @@
 """Pirate-holding raid initiation (LEG-1105).
 
-Wires the first live caller for the ADR-0060 dormant combat-lock kernel
-(``acquire_combat_lock`` / ``can_engage``). Does **not** invoke
-``capture_holding`` — capture remains deferred until holding-anchored garrison
-defenders exist (WO-PIRATE-ECO-2 gate).
+Live HTTP caller for the ADR-0060 combat-lock kernel
+(``acquire_combat_lock`` / ``can_engage``) via
+``POST /pirate-holdings/{id}/raid/initiate``.
+
+Capture is a separate live route (``POST .../raid/capture``, LEG-4153) that
+calls ``pirate_ecosystem_service.capture_holding`` directly from
+``pirate_holdings.py`` — this module does **not** invoke capture; that
+split is intentional (initiate = lock, capture = ownership flip).
+
+Still incomplete relative to full canon raid flow: holding-anchored
+garrison / NPC KIA gate and OutlawBase→NPCBarracks conversion are not
+wired here (or elsewhere on tip).
 
 Canon: sw2102-docs/SYSTEMS/pirate-holding-raid.md § Concurrent-attacker
 arbitration (G-F2). Camps are permissive (no lock); Outpost/Stronghold rows
