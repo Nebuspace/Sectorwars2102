@@ -1918,6 +1918,34 @@ class FleetService:
                     rep_service.adjust_reputation(
                         pid, 100, "defeat_bounty_target"
                     )
+                    # LEG-4171: +25 Federation faction-rep when the paid
+                    # bounty share is in Fed-controlled space. Best-effort.
+                    try:
+                        from src.models.zone import ZoneType
+                        from src.services.emergent_reputation_service import (
+                            apply_emergent_action,
+                        )
+                        killing_sector = None
+                        if killed_player is not None:
+                            killing_sector = self.db.query(Sector).filter(
+                                Sector.sector_id == killed_player.current_sector_id
+                            ).first()
+                        if (
+                            killing_sector is not None
+                            and getattr(killing_sector, "zone", None) is not None
+                            and killing_sector.zone.zone_type == ZoneType.FEDERATION
+                        ):
+                            hunter = self.db.query(Player).filter(
+                                Player.id == pid
+                            ).first()
+                            if hunter is not None:
+                                apply_emergent_action(
+                                    self.db, hunter, "KILL_BOUNTY_TARGET_FED"
+                                )
+                    except Exception as e:
+                        logger.error(
+                            "KILL_BOUNTY_TARGET_FED rep hook failed: %s", e
+                        )
 
             if not had_bounty:
                 # Target carried NO bounty at all — the fleet gunned down a

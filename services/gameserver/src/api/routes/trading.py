@@ -43,6 +43,35 @@ ERR_TRADING_RELEASE_MOORING_FAILED = "ERR_TRADING_RELEASE_MOORING_FAILED"
 
 logger = logging.getLogger(__name__)
 
+
+def _award_pay_region_tax_fed(db, player, station, region_tax_amount) -> None:
+    """LEG-4175: +1 Fed rep per 25,000 cr region tax in Fed space.
+
+    Floor blocks only (no carry-over). Uses the 25,000-cr tax cadence,
+    not the 5,000-cr trade-volume helper.
+    """
+    try:
+        if player is None or int(region_tax_amount or 0) <= 0:
+            return
+        from src.models.zone import ZoneType
+        from src.services.emergent_reputation_service import apply_emergent_action
+
+        sec = getattr(station, "sector", None)
+        if sec is None and getattr(station, "sector_uuid", None) is not None:
+            sec = db.query(Sector).filter(Sector.id == station.sector_uuid).first()
+        zone_type = getattr(sec, "zone_type", None) if sec is not None else None
+        if zone_type is None and sec is not None and getattr(sec, "zone", None) is not None:
+            zone_type = sec.zone.zone_type
+        # Frozen contract: sector.zone_type == ZoneType.FEDERATION
+        if zone_type != ZoneType.FEDERATION:
+            return
+        blocks = int(region_tax_amount // 25000)
+        for _ in range(blocks):
+            apply_emergent_action(db, player, "PAY_REGION_TAX_FED")
+    except Exception:
+        logger.warning("PAY_REGION_TAX_FED rep hook failed", exc_info=True)
+
+
 router = APIRouter(prefix="/trading", tags=["trading"])
 
 
@@ -820,6 +849,9 @@ async def buy_resource(
                 # NEVER station.treasury_balance — that is the station owner's
                 # private purse (WO-FIX-REGION-TAX-FALLBACK-MISROUTES-STATION-TREASURY).
                 fallback_credit_region_tax(db, station, region_tax_amount)
+            _award_pay_region_tax_fed(
+                db, current_player, station, region_tax_amount
+            )
 
         # Update ship cargo (using proper structure)
         if not current_ship.cargo:
@@ -1196,6 +1228,9 @@ async def sell_resource(
                 # NEVER station.treasury_balance — that is the station owner's
                 # private purse (WO-FIX-REGION-TAX-FALLBACK-MISROUTES-STATION-TREASURY).
                 fallback_credit_region_tax(db, station, region_tax_amount)
+            _award_pay_region_tax_fed(
+                db, current_player, station, region_tax_amount
+            )
 
         # Update ship cargo (using proper structure)
         if not current_ship.cargo:
@@ -1302,8 +1337,32 @@ async def sell_resource(
                 apply_trade_volume_rep(
                     db, current_player, "TRADE_VOLUME_AM_ORE", total_earnings, tv_ctx
                 )
+            # LEG-4173: exotic_technology sold at a Nova-flagged station
+            # (+2 / 5,000 cr via the per-block accumulator).
+            if (
+                trade_request.resource_type == "exotic_technology"
+                and station.faction_affiliation == "Nova Scientific Institute"
+            ):
+                apply_trade_volume_rep(
+                    db, current_player, "SELL_EXOTIC_TECH_NOVA", total_earnings, tv_ctx
+                )
         except Exception:
             logger.warning("emergent trade-volume faction rep failed (sell)", exc_info=True)
+
+        # LEG-4163: gourmet_food / luxury_goods at a Frontier Coalition
+        # station — +2 per 10,000 cr floor (one apply_emergent_action per
+        # block; no carry-over). Best-effort; never fail the sell.
+        try:
+            if (
+                trade_request.resource_type in ("gourmet_food", "luxury_goods")
+                and station.faction_affiliation == "Frontier Coalition"
+            ):
+                from src.services.emergent_reputation_service import apply_emergent_action
+                luxury_blocks = int(total_earnings // 10_000)
+                for _ in range(luxury_blocks):
+                    apply_emergent_action(db, current_player, "TRADE_LUXURY_FC")
+        except Exception:
+            logger.warning("TRADE_LUXURY_FC rep failed", exc_info=True)
 
         # Award rank points for trading volume
         rank_awarded = None

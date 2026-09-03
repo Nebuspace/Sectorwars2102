@@ -591,6 +591,89 @@ EMERGENT_ACTIONS: Dict[str, EmergentAction] = {
             "Fringe-controlled port (+25 / transaction)"
         ),
     ),
+    # LEG-4163 — Frontier Coalition: gourmet_food / luxury_goods at an FC
+    # station | +2 / 10,000 cr floor (one apply_emergent_action per block).
+    "TRADE_LUXURY_FC": EmergentAction(
+        name="TRADE_LUXURY_FC",
+        deltas=[FactionDelta(FactionType.INDEPENDENTS, 2)],
+        doc_source=(
+            "factions-and-teams.md FC: Sell gourmet_food/luxury_goods to a "
+            "Frontier colony port (+2 / 10,000 cr)"
+        ),
+    ),
+    # LEG-4165 — Federation: kill Wanted/Suspect player | +15
+    "KILL_WANTED_PLAYER_FED": EmergentAction(
+        name="KILL_WANTED_PLAYER_FED",
+        deltas=[FactionDelta(FactionType.FEDERATION, 15)],
+        doc_source=(
+            "factions-and-teams.md Federation table: Kill a player with active "
+            "Wanted/Suspect status in Fed-Controlled space (+15)"
+        ),
+    ),
+    # LEG-4166 — Nova Scientific: Quantum Jump scan | +1 / scan, cap 5/day
+    "QUANTUM_SCAN_NOVA": EmergentAction(
+        name="QUANTUM_SCAN_NOVA",
+        deltas=[FactionDelta(FactionType.EXPLORERS, 1)],
+        doc_source=(
+            "factions-and-teams.md Nova table: long-range Quantum Jump scan "
+            "+1/scan cap 5/day"
+        ),
+    ),
+    # LEG-4167 — Federation: first-visit a Fed-zone sector | +10
+    "DISCOVER_SECTOR_FED": EmergentAction(
+        name="DISCOVER_SECTOR_FED",
+        deltas=[FactionDelta(FactionType.FEDERATION, 10)],
+        doc_source=(
+            "factions-and-teams.md Federation table: discover sector in/"
+            "adjacent to Fed territory +10"
+        ),
+    ),
+    # LEG-4171 — Federation: kill system-bounty target in Fed space | +25
+    "KILL_BOUNTY_TARGET_FED": EmergentAction(
+        name="KILL_BOUNTY_TARGET_FED",
+        deltas=[FactionDelta(FactionType.FEDERATION, 25)],
+        doc_source=(
+            "factions-and-teams.md Fed table: kill system-bounty target in "
+            "fedspace +25"
+        ),
+    ),
+    # LEG-4172 — Frontier Coalition: vote on Frontier-aligned governance | +2
+    "VOTE_FRONTIER_GOV": EmergentAction(
+        name="VOTE_FRONTIER_GOV",
+        deltas=[FactionDelta(FactionType.INDEPENDENTS, 2)],
+        doc_source=(
+            "factions-and-teams.md FC table: vote in Frontier-aligned "
+            "governance +2/vote"
+        ),
+    ),
+    # LEG-4173 — Nova Scientific: sell exotic_technology at Nova station
+    # | +2 / 5,000 cr (apply_trade_volume_rep per-block)
+    "SELL_EXOTIC_TECH_NOVA": EmergentAction(
+        name="SELL_EXOTIC_TECH_NOVA",
+        deltas=[FactionDelta(FactionType.EXPLORERS, 2)],
+        doc_source=(
+            "factions-and-teams.md Nova table: sell exotic_technology at "
+            "Nova station +2/5k cr"
+        ),
+    ),
+    # LEG-4174 — Federation: drone defense survives in Fed space | +20
+    "DEFEND_FED_SECTOR": EmergentAction(
+        name="DEFEND_FED_SECTOR",
+        deltas=[FactionDelta(FactionType.FEDERATION, 20)],
+        doc_source=(
+            "factions-and-teams.md Federation table: Defend a Fed-Controlled "
+            "sector (drone defense survives an attack) +20"
+        ),
+    ),
+    # LEG-4175 — Federation: pay region tax | +1 / 25,000 cr
+    "PAY_REGION_TAX_FED": EmergentAction(
+        name="PAY_REGION_TAX_FED",
+        deltas=[FactionDelta(FactionType.FEDERATION, 1)],
+        doc_source=(
+            "factions-and-teams.md Federation table: Pay region tax "
+            "cumulatively +1 / 25,000 cr taxed"
+        ),
+    ),
 }
 
 
