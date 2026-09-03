@@ -252,7 +252,8 @@ describe('SectorsManager filter_has_pirate_holding (LEG-4185)', () => {
   });
 
   it('when Holding Yes is on, only sectors with has_pirate_holding true remain', async () => {
-    vi.mocked(api.get).mockImplementation((_url: string, config?: { params?: { filter_has_pirate_holding?: boolean } }) => {
+    vi.mocked(api.get).mockImplementation((...args: unknown[]) => {
+      const config = args[1] as { params?: { filter_has_pirate_holding?: boolean } } | undefined;
       if (config?.params?.filter_has_pirate_holding === true) {
         return Promise.resolve({
           data: {
@@ -302,7 +303,8 @@ describe('SectorsManager filter_has_pirate_holding (LEG-4185)', () => {
   });
 
   it('when Holding No is on, sectors with has_pirate_holding true are excluded', async () => {
-    vi.mocked(api.get).mockImplementation((_url: string, config?: { params?: { filter_has_pirate_holding?: boolean } }) => {
+    vi.mocked(api.get).mockImplementation((...args: unknown[]) => {
+      const config = args[1] as { params?: { filter_has_pirate_holding?: boolean } } | undefined;
       if (config?.params?.filter_has_pirate_holding === false) {
         return Promise.resolve({
           data: {
