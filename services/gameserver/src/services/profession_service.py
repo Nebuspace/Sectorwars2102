@@ -88,7 +88,7 @@ PRODUCTION_BONUS: dict[ProfessionType, dict[str, float]] = {
     ProfessionType.MEDICAL_PROFESSIONALS: {"colonists": 1.20},
 }
 
-RESEARCH_SCIENTIST_MULTIPLIER = 1.40
+RESEARCH_SCIENTIST_MULTIPLIER = 1.40  # [OPEN] provisional — LEG-4147; professions.md §Research Scientists
 STRUCTURAL_ENGINEER_COST_MULTIPLIER = 0.80  # −20% building upgrade costs
 COMBAT_PILOT_DRONE_MULTIPLIER = 1.50
 DEFENSE_COORDINATOR_MULTIPLIER = 1.30

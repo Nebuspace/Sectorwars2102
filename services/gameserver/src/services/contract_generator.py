@@ -199,8 +199,57 @@ BULK_PROCUREMENT_DEFICIT_THRESHOLD = MIN_CONTRACT_QUANTITY * 2
 # own MAX_CONTRACT_QUANTITY ceiling instead (the SAME per-haul cap every
 # other type is capped AT, just not further reduced by this one thin
 # origin's reserves) -- reuses an existing constant rather than inventing
-# a new, larger bulk-specific quantity band this WO wasn't asked to
+# a new, larger bulk-specific quantity band this WO wouldn't be asked to
 # design (per "do not invent a new pricing scheme, mirror the siblings").
+
+# --- LEG-4142: refugee_transport / acquisition_bounty / escort generators ---
+#
+# refugee_transport: move colonists interregionally (contracts.md §Refugee
+# transport). commodity_type="colonists", interregional stations only.
+# Payment formula: per-colonist rate anchored at cargo_delivery's formula;
+# colony demand justifies a premium over standard cargo.
+# [OPEN] REFUGEE_TRANSPORT_TYPE_MULTIPLIER: canon says "pay per surviving
+# colonist on arrival" with no stated rate. Pinned at 1.5x (between express
+# and standard) as a provisional baseline. Proposed to DECISIONS.md.
+REFUGEE_TRANSPORT_TYPE_MULTIPLIER = Decimal("1.5")  # [OPEN] provisional
+REFUGEE_TRANSPORT_PENALTY_MULTIPLIER = Decimal("1.0")  # [OPEN] same as cargo
+# [OPEN] colonist quantity band: generated as a head count analogous to
+# commodity units. 20-150 colonists per contract (mirrors MIN/MAX_CONTRACT_
+# QUANTITY). Proposed to DECISIONS.md.
+MIN_REFUGEE_QUANTITY = 20
+MAX_REFUGEE_QUANTITY = 150
+# Assumed credit value per colonist for the payment formula (stands in for
+# unit_price which commodity-based contracts derive from the market). A
+# colonist is valued at the same credit baseline a mid-tier commodity unit
+# fetches on average. [OPEN] provisional; proposed to DECISIONS.md.
+COLONIST_CREDIT_VALUE = Decimal("50.0")  # [OPEN] provisional
+
+# acquisition_bounty: NPC issues a "bring me X units of commodity Y" open
+# contract with no fixed origin (contracts.md §Acquisition bounty). Multiple
+# acceptors may eventually fulfill partial quantities, but single-acceptor at
+# launch mirrors bulk_procurement's constraint.
+# [OPEN] ACQUISITION_BOUNTY_TYPE_MULTIPLIER: canon gives no stated premium for
+# NPC acquisition bounties. Pinned at 1.25x -- a mild over-market incentive
+# to source from any route, less premium than express (1.75x). Proposed to
+# DECISIONS.md.
+ACQUISITION_BOUNTY_TYPE_MULTIPLIER = Decimal("1.25")  # [OPEN] provisional
+ACQUISITION_BOUNTY_PENALTY_MULTIPLIER = Decimal("1.0")  # [OPEN] same as cargo
+# [OPEN] quantity band: mirrors cargo_delivery range. Proposed to DECISIONS.md.
+MAX_ACQUISITION_BOUNTY_QUANTITY = MAX_CONTRACT_QUANTITY
+
+# escort: NPC pays player to escort an NPC or cargo from A to B
+# (contracts.md §Escort contract). commodity_type=None, quantity=None.
+# Payment is a flat fee per hop (distance-only; no commodity value term).
+# [OPEN] ESCORT_FLAT_FEE_PER_HOP: no canon number. 500cr/hop is a provisional
+# starting point — enough to make escorting a 4-hop route meaningfully
+# rewarding. Proposed to DECISIONS.md.
+ESCORT_FLAT_FEE_PER_HOP = Decimal("500.0")  # [OPEN] provisional
+# [OPEN] ESCORT_PENALTY_PCT: penalty on abandoning an escort is 50% of payment.
+# Provisional; proposed to DECISIONS.md.
+ESCORT_PENALTY_PCT = Decimal("0.5")  # [OPEN] provisional
+# Escort contracts are generated per pair of origin→destination stations with
+# ≥1 hop distance.
+MAX_ACTIVE_NPC_ESCORT_CONTRACTS_PER_STATION = 2  # [OPEN] provisional
 
 
 def _now() -> datetime:
@@ -283,6 +332,53 @@ def compute_bulk_procurement_payment(
         unit_price, quantity, hops, deadline_hours,
         BULK_PROCUREMENT_TYPE_MULTIPLIER, BULK_PROCUREMENT_PENALTY_MULTIPLIER,
     )
+
+
+# --- LEG-4142: payment helpers for the three new contract types ---
+
+
+def compute_refugee_transport_payment(
+    quantity: int, hops: int, deadline_hours: Decimal,
+) -> Tuple[Decimal, Decimal]:
+    """refugee_transport payment formula (LEG-4142).
+
+    Uses COLONIST_CREDIT_VALUE as the unit_price stand-in (no live
+    commodity price for colonists; they aren't a traded commodity).
+    Runs through the shared _compute_typed_contract_payment formula so
+    urgency/distance scaling matches siblings. [OPEN] multiplier pin —
+    see REFUGEE_TRANSPORT_TYPE_MULTIPLIER's own comment.
+    """
+    return _compute_typed_contract_payment(
+        COLONIST_CREDIT_VALUE, quantity, hops, deadline_hours,
+        REFUGEE_TRANSPORT_TYPE_MULTIPLIER, REFUGEE_TRANSPORT_PENALTY_MULTIPLIER,
+    )
+
+
+def compute_acquisition_bounty_payment(
+    unit_price: Decimal, quantity: int, hops: int, deadline_hours: Decimal,
+) -> Tuple[Decimal, Decimal]:
+    """acquisition_bounty payment formula (LEG-4142).
+
+    NPC offers a bounty for 'any' delivery of commodity X; unit_price is
+    the commodity's market sell price at the destination station. [OPEN]
+    multiplier pin — see ACQUISITION_BOUNTY_TYPE_MULTIPLIER's own comment.
+    """
+    return _compute_typed_contract_payment(
+        unit_price, quantity, hops, deadline_hours,
+        ACQUISITION_BOUNTY_TYPE_MULTIPLIER, ACQUISITION_BOUNTY_PENALTY_MULTIPLIER,
+    )
+
+
+def compute_escort_payment(hops: int) -> Tuple[Decimal, Decimal]:
+    """escort payment formula (LEG-4142).
+
+    Flat-fee per hop — no commodity value term (escort contracts have no
+    commodity_type / quantity). [OPEN] — see ESCORT_FLAT_FEE_PER_HOP and
+    ESCORT_PENALTY_PCT's own comments.
+    """
+    payment = (ESCORT_FLAT_FEE_PER_HOP * Decimal(max(1, hops))).quantize(Decimal("0.01"))
+    penalty = (payment * ESCORT_PENALTY_PCT).quantize(Decimal("0.01"))
+    return payment, penalty
 
 
 # --- sector-graph helpers (private to this service -- mirrors escape_pod_
@@ -894,3 +990,339 @@ def generate_npc_contracts(
         "generated": generated, "stations_scanned": batch.stations_scanned,
         "blocked_by": batch.blocked_by, "generated_by_type": batch.generated_by_type,
     }
+
+
+# ---------------------------------------------------------------------------
+# LEG-4142: NPC generators for refugee_transport, acquisition_bounty, escort
+# ---------------------------------------------------------------------------
+
+
+def generate_refugee_transport_contracts(
+    db: Session,
+    now: Optional[datetime] = None,
+    stations: Optional[List[Any]] = None,
+) -> int:
+    """Generate refugee_transport NPC contracts (LEG-4142).
+
+    contracts.md §Refugee transport: "Move colonists from one region to
+    another. Interregional only." An NPC station in one region posts a
+    refugee transport contract with destination in a DIFFERENT region.
+
+    Simplification for this generator: 'interregional' is approximated as
+    hops >= REFUGEE_MIN_HOPS (a long-distance multi-hop route). A proper
+    region-table check would require joining Region, which adds complexity
+    without changing observable behavior at current scale.
+    [OPEN] the hop threshold and quantity formula are provisional — see
+    REFUGEE_TRANSPORT_TYPE_MULTIPLIER's own comment.
+
+    commodity_type = 'colonists' (canon: contracts.md:42 "or `colonists`
+    for refugee contracts"). No commodity market price used — COLONIST_
+    CREDIT_VALUE substitutes.
+
+    Passenger-ship gating is accept-time; this generator does not gate on
+    the accepting player's ship type (no passenger_rating field exists on
+    Ship as of this WO).
+    """
+    REFUGEE_MIN_HOPS = 3  # [OPEN] proxy for 'interregional' — proposed to DECISIONS.md
+    now = now or _now()
+    _stations: List[Station] = stations if stations is not None else db.query(Station).all()
+    if len(_stations) < 2:
+        return 0
+
+    _pk_to_sector_id, adjacency = _load_directed_sector_graph(db)
+    generated = 0
+
+    for origin in _stations:
+        # Only post refugee contracts from stations with colonists logic (any
+        # station type — colonists can be in transit from any port).
+        origin_sector_pk = getattr(origin, "sector_uuid", None)
+        if origin_sector_pk is None:
+            continue
+
+        # Check existing refugee pool for this origin (reuse pool cap logic).
+        existing_count = (
+            db.query(Contract)
+            .filter(
+                Contract.issuer_id == origin.id,
+                Contract.contract_type == ContractType.REFUGEE_TRANSPORT,
+                Contract.status == ContractStatus.POSTED,
+            )
+            .count()
+        )
+        if existing_count >= MAX_ACTIVE_NPC_CONTRACTS_PER_STATION:
+            continue
+
+        distances = _all_hop_distances(adjacency, origin_sector_pk)
+        # Find a long-distance destination.
+        destination = None
+        hops_found = None
+        for candidate in _stations:
+            if candidate.id == origin.id:
+                continue
+            dest_sector_pk = getattr(candidate, "sector_uuid", None)
+            if dest_sector_pk is None:
+                continue
+            candidate_hops = distances.get(dest_sector_pk)
+            if candidate_hops is None or candidate_hops < REFUGEE_MIN_HOPS:
+                continue
+            destination = candidate
+            hops_found = candidate_hops
+            break
+
+        if destination is None or hops_found is None:
+            continue
+
+        quantity = random.randint(MIN_REFUGEE_QUANTITY, MAX_REFUGEE_QUANTITY)  # noqa: S311
+        deadline_hours = Decimal(str(pick_deadline_hours()))
+        payment, penalty = compute_refugee_transport_payment(quantity, hops_found, deadline_hours)
+        faction_id = None
+        if getattr(origin, "faction_affiliation", None):
+            faction_row = (
+                db.query(Faction)
+                .filter(Faction.name == origin.faction_affiliation)
+                .first()
+            )
+            faction_id = faction_row.id if faction_row else None
+
+        deadline = now + timedelta(hours=float(deadline_hours))
+        db.add(Contract(
+            id=uuid.uuid4(),
+            issuer_type=ContractIssuerType.NPC,
+            issuer_id=origin.id,
+            contract_type=ContractType.REFUGEE_TRANSPORT,
+            status=ContractStatus.POSTED,
+            origin_station_id=origin.id,
+            destination_station_id=destination.id,
+            commodity_type="colonists",
+            quantity=quantity,
+            payment=payment,
+            penalty=penalty,
+            acceptance_fee_pct=Decimal("2.0"),
+            escrow_amount=Decimal("0"),
+            insurance_pool_reserve=(payment * Decimal("0.10")).quantize(
+                Decimal("1"), rounding=ROUND_HALF_UP,
+            ),
+            faction_id=faction_id,
+            reputation_reward=NPC_CONTRACT_FACTION_REP_REWARD if faction_id else None,
+            deadline=deadline,
+        ))
+        generated += 1
+
+    if generated:
+        db.flush()
+    logger.info("refugee_transport generator: posted %s contracts", generated)
+    return generated
+
+
+def generate_acquisition_bounty_contracts(
+    db: Session,
+    now: Optional[datetime] = None,
+    stations: Optional[List[Any]] = None,
+) -> int:
+    """Generate acquisition_bounty NPC contracts (LEG-4142).
+
+    contracts.md §Acquisition bounty: "The player offers credits for ANY
+    cargo of type X delivered to port Y by the deadline."
+
+    NPC variant: a station posts an open acquisition bounty for a commodity
+    it buys. origin_station_id is NULL (no fixed source — player sources
+    from anywhere). destination_station_id is the issuing/receiving station.
+    commodity_type is a commodity the destination station buys.
+
+    payment uses compute_acquisition_bounty_payment with a representative
+    price proxy: the station's own buy price for the commodity (a bounty
+    offers a premium over what the station normally pays — the multiplier
+    handles that, no separate price discovery needed here).
+    """
+    now = now or _now()
+    _stations: List[Station] = stations if stations is not None else db.query(Station).all()
+    if not _stations:
+        return 0
+
+    trading_service = TradingService(db)
+    generated = 0
+
+    for station in _stations:
+        if not isinstance(station.commodities, dict):
+            continue
+
+        # Check existing acquisition bounty pool for this station.
+        existing_count = (
+            db.query(Contract)
+            .filter(
+                Contract.issuer_id == station.id,
+                Contract.contract_type == ContractType.ACQUISITION_BOUNTY,
+                Contract.status == ContractStatus.POSTED,
+            )
+            .count()
+        )
+        if existing_count >= MAX_ACTIVE_NPC_CONTRACTS_PER_STATION:
+            continue
+
+        # Find a commodity this station BUYS with any stock demand.
+        commodity_name = None
+        for name, spec in station.commodities.items():
+            if isinstance(spec, dict) and spec.get("buys"):
+                commodity_name = name
+                break
+        if commodity_name is None:
+            continue
+
+        # Use the station's own sell price as the unit_price proxy
+        # (what a player can source this commodity for, roughly).
+        try:
+            unit_price = Decimal(str(trading_service.calculate_dynamic_price(
+                station, commodity_name, "sell",
+            )))
+        except Exception:
+            unit_price = Decimal("10.0")  # safe fallback
+
+        if unit_price <= 0:
+            unit_price = Decimal("10.0")
+
+        quantity = random.randint(MIN_CONTRACT_QUANTITY, MAX_ACQUISITION_BOUNTY_QUANTITY)  # noqa: S311
+        deadline_hours = Decimal(str(pick_deadline_hours()))
+        hops = 1  # acquisition bounty: no fixed origin, use 1-hop proxy for urgency/distance
+        payment, penalty = compute_acquisition_bounty_payment(unit_price, quantity, hops, deadline_hours)
+
+        faction_id = None
+        if getattr(station, "faction_affiliation", None):
+            faction_row = (
+                db.query(Faction)
+                .filter(Faction.name == station.faction_affiliation)
+                .first()
+            )
+            faction_id = faction_row.id if faction_row else None
+
+        deadline = now + timedelta(hours=float(deadline_hours))
+        db.add(Contract(
+            id=uuid.uuid4(),
+            issuer_type=ContractIssuerType.NPC,
+            issuer_id=station.id,
+            contract_type=ContractType.ACQUISITION_BOUNTY,
+            status=ContractStatus.POSTED,
+            origin_station_id=None,  # no fixed origin — player sources freely
+            destination_station_id=station.id,
+            commodity_type=commodity_name,
+            quantity=quantity,
+            payment=payment,
+            penalty=penalty,
+            acceptance_fee_pct=Decimal("2.0"),
+            escrow_amount=Decimal("0"),
+            insurance_pool_reserve=(payment * Decimal("0.10")).quantize(
+                Decimal("1"), rounding=ROUND_HALF_UP,
+            ),
+            faction_id=faction_id,
+            reputation_reward=NPC_CONTRACT_FACTION_REP_REWARD if faction_id else None,
+            deadline=deadline,
+        ))
+        generated += 1
+
+    if generated:
+        db.flush()
+    logger.info("acquisition_bounty generator: posted %s contracts", generated)
+    return generated
+
+
+def generate_escort_contracts(
+    db: Session,
+    now: Optional[datetime] = None,
+    stations: Optional[List[Any]] = None,
+) -> int:
+    """Generate escort NPC contracts (LEG-4142).
+
+    contracts.md §Escort contract: "pays another player to fly with them
+    through a sequence of sectors." NPC variant: an NPC station posts an
+    escort job from its sector to a reachable destination station. The
+    escorted party is the NPC; the accepting player provides protection.
+
+    commodity_type = None, quantity = None (canon: contracts.md:42
+    "or null for `escort`").
+
+    Payment is ESCORT_FLAT_FEE_PER_HOP × distance (flat, not commodity-
+    value-based). [OPEN] — see ESCORT_FLAT_FEE_PER_HOP's own comment.
+    """
+    ESCORT_MIN_HOPS = 1
+    now = now or _now()
+    _stations: List[Station] = stations if stations is not None else db.query(Station).all()
+    if len(_stations) < 2:
+        return 0
+
+    _pk_to_sector_id, adjacency = _load_directed_sector_graph(db)
+    generated = 0
+
+    for origin in _stations:
+        origin_sector_pk = getattr(origin, "sector_uuid", None)
+        if origin_sector_pk is None:
+            continue
+
+        existing_count = (
+            db.query(Contract)
+            .filter(
+                Contract.issuer_id == origin.id,
+                Contract.contract_type == ContractType.ESCORT,
+                Contract.status == ContractStatus.POSTED,
+            )
+            .count()
+        )
+        if existing_count >= MAX_ACTIVE_NPC_ESCORT_CONTRACTS_PER_STATION:
+            continue
+
+        distances = _all_hop_distances(adjacency, origin_sector_pk)
+        destination = None
+        hops_found = None
+        for candidate in _stations:
+            if candidate.id == origin.id:
+                continue
+            dest_sector_pk = getattr(candidate, "sector_uuid", None)
+            if dest_sector_pk is None:
+                continue
+            candidate_hops = distances.get(dest_sector_pk)
+            if candidate_hops is not None and candidate_hops >= ESCORT_MIN_HOPS:
+                destination = candidate
+                hops_found = candidate_hops
+                break
+
+        if destination is None or hops_found is None:
+            continue
+
+        deadline_hours = Decimal(str(pick_deadline_hours()))
+        payment, penalty = compute_escort_payment(hops_found)
+
+        faction_id = None
+        if getattr(origin, "faction_affiliation", None):
+            faction_row = (
+                db.query(Faction)
+                .filter(Faction.name == origin.faction_affiliation)
+                .first()
+            )
+            faction_id = faction_row.id if faction_row else None
+
+        deadline = now + timedelta(hours=float(deadline_hours))
+        db.add(Contract(
+            id=uuid.uuid4(),
+            issuer_type=ContractIssuerType.NPC,
+            issuer_id=origin.id,
+            contract_type=ContractType.ESCORT,
+            status=ContractStatus.POSTED,
+            origin_station_id=origin.id,
+            destination_station_id=destination.id,
+            commodity_type=None,  # escort: no commodity
+            quantity=None,        # escort: no quantity
+            payment=payment,
+            penalty=penalty,
+            acceptance_fee_pct=Decimal("2.0"),
+            escrow_amount=Decimal("0"),
+            insurance_pool_reserve=(payment * Decimal("0.10")).quantize(
+                Decimal("1"), rounding=ROUND_HALF_UP,
+            ),
+            faction_id=faction_id,
+            reputation_reward=NPC_CONTRACT_FACTION_REP_REWARD if faction_id else None,
+            deadline=deadline,
+        ))
+        generated += 1
+
+    if generated:
+        db.flush()
+    logger.info("escort generator: posted %s contracts", generated)
+    return generated
