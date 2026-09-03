@@ -92,7 +92,6 @@ const SectorsManager: React.FC = () => {
             filter_has_port: filterHasPort !== null ? filterHasPort : undefined,
             filter_has_planet: filterHasPlanet !== null ? filterHasPlanet : undefined,
             filter_discovered: filterDiscovered !== null ? filterDiscovered : undefined,
-            // Forward-compat: GS may ignore until server filter ships; client also filters below.
             filter_has_pirate_holding:
               filterHasPirateHolding !== null ? filterHasPirateHolding : undefined,
             search: searchQuery.trim() || undefined,
@@ -102,20 +101,9 @@ const SectorsManager: React.FC = () => {
         });
         
         const data = response.data as { sectors: Sector[]; total?: number; total_count?: number; };
-        let nextSectors = data.sectors || [];
-        // Client-side honesty while GS may not honor filter_has_pirate_holding yet (LEG-4185).
-        // Uses list-level has_pirate_holding only — never per-row pirate-holdings GET.
-        if (filterHasPirateHolding === true) {
-          nextSectors = nextSectors.filter((s) => s.has_pirate_holding === true);
-        } else if (filterHasPirateHolding === false) {
-          nextSectors = nextSectors.filter((s) => s.has_pirate_holding !== true);
-        }
+        const nextSectors = data.sectors || [];
         setSectors(nextSectors);
-        setTotalSectors(
-          filterHasPirateHolding !== null
-            ? nextSectors.length
-            : (data.total ?? data.total_count ?? nextSectors.length),
-        );
+        setTotalSectors(data.total ?? data.total_count ?? nextSectors.length);
         setSectorFetchError(null);
       } catch (error: unknown) {
         console.error('Error fetching sectors:', error);

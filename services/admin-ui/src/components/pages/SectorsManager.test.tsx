@@ -252,15 +252,25 @@ describe('SectorsManager filter_has_pirate_holding (LEG-4185)', () => {
   });
 
   it('when Holding Yes is on, only sectors with has_pirate_holding true remain', async () => {
-    vi.mocked(api.get).mockResolvedValue({
-      data: {
-        sectors: [
-          listSector({ id: 'a', sector_id: 1, name: 'Held', has_pirate_holding: true }),
-          listSector({ id: 'b', sector_id: 2, name: 'Clear', has_pirate_holding: false }),
-          listSector({ id: 'c', sector_id: 3, name: 'Unknown' }),
-        ],
-        total: 3,
-      },
+    vi.mocked(api.get).mockImplementation((_url: string, config?: { params?: { filter_has_pirate_holding?: boolean } }) => {
+      if (config?.params?.filter_has_pirate_holding === true) {
+        return Promise.resolve({
+          data: {
+            sectors: [listSector({ id: 'a', sector_id: 1, name: 'Held', has_pirate_holding: true })],
+            total: 1,
+          },
+        });
+      }
+      return Promise.resolve({
+        data: {
+          sectors: [
+            listSector({ id: 'a', sector_id: 1, name: 'Held', has_pirate_holding: true }),
+            listSector({ id: 'b', sector_id: 2, name: 'Clear', has_pirate_holding: false }),
+            listSector({ id: 'c', sector_id: 3, name: 'Unknown' }),
+          ],
+          total: 3,
+        },
+      });
     });
 
     render(<SectorsManager />);
@@ -274,9 +284,9 @@ describe('SectorsManager filter_has_pirate_holding (LEG-4185)', () => {
     fireEvent.click(within(holdingFilter).getByRole('button', { name: 'Yes' }));
 
     await waitFor(() => {
-      expect(screen.getByText('Held')).toBeTruthy();
+      expect(screen.queryByText('Clear')).toBeNull();
     });
-    expect(screen.queryByText('Clear')).toBeNull();
+    expect(screen.getByText('Held')).toBeTruthy();
     expect(screen.queryByText('Unknown')).toBeNull();
 
     const getCalls = vi.mocked(api.get).mock.calls;
@@ -292,14 +302,24 @@ describe('SectorsManager filter_has_pirate_holding (LEG-4185)', () => {
   });
 
   it('when Holding No is on, sectors with has_pirate_holding true are excluded', async () => {
-    vi.mocked(api.get).mockResolvedValue({
-      data: {
-        sectors: [
-          listSector({ id: 'a', sector_id: 1, name: 'Held', has_pirate_holding: true }),
-          listSector({ id: 'b', sector_id: 2, name: 'Clear', has_pirate_holding: false }),
-        ],
-        total: 2,
-      },
+    vi.mocked(api.get).mockImplementation((_url: string, config?: { params?: { filter_has_pirate_holding?: boolean } }) => {
+      if (config?.params?.filter_has_pirate_holding === false) {
+        return Promise.resolve({
+          data: {
+            sectors: [listSector({ id: 'b', sector_id: 2, name: 'Clear', has_pirate_holding: false })],
+            total: 1,
+          },
+        });
+      }
+      return Promise.resolve({
+        data: {
+          sectors: [
+            listSector({ id: 'a', sector_id: 1, name: 'Held', has_pirate_holding: true }),
+            listSector({ id: 'b', sector_id: 2, name: 'Clear', has_pirate_holding: false }),
+          ],
+          total: 2,
+        },
+      });
     });
 
     render(<SectorsManager />);
@@ -309,9 +329,20 @@ describe('SectorsManager filter_has_pirate_holding (LEG-4185)', () => {
     fireEvent.click(within(holdingFilter).getByRole('button', { name: 'No' }));
 
     await waitFor(() => {
-      expect(screen.getByText('Clear')).toBeTruthy();
+      expect(screen.queryByText('Held')).toBeNull();
     });
-    expect(screen.queryByText('Held')).toBeNull();
+    expect(screen.getByText('Clear')).toBeTruthy();
+
+    const getCalls = vi.mocked(api.get).mock.calls;
+    const lastCall = getCalls[getCalls.length - 1];
+    expect(lastCall?.[1]).toEqual(
+      expect.objectContaining({
+        params: expect.objectContaining({ filter_has_pirate_holding: false }),
+      }),
+    );
+    expect(
+      vi.mocked(api.get).mock.calls.every(([url]) => !String(url).includes('pirate-holdings')),
+    ).toBe(true);
   });
 });
 
