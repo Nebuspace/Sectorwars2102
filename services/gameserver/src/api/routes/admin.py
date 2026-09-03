@@ -1341,6 +1341,7 @@ async def get_all_sectors(
     filter_cluster: Optional[str] = None,
     filter_has_port: Optional[bool] = None,
     filter_has_planet: Optional[bool] = None,
+    filter_has_pirate_holding: Optional[bool] = None,
     filter_discovered: Optional[bool] = None,
     search: Optional[str] = None,
     page: int = 1,
@@ -1387,6 +1388,15 @@ async def get_all_sectors(
             query = query.filter(Sector.sector_id.in_(planet_sectors))
         else:
             query = query.filter(~Sector.sector_id.in_(planet_sectors))
+
+    # LEG-4198: same subquery honesty as port/planet for pirate holdings.
+    if filter_has_pirate_holding is not None:
+        holding_subq = db.query(PirateHolding.sector_id).distinct().subquery()
+        holding_sectors = db.query(holding_subq.c.sector_id)
+        if filter_has_pirate_holding:
+            query = query.filter(Sector.sector_id.in_(holding_sectors))
+        else:
+            query = query.filter(~Sector.sector_id.in_(holding_sectors))
 
     total = query.count()
 
