@@ -1341,6 +1341,7 @@ async def get_all_sectors(
     filter_cluster: Optional[str] = None,
     filter_has_port: Optional[bool] = None,
     filter_has_planet: Optional[bool] = None,
+    filter_has_pirate_holding: Optional[bool] = None,
     filter_discovered: Optional[bool] = None,
     search: Optional[str] = None,
     page: int = 1,
@@ -1387,6 +1388,15 @@ async def get_all_sectors(
             query = query.filter(Sector.sector_id.in_(planet_sectors))
         else:
             query = query.filter(~Sector.sector_id.in_(planet_sectors))
+
+    # LEG-4198: same subquery honesty as port/planet for pirate holdings.
+    if filter_has_pirate_holding is not None:
+        holding_subq = db.query(PirateHolding.sector_id).distinct().subquery()
+        holding_sectors = db.query(holding_subq.c.sector_id)
+        if filter_has_pirate_holding:
+            query = query.filter(Sector.sector_id.in_(holding_sectors))
+        else:
+            query = query.filter(~Sector.sector_id.in_(holding_sectors))
 
     total = query.count()
 
@@ -1837,6 +1847,7 @@ _ADMIN_PIRATE_HOLDING_FIELDS = (
     "region_id",
     "owner_player_id",
     "owner_team_id",
+    "outlaw_base_id",
     "captured_at",
     "combat_lock_held_by",
     "current_strength",
@@ -1844,7 +1855,7 @@ _ADMIN_PIRATE_HOLDING_FIELDS = (
 
 
 def _admin_pirate_holding_payload(holding: PirateHolding) -> dict:
-    """Operator inspect payload — committed columns only (LEG-4176)."""
+    """Operator inspect payload — committed columns only (LEG-4176 / LEG-4197)."""
     return {
         "id": str(holding.id),
         "tier": holding.tier.value if holding.tier is not None else None,
@@ -1855,6 +1866,9 @@ def _admin_pirate_holding_payload(holding: PirateHolding) -> dict:
         ),
         "owner_team_id": (
             str(holding.owner_team_id) if holding.owner_team_id is not None else None
+        ),
+        "outlaw_base_id": (
+            str(holding.outlaw_base_id) if holding.outlaw_base_id is not None else None
         ),
         "captured_at": holding.captured_at.isoformat() if holding.captured_at else None,
         "combat_lock_held_by": (
