@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import PlayerAssetManager from './PlayerAssetManager';
 import { api } from '../../utils/auth';
 import type { PlayerModel } from '../../types/playerManagement';
@@ -96,5 +96,153 @@ describe('PlayerAssetManager scope honesty (LEG-1207)', () => {
     expect(alert).not.toBe('Network Error');
     expect(alert).not.toContain('Network Error');
     expect(alert).not.toMatch(/^Failed to load player assets$/);
+  });
+});
+
+describe('PlayerAssetManager pirate-holding indicator (LEG-4193)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  function mockOwnedAssets(overrides?: {
+    planets?: unknown[];
+    ports?: unknown[];
+    sectors?: Array<{ sector_id: number; has_pirate_holding?: boolean }>;
+    sectorsReject?: unknown;
+  }) {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/admin/ships')) {
+        return { data: { ships: [] } };
+      }
+      if (String(url).includes('/admin/planets')) {
+        return {
+          data: {
+            planets:
+              overrides?.planets ?? [
+                { id: 'pl1', name: 'Alpha', planet_type: 'Terran', sector_id: 10 },
+              ],
+          },
+        };
+      }
+      if (String(url).includes('/admin/ports')) {
+        return {
+          data: {
+            ports:
+              overrides?.ports ?? [
+                { id: 'pt1', name: 'Dock', port_class: 1, sector_id: 10 },
+                { id: 'pt2', name: 'Bay', port_class: 2, sector_id: 20 },
+              ],
+          },
+        };
+      }
+      if (String(url).includes('/admin/sectors')) {
+        if (overrides?.sectorsReject) {
+          throw overrides.sectorsReject;
+        }
+        return {
+          data: {
+            sectors:
+              overrides?.sectors ?? [
+                { sector_id: 10, has_pirate_holding: true },
+                { sector_id: 20, has_pirate_holding: false },
+              ],
+            total: 2,
+          },
+        };
+      }
+      return { data: {} };
+    });
+  }
+
+  it('shows Holding badge on owned planets/ports whose sector has_pirate_holding', async () => {
+    mockOwnedAssets();
+
+    render(
+      <PlayerAssetManager player={player} onClose={() => {}} onUpdate={() => {}} />,
+    );
+
+    await waitFor(() => {
+      expect(api.get).toHaveBeenCalledWith(
+        '/api/v1/admin/sectors',
+        expect.objectContaining({ params: { page: 1, limit: 100 } }),
+      );
+    });
+
+    // No per-row pirate-holdings GET
+    expect(
+      vi
+        .mocked(api.get)
+        .mock.calls.some(([url]) => String(url).includes('/pirate-holdings')),
+    ).toBe(false);
+
+    fireEvent.click(screen.getByRole('button', { name: /Planets/i }));
+    expect(await screen.findByTestId('pirate-holding-badge-pl1')).toHaveTextContent(
+      'Holding',
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Ports/i }));
+    expect(screen.getByTestId('pirate-holding-badge-pt1')).toBeTruthy();
+    expect(screen.queryByTestId('pirate-holding-badge-pt2')).toBeNull();
+    expect(screen.queryByText(/outlaw_base/i)).toBeNull();
+  });
+
+  it('shows no Holding chrome when sector flags are false/omitted', async () => {
+    mockOwnedAssets({
+      sectors: [
+        { sector_id: 10, has_pirate_holding: false },
+        { sector_id: 20 },
+      ],
+    });
+
+    render(
+      <PlayerAssetManager player={player} onClose={() => {}} onUpdate={() => {}} />,
+    );
+
+    await waitFor(() => {
+      expect(api.get).toHaveBeenCalledWith(
+        '/api/v1/admin/sectors',
+        expect.anything(),
+      );
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /Planets/i }));
+    expect(screen.queryByTestId('pirate-holding-badge-pl1')).toBeNull();
+  });
+
+  it('surfaces sectors-list failure via formatAdminApiError without inventing badges', async () => {
+    mockOwnedAssets({
+      sectorsReject: Object.assign(new Error('HTTP 403'), {
+        response: { status: 403, data: { detail: 'Missing scope' } },
+      }),
+    });
+
+    render(
+      <PlayerAssetManager player={player} onClose={() => {}} onUpdate={() => {}} />,
+    );
+
+    const alert = await screen.findByTestId('pirate-holdings-flag-error');
+    expect(alert.textContent ?? '').toMatch(/Missing scope|Access denied|admin\.galaxy\.manage/i);
+    expect(screen.queryByTestId(/pirate-holding-badge-/)).toBeNull();
+  });
+
+  it('skips sectors list when player owns no planets or ports', async () => {
+    mockOwnedAssets({ planets: [], ports: [], sectors: [] });
+
+    render(
+      <PlayerAssetManager player={player} onClose={() => {}} onUpdate={() => {}} />,
+    );
+
+    await waitFor(() => {
+      expect(api.get).toHaveBeenCalledWith(
+        expect.stringContaining('/admin/ships'),
+      );
+    });
+
+    expect(
+      vi
+        .mocked(api.get)
+        .mock.calls.some(([url]) => String(url).includes('/admin/sectors')),
+    ).toBe(false);
   });
 });
