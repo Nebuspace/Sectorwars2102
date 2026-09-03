@@ -562,6 +562,10 @@ h2, h3, h4 {
   border-color: rgba(124, 179, 66, 0.3);
 }
 
+.sector-card.has-holding {
+  border-color: rgba(249, 115, 22, 0.35);
+}
+
 .sector-header {
   display: flex;
   justify-content: space-between;
@@ -629,6 +633,11 @@ h2, h3, h4 {
 .feature-badge.warp {
   background: rgba(156, 39, 176, 0.2);
   color: #d8b4fe;
+}
+
+.feature-badge.holding {
+  background: rgba(249, 115, 22, 0.2);
+  color: #fdba74;
 }
 
 /* Galaxy Map Placeholder */
