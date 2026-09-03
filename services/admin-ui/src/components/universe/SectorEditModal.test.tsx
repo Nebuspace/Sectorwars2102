@@ -123,3 +123,175 @@ describe('SectorEditModal scope errors (LEG-1213)', () => {
     expect(text).not.toMatch(/TypeError/i);
   });
 });
+
+const axiosError = (status: number) =>
+  Object.assign(new Error(`HTTP ${status}`), { response: { status } });
+
+function mockDetailLoads(holdingsPayload: unknown) {
+  vi.mocked(api.get).mockImplementation(async (url: string) => {
+    if (url.endsWith('/pirate-holdings')) {
+      return { data: holdingsPayload };
+    }
+    if (url.endsWith('/planet')) {
+      return { data: { has_planet: false, planet: null } };
+    }
+    if (url.endsWith('/port')) {
+      return { data: { has_port: false, port: null } };
+    }
+    return { data: {} };
+  });
+}
+
+function renderModal() {
+  return render(
+    <MemoryRouter>
+      <SectorEditModal
+        isOpen
+        sector={sector as any}
+        onClose={() => {}}
+        onSave={() => {}}
+      />
+    </MemoryRouter>,
+  );
+}
+
+describe('SectorEditModal pirate holdings (LEG-4189)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.put).mockReset();
+  });
+
+  it('fetches admin pirate-holdings once using sector.sector_id', async () => {
+    mockDetailLoads({ holdings: [] });
+    renderModal();
+
+    await waitFor(() => {
+      expect(vi.mocked(api.get)).toHaveBeenCalledWith(
+        '/api/v1/admin/sectors/1/pirate-holdings',
+      );
+    });
+    const holdingsCalls = vi
+      .mocked(api.get)
+      .mock.calls.filter(([url]) => String(url).endsWith('/pirate-holdings'));
+    expect(holdingsCalls.length).toBeGreaterThanOrEqual(1);
+    expect(holdingsCalls.every(([url]) => url === '/api/v1/admin/sectors/1/pirate-holdings')).toBe(
+      true,
+    );
+    expect(vi.mocked(api.get).mock.calls.some(([url]) => String(url).includes('sec-1/pirate'))).toBe(
+      false,
+    );
+  });
+
+  it('shows an honest empty state when holdings is empty', async () => {
+    mockDetailLoads({ holdings: [] });
+    renderModal();
+
+    expect(await screen.findByTestId('pirate-holdings-empty')).toHaveTextContent(
+      'No pirate holdings in this sector.',
+    );
+    expect(screen.queryByTestId(/pirate-holding-row-/)).toBeNull();
+    expect(screen.queryByText(/outlaw_base_id/i)).toBeNull();
+    expect(screen.queryByRole('button', { name: /capture|initiate/i })).toBeNull();
+  });
+
+  it('treats omitted holdings key as empty without fabricating rows', async () => {
+    mockDetailLoads({});
+    renderModal();
+
+    expect(await screen.findByTestId('pirate-holdings-empty')).toBeTruthy();
+    expect(screen.queryByTestId(/pirate-holding-row-/)).toBeNull();
+  });
+
+  it('lists present holdings without inventing outlaw_base_id', async () => {
+    mockDetailLoads({
+      holdings: [
+        {
+          id: 'hold-1',
+          tier: 'OUTPOST',
+          owner_player_id: null,
+          outlaw_base_id: 'must-not-render',
+        },
+        {
+          id: 'hold-2',
+          owner_player_id: 'player-3',
+        },
+      ],
+    });
+    renderModal();
+
+    const row1 = await screen.findByTestId('pirate-holding-row-hold-1');
+    expect(row1).toHaveTextContent('id: hold-1');
+    expect(row1).toHaveTextContent('tier: OUTPOST');
+    expect(row1).toHaveTextContent('owner: pirate-controlled');
+    expect(row1).not.toHaveTextContent('must-not-render');
+    expect(row1).not.toHaveTextContent('outlaw_base_id');
+
+    const row2 = screen.getByTestId('pirate-holding-row-hold-2');
+    expect(row2).toHaveTextContent('owner: player-3');
+    expect(row2).toHaveTextContent('tier: —');
+    expect(screen.queryByRole('button', { name: /capture|initiate/i })).toBeNull();
+  });
+
+  it('surfaces holdings load 403 via formatUniverseAdminError', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.endsWith('/pirate-holdings')) {
+        throw axiosError(403);
+      }
+      if (url.endsWith('/planet')) {
+        return { data: { has_planet: false, planet: null } };
+      }
+      if (url.endsWith('/port')) {
+        return { data: { has_port: false, port: null } };
+      }
+      return { data: {} };
+    });
+    renderModal();
+
+    await waitFor(() => {
+      expect(screen.getByText(/admin\.universe\.manage|Access denied/i)).toBeTruthy();
+    });
+    expect(await screen.findByTestId('pirate-holdings-empty')).toBeTruthy();
+  });
+
+  it('surfaces holdings load 429 via formatUniverseAdminError', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.endsWith('/pirate-holdings')) {
+        throw axiosError(429);
+      }
+      if (url.endsWith('/planet')) {
+        return { data: { has_planet: false, planet: null } };
+      }
+      if (url.endsWith('/port')) {
+        return { data: { has_port: false, port: null } };
+      }
+      return { data: {} };
+    });
+    renderModal();
+
+    await waitFor(() => {
+      expect(screen.getByText(/rate limit/i)).toBeTruthy();
+    });
+  });
+
+  it('surfaces holdings load network collapse via fallback copy', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.endsWith('/pirate-holdings')) {
+        throw new TypeError('Failed to fetch');
+      }
+      if (url.endsWith('/planet')) {
+        return { data: { has_planet: false, planet: null } };
+      }
+      if (url.endsWith('/port')) {
+        return { data: { has_port: false, port: null } };
+      }
+      return { data: {} };
+    });
+    renderModal();
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to load pirate holdings/i)).toBeTruthy();
+    });
+    const text = screen.getByText(/Failed to load pirate holdings/i).textContent ?? '';
+    expect(text).not.toMatch(/Failed to fetch/i);
+  });
+});

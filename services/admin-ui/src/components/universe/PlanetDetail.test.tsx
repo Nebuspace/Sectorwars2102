@@ -1,12 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import PlanetDetail, { buildPlanetPatchPayload } from './PlanetDetail';
+import PlanetDetail, { buildPlanetPatchPayload, resolvePlanetAdminSectorId } from './PlanetDetail';
 import { api } from '../../utils/auth';
 
 vi.mock('../../utils/auth', () => ({
   api: {
     patch: vi.fn(),
+    get: vi.fn(),
   },
 }));
 
@@ -67,6 +68,7 @@ describe('PlanetDetail Soft-ORDER non-PATCHABLE honesty', () => {
   beforeEach(() => {
     vi.mocked(api.patch).mockReset();
     vi.mocked(api.patch).mockResolvedValue({ data: { success: true } });
+    vi.mocked(api.get).mockReset();
   });
 
   it('non-PATCHABLE owner_name is read-only and does not PATCH', async () => {
@@ -184,6 +186,7 @@ describe('PlanetDetail Soft-ORDER non-PATCHABLE honesty', () => {
 describe('PlanetDetail PATCH errors (LEG-2616)', () => {
   beforeEach(() => {
     vi.mocked(api.patch).mockReset();
+    vi.mocked(api.get).mockReset();
   });
 
   it('surfaces formatAdminApiError on name PATCH 403', async () => {
@@ -295,5 +298,125 @@ describe('PlanetDetail PATCH errors (LEG-2616)', () => {
     expect(msg).not.toBe('Network Error');
     expect(msg).not.toContain('Network Error');
     expect(msg).not.toMatch(/TypeError/i);
+  });
+});
+
+describe('resolvePlanetAdminSectorId', () => {
+  it('prefers planet.sector_id when it is a finite integer', () => {
+    expect(resolvePlanetAdminSectorId({ sector_id: 42, planet: { sector_id: 7 } })).toBe(42);
+    expect(resolvePlanetAdminSectorId({ sector_id: '42' })).toBe(42);
+  });
+
+  it('falls back to nested planet.planet.sector_id', () => {
+    expect(resolvePlanetAdminSectorId({ planet: { sector_id: 9 } })).toBe(9);
+  });
+
+  it('rejects UUID / missing / non-integer values', () => {
+    expect(resolvePlanetAdminSectorId(basePlanet)).toBeNull();
+    expect(resolvePlanetAdminSectorId({ sector_id: 's1' })).toBeNull();
+    expect(resolvePlanetAdminSectorId({ sector_id: 1.5 })).toBeNull();
+  });
+});
+
+describe('PlanetDetail pirate holdings (LEG-4191)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.patch).mockReset();
+  });
+
+  it('fetches admin pirate-holdings once using planet.sector_id', async () => {
+    vi.mocked(api.get).mockResolvedValue({ data: { holdings: [] } });
+    render(<PlanetDetail planet={{ ...basePlanet, sector_id: 42 }} onBack={() => undefined} />);
+
+    await waitFor(() => {
+      expect(vi.mocked(api.get)).toHaveBeenCalledWith(
+        '/api/v1/admin/sectors/42/pirate-holdings',
+      );
+    });
+    expect(
+      vi.mocked(api.get).mock.calls.every(
+        ([url]) => url === '/api/v1/admin/sectors/42/pirate-holdings',
+      ),
+    ).toBe(true);
+    expect(await screen.findByTestId('pirate-holdings-empty')).toHaveTextContent(
+      'No pirate holdings in this sector.',
+    );
+  });
+
+  it('fetches using nested planet.planet.sector_id when top-level is missing', async () => {
+    vi.mocked(api.get).mockResolvedValue({ data: { holdings: [] } });
+    render(
+      <PlanetDetail
+        planet={{ ...basePlanet, planet: { sector_id: 77 } }}
+        onBack={() => undefined}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(vi.mocked(api.get)).toHaveBeenCalledWith(
+        '/api/v1/admin/sectors/77/pirate-holdings',
+      );
+    });
+  });
+
+  it('treats omitted holdings key as empty without fabricating rows', async () => {
+    vi.mocked(api.get).mockResolvedValue({ data: {} });
+    render(<PlanetDetail planet={{ ...basePlanet, sector_id: 42 }} onBack={() => undefined} />);
+
+    expect(await screen.findByTestId('pirate-holdings-empty')).toBeTruthy();
+    expect(screen.queryByTestId(/pirate-holding-row-/)).toBeNull();
+  });
+
+  it('lists present holdings without inventing outlaw_base_id', async () => {
+    vi.mocked(api.get).mockResolvedValue({
+      data: {
+        holdings: [
+          {
+            id: 'hold-1',
+            tier: 'OUTPOST',
+            owner_player_id: null,
+            outlaw_base_id: 'must-not-render',
+          },
+          { id: 'hold-2', owner_player_id: 'player-3' },
+        ],
+      },
+    });
+    render(<PlanetDetail planet={{ ...basePlanet, sector_id: 42 }} onBack={() => undefined} />);
+
+    const row1 = await screen.findByTestId('pirate-holding-row-hold-1');
+    expect(row1).toHaveTextContent('id: hold-1');
+    expect(row1).toHaveTextContent('tier: OUTPOST');
+    expect(row1).toHaveTextContent('owner: pirate-controlled');
+    expect(row1).not.toHaveTextContent('must-not-render');
+    expect(row1).not.toHaveTextContent('outlaw_base_id');
+
+    const row2 = screen.getByTestId('pirate-holding-row-hold-2');
+    expect(row2).toHaveTextContent('owner: player-3');
+    expect(row2).toHaveTextContent('tier: —');
+    expect(screen.queryByRole('button', { name: /capture|initiate/i })).toBeNull();
+  });
+
+  it('does not GET when neither sector_id path is a finite integer', () => {
+    render(<PlanetDetail planet={basePlanet} onBack={() => undefined} />);
+
+    expect(vi.mocked(api.get)).not.toHaveBeenCalled();
+    expect(screen.getByTestId('pirate-holdings-unavailable')).toHaveTextContent(
+      /cannot be loaded/i,
+    );
+    expect(screen.queryByTestId('pirate-holdings-empty')).toBeNull();
+  });
+
+  it('surfaces holdings load 403 via formatAdminApiError', async () => {
+    vi.mocked(api.get).mockRejectedValue(
+      httpErr(403, 'Missing scope admin.universe.manage'),
+    );
+    render(<PlanetDetail planet={{ ...basePlanet, sector_id: 42 }} onBack={() => undefined} />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(
+        /Missing scope admin\.universe\.manage/i,
+      );
+    });
+    expect(await screen.findByTestId('pirate-holdings-empty')).toBeTruthy();
   });
 });
