@@ -251,7 +251,14 @@ export interface PirateHoldingRaidInitiateResponse {
   combat_lock_team_snapshot?: string[] | null;
 }
 
-/** Pirate holdings discovery + raid initiate (LEG-4107). Capture is tip-absent — invent=0. */
+/** POST /pirate-holdings/{id}/raid/capture — G-F2 capture completion (LEG-4154). */
+export interface PirateHoldingCaptureResponse {
+  holding_id: string;
+  captured_at: string | null;
+  owner_team_id: string | null;
+}
+
+/** Pirate holdings discovery + raid initiate + capture (LEG-4107, LEG-4154). */
 export const pirateHoldingsAPI = {
   listBySector: (sectorId: number): Promise<PirateHoldingDiscovery[]> =>
     apiRequest(
@@ -261,6 +268,12 @@ export const pirateHoldingsAPI = {
   initiateRaid: (holdingId: string): Promise<PirateHoldingRaidInitiateResponse> =>
     apiRequest(
       `/api/v1/pirate-holdings/${encodeURIComponent(holdingId)}/raid/initiate`,
+      { method: 'POST' },
+    ),
+
+  captureHolding: (holdingId: string): Promise<PirateHoldingCaptureResponse> =>
+    apiRequest(
+      `/api/v1/pirate-holdings/${encodeURIComponent(holdingId)}/raid/capture`,
       { method: 'POST' },
     ),
 };
