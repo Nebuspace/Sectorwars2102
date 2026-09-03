@@ -279,7 +279,8 @@ describe('SectorsManager filter_has_pirate_holding (LEG-4185)', () => {
     expect(screen.queryByText('Clear')).toBeNull();
     expect(screen.queryByText('Unknown')).toBeNull();
 
-    const lastCall = vi.mocked(api.get).mock.calls.at(-1);
+    const getCalls = vi.mocked(api.get).mock.calls;
+    const lastCall = getCalls[getCalls.length - 1];
     expect(lastCall?.[1]).toEqual(
       expect.objectContaining({
         params: expect.objectContaining({ filter_has_pirate_holding: true }),
