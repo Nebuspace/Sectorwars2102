@@ -591,6 +591,30 @@ EMERGENT_ACTIONS: Dict[str, EmergentAction] = {
             "Fringe-controlled port (+25 / transaction)"
         ),
     ),
+    # LEG-4156 — Frontier Coalition: "Establish a colony in a Frontier-zone
+    # sector | +50 | their core mission" (factions-and-teams.md FC table,
+    # line 115). Wired in genesis_service.py after successful planet formation
+    # in a ZoneType.FRONTIER sector.
+    "ESTABLISH_COLONY_FC": EmergentAction(
+        name="ESTABLISH_COLONY_FC",
+        deltas=[FactionDelta(FactionType.INDEPENDENTS, 50)],
+        doc_source=(
+            "factions-and-teams.md FC line 115: Establish a colony in a "
+            "Frontier-zone sector (+50; their core mission)"
+        ),
+    ),
+    # LEG-4157 — Frontier Coalition: "Tow a non-team-mate's drifting/escape-pod
+    # ship across ≥2 sectors | +15 | good-neighbor emergent"
+    # (factions-and-teams.md FC table, line 116). Wired in tow_service.py at
+    # tow completion when ≥2 sectors traversed and tow target is not a teammate.
+    "TOW_RESCUE_FC": EmergentAction(
+        name="TOW_RESCUE_FC",
+        deltas=[FactionDelta(FactionType.INDEPENDENTS, 15)],
+        doc_source=(
+            "factions-and-teams.md FC line 116: Tow a non-team-mate's "
+            "drifting/escape-pod ship across ≥2 sectors (+15)"
+        ),
+    ),
 }
 
 
