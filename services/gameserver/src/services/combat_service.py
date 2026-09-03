@@ -1350,17 +1350,26 @@ class CombatService:
                             "+ police skipped (WO-CMB-SUSPECT-LIFE-1)",
                             attacker.id, defender.id,
                         )
-                    # LEG-4165: +15 Federation rep for killing a Wanted/Suspect
-                    # player. Frozen contract does not require a zone gate.
+                    # LEG-4165 + LEG-4179: +15 Federation rep for killing a
+                    # Wanted/Suspect player in Fed-controlled space only.
                     # Grey-flag-only exemption (no wanted/suspect) must not fire.
                     if defender_is_live_wanted or defender_is_live_suspect:
                         try:
+                            from src.models.zone import ZoneType
                             from src.services.emergent_reputation_service import (
                                 apply_emergent_action,
                             )
-                            apply_emergent_action(
-                                self.db, attacker, "KILL_WANTED_PLAYER_FED",
-                            )
+                            kill_sector = self.db.query(Sector).filter(
+                                Sector.sector_id == defender.current_sector_id
+                            ).first()
+                            if (
+                                kill_sector is not None
+                                and getattr(kill_sector, "zone", None) is not None
+                                and kill_sector.zone.zone_type == ZoneType.FEDERATION
+                            ):
+                                apply_emergent_action(
+                                    self.db, attacker, "KILL_WANTED_PLAYER_FED",
+                                )
                         except Exception:
                             logger.warning(
                                 "KILL_WANTED_PLAYER_FED rep hook failed for "

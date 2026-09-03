@@ -76,7 +76,13 @@ def test_combat_wires_wanted_and_bounty_fed():
     assert "ZoneType.FEDERATION" in text
     assert '"DEFEND_FED_SECTOR"' in text
     assert "drones_remaining > 0" in text
-    assert "sector.zone_type == ZoneType.FEDERATION" in text
+    assert "sector.zone.zone_type == ZoneType.FEDERATION" in text
+    # LEG-4179: Wanted/Suspect award must share the bounty hook's Fed-zone gate.
+    wanted = text.split("LEG-4165 + LEG-4179")[1].split("else:")[0]
+    assert "kill_sector.zone.zone_type == ZoneType.FEDERATION" in wanted
+    assert '"KILL_WANTED_PLAYER_FED"' in wanted
+    assert "getattr(kill_sector, \"zone\", None) is not None" in wanted
+    assert "Sector.zone_type" not in wanted
 
 
 def test_fleet_wires_bounty_fed_on_paid_share():
