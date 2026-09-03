@@ -871,6 +871,28 @@ class GenesisService:
         if planet.formation_complete_at and now >= planet.formation_complete_at:
             # Transition planet to usable state
             self._complete_formation(planet)
+
+            # LEG-4156: Frontier Coalition +50 rep on colony founding in a
+            # Frontier-zone sector (factions-and-teams.md FC table, line 115).
+            # Flush-only, best-effort — exception logged; genesis still commits.
+            try:
+                sector = self.db.query(Sector).filter(Sector.id == planet.sector_uuid).first()
+                if sector is not None and sector.zone is not None:
+                    from src.models.zone import ZoneType
+                    if sector.zone.zone_type == ZoneType.FRONTIER:
+                        from src.services.emergent_reputation_service import apply_emergent_action
+                        player_obj = self.db.query(Player).filter(Player.id == player_id).first()
+                        if player_obj is not None:
+                            apply_emergent_action(
+                                self.db, player_obj, "ESTABLISH_COLONY_FC",
+                                context={"planet_id": str(planet.id), "sector_id": str(sector.id)},
+                            )
+            except Exception:
+                logger.exception(
+                    "ESTABLISH_COLONY_FC rep hook failed for planet %s; genesis still commits",
+                    planet.id,
+                )
+
             self.db.commit()
             self.db.refresh(planet)
 

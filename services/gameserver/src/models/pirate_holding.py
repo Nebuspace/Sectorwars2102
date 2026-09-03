@@ -3,18 +3,18 @@
 Canon: sw2102-docs/SYSTEMS/pirate-ecosystem.md (ADR-0048, population score
 :45-64), pirate-holding-raid.md (ADR-0047, strength-state fields :71-89).
 
-Scope: this is the FOUNDATION slice only. Fields needed by
-``pirate_ecosystem_service``'s population-score / target / cap / cleansed
-math and by the eligible-sector finder. Deliberately OMITTED (deferred to the
-raid/capture WO and to ECO-2's growth tick, which is entirely unbuilt at
-HEAD):
+Scope: this is the FOUNDATION slice plus LEG-4177's lodging-anchor kernel.
+Fields needed by ``pirate_ecosystem_service``'s population-score / target /
+cap / cleansed math and by the eligible-sector finder.
 
-- ``outlaw_base_id`` FK — OutlawBase table ships in WO-BUILD-NPC-LODGING-
-  FOUNDATION; wiring this FK onto PirateHolding remains a follow-on
-  (raid/capture slice).
-- ``interior_sector_ids`` / ``parent_holding_id`` / ``composition`` — spawn-
-  algorithm state per pirate-holding-raid.md; nothing in this WO's scope
-  writes or reads them.
+- ``outlaw_base_id`` FK — nullable UUID to ``outlaw_bases.id`` (ON DELETE
+  SET NULL). Canon DATA_MODELS/pirate-holdings.md lists this as NOT NULL
+  1:1; existing holdings have no base rows to attach, so this slice is
+  nullable with no backfill. Unique on the column (Postgres allows many
+  NULLs) is the 1:1 guard. OutlawBase→NPCBarracks conversion stays out of
+  scope (ADR-0060 G-V2 still has no conversion path).
+- Deliberately OMITTED: ``interior_sector_ids`` / ``parent_holding_id`` /
+  ``composition`` — spawn-algorithm state per pirate-holding-raid.md.
 
 ADR-0060 (Group A pirate-ecosystem/holdings hardening, G-F2/G-V1/R-F1) adds
 the raid/capture kernel's columns — ``combat_lock_held_by``,
@@ -120,6 +120,13 @@ class PirateHolding(Base):
             name="pirate_holdings_stronghold_requires_formation",
         ),
         Index("ix_pirate_holdings_region_owner", "region_id", "owner_player_id"),
+        # LEG-4177: 1:1 lodging anchor without NOT NULL. Multiple NULLs are
+        # allowed; a non-NULL outlaw_base_id may appear on at most one holding.
+        Index(
+            "uq_pirate_holdings_outlaw_base_id",
+            "outlaw_base_id",
+            unique=True,
+        ),
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -132,6 +139,13 @@ class PirateHolding(Base):
     )
     # GLOBAL sectors.sector_id — see module docstring divergence note.
     sector_id = Column(Integer, nullable=False, index=True)
+
+    # LEG-4177 lodging kernel. Nullable — no backfill. Unique index above.
+    outlaw_base_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("outlaw_bases.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
     tier = Column(Enum(PirateHoldingTier, name="pirate_holding_tier"), nullable=False)
 
