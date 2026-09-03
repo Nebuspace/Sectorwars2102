@@ -57,6 +57,33 @@ function normalizeControllingFaction(value: unknown): string | null {
   return s;
 }
 
+type PirateHoldingRow = {
+  id: string;
+  tier?: string | null;
+  owner_player_id?: string | null;
+  combat_lock_held_by?: string | null;
+  captured_at?: string | null;
+};
+
+function asPirateHoldings(data: unknown): PirateHoldingRow[] {
+  const holdings = (data as { holdings?: unknown } | null)?.holdings;
+  if (!Array.isArray(holdings)) return [];
+  return holdings.filter(
+    (row): row is PirateHoldingRow =>
+      row !== null &&
+      typeof row === 'object' &&
+      typeof (row as PirateHoldingRow).id === 'string',
+  );
+}
+
+function formatHoldingOwner(holding: PirateHoldingRow): string {
+  const owner = holding.owner_player_id;
+  if (owner === null || owner === undefined || String(owner).trim() === '') {
+    return 'pirate-controlled';
+  }
+  return String(owner);
+}
+
 interface SectorDetailProps {
   sector: any;
   onBack: () => void;
@@ -70,6 +97,7 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
   const [portData, setPortData] = useState<any>(null);
   const [planetData, setPlanetData] = useState<any>(null);
   const [shipsInSector, setShipsInSector] = useState<any[]>([]);
+  const [pirateHoldings, setPirateHoldings] = useState<PirateHoldingRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [editingField, setEditingField] = useState<string | null>(null);
@@ -125,6 +153,17 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
       } catch (shipsError) {
         noteLoadFailure(shipsError, 'Failed to load ships data');
         setShipsInSector([]);
+      }
+
+      // Pirate holdings (LEG-4178) — always inspect; 404 → honest empty.
+      try {
+        const holdingsResponse = await api.get(
+          `/api/v1/admin/sectors/${sector.sector_id}/pirate-holdings`,
+        );
+        setPirateHoldings(asPirateHoldings(holdingsResponse.data));
+      } catch (holdingsError) {
+        noteLoadFailure(holdingsError, 'Failed to load pirate holdings');
+        setPirateHoldings([]);
       }
 
     } catch (error) {
@@ -527,6 +566,39 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
               </div>
             </div>
           )}
+
+            <div className="ships-panel" data-testid="pirate-holdings-panel">
+              <h3>Pirate holdings</h3>
+              {pirateHoldings.length === 0 ? (
+                <p data-testid="pirate-holdings-empty">No pirate holdings in this sector.</p>
+              ) : (
+                <div className="ships-list">
+                  {pirateHoldings.map((holding) => (
+                    <div
+                      key={holding.id}
+                      className="ship-item"
+                      data-testid={`pirate-holding-row-${holding.id}`}
+                    >
+                      <span>id: {holding.id}</span>
+                      <span>tier: {holding.tier ?? '—'}</span>
+                      <span>owner: {formatHoldingOwner(holding)}</span>
+                      <span>
+                        combat lock:{' '}
+                        {holding.combat_lock_held_by && String(holding.combat_lock_held_by).trim() !== ''
+                          ? holding.combat_lock_held_by
+                          : 'none'}
+                      </span>
+                      <span>
+                        captured_at:{' '}
+                        {holding.captured_at && String(holding.captured_at).trim() !== ''
+                          ? holding.captured_at
+                          : '—'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         )}
 
