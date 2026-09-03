@@ -58,7 +58,7 @@ because a border scan gets DENSER as the destination gets more lawful, where a
 venue sale gets noticed in laxer space. Same base, same weights, same clamps: one
 detection model to balance, not two. The roll only fires when
 ``dest_security > origin_security`` and is rate-limited per destination sector by
-``TRANSIT_SCAN_COOLDOWN_SECONDS`` ([OPEN-9]).
+``TRANSIT_SCAN_COOLDOWN_SECONDS`` (ratified-900s).
 
 CONSEQUENCES (brief §1.4, [OPEN-6]/[OPEN-7]): fine = cargo value ×
 {LIGHT 2, MODERATE 3, SEVERE 4}; heat = ``is_suspect`` for LIGHT/MODERATE,
@@ -179,13 +179,11 @@ SEVERITY_ORDER: Dict[IllegalSeverity, int] = {
 # model — see _transit_detection_probability. Every weight above is reused
 # VERBATIM, so this hook introduces no new balance numbers.
 #
-# [OPEN-9] — THE ONE UNCONFIRMED NUMBER HERE. The brief's default is "one scan
-# per sector per traversal (no re-roll on immediate re-entry)" and then says
-# "Confirm window." A per-(sector, timestamp) anchor is how that is expressed;
-# this is the window's provisional length. It only has to outlast a there-and-
-# back bounce, so it is deliberately short. Escalated to canon, not silently
-# adopted: change here, one place, when [OPEN-9] is ruled.
-TRANSIT_SCAN_COOLDOWN_SECONDS = 900  # 15 min — PROVISIONAL, awaiting [OPEN-9]
+# LEG-4150: TRANSIT_SCAN_COOLDOWN_SECONDS ratified at 900s (15 min) by Coordinator
+# autonomous ruling 2026-09-03 per ADR-0093 pattern. One scan per (player,
+# destination sector) per traversal — sized to outlast a there-and-back bounce.
+# If live data requires adjustment a balance WO can revise.
+TRANSIT_SCAN_COOLDOWN_SECONDS = 900  # 15 min — ratified LEG-4150
 
 
 def scan_in_transit_best_effort(
@@ -869,7 +867,7 @@ class ContrabandService:
            INTO tighter space, never for leaving it. Equal or looser security is
            not a scan event (a NULL security_level reads as the mid default 5 on
            both sides, so an unseeded sector pair is never a scan);
-        4. the [OPEN-9] per-sector cooldown has expired for THIS destination —
+        4. the ratified-900s per-sector cooldown has expired for THIS destination —
            read straight off the passed-in ``player``, no query and no lock.
 
         **WHY THE GATES MUST ALL PRECEDE THE LOCK (regression, 2026-08-03).**
@@ -920,7 +918,7 @@ class ContrabandService:
         if dest_security <= origin_security:
             return _skip("not_higher_security")
 
-        # (4) [OPEN-9] cooldown — "one scan per sector per traversal (no re-roll
+        # (4) ratified-900s cooldown — "one scan per sector per traversal (no re-roll
         # on immediate re-entry)". Keyed on the destination, so bouncing back and
         # forth across the same border cannot farm rolls, while a genuinely new
         # crossing always scans. Read off the already-loaded player: no query, and
@@ -1017,7 +1015,7 @@ class ContrabandService:
         self, player: Player, destination_sector_id: int, now: datetime,
     ) -> bool:
         """True iff this player already burned a transit scan on THIS sector
-        inside the [OPEN-9] window. NULL anchor (every pre-migration row) reads as
+        inside the ratified-900s window. NULL anchor (every pre-migration row) reads as
         "never scanned", which grants no retroactive immunity."""
         last_at = player.last_contraband_scan_at
         last_sector = player.last_contraband_scan_sector_id

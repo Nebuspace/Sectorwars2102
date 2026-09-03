@@ -519,11 +519,11 @@ async def set_active_ship(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"{ship.name} is harmonizing into a warp gate focus and cannot be boarded",
         )
-    if locked_player.is_landed:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Lift off before switching ships",
-        )
+    # LEG-4149: same-sector owned-ship switch (set-active) is 0-turn per canon
+    # (ships.md §Ownership and piloting). is_landed rejection removed — the
+    # existing sector-match check above already ensures both ships are at the
+    # same location, so docked switching is safe. Canon says switching while
+    # docked should cost 0 turns and require no lift-off.
 
     old_ship = None
     if locked_player.current_ship_id is not None and locked_player.current_ship_id != ship.id:
