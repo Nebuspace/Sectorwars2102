@@ -42,7 +42,7 @@ from src.core.database import get_db
 from src.models.contract import Contract, ContractInsuranceCoverageTier, ContractStatus, ContractType
 from src.models.player import Player
 from src.services import contract_service
-from src.services.contract_service import ContractConflictError, ContractError, ContractNotFoundError
+from src.services.contract_service import ContractConflictError, ContractError, ContractForbiddenError, ContractNotFoundError
 
 router = APIRouter(prefix="/contracts", tags=["contracts"])
 
@@ -183,6 +183,8 @@ def _raise_for(exc: ContractError) -> None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
     if isinstance(exc, ContractConflictError):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    if isinstance(exc, ContractForbiddenError):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 

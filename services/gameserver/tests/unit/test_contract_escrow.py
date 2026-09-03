@@ -132,15 +132,23 @@ class _FakeSession:
     def __init__(
         self, *, players: Optional[List[Any]] = None, stations: Optional[List[Any]] = None,
         contracts: Optional[List[Any]] = None, resources: Optional[List[Any]] = None,
+        direct_relationships: Optional[List[Any]] = None,
+        posting_blocks: Optional[List[Any]] = None,
     ) -> None:
         self.players = players or []
         self.stations = stations or []
         self.contracts = contracts or []
         self.resources = resources or []
+        self.direct_relationships = direct_relationships or []
+        self.posting_blocks = posting_blocks or []
         self.added: List[Any] = []
         self.flush_calls = 0
 
     def query(self, *entities: Any) -> _FakeQuery:
+        from src.models.player_direct_relationship import (
+            ContractPostingBlock,
+            PlayerDirectRelationship,
+        )
         head = entities[0]
         if head is Player:
             return _FakeQuery(self.players)
@@ -150,6 +158,10 @@ class _FakeSession:
             return _FakeQuery(self.resources)
         if head is Station or head is Station.id:
             return _FakeQuery(self.stations)
+        if head is PlayerDirectRelationship:
+            return _FakeQuery(self.direct_relationships)
+        if head is ContractPostingBlock:
+            return _FakeQuery(self.posting_blocks)
         raise AssertionError(f"unexpected query for {entities!r}")
 
     def add(self, obj: Any) -> None:
