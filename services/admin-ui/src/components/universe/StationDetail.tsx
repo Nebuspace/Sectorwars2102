@@ -54,6 +54,7 @@ type PirateHoldingRow = {
   id: string;
   tier?: string | null;
   owner_player_id?: string | null;
+  outlaw_base_id?: string | null;
 };
 
 function asIntegerSectorId(value: unknown): number | null {
@@ -92,6 +93,16 @@ function formatHoldingOwner(holding: PirateHoldingRow): string {
 function formatHoldingTier(tier: unknown): string {
   if (tier === null || tier === undefined) return '—';
   const s = String(tier).trim();
+  return s === '' ? '—' : s;
+}
+
+/** Honest inspect placeholder when a GET key is omitted, null, or blank. Never invent. */
+function formatHoldingInspectValue(value: unknown): string {
+  if (value === null || value === undefined) return '—';
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? String(value) : '—';
+  }
+  const s = String(value).trim();
   return s === '' ? '—' : s;
 }
 
@@ -585,6 +596,9 @@ const PortDetail: React.FC<PortDetailProps> = ({ port, onBack, onUpdate }) => {
                   <span>id: {holding.id}</span>
                   <span>tier: {formatHoldingTier(holding.tier)}</span>
                   <span>owner: {formatHoldingOwner(holding)}</span>
+                  <span>
+                    outlaw_base_id: {formatHoldingInspectValue(holding.outlaw_base_id)}
+                  </span>
                 </div>
               ))}
             </div>
