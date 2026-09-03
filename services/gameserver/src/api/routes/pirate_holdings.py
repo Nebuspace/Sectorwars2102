@@ -192,5 +192,6 @@ async def capture_pirate_holding_raid(
     return {
         "holding_id": str(holding.id),
         "captured_at": holding.captured_at.isoformat() if holding.captured_at else None,
+        "owner_player_id": str(holding.owner_player_id) if holding.owner_player_id else None,
         "owner_team_id": str(holding.owner_team_id) if holding.owner_team_id else None,
     }
