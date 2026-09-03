@@ -413,9 +413,46 @@ class TowService:
         if not ts or not ts.get("towed_ship_id"):
             raise TowError("That ship is not towing anything.")
         towed_id = ts.get("towed_ship_id")
+        hops_towed = ts.get("hops_towed", 0)
         hauler.tow_state = None
         flag_modified(hauler, "tow_state")
-        logger.info("Tow DETACH: hauler %s released %s (0 turns)", hauler.id, towed_id)
+        logger.info("Tow DETACH: hauler %s released %s (0 turns, %d hops)", hauler.id, towed_id, hops_towed)
+
+        # LEG-4157: Frontier Coalition +15 rep for towing a non-teammate's ship ≥2 sectors
+        # (factions-and-teams.md FC table, line 116). Best-effort, flush-only.
+        if hops_towed >= 2 and towed_id and hauler.owner_id:
+            try:
+                towed_ship = self.db.query(Ship).filter(
+                    Ship.id == uuid.UUID(towed_id)
+                ).first()
+                if towed_ship is not None:
+                    hauler_pilot = self.db.query(Player).filter(
+                        Player.id == hauler.owner_id
+                    ).first()
+                    if hauler_pilot is not None and towed_ship.owner_id is not None:
+                        # Check non-teammate constraint
+                        hauler_team = getattr(hauler_pilot, "team_id", None)
+                        towed_owner = self.db.query(Player).filter(
+                            Player.id == towed_ship.owner_id
+                        ).first()
+                        towed_team = getattr(towed_owner, "team_id", None) if towed_owner else None
+                        is_teammate = (
+                            hauler_team is not None
+                            and towed_team is not None
+                            and hauler_team == towed_team
+                        )
+                        if not is_teammate:
+                            from src.services.emergent_reputation_service import apply_emergent_action
+                            apply_emergent_action(
+                                self.db, hauler_pilot, "TOW_RESCUE_FC",
+                                context={"towed_ship_id": towed_id, "hops": hops_towed},
+                            )
+            except Exception:
+                logger.exception(
+                    "TOW_RESCUE_FC rep hook failed for hauler %s; detach still proceeds",
+                    hauler.id,
+                )
+
         return {"status": "DETACHED", "hauler_id": str(hauler.id), "towed_ship_id": towed_id}
 
     # ------------------------------------------------------------------ #
@@ -436,6 +473,11 @@ class TowService:
         towed = self.db.query(Ship).filter(Ship.id == uuid.UUID(towed_id)).first()
         if towed is None or towed.is_destroyed:
             return False
+
+        # LEG-4157: track hop count for the ≥2-sector FC rep trigger at detach.
+        ts["hops_towed"] = ts.get("hops_towed", 0) + 1
+        flag_modified(hauler, "tow_state")
+
         towed.sector_id = destination_sector_id
         # The towed pilot's location follows the hauler (0 turns) only when this
         # towed hull is the pilot's ACTIVE ship.
