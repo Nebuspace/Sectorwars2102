@@ -19,6 +19,8 @@ interface Sector {
   is_discovered: boolean;
   has_port: boolean;
   has_planet: boolean;
+  /** Present only when GS list JSON includes it; omit/false → no Holding badge. */
+  has_pirate_holding?: boolean;
   has_warp_tunnel: boolean;
   player_count: number;
   controlling_faction: string | null;
@@ -455,6 +457,9 @@ const SectorsManager: React.FC = () => {
                                   <div className="flex gap-2 flex-wrap">
                                     {sector.has_port && <span className="badge badge-info" title="Trading Port">Port</span>}
                                     {sector.has_planet && <span className="badge badge-success" title="Habitable Planet">Planet</span>}
+                                    {sector.has_pirate_holding === true && (
+                                      <span className="badge badge-warning" title="Pirate Holding">Holding</span>
+                                    )}
                                     {!sector.has_warp_tunnel && <span className="badge badge-warning" title="No Warp Tunnel">No Warp</span>}
                                     {sector.is_discovered && <span className="badge badge-success" title="Sector Mapped">Mapped</span>}
                                   </div>
