@@ -63,6 +63,10 @@ type PirateHoldingRow = {
   owner_player_id?: string | null;
   combat_lock_held_by?: string | null;
   captured_at?: string | null;
+  current_strength?: number | string | null;
+  owner_team_id?: string | number | null;
+  region_id?: number | string | null;
+  sector_id?: number | string | null;
 };
 
 function asPirateHoldings(data: unknown): PirateHoldingRow[] {
@@ -82,6 +86,16 @@ function formatHoldingOwner(holding: PirateHoldingRow): string {
     return 'pirate-controlled';
   }
   return String(owner);
+}
+
+/** Honest inspect placeholder when a GET key is omitted, null, or blank. Never invent. */
+function formatHoldingInspectValue(value: unknown): string {
+  if (value === null || value === undefined) return '—';
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? String(value) : '—';
+  }
+  const s = String(value).trim();
+  return s === '' ? '—' : s;
 }
 
 interface SectorDetailProps {
@@ -594,6 +608,14 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
                           ? holding.captured_at
                           : '—'}
                       </span>
+                      <span>
+                        current_strength: {formatHoldingInspectValue(holding.current_strength)}
+                      </span>
+                      <span>
+                        owner_team_id: {formatHoldingInspectValue(holding.owner_team_id)}
+                      </span>
+                      <span>region_id: {formatHoldingInspectValue(holding.region_id)}</span>
+                      <span>sector_id: {formatHoldingInspectValue(holding.sector_id)}</span>
                     </div>
                   ))}
                 </div>

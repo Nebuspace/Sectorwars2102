@@ -56,6 +56,9 @@ function mockSuccessfulDetailLoads() {
     if (url.endsWith('/port')) {
       return { data: { has_port: false, port: null } };
     }
+    if (url.endsWith('/pirate-holdings')) {
+      return { data: { holdings: [] } };
+    }
     throw new Error(`unexpected GET ${url}`);
   });
 }
@@ -134,6 +137,9 @@ describe('SectorEditModal typeErrorHonesty densify (LEG-3702)', () => {
       if (url.endsWith('/port')) {
         return { data: { has_port: false, port: null } };
       }
+      if (url.endsWith('/pirate-holdings')) {
+        return { data: { holdings: [] } };
+      }
       throw new Error(`unexpected GET ${url}`);
     });
 
@@ -165,6 +171,9 @@ describe('SectorEditModal typeErrorHonesty densify (LEG-3702)', () => {
       }
       if (url.endsWith('/port')) {
         throw new TypeError('Failed to fetch');
+      }
+      if (url.endsWith('/pirate-holdings')) {
+        return { data: { holdings: [] } };
       }
       throw new Error(`unexpected GET ${url}`);
     });
