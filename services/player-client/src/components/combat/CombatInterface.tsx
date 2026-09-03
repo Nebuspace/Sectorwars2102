@@ -95,6 +95,20 @@ interface CombatTarget {
   type: 'ship' | 'planet' | 'port';
   isNpc?: boolean;
   shipType?: string;
+  /** Defender ship turn-cost from players_present (LEG-391; default handled client-side). */
+  attack_turn_cost?: number | null;
+  /** Optional combat snapshot when target is another ship (hull/shields for HUD bars). */
+  combat?: {
+    hull?: number | null;
+    max_hull?: number | null;
+    shields?: number | null;
+    max_shields?: number | null;
+  } | null;
+  /** Optional cargo snapshot when target is another ship (used for cargo HUD bar). */
+  cargo?: {
+    used?: number | null;
+    capacity?: number | null;
+  } | null;
 }
 
 interface CombatInterfaceProps {
@@ -127,6 +141,10 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
   const [combatId, setCombatId] = useState<string | null>(null);
   const [combatStatus, setCombatStatus] = useState<CombatStatus | null>(null);
   const [isEngaging, setIsEngaging] = useState(false);
+  const [roundAction, setRoundAction] = useState<'attack' | 'defend' | 'evade' | 'flee'>(
+    'attack',
+  );
+  const [retreatBusy, setRetreatBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Target selected from the in-sector target list (when no target prop is given,
@@ -137,6 +155,47 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
 
   // UI state
   const [showCombatLog, setShowCombatLog] = useState(true);
+
+  // Helpers for HUD bars.
+  const numOrNull = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  const pctOrNull = (current: number | null, max: number | null): number | null => {
+    if (current == null || max == null || max <= 0) return null;
+    return Math.max(0, Math.min(100, (current / max) * 100));
+  };
+  const cargoUsedAndCap = (cargo: any): { used: number | null; capacity: number | null } => {
+    if (!cargo || typeof cargo !== 'object') return { used: null, capacity: null };
+    const used =
+      typeof cargo.used === 'number'
+        ? cargo.used
+        : typeof cargo.used === 'string'
+          ? Number(cargo.used)
+          : null;
+    const capacity =
+      typeof cargo.capacity === 'number'
+        ? cargo.capacity
+        : typeof cargo.capacity === 'string'
+          ? Number(cargo.capacity)
+          : null;
+    return {
+      used: typeof used === 'number' && Number.isFinite(used) ? used : null,
+      capacity: typeof capacity === 'number' && Number.isFinite(capacity) ? capacity : null,
+    };
+  };
+
+  const playerCombat = currentShip?.combat ?? null;
+  const oppCombat = combatTarget?.combat ?? null;
+
+  const playerCargo = currentShip?.cargo ?? null;
+  const playerCargoCap =
+    typeof currentShip?.cargo_capacity === 'number' ? currentShip?.cargo_capacity : null;
+
+  const playerCargoUsed = cargoUsedAndCap(playerCargo).used;
+  const playerCargoCapacity = playerCargoCap ?? cargoUsedAndCap(playerCargo).capacity;
+
+  const oppCargoUsed = cargoUsedAndCap(combatTarget?.cargo).used;
+  const oppCargoCapacity = cargoUsedAndCap(combatTarget?.cargo).capacity;
+
+  const turnCost = typeof combatTarget?.attack_turn_cost === 'number' ? combatTarget.attack_turn_cost : 2;
 
   // Handle combat end
   const handleCombatEnd = useCallback((status: CombatStatus) => {
@@ -280,6 +339,14 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
     .filter((p: any) => p && p.player_id && p.player_id !== playerState?.id && p.ship_id)
     .map((p: any) => {
       const standing = npcStanding(p);
+      const attackTurnCost =
+        typeof p.attack_turn_cost === 'number' && Number.isFinite(p.attack_turn_cost)
+          ? p.attack_turn_cost
+          : null;
+      const combatSnapshot =
+        p.combat && typeof p.combat === 'object' ? (p.combat as CombatTarget['combat']) : null;
+      const cargoSnapshot =
+        p.cargo && typeof p.cargo === 'object' ? (p.cargo as CombatTarget['cargo']) : null;
       const hull = p.ship_type && p.ship_type !== 'None'
         ? String(p.ship_type).replace(/_/g, ' ').toLowerCase()
         : 'ship';
@@ -292,7 +359,10 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
         isNpc: !!p.is_npc,
         shipType: p.ship_type && p.ship_type !== 'None' ? String(p.ship_type) : undefined,
         subtype: standing ? `${hull} · ${standing.label}` : hull,
-        lawful: standing?.lawful
+        lawful: standing?.lawful,
+        attack_turn_cost: attackTurnCost,
+        combat: combatSnapshot,
+        cargo: cargoSnapshot,
       };
     });
 
@@ -406,6 +476,9 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
                     type: t.type,
                     isNpc: t.isNpc,
                     shipType: t.shipType,
+                    attack_turn_cost: t.attack_turn_cost ?? null,
+                    combat: t.combat ?? null,
+                    cargo: t.cargo ?? null,
                   })}
                   disabled={isEngaging}
                 >
@@ -481,11 +554,77 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
           <div className="ship-type">{currentShip?.type || 'Unknown'}</div>
 
           {currentShip && (
-            <div className="combat-stats">
-              <div>Attack: {currentShip.combat?.attack_rating || 0}</div>
-              <div>Defense: {currentShip.combat?.defense_rating || 0}</div>
-              <div>Drones: {playerState?.defense_drones ?? 0}</div>
-            </div>
+            <>
+              {combatId && (
+                <>
+                  <div
+                    className="health-bar"
+                    data-testid="combat-hull-bar-player"
+                    aria-label="Player hull"
+                  >
+                    <div
+                      className="health-fill"
+                      style={{
+                        width: `${pctOrNull(numOrNull(playerCombat?.hull), numOrNull(playerCombat?.max_hull)) ?? 0}%`,
+                      }}
+                    />
+                    <div className="health-text">
+                      {(() => {
+                        const h = numOrNull(playerCombat?.hull);
+                        const mh = numOrNull(playerCombat?.max_hull);
+                        return h != null && mh != null ? `${h} / ${mh}` : '—';
+                      })()}
+                    </div>
+                  </div>
+                  <div
+                    className="health-bar"
+                    data-testid="combat-shield-bar-player"
+                    aria-label="Player shields"
+                  >
+                    <div
+                      className="health-fill"
+                      style={{
+                        width: `${pctOrNull(numOrNull(playerCombat?.shields), numOrNull(playerCombat?.max_shields)) ?? 0}%`,
+                        background: 'linear-gradient(90deg, #00ccff, #0077ff)',
+                      }}
+                    />
+                    <div className="health-text">
+                      {(() => {
+                        const s = numOrNull(playerCombat?.shields);
+                        const ms = numOrNull(playerCombat?.max_shields);
+                        return s != null && ms != null ? `${s} / ${ms}` : '—';
+                      })()}
+                    </div>
+                  </div>
+                  <div
+                    className="health-bar"
+                    data-testid="combat-cargo-bar-player"
+                    aria-label="Player cargo"
+                  >
+                    <div
+                      className="health-fill"
+                      style={{
+                        width: `${pctOrNull(playerCargoUsed, playerCargoCapacity) ?? 0}%`,
+                        background: 'linear-gradient(90deg, #a78bfa, #6d28d9)',
+                      }}
+                    />
+                    <div className="health-text">
+                      {(() => {
+                        return playerCargoUsed != null && playerCargoCapacity != null
+                          ? `${playerCargoUsed} / ${playerCargoCapacity}`
+                          : '—';
+                      })()}
+                    </div>
+                  </div>
+                </>
+              )}
+
+              <div className="combat-stats">
+                <div>Attack: {currentShip.combat?.attack_rating || 0}</div>
+                <div>Defense: {currentShip.combat?.defense_rating || 0}</div>
+                <div>Drones: {playerState?.defense_drones ?? 0}</div>
+              </div>
+            </>
           )}
         </div>
 
@@ -497,10 +636,14 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
                 Prepare for combat against {combatTarget.name}
                 {combatTarget.isNpc && <span className="npc-badge"> NPC</span>}
               </p>
+              <div className="turn-cost-preview" role="status" data-testid="combat-turn-cost-preview">
+                Costs {turnCost} turn{turnCost === 1 ? '' : 's'}
+              </div>
               <button
                 className="cockpit-btn danger engage-btn"
                 onClick={() => initiateCombat(combatTarget)}
                 disabled={isEngaging}
+                title={`Costs ${turnCost} turn${turnCost === 1 ? '' : 's'}`}
               >
                 {isEngaging ? 'Engaging...' : 'ENGAGE COMBAT'}
               </button>
@@ -550,6 +693,60 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
                     )}
                   </div>
                 )}
+
+                {/* Round-action controls (per-fight round HUD). */}
+                <div className="combat-actions" data-testid="combat-round-actions" aria-label="Round actions">
+                  {(
+                    [
+                      { key: 'attack' as const, label: 'Attack' },
+                      { key: 'defend' as const, label: 'Defend' },
+                      { key: 'evade' as const, label: 'Evade' },
+                    ] as const
+                  ).map((a) => (
+                    <button
+                      key={a.key}
+                      type="button"
+                      className={`action-btn ${roundAction === a.key ? 'active' : ''}`}
+                      onClick={() => {
+                        setRoundAction(a.key);
+                        setError(null);
+                      }}
+                      disabled={retreatBusy}
+                      aria-pressed={roundAction === a.key}
+                      title="Tactical round action (UI intent only)"
+                    >
+                      {a.label}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    className={`action-btn retreat ${roundAction === 'flee' ? 'active' : ''}`}
+                    data-testid="combat-round-action-flee"
+                    onClick={async () => {
+                      if (!combatId || retreatBusy) return;
+                      setRetreatBusy(true);
+                      setError(null);
+                      setRoundAction('flee');
+                      try {
+                        const result = await gameAPI.combat.retreat(combatId);
+                        if (result?.success) {
+                          await refreshPlayerState();
+                        } else {
+                          setError(result?.message || 'Retreat failed.');
+                        }
+                      } catch (e: unknown) {
+                        setError(formatCombatInitiateError(e));
+                      } finally {
+                        setRetreatBusy(false);
+                      }
+                    }}
+                    disabled={retreatBusy}
+                    aria-pressed={roundAction === 'flee'}
+                    title="Flee (calls combatAPI.retreat)"
+                  >
+                    {retreatBusy ? 'Fleeing…' : 'Flee'}
+                  </button>
+                </div>
               </div>
             </div>
           )}
@@ -562,6 +759,70 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
             {combatTarget.isNpc && <span className="npc-badge"> NPC</span>}
           </h3>
           <div className="ship-type">{combatTarget.type}</div>
+
+          {combatId && (
+            <>
+              <div
+                className="health-bar"
+                data-testid="combat-hull-bar-opponent"
+                aria-label="Opponent hull"
+              >
+                <div
+                  className="health-fill enemy"
+                  style={{
+                    width: `${pctOrNull(numOrNull(oppCombat?.hull), numOrNull(oppCombat?.max_hull)) ?? 0}%`,
+                  }}
+                />
+                <div className="health-text">
+                  {(() => {
+                    const h = numOrNull(oppCombat?.hull);
+                    const mh = numOrNull(oppCombat?.max_hull);
+                    return h != null && mh != null ? `${h} / ${mh}` : '—';
+                  })()}
+                </div>
+              </div>
+              <div
+                className="health-bar"
+                data-testid="combat-shield-bar-opponent"
+                aria-label="Opponent shields"
+              >
+                <div
+                  className="health-fill enemy"
+                  style={{
+                    width: `${pctOrNull(numOrNull(oppCombat?.shields), numOrNull(oppCombat?.max_shields)) ?? 0}%`,
+                    background: 'linear-gradient(90deg, #ff0000, #cc0000)',
+                  }}
+                />
+                <div className="health-text">
+                  {(() => {
+                    const s = numOrNull(oppCombat?.shields);
+                    const ms = numOrNull(oppCombat?.max_shields);
+                    return s != null && ms != null ? `${s} / ${ms}` : '—';
+                  })()}
+                </div>
+              </div>
+              <div
+                className="health-bar"
+                data-testid="combat-cargo-bar-opponent"
+                aria-label="Opponent cargo"
+              >
+                <div
+                  className="health-fill enemy"
+                  style={{
+                    width: `${pctOrNull(oppCargoUsed, oppCargoCapacity) ?? 0}%`,
+                    background: 'linear-gradient(90deg, #6d28d9, #2e1065)',
+                  }}
+                />
+                <div className="health-text">
+                  {(() => {
+                    return oppCargoUsed != null && oppCargoCapacity != null
+                      ? `${oppCargoUsed} / ${oppCargoCapacity}`
+                      : '—';
+                  })()}
+                </div>
+              </div>
+            </>
+          )}
 
           <div className="combat-stats">
             <div>Type: {combatTarget.type}</div>
