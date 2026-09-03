@@ -51,7 +51,15 @@ const sampleTunnel = {
 };
 
 function mockSuccessfulLoad() {
-  vi.mocked(api.get).mockResolvedValue({ data: { warp_tunnels: [sampleTunnel] } });
+  vi.mocked(api.get).mockImplementation(async (url: string) => {
+    if (String(url).includes('/warp-tunnels')) {
+      return { data: { warp_tunnels: [sampleTunnel] } };
+    }
+    if (String(url).includes('/sectors')) {
+      return { data: { sectors: [], total: 0 } };
+    }
+    return { data: {} };
+  });
 }
 
 describe('WarpTunnelsManager scope errors (LEG-966)', () => {
@@ -265,5 +273,100 @@ describe('WarpTunnelsManager modal save errors (LEG-2761)', () => {
       );
     });
     expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/rate limit/i));
+  });
+});
+
+describe('WarpTunnelsManager Holding badge from sector has_pirate_holding (LEG-4201)', () => {
+  const mockListLoad = (sectors: Array<Record<string, unknown>>) => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/warp-tunnels')) {
+        return { data: { warp_tunnels: [sampleTunnel] } };
+      }
+      if (String(url).includes('/sectors')) {
+        return { data: { sectors, total: sectors.length } };
+      }
+      return { data: {} };
+    });
+  };
+
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    toastError.mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('shows a Holding badge when the origin sector has has_pirate_holding true', async () => {
+    mockListLoad([
+      { id: 'sec-origin', sector_id: 1, name: 'Origin', has_pirate_holding: true },
+      { id: 'sec-dest', sector_id: 2, name: 'Dest', has_pirate_holding: false },
+    ]);
+
+    render(<WarpTunnelsManager />);
+
+    expect(await screen.findByText('Test Tunnel')).toBeTruthy();
+    expect(screen.getByTitle('Pirate Holding')).toHaveTextContent('Holding');
+    const urls = vi.mocked(api.get).mock.calls.map((c) => String(c[0]));
+    expect(urls.some((u) => u.includes('pirate-holdings'))).toBe(false);
+  });
+
+  it('shows a Holding badge when the destination sector has has_pirate_holding true', async () => {
+    mockListLoad([
+      { id: 'sec-origin', sector_id: 1, name: 'Origin', has_pirate_holding: false },
+      { id: 'sec-dest', sector_id: 2, name: 'Dest', has_pirate_holding: true },
+    ]);
+
+    render(<WarpTunnelsManager />);
+
+    expect(await screen.findByText('Test Tunnel')).toBeTruthy();
+    expect(screen.getByTitle('Pirate Holding')).toHaveTextContent('Holding');
+    const urls = vi.mocked(api.get).mock.calls.map((c) => String(c[0]));
+    expect(urls.some((u) => u.includes('pirate-holdings'))).toBe(false);
+  });
+
+  it('does not show a Holding badge when origin and destination flags are false', async () => {
+    mockListLoad([
+      { id: 'sec-origin', sector_id: 1, name: 'Origin', has_pirate_holding: false },
+      { id: 'sec-dest', sector_id: 2, name: 'Dest', has_pirate_holding: false },
+    ]);
+
+    render(<WarpTunnelsManager />);
+
+    expect(await screen.findByText('Test Tunnel')).toBeTruthy();
+    expect(screen.queryByTitle('Pirate Holding')).toBeNull();
+    expect(screen.queryByText('Holding')).toBeNull();
+  });
+
+  it('does not show a Holding badge when has_pirate_holding is omitted on both ends', async () => {
+    mockListLoad([
+      { id: 'sec-origin', sector_id: 1, name: 'Origin' },
+      { id: 'sec-dest', sector_id: 2, name: 'Dest' },
+    ]);
+
+    render(<WarpTunnelsManager />);
+
+    expect(await screen.findByText('Test Tunnel')).toBeTruthy();
+    expect(screen.queryByTitle('Pirate Holding')).toBeNull();
+    expect(screen.queryByText('Holding')).toBeNull();
+  });
+
+  it('still lists tunnels when the sectors fetch fails (no invented holdings)', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/warp-tunnels')) {
+        return { data: { warp_tunnels: [sampleTunnel] } };
+      }
+      if (String(url).includes('/sectors')) {
+        throw axiosError(500);
+      }
+      return { data: {} };
+    });
+
+    render(<WarpTunnelsManager />);
+
+    expect(await screen.findByText('Test Tunnel')).toBeTruthy();
+    expect(screen.queryByTitle('Pirate Holding')).toBeNull();
   });
 });

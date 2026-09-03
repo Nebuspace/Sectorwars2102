@@ -35,6 +35,8 @@ const WarpTunnelsManager: React.FC = () => {
   const [filterStatus, setFilterStatus] = useState('all');
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage] = useState(20);
+  /** Sector ids with has_pirate_holding === true (from one sectors list fetch — no N+1). */
+  const [holdingSectorIds, setHoldingSectorIds] = useState<Set<string>>(() => new Set());
 
   // Modal states
   const [selectedTunnel, setSelectedTunnel] = useState<WarpTunnel | null>(null);
@@ -45,9 +47,29 @@ const WarpTunnelsManager: React.FC = () => {
   const fetchWarpTunnels = async () => {
     try {
       setLoading(true);
-      const response = await api.get('/api/v1/admin/warp-tunnels');
-      setWarpTunnels(response.data.warp_tunnels || []);
+      const [tunnelsResponse, sectorsResult] = await Promise.all([
+        api.get('/api/v1/admin/warp-tunnels'),
+        api
+          .get('/api/v1/admin/sectors', { params: { limit: 1000 } })
+          .then((res) => res)
+          .catch(() => null),
+      ]);
+      setWarpTunnels(tunnelsResponse.data.warp_tunnels || []);
       setError(null);
+
+      if (sectorsResult) {
+        const sectors: Array<{ sector_id?: number | string; has_pirate_holding?: boolean }> =
+          sectorsResult.data.sectors || [];
+        const next = new Set<string>();
+        for (const sector of sectors) {
+          if (sector.has_pirate_holding === true && sector.sector_id != null) {
+            next.add(String(sector.sector_id));
+          }
+        }
+        setHoldingSectorIds(next);
+      } else {
+        setHoldingSectorIds(new Set());
+      }
     } catch (err: unknown) {
       setError(
         formatAdminApiError(err, {
@@ -324,6 +346,13 @@ const WarpTunnelsManager: React.FC = () => {
               <tr key={tunnel.id}>
                 <td className="name-cell">
                   <strong>{tunnel.name}</strong>
+                  {(holdingSectorIds.has(String(tunnel.origin_sector_id)) ||
+                    holdingSectorIds.has(String(tunnel.destination_sector_id))) && (
+                    <>
+                      {' '}
+                      <span className="badge badge-warning" title="Pirate Holding">Holding</span>
+                    </>
+                  )}
                 </td>
                 <td>
                   <div className="route-info">
