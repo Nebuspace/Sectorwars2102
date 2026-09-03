@@ -1837,6 +1837,7 @@ _ADMIN_PIRATE_HOLDING_FIELDS = (
     "region_id",
     "owner_player_id",
     "owner_team_id",
+    "outlaw_base_id",
     "captured_at",
     "combat_lock_held_by",
     "current_strength",
@@ -1844,7 +1845,7 @@ _ADMIN_PIRATE_HOLDING_FIELDS = (
 
 
 def _admin_pirate_holding_payload(holding: PirateHolding) -> dict:
-    """Operator inspect payload — committed columns only (LEG-4176)."""
+    """Operator inspect payload — committed columns only (LEG-4176 / LEG-4197)."""
     return {
         "id": str(holding.id),
         "tier": holding.tier.value if holding.tier is not None else None,
@@ -1855,6 +1856,9 @@ def _admin_pirate_holding_payload(holding: PirateHolding) -> dict:
         ),
         "owner_team_id": (
             str(holding.owner_team_id) if holding.owner_team_id is not None else None
+        ),
+        "outlaw_base_id": (
+            str(holding.outlaw_base_id) if holding.outlaw_base_id is not None else None
         ),
         "captured_at": holding.captured_at.isoformat() if holding.captured_at else None,
         "combat_lock_held_by": (
