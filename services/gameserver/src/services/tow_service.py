@@ -376,6 +376,7 @@ class TowService:
         ts["request_state"] = REQUEST_LOCKED
         ts["locked_at"] = datetime.now(timezone.utc).isoformat()
         ts["lock_sector_id"] = hauler.sector_id
+        ts["sectors_towed"] = 0  # LEG-4162: hop counter for FC rep trigger at detach
         flag_modified(hauler, "tow_state")
         logger.info(
             "Tow ACCEPT: hauler %s now towing %s (surcharge=%s)",
@@ -413,12 +414,12 @@ class TowService:
         if not ts or not ts.get("towed_ship_id"):
             raise TowError("That ship is not towing anything.")
         towed_id = ts.get("towed_ship_id")
-        hops_towed = ts.get("hops_towed", 0)
+        hops_towed = ts.get("sectors_towed", 0)  # LEG-4162: field renamed hops_towed → sectors_towed
         hauler.tow_state = None
         flag_modified(hauler, "tow_state")
         logger.info("Tow DETACH: hauler %s released %s (0 turns, %d hops)", hauler.id, towed_id, hops_towed)
 
-        # LEG-4157: Frontier Coalition +15 rep for towing a non-teammate's ship ≥2 sectors
+        # LEG-4162: Frontier Coalition +15 rep for towing a non-teammate's ship ≥2 sectors
         # (factions-and-teams.md FC table, line 116). Best-effort, flush-only.
         if hops_towed >= 2 and towed_id and hauler.owner_id:
             try:
@@ -445,7 +446,7 @@ class TowService:
                             from src.services.emergent_reputation_service import apply_emergent_action
                             apply_emergent_action(
                                 self.db, hauler_pilot, "TOW_RESCUE_FC",
-                                context={"towed_ship_id": towed_id, "hops": hops_towed},
+                                context={"towed_ship_id": towed_id, "sectors_towed": hops_towed},
                             )
             except Exception:
                 logger.exception(
@@ -474,8 +475,8 @@ class TowService:
         if towed is None or towed.is_destroyed:
             return False
 
-        # LEG-4157: track hop count for the ≥2-sector FC rep trigger at detach.
-        ts["hops_towed"] = ts.get("hops_towed", 0) + 1
+        # LEG-4162: track sector count for the ≥2-sector FC rep trigger at detach.
+        ts["sectors_towed"] = ts.get("sectors_towed", 0) + 1
         flag_modified(hauler, "tow_state")
 
         towed.sector_id = destination_sector_id
