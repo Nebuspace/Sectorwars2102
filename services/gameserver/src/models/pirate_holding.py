@@ -21,15 +21,14 @@ the raid/capture kernel's columns — ``combat_lock_held_by``,
 ``combat_lock_team_snapshot``, ``owner_team_id``, ``captured_at``,
 ``evolution_clock_started_at`` — plus ``formation_id`` (needed by R-F1's
 Stronghold-formation CHECK constraint, itself no-code-change per canon's
-G-D1). These are a DORMANT KERNEL: fully wired at the model + service layer
-(see ``pirate_ecosystem_service.acquire_combat_lock`` /
-``can_engage`` / ``release_combat_lock`` / ``capture_holding``), zero live
-callers — no player-facing raid/capture entry point exists anywhere in the
-codebase yet (verify-first confirmed, orchestrator-ruled 2026-08-07). Awaits
-WO-PIRATE-ECO-3-ATTEMPT-CAPTURE to wire a real raid-initiation route. This
-mirrors the established dormant-kernel pattern elsewhere in this codebase
-(see e.g. structures.py's CRT-spine kernels, planet_grid.py's K1b2
-terraform-grid kernel).
+G-D1). The combat-lock / capture helpers
+(``pirate_ecosystem_service.acquire_combat_lock`` / ``can_engage`` /
+``release_combat_lock`` / ``capture_holding``) have live HTTP callers:
+``POST /pirate-holdings/{id}/raid/initiate`` and
+``POST /pirate-holdings/{id}/raid/capture`` (LEG-4153). Residual dormancy
+is narrow — ``maybe_reset_evolution_clock`` / ``evolution_clock_started_at``
+still have no live writer (the live evolution clock anchors on
+``last_damage_at`` / ``created_at``).
 
 ADR-0060 G-V2 (abandoned-holding re-seeding race guard, "explicit
 ``combat_lock_held_by IS NULL`` predicate ... The OutlawBase/NPCBarracks
@@ -43,8 +42,8 @@ saying the lodging tables are "deferred to the lodging slice" -- there is no
 query, service function, or scheduler sweep this WO could add a
 ``combat_lock_held_by IS NULL`` predicate TO. G-V2 has no buildable kernel
 yet; it is blocked on the lodging slice landing first (the tables + the
-re-seed mechanism itself), not merely dormant-for-a-caller like the
-raid/capture kernel above. Flagged for DECISIONS/BACKLOG rather than
+re-seed mechanism itself), not a missing HTTP entry point like the
+raid/capture kernel once was (initiate+capture routes are now live). Flagged for DECISIONS/BACKLOG rather than
 inventing a re-seed mechanism this WO has no canon basis to design.
 
 Divergences from canon, on purpose, documented:
@@ -173,8 +172,9 @@ class PirateHolding(Base):
         index=True,
     )
 
-    # --- ADR-0060 raid/capture kernel (G-F2/G-V1) — DORMANT, see module
-    # docstring. Nullable; NULL == "no active raid" / "not captured". ---
+    # --- ADR-0060 raid/capture kernel (G-F2/G-V1) — live via
+    # POST .../raid/initiate + .../raid/capture; see module docstring.
+    # Nullable; NULL == "no active raid" / "not captured". ---
 
     combat_lock_held_by = Column(
         UUID(as_uuid=True),
@@ -197,8 +197,8 @@ class PirateHolding(Base):
     captured_at = Column(DateTime(timezone=True), nullable=True)
 
     # G-I1 evolution-clock reset threshold (>=5% single-event citadel
-    # damage). Dormant alongside the rest of this kernel — no live writer
-    # until the raid/capture entry point (ECO-3) exists.
+    # damage). Writer (``maybe_reset_evolution_clock``) still has no live
+    # caller; initiate/capture routes do not write this column yet.
     evolution_clock_started_at = Column(DateTime(timezone=True), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
