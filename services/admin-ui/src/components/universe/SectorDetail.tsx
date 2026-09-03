@@ -67,6 +67,7 @@ type PirateHoldingRow = {
   owner_team_id?: string | number | null;
   region_id?: number | string | null;
   sector_id?: number | string | null;
+  outlaw_base_id?: string | null;
 };
 
 function asPirateHoldings(data: unknown): PirateHoldingRow[] {
@@ -616,6 +617,9 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
                       </span>
                       <span>region_id: {formatHoldingInspectValue(holding.region_id)}</span>
                       <span>sector_id: {formatHoldingInspectValue(holding.sector_id)}</span>
+                      <span>
+                        outlaw_base_id: {formatHoldingInspectValue(holding.outlaw_base_id)}
+                      </span>
                     </div>
                   ))}
                 </div>

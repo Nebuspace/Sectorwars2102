@@ -95,7 +95,7 @@ describe('SectorDetail pirate holdings (LEG-4178)', () => {
     expect(screen.queryByRole('button', { name: /capture|initiate/i })).toBeNull();
   });
 
-  it('lists present holdings without inventing outlaw_base_id', async () => {
+  it('lists present holdings and shows outlaw_base_id when GET includes a non-null value', async () => {
     mockLoads({
       holdings: [
         {
@@ -104,7 +104,7 @@ describe('SectorDetail pirate holdings (LEG-4178)', () => {
           owner_player_id: null,
           combat_lock_held_by: 'player-9',
           captured_at: '2026-09-03T12:00:00Z',
-          outlaw_base_id: 'must-not-render',
+          outlaw_base_id: 'base-uuid-111',
           current_strength: 18,
           owner_team_id: 'team-7',
           region_id: 3,
@@ -139,8 +139,8 @@ describe('SectorDetail pirate holdings (LEG-4178)', () => {
     expect(row1).toHaveTextContent('owner_team_id: team-7');
     expect(row1).toHaveTextContent('region_id: 3');
     expect(row1).toHaveTextContent('sector_id: 42');
+    expect(row1).toHaveTextContent('outlaw_base_id: base-uuid-111');
     expect(row1).not.toHaveTextContent('must-not-render');
-    expect(row1).not.toHaveTextContent('outlaw_base_id');
 
     const row2 = screen.getByTestId('pirate-holding-row-hold-2');
     expect(row2).toHaveTextContent('owner: player-3');
@@ -150,6 +150,7 @@ describe('SectorDetail pirate holdings (LEG-4178)', () => {
     expect(row2).toHaveTextContent('owner_team_id: —');
     expect(row2).toHaveTextContent('region_id: —');
     expect(row2).toHaveTextContent('sector_id: —');
+    expect(row2).toHaveTextContent('outlaw_base_id: —');
     expect(screen.queryByRole('button', { name: /capture|initiate/i })).toBeNull();
   });
 
@@ -162,6 +163,7 @@ describe('SectorDetail pirate holdings (LEG-4178)', () => {
           owner_team_id: null,
           region_id: null,
           sector_id: null,
+          outlaw_base_id: null,
         },
       ],
     });
@@ -181,7 +183,8 @@ describe('SectorDetail pirate holdings (LEG-4178)', () => {
     expect(row).toHaveTextContent('region_id: —');
     expect(row).toHaveTextContent('sector_id: —');
     expect(row).not.toHaveTextContent('sector_id: 42');
-    expect(screen.queryByText(/outlaw_base_id/i)).toBeNull();
+    expect(row).toHaveTextContent('outlaw_base_id: —');
+    expect(row).not.toHaveTextContent('base-uuid-111');
   });
 
   it('treats 404 as empty without a loadError alert', async () => {
