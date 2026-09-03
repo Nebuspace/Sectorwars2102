@@ -643,6 +643,30 @@ EMERGENT_ACTIONS: Dict[str, EmergentAction] = {
             "Wanted/Suspect status in Fed-Controlled space (+15)"
         ),
     ),
+    # LEG-4167 — Federation: "Discover a sector inside or adjacent to Fed
+    # territory | +10" (factions-and-teams.md Federation trigger table line 91).
+    # Wired in quantum_service.py and movement_service.py at first-discovery
+    # of a ZoneType.FEDERATION sector (first-wins via mark_sector_discovered).
+    "DISCOVER_FED_SECTOR": EmergentAction(
+        name="DISCOVER_FED_SECTOR",
+        deltas=[FactionDelta(FactionType.FEDERATION, 10)],
+        doc_source=(
+            "factions-and-teams.md Federation table line 91: Discover a sector "
+            "inside or adjacent to Fed territory (+10)"
+        ),
+    ),
+    # LEG-4166 — Nova Scientific: "+1 NS rep per Quantum Jump scan, cap 5/day"
+    # (factions-and-teams.md Nova Scientific trigger table). Wired in
+    # quantum_service.py scan() after db.commit(). The 5/day per-action cap is
+    # enforced via player.settings["quantum_scan_ns_rep_<today>"].
+    "QUANTUM_SCAN_NS": EmergentAction(
+        name="QUANTUM_SCAN_NS",
+        deltas=[FactionDelta(FactionType.EXPLORERS, 1)],
+        doc_source=(
+            "factions-and-teams.md Nova Scientific table: +1 NS rep per "
+            "Quantum Jump scan (cap 5/day)"
+        ),
+    ),
 }
 
 
