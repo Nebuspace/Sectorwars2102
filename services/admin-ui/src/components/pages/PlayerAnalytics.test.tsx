@@ -305,7 +305,7 @@ describe('PlayerAnalytics regions fetch errors (LEG-2750)', () => {
     render(<PlayerAnalytics />);
 
     await waitFor(() => {
-      expect(screen.getByRole('alert').textContent).toMatch(/admin\.galaxy\.manage/);
+      expect(screen.getByRole('alert').textContent).toMatch(/regions:\s*.*admin\.galaxy\.manage/);
     });
   });
 
@@ -349,7 +349,7 @@ describe('PlayerAnalytics regions fetch errors (LEG-2750)', () => {
     render(<PlayerAnalytics />);
 
     await waitFor(() => {
-      expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
+      expect(screen.getByRole('alert').textContent).toMatch(/regions:\s*.*rate limit/i);
     });
   });
 
