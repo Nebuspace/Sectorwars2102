@@ -39,10 +39,12 @@ function parseProposal(raw: unknown): StakeTransferProposal | null {
   if (!Number.isFinite(pct)) return null;
   const approvalsRaw = Array.isArray(r.approvals) ? r.approvals : [];
   const approvals = approvalsRaw
-    .map((row) => {
+    .map((row): { player_id: string; at?: string } | null => {
       const a = asRecord(row);
       if (!a || typeof a.player_id !== 'string') return null;
-      return { player_id: a.player_id, at: typeof a.at === 'string' ? a.at : undefined };
+      const entry: { player_id: string; at?: string } = { player_id: a.player_id };
+      if (typeof a.at === 'string') entry.at = a.at;
+      return entry;
     })
     .filter((a): a is { player_id: string; at?: string } => a !== null);
   return {
