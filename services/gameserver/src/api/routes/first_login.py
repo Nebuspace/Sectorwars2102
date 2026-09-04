@@ -14,6 +14,7 @@ from src.models.first_login import ShipChoice, FirstLoginSession
 from src.services.first_login_service import FirstLoginService, FirstLoginCompletionError
 from src.services.ai_dialogue_service import get_ai_dialogue_service, AIDialogueService
 from src.services.ai_security_service import get_security_service, AISecurityService
+from src.utils.error_handling import route_internal_error
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -271,11 +272,11 @@ async def claim_ship(
                 claim.dialogue_response
             )
             logger.info("Ship claim recorded successfully")
-        except Exception as record_error:
-            logger.error(f"Failed to record ship claim: {str(record_error)}", exc_info=True)
+        except Exception:
+            logger.exception("Failed to record ship claim")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to record ship claim: {str(record_error)}"
+                detail="Failed to record ship claim",
             )
 
         # ESCAPE POD BYPASS: If claiming an escape pod, grant it immediately without interrogation
@@ -326,11 +327,12 @@ async def claim_ship(
     except HTTPException:
         # Re-raise HTTP exceptions as-is
         raise
-    except Exception as e:
-        logger.error(f"Unexpected error in claim_ship: {str(e)}", exc_info=True)
-        raise HTTPException(
+    except Exception:
+        logger.exception("Unexpected error in claim_ship")
+        raise route_internal_error(
+            "ERR_FIRST_LOGIN_CLAIM_SHIP_FAILED",
+            "Failed to claim ship",
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Internal server error: {str(e)}"
         )
 
 

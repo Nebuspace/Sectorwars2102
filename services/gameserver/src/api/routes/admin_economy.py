@@ -2,6 +2,7 @@
 Admin Economy Dashboard API routes
 """
 
+import logging
 from typing import Optional, List
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -19,7 +20,16 @@ from src.models.station import Station
 from src.models.sector import Sector
 from src.models.player import Player
 from src.services.economy_analytics_service import EconomyAnalyticsService, InterventionError
+from src.utils.error_handling import route_internal_error
 
+ERR_ADMIN_ECONOMY_MARKET_DATA_FAILED = "ERR_ADMIN_ECONOMY_MARKET_DATA_FAILED"
+ERR_ADMIN_ECONOMY_METRICS_FAILED = "ERR_ADMIN_ECONOMY_METRICS_FAILED"
+ERR_ADMIN_ECONOMY_PRICE_ALERTS_FAILED = "ERR_ADMIN_ECONOMY_PRICE_ALERTS_FAILED"
+ERR_ADMIN_ECONOMY_INTERVENTION_FAILED = "ERR_ADMIN_ECONOMY_INTERVENTION_FAILED"
+ERR_ADMIN_ECONOMY_DASHBOARD_FAILED = "ERR_ADMIN_ECONOMY_DASHBOARD_FAILED"
+
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin/economy", tags=["admin-economy"])
 
@@ -140,10 +150,11 @@ async def get_market_data(
             ))
 
         return market_data
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to retrieve market data: {str(e)}"
+    except Exception:
+        logger.exception("Failed to retrieve market data")
+        raise route_internal_error(
+            ERR_ADMIN_ECONOMY_MARKET_DATA_FAILED,
+            "Failed to retrieve market data",
         )
 
 
@@ -245,10 +256,11 @@ async def get_economic_metrics(
                 most_traded_commodity=most_traded.commodity if most_traded else "None",
                 economic_health_score=economic_health_score
             )
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to retrieve economic metrics: {str(e)}"
+    except Exception:
+        logger.exception("Failed to retrieve economic metrics")
+        raise route_internal_error(
+            ERR_ADMIN_ECONOMY_METRICS_FAILED,
+            "Failed to retrieve economic metrics",
         )
 
 
@@ -275,10 +287,11 @@ async def get_price_alerts(
         analytics_service = EconomyAnalyticsService(db)
         alerts = analytics_service.get_price_alerts(threshold_percent=threshold_percent)
         return [PriceAlertResponse(**alert) for alert in alerts]
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to retrieve price alerts: {str(e)}"
+    except Exception:
+        logger.exception("Failed to retrieve price alerts")
+        raise route_internal_error(
+            ERR_ADMIN_ECONOMY_PRICE_ALERTS_FAILED,
+            "Failed to retrieve price alerts",
         )
 
 
@@ -329,10 +342,11 @@ async def perform_market_intervention(
         raise HTTPException(status_code=e.status_code, detail=e.detail)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Market intervention failed: {str(e)}"
+    except Exception:
+        logger.exception("Market intervention failed")
+        raise route_internal_error(
+            ERR_ADMIN_ECONOMY_INTERVENTION_FAILED,
+            "Market intervention failed",
         )
 
 
@@ -386,10 +400,11 @@ async def get_dashboard_summary(
             },
             "top_trading_ports": market_data['top_trading_ports'][:5]
         }
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to generate dashboard summary: {str(e)}"
+    except Exception:
+        logger.exception("Failed to generate dashboard summary")
+        raise route_internal_error(
+            ERR_ADMIN_ECONOMY_DASHBOARD_FAILED,
+            "Failed to generate dashboard summary",
         )
 
 

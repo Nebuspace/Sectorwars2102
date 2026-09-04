@@ -23,6 +23,10 @@ from src.models.player import Player
 from src.models.ship import Ship
 from src.services import expedition_service, first_login_service
 from src.services.expedition_service import ExpeditionError
+from src.utils.error_handling import route_internal_error
+
+ERR_EXPEDITIONS_LAUNCH_FAILED = "ERR_EXPEDITIONS_LAUNCH_FAILED"
+ERR_EXPEDITIONS_REROLL_FAILED = "ERR_EXPEDITIONS_REROLL_FAILED"
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +92,11 @@ async def launch_expedition(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception:
         db.rollback()
-        raise
+        logger.exception("Failed to launch expedition")
+        raise route_internal_error(
+            ERR_EXPEDITIONS_LAUNCH_FAILED,
+            "Failed to launch expedition",
+        )
 
 
 @router.get("/{expedition_id}/status")
@@ -150,4 +158,8 @@ async def reroll_expedition(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception:
         db.rollback()
-        raise
+        logger.exception("Failed to reroll expedition")
+        raise route_internal_error(
+            ERR_EXPEDITIONS_REROLL_FAILED,
+            "Failed to reroll expedition",
+        )

@@ -5,6 +5,7 @@ Supports full game administration based on DOCS specifications
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text, func, desc, or_
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
@@ -12,8 +13,9 @@ from datetime import datetime, timedelta, timezone
 import logging
 import uuid
 
-from src.core.database import get_db
+from src.core.database import get_db, get_async_session
 from src.auth.admin_scopes import (
+    ARIA_AUDIT,
     ECONOMY_INTERVENE,
     GALAXY_MANAGE,
     PLAYERS_ADJUST_CREDITS,
@@ -27,6 +29,7 @@ from src.auth.dependencies import require_all_scopes, require_scope
 from src.models.user import User
 from src.services.admin_action_log_service import log_admin_action
 from src.services.admin_action_attempt import admin_action_attempt
+from src.utils.error_handling import route_internal_error
 from src.models.player import Player
 from src.models.ship import Ship, ShipType
 from src.models.planet import Planet, PlanetType, PlanetStatus
@@ -39,11 +42,47 @@ from src.models.team import Team
 from src.models.route_optimization_run import RouteOptimizationRun
 from src.models.faction import Faction
 from src.services.analytics_service import AnalyticsService
+from src.services.market_prediction_engine import MarketPredictionEngine
 from src.services.ai_security_service import get_security_service
 from src.services.faction_service import FactionService
+from src.models.aria_personal_intelligence import ARIASecurityLog
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+_market_prediction_engine = MarketPredictionEngine()
+
+_ADMIN_PREDICTION_TIMEFRAME_HOURS = {
+    "15m": 1,
+    "1h": 1,
+    "4h": 4,
+    "1d": 24,
+    "1w": 168,
+}
+
+
+def _admin_prediction_hours_ahead(timeframe: str, hours_ahead: Optional[int]) -> int:
+    if hours_ahead is not None:
+        return max(1, min(168, hours_ahead))
+    return _ADMIN_PREDICTION_TIMEFRAME_HOURS.get(timeframe, 24)
+
+
+def _admin_ai_prediction_row(prediction, timeframe: str) -> Dict[str, Any]:
+    commodity = prediction.commodity
+    station_key = prediction.station_id or "global"
+    return {
+        "id": f"{commodity}-{station_key}",
+        "resourceId": commodity,
+        "resourceName": commodity.replace("_", " ").title(),
+        "sectorId": station_key,
+        "sectorName": station_key if station_key == "global" else f"Station {station_key[:8]}",
+        "currentPrice": prediction.current_price,
+        "predictedPrice": prediction.predicted_price,
+        "confidence": round(prediction.confidence * 100, 1),
+        "timeframe": timeframe,
+        "factors": prediction.factors,
+        "timestamp": prediction.timestamp.isoformat(),
+    }
 
 # Pydantic Models for Requests/Responses
 
@@ -389,11 +428,9 @@ async def get_players_comprehensive(
             "total_pages": (total_count + limit - 1) // limit
         }
         
-    except Exception as e:
-        logger.error(f"Error in get_players_comprehensive: {e}")
-        import traceback
-        logger.error(f"Full traceback: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch players: {str(e)}")
+    except Exception:
+        logger.exception("Error in get_players_comprehensive")
+        raise route_internal_error("ERR_ADMIN_COMP_PLAYERS_LIST_FAILED", "Failed to fetch players")
 
 @router.put("/players/{player_id}", response_model=Dict[str, str])
 async def update_player(
@@ -485,7 +522,7 @@ async def update_player(
     except Exception as e:
         db.rollback()
         logger.error(f"Error updating player {player_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to update player: {str(e)}")
+        raise route_internal_error("ERR_ADMIN_COMP_PLAYER_UPDATE_FAILED", "Failed to update player")
 
 # Ship Management Endpoints
 
@@ -700,7 +737,7 @@ async def create_ship(
             raise
         except Exception as e:
             logger.error(f"Error creating ship: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to create ship: {str(e)}") from e
+            raise route_internal_error("ERR_ADMIN_COMP_SHIP_CREATE_FAILED", "Failed to create ship") from e
 
 @router.put("/ships/{ship_id}", response_model=Dict[str, str])
 async def update_ship(
@@ -749,7 +786,7 @@ async def update_ship(
             raise
         except Exception as e:
             logger.error(f"Error updating ship {ship_id}: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to update ship: {str(e)}") from e
+            raise route_internal_error("ERR_ADMIN_COMP_SHIP_UPDATE_FAILED", "Failed to update ship") from e
 
 @router.delete("/ships/{ship_id}", response_model=Dict[str, str])
 async def delete_ship(
@@ -798,7 +835,7 @@ async def delete_ship(
             raise
         except Exception as e:
             logger.error(f"Error deleting ship {ship_id}: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to delete ship: {str(e)}") from e
+            raise route_internal_error("ERR_ADMIN_COMP_SHIP_DELETE_FAILED", "Failed to delete ship") from e
 
 @router.post("/ships/{ship_id}/teleport", response_model=Dict[str, str])
 async def teleport_ship(
@@ -849,7 +886,7 @@ async def teleport_ship(
             raise
         except Exception as e:
             logger.error(f"Error teleporting ship {ship_id}: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to teleport ship: {str(e)}") from e
+            raise route_internal_error("ERR_ADMIN_COMP_SHIP_TELEPORT_FAILED", "Failed to teleport ship") from e
 
 
 @router.post("/ships/registry/backfill", response_model=Dict[str, Any])
@@ -945,9 +982,7 @@ async def create_player_from_user(
             raise
         except Exception as e:
             logger.error(f"Error creating player for user {user_id}: {e}")
-            raise HTTPException(
-                status_code=500, detail=f"Failed to create player: {str(e)}"
-            ) from e
+            raise route_internal_error("ERR_ADMIN_COMP_PLAYER_CREATE_FAILED", "Failed to create player") from e
 
 
 @router.post("/players/create-bulk", response_model=Dict[str, Any])
@@ -999,9 +1034,7 @@ async def create_players_from_all_users(
             raise
         except Exception as e:
             logger.error(f"Error creating players from users: {e}")
-            raise HTTPException(
-                status_code=500, detail=f"Failed to create players: {str(e)}"
-            ) from e
+            raise route_internal_error("ERR_ADMIN_COMP_PLAYERS_BULK_CREATE_FAILED", "Failed to create players") from e
 
 # Universe Management Endpoints
 
@@ -1080,9 +1113,9 @@ async def get_sectors_comprehensive(
             "total_pages": (total_count + limit - 1) // limit
         }
         
-    except Exception as e:
-        logger.error(f"Error in get_sectors_comprehensive: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch sectors: {str(e)}")
+    except Exception:
+        logger.exception("Error in get_sectors_comprehensive")
+        raise route_internal_error("ERR_ADMIN_COMP_SECTORS_LIST_FAILED", "Failed to fetch sectors")
 
 # Station Management Endpoints
 
@@ -1186,9 +1219,9 @@ async def get_ports_comprehensive(
             "total_pages": (total_count + limit - 1) // limit
         }
         
-    except Exception as e:
-        logger.error(f"Error in get_ports_comprehensive: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch ports: {str(e)}")
+    except Exception:
+        logger.exception("Error in get_ports_comprehensive")
+        raise route_internal_error("ERR_ADMIN_COMP_PORTS_LIST_FAILED", "Failed to fetch ports")
 
 # Planet Management Endpoints
 
@@ -1274,9 +1307,9 @@ async def get_planets_comprehensive(
             "total_pages": (total_count + limit - 1) // limit
         }
         
-    except Exception as e:
-        logger.error(f"Error in get_planets_comprehensive: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch planets: {str(e)}")
+    except Exception:
+        logger.exception("Error in get_planets_comprehensive")
+        raise route_internal_error("ERR_ADMIN_COMP_PLANETS_LIST_FAILED", "Failed to fetch planets")
 
 # Analytics and Monitoring Endpoints
 
@@ -1343,9 +1376,9 @@ async def get_analytics_dashboard(
             }
         )
         
-    except Exception as e:
-        logger.error(f"Error in get_analytics_dashboard: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch analytics: {str(e)}")
+    except Exception:
+        logger.exception("Error in get_analytics_dashboard")
+        raise route_internal_error("ERR_ADMIN_COMP_ANALYTICS_FETCH_FAILED", "Failed to fetch analytics")
 
 @router.get("/system/health", response_model=SystemHealthResponse)
 async def get_system_health(
@@ -1373,9 +1406,9 @@ async def get_system_health(
             last_checked=datetime.utcnow()
         )
         
-    except Exception as e:
-        logger.error(f"Error in get_system_health: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get system health: {str(e)}")
+    except Exception:
+        logger.exception("Error in get_system_health")
+        raise route_internal_error("ERR_ADMIN_COMP_SYSTEM_HEALTH_FAILED", "Failed to get system health")
 
 # Warp Tunnel Management Endpoints
 
@@ -1472,9 +1505,9 @@ async def get_warp_tunnels_comprehensive(
             "total_pages": (total_count + limit - 1) // limit
         }
         
-    except Exception as e:
-        logger.error(f"Error in get_warp_tunnels_comprehensive: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch warp tunnels: {str(e)}")
+    except Exception:
+        logger.exception("Error in get_warp_tunnels_comprehensive")
+        raise route_internal_error("ERR_ADMIN_COMP_WARP_TUNNELS_LIST_FAILED", "Failed to fetch warp tunnels")
 
 # Team Management Endpoints
 
@@ -1527,9 +1560,9 @@ async def get_teams_comprehensive(
             "total_pages": (total_count + limit - 1) // limit
         }
         
-    except Exception as e:
-        logger.error(f"Error in get_teams_comprehensive: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch teams: {str(e)}")
+    except Exception:
+        logger.exception("Error in get_teams_comprehensive")
+        raise route_internal_error("ERR_ADMIN_COMP_TEAMS_LIST_FAILED", "Failed to fetch teams")
 
 # Analytics Endpoints
 
@@ -1577,9 +1610,54 @@ async def get_real_time_analytics(
             "timestamp": datetime.utcnow().isoformat()
         }
 
-    except Exception as e:
-        logger.error(f"Error fetching real-time analytics: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch analytics: {str(e)}")
+    except Exception:
+        logger.exception("Error fetching real-time analytics")
+        raise route_internal_error("ERR_ADMIN_COMP_ANALYTICS_DASHBOARD_FAILED", "Failed to fetch analytics")
+
+
+@router.get("/analytics/predictions", response_model=Dict[str, Any])
+async def get_analytics_predictions(
+    timeframe: str = Query("1h", description="Admin UI timeframe filter (echoed)"),
+    resource: Optional[str] = Query(None, description="Filter by commodity name"),
+    station_id: Optional[str] = Query(None, description="Restrict predictions to a station"),
+    hours_ahead: Optional[int] = Query(
+        None, ge=1, le=168, description="Prediction horizon in hours (overrides timeframe)"
+    ),
+    current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
+    db: AsyncSession = Depends(get_async_session),
+) -> Dict[str, Any]:
+    """Market price predictions for the admin Advanced Analytics surface."""
+    try:
+        horizon = _admin_prediction_hours_ahead(timeframe, hours_ahead)
+        if resource:
+            prediction = await _market_prediction_engine.predict_prices(
+                db, commodity=resource, station_id=station_id, hours_ahead=horizon
+            )
+            predictions = [prediction.to_dict()] if prediction else []
+        else:
+            batch = await _market_prediction_engine.batch_predict(
+                db, station_id=station_id, hours_ahead=horizon
+            )
+            predictions = [pred.to_dict() for pred in batch.values()]
+
+        logger.info(
+            "Admin %s requested analytics predictions (timeframe=%s count=%d)",
+            current_admin.username,
+            timeframe,
+            len(predictions),
+        )
+        return {
+            "timeframe": timeframe,
+            "hours_ahead": horizon,
+            "resource": resource,
+            "station_id": station_id,
+            "predictions": predictions,
+            "count": len(predictions),
+            "generated_at": datetime.utcnow().isoformat(),
+        }
+    except Exception:
+        logger.exception("Error fetching analytics predictions")
+        raise route_internal_error("ERR_ADMIN_COMP_ANALYTICS_PREDICTIONS_FAILED", "Failed to fetch analytics predictions")
 
 
 @router.post("/analytics/snapshot", response_model=Dict[str, Any])
@@ -1614,9 +1692,9 @@ async def create_analytics_snapshot(
             "timestamp": snapshot.snapshot_time.isoformat()
         }
         
-    except Exception as e:
-        logger.error(f"Error creating analytics snapshot: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to create snapshot: {str(e)}")
+    except Exception:
+        logger.exception("Error in create_analytics_snapshot")
+        raise route_internal_error("ERR_ADMIN_COMP_ANALYTICS_SNAPSHOT_FAILED", "Failed to create analytics snapshot")
 
 
 @router.post("/ports/update-stock-levels", response_model=Dict[str, Any])
@@ -1677,10 +1755,10 @@ async def update_all_port_stock_levels(
             "has_more": len(updated_ports) > 20
         }
         
-    except Exception as e:
+    except Exception:
         db.rollback()
-        logger.error(f"Error updating port stock levels: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to update port stock levels: {str(e)}")
+        logger.exception("Error in update_all_port_stock_levels")
+        raise route_internal_error("ERR_ADMIN_COMP_PORT_STOCK_UPDATE_FAILED", "Failed to update port stock levels")
 
 
 # =============================================================================
@@ -1705,7 +1783,7 @@ async def get_security_report(current_admin: User = Depends(require_scope(PLAYER
         
     except Exception as e:
         logger.error(f"Error generating security report: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to generate security report: {str(e)}")
+        raise route_internal_error("ERR_ADMIN_COMP_SECURITY_REPORT_FAILED", "Failed to generate security report")
 
 
 @router.get("/security/alerts", summary="Get current security alerts")
@@ -1729,13 +1807,13 @@ async def get_security_alerts(current_admin: User = Depends(require_scope(PLAYER
         
     except Exception as e:
         logger.error(f"Error getting security alerts: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get security alerts: {str(e)}")
+        raise route_internal_error("ERR_ADMIN_COMP_SECURITY_ALERTS_FAILED", "Failed to get security alerts")
 
 
 @router.get("/security/player/{player_id}/risk", summary="Get player risk assessment")
 async def get_player_risk_assessment(
     player_id: str,
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW))
+    current_admin: User = Depends(require_scope(ARIA_AUDIT))
 ):
     """
     Get detailed risk assessment for a specific player including:
@@ -1753,13 +1831,13 @@ async def get_player_risk_assessment(
         
     except Exception as e:
         logger.error(f"Error getting player risk assessment: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get player risk assessment: {str(e)}")
+        raise route_internal_error("ERR_ADMIN_COMP_PLAYER_RISK_FAILED", "Failed to get player risk assessment")
 
 
 @router.get("/security/player/{player_id}/status", summary="Get player security status")
 async def get_player_security_status(
     player_id: str,
-    current_admin: User = Depends(require_scope(PLAYERS_VIEW))
+    current_admin: User = Depends(require_scope(ARIA_AUDIT))
 ):
     """
     Get current security status for a specific player including:
@@ -1776,7 +1854,86 @@ async def get_player_security_status(
         
     except Exception as e:
         logger.error(f"Error getting player security status: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get player security status: {str(e)}")
+        raise route_internal_error("ERR_ADMIN_COMP_PLAYER_SECURITY_STATUS_FAILED", "Failed to get player security status")
+
+
+def _describe_aria_security_log_event(event_data: Any) -> str:
+    """Human-readable summary for admin log review (LEG-3607)."""
+    if not event_data:
+        return ""
+    if isinstance(event_data, dict):
+        for key in ("message", "reason", "detail", "description"):
+            value = event_data.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    import json
+
+    text = json.dumps(event_data, separators=(",", ":"), default=str)
+    if len(text) > 200:
+        return f"{text[:197]}..."
+    return text
+
+
+@router.get("/security/player/{player_id}/logs", summary="List ARIA security logs for player")
+async def list_player_security_logs(
+    player_id: str,
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    current_admin: User = Depends(require_scope(ARIA_AUDIT)),
+    db: Session = Depends(get_db),
+):
+    """
+    Paginated ARIASecurityLog history for one player (UIADM-SECURITY-PLAYER-OPS).
+    """
+    try:
+        try:
+            player_uuid = uuid.UUID(player_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid player id: {player_id}") from exc
+
+        player_row = db.query(Player).filter(Player.id == player_uuid).first()
+        if player_row is None:
+            raise HTTPException(status_code=404, detail=f"Player {player_id} not found")
+
+        base = db.query(ARIASecurityLog).filter(ARIASecurityLog.player_id == player_uuid)
+        total = base.count()
+        offset = (page - 1) * limit
+        rows = (
+            base.order_by(ARIASecurityLog.created_at.desc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+        pages = (total + limit - 1) // limit if total else 0
+
+        items = [
+            {
+                "id": str(row.id),
+                "timestamp": row.created_at.isoformat() if row.created_at else None,
+                "event_type": row.event_type,
+                "severity": row.event_severity,
+                "description": _describe_aria_security_log_event(row.event_data),
+            }
+            for row in rows
+        ]
+
+        logger.info(
+            f"Admin {current_admin.username} listed {len(items)} ARIA security logs "
+            f"for player {player_id} (page {page})"
+        )
+        return {
+            "items": items,
+            "page": page,
+            "limit": limit,
+            "total": total,
+            "pages": pages,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing player security logs: {e}")
+        raise route_internal_error("ERR_ADMIN_COMP_PLAYER_SECURITY_LOGS_FAILED", "Failed to list player security logs")
 
 
 @router.post("/security/cleanup", summary="Clean up old security data")
@@ -1801,7 +1958,7 @@ async def cleanup_security_data(
         
     except Exception as e:
         logger.error(f"Error cleaning up security data: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to clean up security data: {str(e)}")
+        raise route_internal_error("ERR_ADMIN_COMP_SECURITY_CLEANUP_FAILED", "Failed to clean up security data")
 
 
 class PlayerSecurityAction(BaseModel):
@@ -1814,7 +1971,7 @@ class PlayerSecurityAction(BaseModel):
 async def take_security_action(
     player_id: str,
     action: PlayerSecurityAction,
-    current_admin: User = Depends(require_scope(SECURITY_ACT)),
+    current_admin: User = Depends(require_scope(ARIA_AUDIT)),
     db: Session = Depends(get_db),
 ):
     """
@@ -1884,7 +2041,7 @@ async def take_security_action(
         raise
     except Exception as e:
         logger.error(f"Error taking security action: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to take security action: {str(e)}")
+        raise route_internal_error("ERR_ADMIN_COMP_SECURITY_ACTION_FAILED", "Failed to take security action")
 
 
 # =============================================================================
@@ -2017,7 +2174,7 @@ async def update_sector(
         except Exception as e:
             db.rollback()
             logger.error(f"Error updating sector {sector_id}: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to update sector: {str(e)}")
+            raise route_internal_error("ERR_ADMIN_COMP_SECTOR_UPDATE_FAILED", "Failed to update sector")
 
 @router.post("/sectors/{sector_id}/planet", response_model=Dict[str, Any])
 async def create_planet_in_sector(
@@ -2108,7 +2265,7 @@ async def create_planet_in_sector(
         except Exception as e:
             db.rollback()
             logger.error(f"Error creating planet in sector {sector_id}: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to create planet: {str(e)}")
+            raise route_internal_error("ERR_ADMIN_COMP_PLANET_CREATE_FAILED", "Failed to create planet")
 
 class PlanetUpdateRequest(BaseModel):
     name: Optional[str] = Field(None, max_length=100)
@@ -2181,7 +2338,7 @@ async def update_planet(
         except Exception as e:
             logger.error(f"Error updating planet {planet_id}: {e}")
             db.rollback()
-            raise HTTPException(status_code=500, detail=f"Failed to update planet: {str(e)}")
+            raise route_internal_error("ERR_ADMIN_COMP_PLANET_UPDATE_FAILED", "Failed to update planet")
 
 
 @router.delete("/planets/{planet_id}", response_model=Dict[str, Any])
@@ -2252,7 +2409,7 @@ async def delete_planet(
         except Exception as e:
             logger.error(f"Error deleting planet {planet_id}: {e}")
             db.rollback()
-            raise HTTPException(status_code=500, detail=f"Failed to delete planet: {str(e)}")
+            raise route_internal_error("ERR_ADMIN_COMP_PLANET_DELETE_FAILED", "Failed to delete planet")
 
 
 @router.post("/sectors/{sector_id}/port", response_model=Dict[str, Any])
@@ -2343,7 +2500,7 @@ async def create_port_in_sector(
         except Exception as e:
             db.rollback()
             logger.error(f"Error creating port in sector {sector_id}: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to create port: {str(e)}")
+            raise route_internal_error("ERR_ADMIN_COMP_PORT_IN_SECTOR_CREATE_FAILED", "Failed to create port")
 
 @router.get("/sectors/{sector_id}/warp-tunnels")
 async def get_sector_warp_tunnels(
@@ -2432,7 +2589,7 @@ async def get_sector_warp_tunnels(
         logger.error(f"Error getting warp tunnels for sector {sector_id}: {e}")
         import traceback
         logger.error(f"Full traceback: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"Failed to get sector warp tunnels: {str(e)}")
+        raise route_internal_error("ERR_ADMIN_COMP_SECTOR_WARPS_FAILED", "Failed to get sector warp tunnels")
 
 class WarpTunnelCreateRequest(BaseModel):
     """Request model for creating a new warp tunnel"""
@@ -2569,7 +2726,7 @@ async def create_warp_tunnel(
             logger.error(f"Error creating warp tunnel: {e}")
             import traceback
             logger.error(f"Full traceback: {traceback.format_exc()}")
-            raise HTTPException(status_code=500, detail=f"Failed to create warp tunnel: {str(e)}")
+            raise route_internal_error("ERR_ADMIN_COMP_WARP_CREATE_FAILED", "Failed to create warp tunnel")
 
 @router.put("/warp-tunnels/{tunnel_id}")
 async def update_warp_tunnel(
@@ -2654,7 +2811,7 @@ async def update_warp_tunnel(
             logger.error(f"Error updating warp tunnel {tunnel_id}: {e}")
             import traceback
             logger.error(f"Full traceback: {traceback.format_exc()}")
-            raise HTTPException(status_code=500, detail=f"Failed to update warp tunnel: {str(e)}")
+            raise route_internal_error("ERR_ADMIN_COMP_WARP_UPDATE_FAILED", "Failed to update warp tunnel")
 
 @router.delete("/warp-tunnels/{tunnel_id}")
 async def delete_warp_tunnel(
@@ -2708,7 +2865,7 @@ async def delete_warp_tunnel(
             logger.error(f"Error deleting warp tunnel {tunnel_id}: {e}")
             import traceback
             logger.error(f"Full traceback: {traceback.format_exc()}")
-            raise HTTPException(status_code=500, detail=f"Failed to delete warp tunnel: {str(e)}")
+            raise route_internal_error("ERR_ADMIN_COMP_WARP_DELETE_FAILED", "Failed to delete warp tunnel")
 
 @router.get("/warp-tunnels", response_model=Dict[str, Any])
 async def get_warp_tunnels(
@@ -2774,7 +2931,7 @@ async def delete_port(
         except Exception as e:
             logger.error(f"Error deleting port {station_id}: {e}")
             db.rollback()
-            raise HTTPException(status_code=500, detail=f"Failed to delete port: {str(e)}")
+            raise route_internal_error("ERR_ADMIN_COMP_PORT_DELETE_FAILED", "Failed to delete port")
 
 @router.post("/ports", response_model=Dict[str, Any])
 async def create_port(
@@ -2880,7 +3037,7 @@ async def create_port(
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
             db.rollback()
-            raise HTTPException(status_code=500, detail=f"Failed to create port: {str(e)}")
+            raise route_internal_error("ERR_ADMIN_COMP_PORT_CREATE_FAILED", "Failed to create port")
 
     # =============================================================================
     # AI TRADING INTELLIGENCE ADMIN ENDPOINTS
@@ -2901,9 +3058,9 @@ async def get_ai_models(
         logger.info(f"Admin {current_admin.username} requested AI models data")
         return models
         
-    except Exception as e:
-        logger.error(f"Error getting AI models: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get AI models: {str(e)}")
+    except Exception:
+        logger.exception("Error in get_ai_models")
+        raise route_internal_error("ERR_ADMIN_COMP_AI_MODELS_FAILED", "Failed to get AI models")
 
 @router.get("/ai/predictions/accuracy", response_model=List[Dict[str, Any]])
 async def get_ai_prediction_accuracy(
@@ -2920,9 +3077,9 @@ async def get_ai_prediction_accuracy(
         logger.info(f"Admin {current_admin.username} requested AI prediction accuracy data")
         return commodities
         
-    except Exception as e:
-        logger.error(f"Error getting AI prediction accuracy: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get AI prediction accuracy: {str(e)}")
+    except Exception:
+        logger.exception("Error in get_ai_prediction_accuracy")
+        raise route_internal_error("ERR_ADMIN_COMP_AI_PREDICTION_ACCURACY_FAILED", "Failed to get AI prediction accuracy")
 
 @router.get("/ai/profiles", response_model=List[Dict[str, Any]])
 async def get_ai_player_profiles(
@@ -2948,9 +3105,9 @@ async def get_ai_player_profiles(
         logger.info(f"Admin {current_admin.username} requested AI player profiles")
         return profiles
         
-    except Exception as e:
-        logger.error(f"Error getting AI player profiles: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get AI player profiles: {str(e)}")
+    except Exception:
+        logger.exception("Error in get_ai_player_profiles")
+        raise route_internal_error("ERR_ADMIN_COMP_AI_PLAYER_PROFILES_FAILED", "Failed to get AI player profiles")
 
 @router.get("/ai/metrics", response_model=Dict[str, Any])
 async def get_ai_system_metrics(
@@ -2987,31 +3144,50 @@ async def get_ai_system_metrics(
         logger.info(f"Admin {current_admin.username} requested AI system metrics")
         return metrics
         
-    except Exception as e:
-        logger.error(f"Error getting AI system metrics: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get AI system metrics: {str(e)}")
+    except Exception:
+        logger.exception("Error in get_ai_system_metrics")
+        raise route_internal_error("ERR_ADMIN_COMP_AI_SYSTEM_METRICS_FAILED", "Failed to get AI system metrics")
 
 @router.get("/ai/predictions", response_model=List[Dict[str, Any]])
 async def get_ai_predictions(
     timeframe: str = Query("1h", description="Prediction timeframe"),
     resource: Optional[str] = Query(None, description="Filter by resource"),
+    station_id: Optional[str] = Query(None, description="Restrict to a station"),
+    hours_ahead: Optional[int] = Query(
+        None, ge=1, le=168, description="Prediction horizon in hours (overrides timeframe)"
+    ),
     current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_session),
 ):
-    """Get AI price predictions for admin dashboard"""
+    """Get AI price predictions for admin dashboard (AITradingDashboard tab)."""
     try:
-        # No price prediction engine exists; nothing in the system generates,
-        # stores, or scores price forecasts (see GET /ai/models — there is no
-        # model registry either). Return an empty list rather than fabricated
-        # predictions.
-        predictions: List[Dict[str, Any]] = []
+        horizon = _admin_prediction_hours_ahead(timeframe, hours_ahead)
+        if resource:
+            prediction = await _market_prediction_engine.predict_prices(
+                db, commodity=resource, station_id=station_id, hours_ahead=horizon
+            )
+            raw_predictions = [prediction] if prediction else []
+        else:
+            batch = await _market_prediction_engine.batch_predict(
+                db, station_id=station_id, hours_ahead=horizon
+            )
+            raw_predictions = list(batch.values())
 
-        logger.info(f"Admin {current_admin.username} requested AI predictions")
+        predictions = [
+            _admin_ai_prediction_row(pred, timeframe) for pred in raw_predictions
+        ]
+
+        logger.info(
+            "Admin %s requested AI predictions (timeframe=%s count=%d)",
+            current_admin.username,
+            timeframe,
+            len(predictions),
+        )
         return predictions
 
-    except Exception as e:
-        logger.error(f"Error getting AI predictions: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get AI predictions: {str(e)}")
+    except Exception:
+        logger.exception("Error getting AI predictions")
+        raise route_internal_error("ERR_ADMIN_COMP_AI_PREDICTIONS_FAILED", "Failed to get AI predictions")
 
 
 @router.get("/ai/route-optimization", response_model=Dict[str, Any])
@@ -3093,9 +3269,9 @@ async def get_ai_route_optimization_data(
         logger.info(f"Admin {current_admin.username} requested AI route optimization data")
         return data
 
-    except Exception as e:
-        logger.error(f"Error getting AI route optimization data: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get AI route optimization data: {str(e)}")
+    except Exception:
+        logger.exception("Error in get_ai_route_optimization_data")
+        raise route_internal_error("ERR_ADMIN_COMP_AI_ROUTE_OPTIMIZATION_FAILED", "Failed to get AI route optimization data")
 
 @router.get("/ai/behavior-analytics", response_model=Dict[str, Any])
 async def get_ai_behavior_analytics(
@@ -3119,9 +3295,9 @@ async def get_ai_behavior_analytics(
         logger.info(f"Admin {current_admin.username} requested AI behavior analytics")
         return data
 
-    except Exception as e:
-        logger.error(f"Error getting AI behavior analytics: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get AI behavior analytics: {str(e)}")
+    except Exception:
+        logger.exception("Error in get_ai_behavior_analytics")
+        raise route_internal_error("ERR_ADMIN_COMP_AI_BEHAVIOR_ANALYTICS_FAILED", "Failed to get AI behavior analytics")
 
 
 class FactionBountyRequest(BaseModel):

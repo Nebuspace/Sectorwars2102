@@ -2,21 +2,26 @@
 Admin API routes for managing factions.
 """
 
-from uuid import UUID
-from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
-from pydantic import BaseModel, Field
+import logging
 from datetime import datetime
+from typing import List, Optional
+from uuid import UUID
 
-from src.core.database import get_db
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
+
 from src.auth.admin_scopes import GALAXY_MANAGE, PLAYERS_ADJUST_REP, PLAYERS_VIEW
 from src.auth.dependencies import require_scope
-from src.models.user import User
+from src.core.database import get_db
 from src.models.faction import Faction, FactionType
-from src.services.faction_service import FactionService
-from src.services.admin_action_log_service import log_admin_action
+from src.models.user import User
 from src.services.admin_action_attempt import admin_action_attempt
+from src.services.admin_action_log_service import log_admin_action
+from src.services.faction_service import FactionService
+from src.utils.error_handling import route_internal_error
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin/factions", tags=["admin-factions"])
 
@@ -74,7 +79,7 @@ class FactionDetailResponse(BaseModel):
     logo_url: Optional[str]
     created_at: datetime
     updated_at: datetime
-    
+
     class Config:
         from_attributes = True
 
@@ -86,29 +91,35 @@ async def list_all_factions(
     admin_user: User = Depends(require_scope(PLAYERS_VIEW))
 ):
     """Get detailed list of all factions (admin only)."""
-    service = FactionService(db)
-    factions = await service.get_all_factions()
-    
-    return [
-        FactionDetailResponse(
-            id=str(faction.id),
-            name=faction.name,
-            faction_type=faction.faction_type.value,
-            description=faction.description,
-            territory_sectors=[str(sid) for sid in (faction.territory_sectors or [])],
-            home_sector_id=str(faction.home_sector_id) if faction.home_sector_id else None,
-            base_pricing_modifier=faction.base_pricing_modifier,
-            trade_specialties=faction.trade_specialties or [],
-            aggression_level=faction.aggression_level,
-            diplomacy_stance=faction.diplomacy_stance,
-            color_primary=faction.color_primary,
-            color_secondary=faction.color_secondary,
-            logo_url=faction.logo_url,
-            created_at=faction.created_at,
-            updated_at=faction.updated_at
-        )
-        for faction in factions
-    ]
+    try:
+        service = FactionService(db)
+        factions = await service.get_all_factions()
+
+        return [
+            FactionDetailResponse(
+                id=str(faction.id),
+                name=faction.name,
+                faction_type=faction.faction_type.value,
+                description=faction.description,
+                territory_sectors=[str(sid) for sid in (faction.territory_sectors or [])],
+                home_sector_id=str(faction.home_sector_id) if faction.home_sector_id else None,
+                base_pricing_modifier=faction.base_pricing_modifier,
+                trade_specialties=faction.trade_specialties or [],
+                aggression_level=faction.aggression_level,
+                diplomacy_stance=faction.diplomacy_stance,
+                color_primary=faction.color_primary,
+                color_secondary=faction.color_secondary,
+                logo_url=faction.logo_url,
+                created_at=faction.created_at,
+                updated_at=faction.updated_at
+            )
+            for faction in factions
+        ]
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Error in list_all_factions")
+        raise route_internal_error("ERR_ADMIN_FACTIONS_LIST_FAILED", "Failed to list factions")
 
 
 @router.post("/", response_model=FactionDetailResponse)
@@ -118,61 +129,67 @@ async def create_faction(
     admin_user: User = Depends(require_scope(GALAXY_MANAGE))
 ):
     """Create a new faction (admin only)."""
-    with admin_action_attempt(
-        db,
-        actor=admin_user,
-        scope_used=GALAXY_MANAGE,
-        action="faction_create",
-        target_type="faction",
-        target_id="pending",
-        payload={"name": request.name},
-    ) as attempt:
-        existing = db.query(Faction).filter(Faction.name == request.name).first()
-        if existing:
-            raise HTTPException(
-                status_code=400, detail="Faction with this name already exists"
+    try:
+        with admin_action_attempt(
+            db,
+            actor=admin_user,
+            scope_used=GALAXY_MANAGE,
+            action="faction_create",
+            target_type="faction",
+            target_id="pending",
+            payload={"name": request.name},
+        ) as attempt:
+            existing = db.query(Faction).filter(Faction.name == request.name).first()
+            if existing:
+                raise HTTPException(
+                    status_code=400, detail="Faction with this name already exists"
+                )
+
+            faction = Faction(
+                name=request.name,
+                faction_type=(
+                    request.faction_type.value
+                    if hasattr(request.faction_type, "value")
+                    else request.faction_type
+                ),
+                description=request.description,
+                base_pricing_modifier=request.base_pricing_modifier,
+                trade_specialties=request.trade_specialties,
+                aggression_level=request.aggression_level,
+                diplomacy_stance=request.diplomacy_stance,
+                color_primary=request.color_primary,
+                color_secondary=request.color_secondary,
+                logo_url=request.logo_url,
             )
 
-        faction = Faction(
-            name=request.name,
-            faction_type=(
-                request.faction_type.value
-                if hasattr(request.faction_type, "value")
-                else request.faction_type
-            ),
-            description=request.description,
-            base_pricing_modifier=request.base_pricing_modifier,
-            trade_specialties=request.trade_specialties,
-            aggression_level=request.aggression_level,
-            diplomacy_stance=request.diplomacy_stance,
-            color_primary=request.color_primary,
-            color_secondary=request.color_secondary,
-            logo_url=request.logo_url,
-        )
+            db.add(faction)
+            db.flush()
+            attempt.target_id = str(faction.id)
+            attempt.succeed(payload={"name": request.name})
+            db.refresh(faction)
 
-        db.add(faction)
-        db.flush()
-        attempt.target_id = str(faction.id)
-        attempt.succeed(payload={"name": request.name})
-        db.refresh(faction)
-
-        return FactionDetailResponse(
-            id=str(faction.id),
-            name=faction.name,
-            faction_type=faction.faction_type.value,
-            description=faction.description,
-            territory_sectors=[],
-            home_sector_id=None,
-            base_pricing_modifier=faction.base_pricing_modifier,
-            trade_specialties=faction.trade_specialties or [],
-            aggression_level=faction.aggression_level,
-            diplomacy_stance=faction.diplomacy_stance,
-            color_primary=faction.color_primary,
-            color_secondary=faction.color_secondary,
-            logo_url=faction.logo_url,
-            created_at=faction.created_at,
-            updated_at=faction.updated_at,
-        )
+            return FactionDetailResponse(
+                id=str(faction.id),
+                name=faction.name,
+                faction_type=faction.faction_type.value,
+                description=faction.description,
+                territory_sectors=[],
+                home_sector_id=None,
+                base_pricing_modifier=faction.base_pricing_modifier,
+                trade_specialties=faction.trade_specialties or [],
+                aggression_level=faction.aggression_level,
+                diplomacy_stance=faction.diplomacy_stance,
+                color_primary=faction.color_primary,
+                color_secondary=faction.color_secondary,
+                logo_url=faction.logo_url,
+                created_at=faction.created_at,
+                updated_at=faction.updated_at,
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Error in create_faction")
+        raise route_internal_error("ERR_ADMIN_FACTIONS_CREATE_FAILED", "Failed to create faction")
 
 
 @router.put("/{faction_id}", response_model=FactionDetailResponse)
@@ -183,46 +200,51 @@ async def update_faction(
     admin_user: User = Depends(require_scope(GALAXY_MANAGE))
 ):
     """Update a faction (admin only)."""
-    with admin_action_attempt(
-        db,
-        actor=admin_user,
-        scope_used=GALAXY_MANAGE,
-        action="faction_update",
-        target_type="faction",
-        target_id=str(faction_id),
-    ) as attempt:
-        service = FactionService(db)
-        faction = await service.get_faction_by_id(faction_id)
+    try:
+        with admin_action_attempt(
+            db,
+            actor=admin_user,
+            scope_used=GALAXY_MANAGE,
+            action="faction_update",
+            target_type="faction",
+            target_id=str(faction_id),
+        ) as attempt:
+            service = FactionService(db)
+            faction = await service.get_faction_by_id(faction_id)
 
-        if not faction:
-            raise HTTPException(status_code=404, detail="Faction not found")
+            if not faction:
+                raise HTTPException(status_code=404, detail="Faction not found")
 
-        update_data = request.dict(exclude_unset=True)
-        for field, value in update_data.items():
-            setattr(faction, field, value)
+            update_data = request.dict(exclude_unset=True)
+            for field, value in update_data.items():
+                setattr(faction, field, value)
 
-        faction.updated_at = datetime.utcnow()
-        attempt.succeed(payload=update_data)
-        db.refresh(faction)
+            faction.updated_at = datetime.utcnow()
+            attempt.succeed(payload=update_data)
+            db.refresh(faction)
 
-        return FactionDetailResponse(
-            id=str(faction.id),
-            name=faction.name,
-            faction_type=faction.faction_type.value,
-            description=faction.description,
-            territory_sectors=[str(sid) for sid in (faction.territory_sectors or [])],
-            home_sector_id=str(faction.home_sector_id) if faction.home_sector_id else None,
-            base_pricing_modifier=faction.base_pricing_modifier,
-            trade_specialties=faction.trade_specialties or [],
-            aggression_level=faction.aggression_level,
-            diplomacy_stance=faction.diplomacy_stance,
-            color_primary=faction.color_primary,
-            color_secondary=faction.color_secondary,
-            logo_url=faction.logo_url,
-            created_at=faction.created_at,
-            updated_at=faction.updated_at,
-        )
-
+            return FactionDetailResponse(
+                id=str(faction.id),
+                name=faction.name,
+                faction_type=faction.faction_type.value,
+                description=faction.description,
+                territory_sectors=[str(sid) for sid in (faction.territory_sectors or [])],
+                home_sector_id=str(faction.home_sector_id) if faction.home_sector_id else None,
+                base_pricing_modifier=faction.base_pricing_modifier,
+                trade_specialties=faction.trade_specialties or [],
+                aggression_level=faction.aggression_level,
+                diplomacy_stance=faction.diplomacy_stance,
+                color_primary=faction.color_primary,
+                color_secondary=faction.color_secondary,
+                logo_url=faction.logo_url,
+                created_at=faction.created_at,
+                updated_at=faction.updated_at,
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Error in update_faction")
+        raise route_internal_error("ERR_ADMIN_FACTIONS_UPDATE_FAILED", "Failed to update faction")
 
 
 @router.put("/{faction_id}/territory")
@@ -233,34 +255,42 @@ async def update_faction_territory(
     admin_user: User = Depends(require_scope(GALAXY_MANAGE))
 ):
     """Update faction territory control (admin only)."""
-    service = FactionService(db)
-    
-    # Convert string UUIDs to UUID objects
-    sector_ids = [UUID(sid) for sid in request.sector_ids]
-    
-    log_admin_action(
-        db,
-        actor=admin_user,
-        scope_used=GALAXY_MANAGE,
-        action="faction_territory_update",
-        target_type="faction",
-        target_id=str(faction_id),
-        payload={"sector_count": len(request.sector_ids)},
-    )
+    try:
+        service = FactionService(db)
 
-    faction = await service.update_faction_territory(faction_id, sector_ids)
-    
-    if request.home_sector_id:
-        faction.home_sector_id = UUID(request.home_sector_id)
-        db.commit()
-    
-    return {
-        "success": True,
-        "faction_id": str(faction_id),
-        "faction_name": faction.name,
-        "territory_count": len(sector_ids),
-        "home_sector_id": str(faction.home_sector_id) if faction.home_sector_id else None
-    }
+        sector_ids = [UUID(sid) for sid in request.sector_ids]
+
+        log_admin_action(
+            db,
+            actor=admin_user,
+            scope_used=GALAXY_MANAGE,
+            action="faction_territory_update",
+            target_type="faction",
+            target_id=str(faction_id),
+            payload={"sector_count": len(request.sector_ids)},
+        )
+
+        faction = await service.update_faction_territory(faction_id, sector_ids)
+
+        if request.home_sector_id:
+            faction.home_sector_id = UUID(request.home_sector_id)
+            db.commit()
+
+        return {
+            "success": True,
+            "faction_id": str(faction_id),
+            "faction_name": faction.name,
+            "territory_count": len(sector_ids),
+            "home_sector_id": str(faction.home_sector_id) if faction.home_sector_id else None
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Error in update_faction_territory")
+        raise route_internal_error(
+            "ERR_ADMIN_FACTIONS_TERRITORY_UPDATE_FAILED",
+            "Failed to update faction territory",
+        )
 
 
 @router.put("/{faction_id}/reputation")
@@ -271,37 +301,44 @@ async def update_player_reputation(
     admin_user: User = Depends(require_scope(PLAYERS_ADJUST_REP))
 ):
     """Update a player's reputation with a faction (admin only)."""
-    service = FactionService(db)
-    
-    # Verify faction exists
-    faction = await service.get_faction_by_id(faction_id)
-    if not faction:
-        raise HTTPException(status_code=404, detail="Faction not found")
-    
-    # Update reputation
-    log_admin_action(
-        db,
-        actor=admin_user,
-        scope_used=PLAYERS_ADJUST_REP,
-        action="faction_reputation_update",
-        target_type="player",
-        target_id=str(request.player_id),
-        payload={"faction_id": str(faction_id), "change": request.change},
-    )
+    try:
+        service = FactionService(db)
 
-    reputation = await service.update_reputation(
-        player_id=UUID(request.player_id),
-        faction_id=faction_id,
-        change=request.change,
-        reason=request.reason
-    )
-    
-    return {
-        "success": True,
-        "player_id": request.player_id,
-        "faction_name": faction.name,
-        "old_value": reputation.current_value - request.change,
-        "new_value": reputation.current_value,
-        "new_level": reputation.current_level.value,
-        "new_title": reputation.title
-    }
+        faction = await service.get_faction_by_id(faction_id)
+        if not faction:
+            raise HTTPException(status_code=404, detail="Faction not found")
+
+        log_admin_action(
+            db,
+            actor=admin_user,
+            scope_used=PLAYERS_ADJUST_REP,
+            action="faction_reputation_update",
+            target_type="player",
+            target_id=str(request.player_id),
+            payload={"faction_id": str(faction_id), "change": request.change},
+        )
+
+        reputation = await service.update_reputation(
+            player_id=UUID(request.player_id),
+            faction_id=faction_id,
+            change=request.change,
+            reason=request.reason
+        )
+
+        return {
+            "success": True,
+            "player_id": request.player_id,
+            "faction_name": faction.name,
+            "old_value": reputation.current_value - request.change,
+            "new_value": reputation.current_value,
+            "new_level": reputation.current_level.value,
+            "new_title": reputation.title
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Error in update_player_reputation")
+        raise route_internal_error(
+            "ERR_ADMIN_FACTIONS_REPUTATION_UPDATE_FAILED",
+            "Failed to update player reputation",
+        )

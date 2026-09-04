@@ -30,6 +30,12 @@ from src.services.market_prediction_engine import (
     PricePrediction as EnginePricePrediction,
     TradeOpportunity as EngineTradeOpportunity,
 )
+from src.utils.error_handling import route_internal_error
+
+ERR_MARKET_PREDICTION_PREDICT_FAILED = "ERR_MARKET_PREDICTION_PREDICT_FAILED"
+ERR_MARKET_PREDICTION_BATCH_FAILED = "ERR_MARKET_PREDICTION_BATCH_FAILED"
+ERR_MARKET_PREDICTION_OPPORTUNITIES_FAILED = "ERR_MARKET_PREDICTION_OPPORTUNITIES_FAILED"
+ERR_MARKET_PREDICTION_ANALYSIS_FAILED = "ERR_MARKET_PREDICTION_ANALYSIS_FAILED"
 
 logger = logging.getLogger(__name__)
 
@@ -110,9 +116,9 @@ async def predict_price(
         )
     except Exception:
         logger.exception("Price prediction failed for commodity %s", commodity)
-        raise HTTPException(
-            status_code=500,
-            detail="Market prediction is temporarily unavailable",
+        raise route_internal_error(
+            ERR_MARKET_PREDICTION_PREDICT_FAILED,
+            "Market prediction is temporarily unavailable",
         )
     if prediction is None or (isinstance(prediction, dict) and prediction.get("status") == "error"):
         raise HTTPException(
@@ -140,9 +146,9 @@ async def predict_all_prices(
         )
     except Exception:
         logger.exception("Batch price prediction failed")
-        raise HTTPException(
-            status_code=500,
-            detail="Market prediction is temporarily unavailable",
+        raise route_internal_error(
+            ERR_MARKET_PREDICTION_BATCH_FAILED,
+            "Market prediction is temporarily unavailable",
         )
     if isinstance(predictions, dict) and predictions.get("status") == "error":
         raise HTTPException(
@@ -171,9 +177,9 @@ async def find_opportunities(
         )
     except Exception:
         logger.exception("Opportunity scan failed")
-        raise HTTPException(
-            status_code=500,
-            detail="Market opportunity scan is temporarily unavailable",
+        raise route_internal_error(
+            ERR_MARKET_PREDICTION_OPPORTUNITIES_FAILED,
+            "Market opportunity scan is temporarily unavailable",
         )
     if isinstance(opportunities, dict) and opportunities.get("status") == "error":
         raise HTTPException(
@@ -199,9 +205,9 @@ async def commodity_analysis(
         )
     except Exception:
         logger.exception("Commodity analysis failed for %s", commodity)
-        raise HTTPException(
-            status_code=500,
-            detail="Market analysis is temporarily unavailable",
+        raise route_internal_error(
+            ERR_MARKET_PREDICTION_ANALYSIS_FAILED,
+            "Market analysis is temporarily unavailable",
         )
     if isinstance(result, dict) and result.get("status") == "error":
         raise HTTPException(

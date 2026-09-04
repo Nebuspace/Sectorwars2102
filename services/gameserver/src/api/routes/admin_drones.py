@@ -5,6 +5,7 @@ Provides administrative control over all drones in the game.
 """
 
 import json
+import logging
 from uuid import UUID
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
@@ -19,7 +20,12 @@ from src.models.drone import Drone, DroneDeployment, DroneCombat
 from src.models.user import User
 from src.services.drone_service import DroneService
 from src.services.admin_action_log_service import log_admin_action
+from src.utils.error_handling import route_internal_error
 
+logger = logging.getLogger(__name__)
+
+ERR_ADMIN_DRONES_LIST_FAILED = "ERR_ADMIN_DRONES_LIST_FAILED"
+ERR_ADMIN_DRONES_STATISTICS_FAILED = "ERR_ADMIN_DRONES_STATISTICS_FAILED"
 
 router = APIRouter(prefix="/admin/drones", tags=["admin-drones"])
 
@@ -63,52 +69,58 @@ async def get_all_drones(
     db: AsyncSession = Depends(get_async_session)
 ):
     """Get all drones with optional filters."""
-    query = select(Drone)
+    try:
+        query = select(Drone)
     
-    if player_id:
-        query = query.where(Drone.player_id == player_id)
-    if team_id:
-        query = query.where(Drone.team_id == team_id)
-    if sector_id:
-        query = query.where(Drone.sector_id == sector_id)
-    if drone_type:
-        query = query.where(Drone.drone_type == drone_type)
-    if status:
-        query = query.where(Drone.status == status)
+        if player_id:
+            query = query.where(Drone.player_id == player_id)
+        if team_id:
+            query = query.where(Drone.team_id == team_id)
+        if sector_id:
+            query = query.where(Drone.sector_id == sector_id)
+        if drone_type:
+            query = query.where(Drone.drone_type == drone_type)
+        if status:
+            query = query.where(Drone.status == status)
+            
+        query = query.offset(skip).limit(limit)
         
-    query = query.offset(skip).limit(limit)
-    
-    result = await db.execute(query)
-    drones = result.scalars().all()
-    
-    # Convert to dict for JSON serialization
-    return [
-        {
-            "id": str(drone.id),
-            "player_id": str(drone.player_id),
-            "team_id": str(drone.team_id) if drone.team_id else None,
-            "drone_type": drone.drone_type,
-            "name": drone.name,
-            "level": drone.level,
-            "health": drone.health,
-            "max_health": drone.max_health,
-            "attack_power": drone.attack_power,
-            "defense_power": drone.defense_power,
-            "speed": drone.speed,
-            "status": drone.status,
-            "sector_id": str(drone.sector_id) if drone.sector_id else None,
-            "deployed_at": drone.deployed_at.isoformat() if drone.deployed_at else None,
-            "last_action": drone.last_action.isoformat() if drone.last_action else None,
-            "kills": drone.kills,
-            "damage_dealt": drone.damage_dealt,
-            "damage_taken": drone.damage_taken,
-            "battles_fought": drone.battles_fought,
-            "abilities": drone.abilities,
-            "created_at": drone.created_at.isoformat(),
-            "destroyed_at": drone.destroyed_at.isoformat() if drone.destroyed_at else None
-        }
-        for drone in drones
-    ]
+        result = await db.execute(query)
+        drones = result.scalars().all()
+        
+        # Convert to dict for JSON serialization
+        return [
+            {
+                "id": str(drone.id),
+                "player_id": str(drone.player_id),
+                "team_id": str(drone.team_id) if drone.team_id else None,
+                "drone_type": drone.drone_type,
+                "name": drone.name,
+                "level": drone.level,
+                "health": drone.health,
+                "max_health": drone.max_health,
+                "attack_power": drone.attack_power,
+                "defense_power": drone.defense_power,
+                "speed": drone.speed,
+                "status": drone.status,
+                "sector_id": str(drone.sector_id) if drone.sector_id else None,
+                "deployed_at": drone.deployed_at.isoformat() if drone.deployed_at else None,
+                "last_action": drone.last_action.isoformat() if drone.last_action else None,
+                "kills": drone.kills,
+                "damage_dealt": drone.damage_dealt,
+                "damage_taken": drone.damage_taken,
+                "battles_fought": drone.battles_fought,
+                "abilities": drone.abilities,
+                "created_at": drone.created_at.isoformat(),
+                "destroyed_at": drone.destroyed_at.isoformat() if drone.destroyed_at else None
+            }
+            for drone in drones
+        ]
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Error in get_all_drones")
+        raise route_internal_error(ERR_ADMIN_DRONES_LIST_FAILED, "Failed to list drones")
 
 
 @router.get("/statistics", response_model=DroneStatistics)
@@ -117,70 +129,79 @@ async def get_drone_statistics(
     db: AsyncSession = Depends(get_async_session)
 ):
     """Get overall drone statistics."""
-    # Total drones
-    total_result = await db.execute(select(func.count(Drone.id)))
-    total_drones = total_result.scalar() or 0
-    
-    # Active drones (not destroyed)
-    active_result = await db.execute(
-        select(func.count(Drone.id))
-        .where(Drone.status != "destroyed")
-    )
-    active_drones = active_result.scalar() or 0
-    
-    # Destroyed drones
-    destroyed_drones = total_drones - active_drones
-    
-    # Deployed drones
-    deployed_result = await db.execute(
-        select(func.count(Drone.id))
-        .where(Drone.status == "deployed")
-    )
-    deployed_drones = deployed_result.scalar() or 0
-    
-    # In combat drones
-    combat_result = await db.execute(
-        select(func.count(Drone.id))
-        .where(Drone.status == "combat")
-    )
-    in_combat_drones = combat_result.scalar() or 0
-    
-    # Drones by type
-    type_result = await db.execute(
-        select(Drone.drone_type, func.count(Drone.id))
-        .group_by(Drone.drone_type)
-    )
-    drones_by_type = {row[0]: row[1] for row in type_result}
-    
-    # Average level
-    avg_level_result = await db.execute(
-        select(func.avg(Drone.level))
-        .where(Drone.status != "destroyed")
-    )
-    average_level = float(avg_level_result.scalar() or 1.0)
-    
-    # Total kills and battles
-    stats_result = await db.execute(
-        select(
-            func.sum(Drone.kills),
-            func.sum(Drone.battles_fought)
+    try:
+        # Total drones
+        total_result = await db.execute(select(func.count(Drone.id)))
+        total_drones = total_result.scalar() or 0
+        
+        # Active drones (not destroyed)
+        active_result = await db.execute(
+            select(func.count(Drone.id))
+            .where(Drone.status != "destroyed")
         )
-    )
-    stats_row = stats_result.first()
-    total_kills = stats_row[0] or 0
-    total_battles = stats_row[1] or 0
-    
-    return DroneStatistics(
-        total_drones=total_drones,
-        active_drones=active_drones,
-        destroyed_drones=destroyed_drones,
-        deployed_drones=deployed_drones,
-        in_combat_drones=in_combat_drones,
-        drones_by_type=drones_by_type,
-        average_level=average_level,
-        total_kills=total_kills,
-        total_battles=total_battles
-    )
+        active_drones = active_result.scalar() or 0
+        
+        # Destroyed drones
+        destroyed_drones = total_drones - active_drones
+        
+        # Deployed drones
+        deployed_result = await db.execute(
+            select(func.count(Drone.id))
+            .where(Drone.status == "deployed")
+        )
+        deployed_drones = deployed_result.scalar() or 0
+        
+        # In combat drones
+        combat_result = await db.execute(
+            select(func.count(Drone.id))
+            .where(Drone.status == "combat")
+        )
+        in_combat_drones = combat_result.scalar() or 0
+        
+        # Drones by type
+        type_result = await db.execute(
+            select(Drone.drone_type, func.count(Drone.id))
+            .group_by(Drone.drone_type)
+        )
+        drones_by_type = {row[0]: row[1] for row in type_result}
+        
+        # Average level
+        avg_level_result = await db.execute(
+            select(func.avg(Drone.level))
+            .where(Drone.status != "destroyed")
+        )
+        average_level = float(avg_level_result.scalar() or 1.0)
+        
+        # Total kills and battles
+        stats_result = await db.execute(
+            select(
+                func.sum(Drone.kills),
+                func.sum(Drone.battles_fought)
+            )
+        )
+        stats_row = stats_result.first()
+        total_kills = stats_row[0] or 0
+        total_battles = stats_row[1] or 0
+        
+        return DroneStatistics(
+            total_drones=total_drones,
+            active_drones=active_drones,
+            destroyed_drones=destroyed_drones,
+            deployed_drones=deployed_drones,
+            in_combat_drones=in_combat_drones,
+            drones_by_type=drones_by_type,
+            average_level=average_level,
+            total_kills=total_kills,
+            total_battles=total_battles
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Error in get_drone_statistics")
+        raise route_internal_error(
+            ERR_ADMIN_DRONES_STATISTICS_FAILED,
+            "Failed to fetch drone statistics",
+        )
 
 
 def _parse_combat_log(raw: Optional[str]) -> Optional[list]:
