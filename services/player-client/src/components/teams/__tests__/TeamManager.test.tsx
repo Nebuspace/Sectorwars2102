@@ -452,6 +452,7 @@ describe('TeamManager', () => {
       expect(container.querySelector('.team-stats .members')?.textContent).toContain('1/10');
     });
 
+    // LEG-4224 Soft-ORDER — kick mutation surfaces GS detail via formatTeamManagerMutationError
     it('shows memberActionError and does not remove the member on a kick failure', async () => {
       mockGetMembers.mockResolvedValue([rawMember({ player_id: 'p2' })]);
       mockKickMember.mockRejectedValue(new Error('cannot kick the leader'));
@@ -610,6 +611,7 @@ describe('TeamManager', () => {
       expect(errorSpy).toHaveBeenCalled();
     });
 
+    // LEG-4224 Soft-ORDER — create mutation preserves GS detail via formatTeamManagerMutationError
     it('shows createError and keeps the modal open on a createTeam rejection', async () => {
       mockCreateTeam.mockRejectedValue(new Error('insufficient credits'));
       await openModal();
@@ -620,6 +622,7 @@ describe('TeamManager', () => {
       expect(container.querySelector('.team-modal-overlay')).not.toBeNull();
     });
 
+    // LEG-4224 Soft-ORDER — create mutation bare status falls back (not raw API Error: N)
     it('shows honest create fallback when createTeam rejects bare API Error: 400', async () => {
       mockCreateTeam.mockRejectedValue(Object.assign(new Error('API Error: 400'), { status: 400 }));
       await openModal();
