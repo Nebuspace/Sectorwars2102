@@ -72,6 +72,10 @@ from src.models.migration_contract import MigrationContract, MigrationContractSt
 # SQLAlchemy's declarative class registry to resolve at mapper-configure
 # time, so this WO adds the missing registration as a necessary byproduct.
 from src.models.contract import Contract
+from src.models.player_direct_relationship import (
+    PlayerDirectRelationship,
+    ContractPostingBlock,
+)
 from src.models.npc_character import (
     NPCCharacter,
     NPCArchetype,
@@ -93,6 +97,7 @@ from src.models.sector_faction_influence import SectorFactionInfluence
 from src.models.medal import Medal, PlayerMedal
 from src.models.bounty_claim import BountyClaim, BountyClaimStatus
 from src.models.region_invite import RegionInvite, RegionInviteStatus, RegionInviteRedemption
+from src.models.takeover_intent import TakeoverIntent, TakeoverIntentStatus
 from src.models.claim_license import ClaimLicense
 from src.models.mining_harvest import MiningHarvest, MiningHarvestStatus
 from src.models.player_trade import (
@@ -121,3 +126,4 @@ from src.models.storage_locker import (
 from src.models.admin_scope_grant import AdminScopeGrant
 from src.models.admin_action_log import AdminActionLog
 from src.models.player_central_bank import PlayerCentralBankAccount
+from src.models.player_npc_encounter import PlayerNpcEncounter

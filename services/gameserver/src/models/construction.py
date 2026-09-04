@@ -104,6 +104,10 @@ class ConstructionReservation(Base):
     # DESC). 0 = no bumps purchased, byte-unchanged promotion order.
     priority_bumps_count = Column(Integer, nullable=False, default=0)
 
+    # Per-project Space Engineer assignments (LEG-3599): list of
+    # {"planet_id": "<uuid>", "count": <int>} entries, capped at 3 total.
+    assigned_engineers = Column(JSONB, nullable=False, default=list)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
