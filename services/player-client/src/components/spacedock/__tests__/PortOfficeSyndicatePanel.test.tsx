@@ -13,6 +13,9 @@ const inviteShare = vi.fn();
 const acceptShareInvite = vi.fn();
 const declineShareInvite = vi.fn();
 const syndicateBuyout = vi.fn();
+const proposeStakeTransfer = vi.fn();
+const approveStakeTransfer = vi.fn();
+const rejectStakeTransfer = vi.fn();
 const refreshPlayerState = vi.fn();
 
 let mockPlayerState: { id?: string } | null = { id: 'owner-1' };
@@ -24,6 +27,9 @@ vi.mock('../../../services/api', () => ({
     acceptShareInvite: (...args: unknown[]) => acceptShareInvite(...args),
     declineShareInvite: (...args: unknown[]) => declineShareInvite(...args),
     syndicateBuyout: (...args: unknown[]) => syndicateBuyout(...args),
+    proposeStakeTransfer: (...args: unknown[]) => proposeStakeTransfer(...args),
+    approveStakeTransfer: (...args: unknown[]) => approveStakeTransfer(...args),
+    rejectStakeTransfer: (...args: unknown[]) => rejectStakeTransfer(...args),
   },
 }));
 
@@ -74,6 +80,9 @@ describe('PortOfficeSyndicatePanel', () => {
     acceptShareInvite.mockReset();
     declineShareInvite.mockReset();
     syndicateBuyout.mockReset();
+    proposeStakeTransfer.mockReset();
+    approveStakeTransfer.mockReset();
+    rejectStakeTransfer.mockReset();
     refreshPlayerState.mockReset();
     refreshPlayerState.mockResolvedValue(undefined);
     mockPlayerState = { id: 'owner-1' };
@@ -266,5 +275,283 @@ describe('PortOfficeSyndicatePanel', () => {
     const text = container.querySelector('[data-testid="po-syndicate-msg"]')?.textContent;
     expect(text).toMatch(/rate limit/i);
     expect(text).not.toMatch(/\b429\b/);
+  });
+
+  it('shows stake-transfer propose form for syndicate shareholders (LEG-4237)', async () => {
+    getSyndicateStatus.mockResolvedValue({
+      station_id: 'st-1',
+      owner_id: 'owner-1',
+      mode: 'syndicate',
+      shares: [
+        { player_id: 'owner-1', pct: 60 },
+        { player_id: 'other-2', pct: 40 },
+      ],
+      pending_invites: [],
+      is_primary: true,
+    });
+
+    await act(async () => {
+      root.render(<PortOfficeSyndicatePanel stationId="st-1" stationName="Dock" />);
+      await flush();
+    });
+
+    expect(container.querySelector('[data-testid="po-syndicate-xfer-form"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="po-syndicate-xfer-submit"]')).toBeTruthy();
+  });
+
+  it('propose applied path refreshes shares without inventing pending list (LEG-4237)', async () => {
+    getSyndicateStatus
+      .mockResolvedValueOnce({
+        station_id: 'st-1',
+        owner_id: 'owner-1',
+        mode: 'syndicate',
+        shares: [
+          { player_id: 'owner-1', pct: 60 },
+          { player_id: 'other-2', pct: 40 },
+        ],
+        pending_invites: [],
+        is_primary: true,
+      })
+      .mockResolvedValueOnce({
+        station_id: 'st-1',
+        owner_id: 'owner-1',
+        mode: 'syndicate',
+        shares: [
+          { player_id: 'owner-1', pct: 50 },
+          { player_id: 'other-2', pct: 50 },
+        ],
+        pending_invites: [],
+        is_primary: true,
+      });
+    proposeStakeTransfer.mockResolvedValue({
+      proposal: {
+        proposal_id: 'xfer-1',
+        from_player_id: 'owner-1',
+        to_player_id: 'other-2',
+        pct: 10,
+        status: 'applied',
+        approvals: [{ player_id: 'owner-1' }],
+      },
+      shares: [
+        { player_id: 'owner-1', pct: 50 },
+        { player_id: 'other-2', pct: 50 },
+      ],
+    });
+
+    await act(async () => {
+      root.render(<PortOfficeSyndicatePanel stationId="st-1" stationName="Dock" />);
+      await flush();
+    });
+
+    const setReactInput = (el: HTMLInputElement, value: string) => {
+      const proto = window.HTMLInputElement.prototype;
+      const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+      desc?.set?.call(el, value);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+
+    const target = container.querySelector(
+      '[data-testid="po-syndicate-xfer-target"]',
+    ) as HTMLInputElement;
+    const pct = container.querySelector(
+      '[data-testid="po-syndicate-xfer-pct"]',
+    ) as HTMLInputElement;
+    await act(async () => {
+      setReactInput(target, 'other-2');
+      setReactInput(pct, '10');
+      await flush();
+    });
+
+    const submit = container.querySelector(
+      '[data-testid="po-syndicate-xfer-submit"]',
+    ) as HTMLButtonElement;
+    await act(async () => {
+      submit.click();
+      await flush();
+    });
+
+    expect(proposeStakeTransfer).toHaveBeenCalledWith('st-1', 'other-2', 10);
+    expect(refreshPlayerState).toHaveBeenCalled();
+    expect(getSyndicateStatus.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(container.querySelector('[data-testid="po-syndicate-xfer-pending"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="po-syndicate-share-owner-1"]')?.textContent).toMatch(
+      /50%/,
+    );
+  });
+
+  it('pending propose hides Approve for auto-approved proposer; Reject remains (LEG-4237)', async () => {
+    mockPlayerState = { id: 'other-2' };
+    getSyndicateStatus.mockResolvedValue({
+      station_id: 'st-1',
+      owner_id: 'owner-1',
+      mode: 'syndicate',
+      shares: [
+        { player_id: 'owner-1', pct: 40 },
+        { player_id: 'other-2', pct: 60 },
+      ],
+      pending_invites: [],
+      is_primary: false,
+    });
+    proposeStakeTransfer.mockResolvedValue({
+      proposal: {
+        proposal_id: 'xfer-9',
+        from_player_id: 'other-2',
+        to_player_id: 'owner-1',
+        pct: 5,
+        status: 'pending',
+        remaining_stake_pct: 95,
+        approving_weight: 55,
+        approvals: [{ player_id: 'other-2' }],
+      },
+    });
+
+    await act(async () => {
+      root.render(<PortOfficeSyndicatePanel stationId="st-1" stationName="Dock" />);
+      await flush();
+    });
+
+    const setReactInput = (el: HTMLInputElement, value: string) => {
+      const proto = window.HTMLInputElement.prototype;
+      const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+      desc?.set?.call(el, value);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+    await act(async () => {
+      setReactInput(
+        container.querySelector('[data-testid="po-syndicate-xfer-target"]') as HTMLInputElement,
+        'owner-1',
+      );
+      await flush();
+    });
+    await act(async () => {
+      (container.querySelector('[data-testid="po-syndicate-xfer-submit"]') as HTMLButtonElement).click();
+      await flush();
+    });
+
+    expect(container.querySelector('[data-testid="po-syndicate-xfer-pending"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="po-syndicate-xfer-approve-xfer-9"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="po-syndicate-xfer-reject-xfer-9"]')).toBeTruthy();
+  });
+
+  it('approve calls LEG-4236 route when pending card has Approve (LEG-4237)', async () => {
+    // Owner holds 40% — propose 10% leaves remaining weight 30; threshold needs peer.
+    // Approvals list empty in response so Approve stays visible for this seat (test harness).
+    getSyndicateStatus.mockResolvedValue({
+      station_id: 'st-1',
+      owner_id: 'owner-1',
+      mode: 'syndicate',
+      shares: [
+        { player_id: 'owner-1', pct: 40 },
+        { player_id: 'other-2', pct: 60 },
+      ],
+      pending_invites: [],
+      is_primary: true,
+    });
+    proposeStakeTransfer.mockResolvedValue({
+      proposal: {
+        proposal_id: 'xfer-peer',
+        from_player_id: 'owner-1',
+        to_player_id: 'newbie-3',
+        pct: 10,
+        status: 'pending',
+        remaining_stake_pct: 90,
+        approving_weight: 0,
+        approvals: [],
+      },
+    });
+    approveStakeTransfer.mockResolvedValue({
+      proposal: {
+        proposal_id: 'xfer-peer',
+        from_player_id: 'owner-1',
+        to_player_id: 'newbie-3',
+        pct: 10,
+        status: 'applied',
+        approvals: [{ player_id: 'owner-1' }],
+      },
+      shares: [
+        { player_id: 'owner-1', pct: 30 },
+        { player_id: 'other-2', pct: 60 },
+        { player_id: 'newbie-3', pct: 10 },
+      ],
+    });
+
+    await act(async () => {
+      root.render(<PortOfficeSyndicatePanel stationId="st-1" stationName="Dock" />);
+      await flush();
+    });
+
+    const setReactInput = (el: HTMLInputElement, value: string) => {
+      const proto = window.HTMLInputElement.prototype;
+      const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+      desc?.set?.call(el, value);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+    await act(async () => {
+      setReactInput(
+        container.querySelector('[data-testid="po-syndicate-xfer-target"]') as HTMLInputElement,
+        'newbie-3',
+      );
+      await flush();
+    });
+    await act(async () => {
+      (container.querySelector('[data-testid="po-syndicate-xfer-submit"]') as HTMLButtonElement).click();
+      await flush();
+    });
+
+    const approve = container.querySelector(
+      '[data-testid="po-syndicate-xfer-approve-xfer-peer"]',
+    ) as HTMLButtonElement;
+    expect(approve).toBeTruthy();
+    await act(async () => {
+      approve.click();
+      await flush();
+    });
+    expect(approveStakeTransfer).toHaveBeenCalledWith('st-1', 'xfer-peer');
+  });
+
+  it('surfaces 403 stake-transfer propose with densify copy (LEG-4237)', async () => {
+    getSyndicateStatus.mockResolvedValue({
+      station_id: 'st-1',
+      owner_id: 'owner-1',
+      mode: 'syndicate',
+      shares: [
+        { player_id: 'owner-1', pct: 60 },
+        { player_id: 'other-2', pct: 40 },
+      ],
+      pending_invites: [],
+      is_primary: true,
+    });
+    proposeStakeTransfer.mockRejectedValue(apiRequestError(403));
+
+    await act(async () => {
+      root.render(<PortOfficeSyndicatePanel stationId="st-1" stationName="Dock" />);
+      await flush();
+    });
+
+    const setReactInput = (el: HTMLInputElement, value: string) => {
+      const proto = window.HTMLInputElement.prototype;
+      const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+      desc?.set?.call(el, value);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+    await act(async () => {
+      setReactInput(
+        container.querySelector('[data-testid="po-syndicate-xfer-target"]') as HTMLInputElement,
+        'other-2',
+      );
+      await flush();
+    });
+    await act(async () => {
+      (container.querySelector('[data-testid="po-syndicate-xfer-submit"]') as HTMLButtonElement).click();
+      await flush();
+    });
+
+    const text = container.querySelector('[data-testid="po-syndicate-msg"]')?.textContent;
+    expect(text).toMatch(/permission/i);
+    expect(text).not.toMatch(/\b403\b/);
   });
 });

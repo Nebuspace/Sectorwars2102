@@ -2795,6 +2795,26 @@ export const portOwnershipAPI = {
       method: 'POST',
     }),
 
+  // Syndicate stake-transfer propose/approve/reject (port-ownership.md § Syndicate) — tip GS LEG-4236.
+  // Paths under /api/v1/stations/{id}/… (NOT under /port-ownership/), same as castGovernanceVote.
+  proposeStakeTransfer: (stationId: string, toPlayerId: string, pct: number) =>
+    apiRequest(`/api/v1/stations/${stationId}/syndicate/stake-transfer`, {
+      method: 'POST',
+      body: JSON.stringify({ to_player_id: toPlayerId, pct }),
+    }),
+
+  approveStakeTransfer: (stationId: string, proposalId: string) =>
+    apiRequest(
+      `/api/v1/stations/${stationId}/syndicate/stake-transfer/${proposalId}/approve`,
+      { method: 'POST' },
+    ),
+
+  rejectStakeTransfer: (stationId: string, proposalId: string) =>
+    apiRequest(
+      `/api/v1/stations/${stationId}/syndicate/stake-transfer/${proposalId}/reject`,
+      { method: 'POST' },
+    ),
+
   // Syndicate co-owner policy vote (port-ownership.md § Syndicate policy votes) — tip GS LEG-301 / LEG-4121.
   // Path is /api/v1/stations/{id}/governance/vote (NOT under /port-ownership/).
   castGovernanceVote: (

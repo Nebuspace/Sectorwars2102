@@ -704,6 +704,64 @@ describe('apiRequest via trade/combat/grey wrappers', () => {
     );
   });
 
+  it('portOwnershipAPI.proposeStakeTransfer POSTs /stations/{id}/syndicate/stake-transfer (LEG-4237)', async () => {
+    post.mockResolvedValue({
+      data: {
+        proposal: {
+          proposal_id: 'xfer-1',
+          from_player_id: 'owner-1',
+          to_player_id: 'other-2',
+          pct: 10,
+          status: 'pending',
+        },
+      },
+    });
+    const out = await portOwnershipAPI.proposeStakeTransfer('st-1', 'other-2', 10);
+    expect(out).toEqual({
+      proposal: {
+        proposal_id: 'xfer-1',
+        from_player_id: 'owner-1',
+        to_player_id: 'other-2',
+        pct: 10,
+        status: 'pending',
+      },
+    });
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/stations/st-1/syndicate/stake-transfer',
+      JSON.stringify({ to_player_id: 'other-2', pct: 10 }),
+      jsonHeaders,
+    );
+  });
+
+  it('portOwnershipAPI.approveStakeTransfer POSTs …/stake-transfer/{id}/approve (LEG-4237)', async () => {
+    post.mockResolvedValue({
+      data: { proposal: { proposal_id: 'xfer-1', status: 'applied' }, shares: [] },
+    });
+    const out = await portOwnershipAPI.approveStakeTransfer('st-1', 'xfer-1');
+    expect(out).toEqual({
+      proposal: { proposal_id: 'xfer-1', status: 'applied' },
+      shares: [],
+    });
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/stations/st-1/syndicate/stake-transfer/xfer-1/approve',
+      undefined,
+      jsonHeaders,
+    );
+  });
+
+  it('portOwnershipAPI.rejectStakeTransfer POSTs …/stake-transfer/{id}/reject (LEG-4237)', async () => {
+    post.mockResolvedValue({
+      data: { proposal: { proposal_id: 'xfer-1', status: 'rejected' } },
+    });
+    const out = await portOwnershipAPI.rejectStakeTransfer('st-1', 'xfer-1');
+    expect(out).toEqual({ proposal: { proposal_id: 'xfer-1', status: 'rejected' } });
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/stations/st-1/syndicate/stake-transfer/xfer-1/reject',
+      undefined,
+      jsonHeaders,
+    );
+  });
+
   it('portOwnershipAPI.castGovernanceVote POSTs /stations/{id}/governance/vote (LEG-4121)', async () => {
     post.mockResolvedValue({
       data: {
