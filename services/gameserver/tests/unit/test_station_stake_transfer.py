@@ -205,3 +205,119 @@ class TestApproveReject:
         # Shares unchanged
         shares = station.ownership["co_ownership_shares"]
         assert sum(int(s["pct"]) for s in shares) == 100
+
+
+class TestPendingListOnStatus:
+    """LEG-4238: pending proposals visible to co-owners via syndicate GET."""
+
+    def _station_with_mixed_transfers(self):
+        owner_id, other_id, target_id, stranger_id = (
+            uuid4(),
+            uuid4(),
+            uuid4(),
+            uuid4(),
+        )
+        pending_id = str(uuid4())
+        applied_id = str(uuid4())
+        snap = [
+            {"player_id": str(owner_id), "pct": 60},
+            {"player_id": str(other_id), "pct": 40},
+        ]
+        station = SimpleNamespace(
+            id=uuid4(),
+            owner_id=owner_id,
+            ownership={
+                SYNDICATE_MODE_KEY: "syndicate",
+                "co_ownership_shares": [
+                    {"player_id": str(owner_id), "pct": 60},
+                    {"player_id": str(other_id), "pct": 40},
+                ],
+                xfer.STAKE_TRANSFERS_KEY: [
+                    {
+                        "proposal_id": pending_id,
+                        "from_player_id": str(owner_id),
+                        "to_player_id": str(target_id),
+                        "pct": 20,
+                        "status": "pending",
+                        "share_snapshot": snap,
+                        "approvals": [
+                            {
+                                "player_id": str(owner_id),
+                                "at": FIXED_NOW.isoformat(),
+                            }
+                        ],
+                        "approving_weight": 40,
+                        "remaining_stake_pct": 80,
+                        "created_at": FIXED_NOW.isoformat(),
+                        "resolved_at": None,
+                    },
+                    {
+                        "proposal_id": applied_id,
+                        "from_player_id": str(other_id),
+                        "to_player_id": str(target_id),
+                        "pct": 5,
+                        "status": "applied",
+                        "share_snapshot": snap,
+                        "approvals": [],
+                        "approving_weight": 50,
+                        "remaining_stake_pct": 95,
+                        "created_at": FIXED_NOW.isoformat(),
+                        "resolved_at": FIXED_NOW.isoformat(),
+                    },
+                ],
+            },
+            treasury_balance=0,
+        )
+        return station, owner_id, other_id, pending_id, stranger_id
+
+    def test_helper_lists_only_pending(self):
+        station, _, _, pending_id, _ = self._station_with_mixed_transfers()
+        listed = xfer.pending_stake_transfers_for(station)
+        assert len(listed) == 1
+        prop = listed[0]
+        assert prop["proposal_id"] == pending_id
+        assert prop["status"] == "pending"
+        for key in (
+            "from_player_id",
+            "to_player_id",
+            "pct",
+            "approving_weight",
+            "remaining_stake_pct",
+        ):
+            assert key in prop
+
+    def test_get_syndicate_status_co_owner_sees_pending(self):
+        from src.services import port_ownership_service as pos
+
+        station, owner_id, _, pending_id, _ = self._station_with_mixed_transfers()
+        owner = SimpleNamespace(id=owner_id)
+        db = MagicMock()
+        with (
+            patch.object(pos, "_lock_station", return_value=station),
+            patch.object(pos, "_expire_syndicate_invites"),
+            patch.object(pos, "maybe_run_scheduled_withdrawal"),
+            patch.object(pos, "forfeit_inactive_syndicate_stakes"),
+        ):
+            result = pos.get_syndicate_status(db, station, owner, FIXED_NOW)
+        pending = result["pending_stake_transfers"]
+        assert len(pending) == 1
+        assert pending[0]["proposal_id"] == pending_id
+        assert pending[0]["pct"] == 20
+        assert pending[0]["approving_weight"] == 40
+        assert pending[0]["remaining_stake_pct"] == 80
+        assert pending[0]["status"] == "pending"
+
+    def test_get_syndicate_status_non_member_empty(self):
+        from src.services import port_ownership_service as pos
+
+        station, _, _, _, stranger_id = self._station_with_mixed_transfers()
+        stranger = SimpleNamespace(id=stranger_id)
+        db = MagicMock()
+        with (
+            patch.object(pos, "_lock_station", return_value=station),
+            patch.object(pos, "_expire_syndicate_invites"),
+            patch.object(pos, "maybe_run_scheduled_withdrawal"),
+            patch.object(pos, "forfeit_inactive_syndicate_stakes"),
+        ):
+            result = pos.get_syndicate_status(db, station, stranger, FIXED_NOW)
+        assert result["pending_stake_transfers"] == []
