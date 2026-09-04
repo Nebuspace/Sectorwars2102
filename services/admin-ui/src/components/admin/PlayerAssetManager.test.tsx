@@ -246,3 +246,115 @@ describe('PlayerAssetManager pirate-holding indicator (LEG-4193)', () => {
     ).toBe(false);
   });
 });
+
+describe('PlayerAssetManager owned pirate holdings (LEG-4213)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  function mockBaseAssets(holdingsResponse?: { holdings?: unknown[] } | Error) {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/admin/ships')) {
+        return { data: { ships: [] } };
+      }
+      if (String(url).includes('/admin/planets')) {
+        return { data: { planets: [] } };
+      }
+      if (String(url).includes('/admin/ports')) {
+        return { data: { ports: [] } };
+      }
+      if (String(url).includes('/admin/sectors')) {
+        return { data: { sectors: [], total: 0 } };
+      }
+      if (String(url) === '/api/v1/admin/pirate-holdings') {
+        if (holdingsResponse instanceof Error) throw holdingsResponse;
+        return { data: holdingsResponse ?? { holdings: [] } };
+      }
+      return { data: {} };
+    });
+  }
+
+  it('loads by-owner GET once when Pirate Holdings tab is opened', async () => {
+    mockBaseAssets({
+      holdings: [
+        {
+          id: 'h1',
+          tier: 'outpost',
+          sector_id: 7,
+          outlaw_base_id: 'ob1',
+          current_strength: 12,
+        },
+      ],
+    });
+
+    render(
+      <PlayerAssetManager player={player} onClose={() => {}} onUpdate={() => {}} />,
+    );
+
+    await waitFor(() => {
+      expect(api.get).toHaveBeenCalledWith(expect.stringContaining('/admin/ships'));
+    });
+
+    fireEvent.click(screen.getByTestId('owned-pirate-holdings-tab'));
+
+    await waitFor(() => {
+      expect(api.get).toHaveBeenCalledWith('/api/v1/admin/pirate-holdings', {
+        params: { owner_player_id: 'p1' },
+      });
+    });
+
+    expect(await screen.findByTestId('owned-pirate-holding-row-h1')).toBeTruthy();
+    expect(screen.getByText(/sector_id: 7/)).toBeTruthy();
+    expect(screen.getByText(/outlaw_base_id: ob1/)).toBeTruthy();
+
+    // One by-owner GET — no sector pirate-holdings N+1
+    const pirateCalls = vi
+      .mocked(api.get)
+      .mock.calls.filter(([url]) => String(url).includes('/pirate-holdings'));
+    expect(pirateCalls).toHaveLength(1);
+    expect(pirateCalls[0][0]).toBe('/api/v1/admin/pirate-holdings');
+  });
+
+  it('shows honest empty state when by-owner list is empty', async () => {
+    mockBaseAssets({ holdings: [] });
+
+    render(
+      <PlayerAssetManager player={player} onClose={() => {}} onUpdate={() => {}} />,
+    );
+
+    await waitFor(() => {
+      expect(api.get).toHaveBeenCalledWith(expect.stringContaining('/admin/ships'));
+    });
+
+    fireEvent.click(screen.getByTestId('owned-pirate-holdings-tab'));
+
+    expect(await screen.findByTestId('owned-pirate-holdings-empty')).toHaveTextContent(
+      /No pirate holdings owned/i,
+    );
+    expect(screen.queryByTestId(/owned-pirate-holding-row-/)).toBeNull();
+  });
+
+  it('surfaces by-owner GET failure via formatAdminApiError without fabricating rows', async () => {
+    mockBaseAssets(
+      Object.assign(new Error('HTTP 403'), {
+        response: { status: 403, data: { detail: 'Missing PLAYERS_VIEW' } },
+      }),
+    );
+
+    render(
+      <PlayerAssetManager player={player} onClose={() => {}} onUpdate={() => {}} />,
+    );
+
+    await waitFor(() => {
+      expect(api.get).toHaveBeenCalledWith(expect.stringContaining('/admin/ships'));
+    });
+
+    fireEvent.click(screen.getByTestId('owned-pirate-holdings-tab'));
+
+    const alert = await screen.findByTestId('owned-pirate-holdings-error');
+    expect(alert.textContent ?? '').toMatch(/Missing PLAYERS_VIEW|Access denied/i);
+    expect(screen.queryByTestId('owned-pirate-holdings-empty')).toBeNull();
+    expect(screen.queryByTestId(/owned-pirate-holding-row-/)).toBeNull();
+  });
+});
