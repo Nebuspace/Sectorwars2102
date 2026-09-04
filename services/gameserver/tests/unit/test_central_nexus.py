@@ -148,7 +148,9 @@ class TestGenerateCentralNexusExistingShortCircuit:
     @pytest.mark.asyncio
     async def test_existing_nexus_short_circuits_without_double_await(self):
         nexus_service = NexusGenerationService()
-        existing_region = Region(id=uuid.uuid4(), name="central-nexus")
+        existing_region = Region(
+            id=uuid.uuid4(), name="central-nexus", is_populated=True
+        )
 
         session = AsyncMock()
         session.execute = AsyncMock(

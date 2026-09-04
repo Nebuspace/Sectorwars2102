@@ -32,6 +32,7 @@ from src.models.planet import Planet
 from src.models.region import Region, RegionStatus
 from src.models.sector import Sector
 from src.models.station import Station
+from src.models.takeover_intent import TakeoverIntent
 from src.services import region_lifecycle_service
 from src.services.realtime_outbox import RealtimeOutbox
 from src.services.scheduler import economy_governance_sweeps
@@ -186,6 +187,8 @@ class FakeRegionLifecycleSession:
             return _FakeEmptyQuery(self)
         if owner is Sector:
             return _FakeEmptyQuery(self)
+        if owner is TakeoverIntent:
+            return _FakeEmptyQuery(self)
         raise AssertionError(f"unexpected query owner {owner!r}")
 
     def execute(self, stmt):
@@ -203,6 +206,9 @@ class FakeRegionLifecycleSession:
         self.commits += 1
 
     def rollback(self):
+        pass
+
+    def flush(self):
         pass
 
 
@@ -361,9 +367,9 @@ class TestAdvanceToTerminated:
 # --------------------------------------------------------------------------- #
 
 class TestDispatchTerminatedCleanup_feat:
-    def test_eligible_region_dispatches_cascade_without_stamping(self, monkeypatch) -> None:
-        """Station termination cascade runs; do NOT stamp cleanup_completed_at
-        until a future WO decides the marker semantics (cycle26-design-flags)."""
+    def test_eligible_region_dispatches_cascade_and_stamps(self, monkeypatch) -> None:
+        """Station termination cascade runs; stamp cleanup_completed_at once
+        planet/station/gate cascades finish (cycle26-design-flags-fix)."""
         region = FakeRegionRow(
             status=RegionStatus.TERMINATED,
             scheduled_hard_delete_at=_NOW - timedelta(hours=1),
@@ -385,7 +391,7 @@ class TestDispatchTerminatedCleanup_feat:
         assert result["cleanup_eligible"] == 1
         assert isinstance(result["_outbox"], RealtimeOutbox)
         assert region.status == RegionStatus.TERMINATED  # cleanup doesn't change status
-        assert region.cleanup_completed_at is None  # deferred until stations are real
+        assert region.cleanup_completed_at == _NOW
         assert station_calls == [region.id]  # cascade dispatched for the right region
         assert gate_calls == [region.id]  # ADR-0052 SK38 gate teardown dispatched for the right region
 
@@ -443,10 +449,9 @@ class TestDispatchTerminatedCleanup_feat:
         assert result["cleanup_eligible"] == 0
         assert isinstance(result["_outbox"], RealtimeOutbox)
 
-    def test_uncompensated_region_redispatches_daily(self, monkeypatch) -> None:
-        """Without cleanup_completed_at, eligible regions re-enter each tick;
-        planet/gate idempotency (termination_compensated_at / COLLAPSED)
-        prevents double-payout — this only asserts the region stays eligible."""
+    def test_stamped_region_not_redispatched(self, monkeypatch) -> None:
+        """Once cleanup_completed_at is stamped, the region is excluded from
+        subsequent ticks even if still past hard-delete."""
         region = FakeRegionRow(
             status=RegionStatus.TERMINATED,
             scheduled_hard_delete_at=_NOW - timedelta(hours=1),
@@ -466,16 +471,16 @@ class TestDispatchTerminatedCleanup_feat:
         region_lifecycle_service.dispatch_terminated_cleanup(session, now=_NOW)
         region_lifecycle_service.dispatch_terminated_cleanup(session, now=_NOW)
 
-        assert len(station_calls) == 2
-        assert region.cleanup_completed_at is None
+        assert len(station_calls) == 1
+        assert region.cleanup_completed_at == _NOW
 
 
 # --------------------------------------------------------------------------- #
-# dispatch_terminated_cleanup -- discovery only, never writes
+# dispatch_terminated_cleanup -- completion stamp
 # --------------------------------------------------------------------------- #
 
 class TestDispatchTerminatedCleanup:
-    def test_eligible_region_counted_never_mutated(self) -> None:
+    def test_eligible_region_stamps_cleanup_completed_at(self) -> None:
         region = FakeRegionRow(
             status=RegionStatus.TERMINATED,
             scheduled_hard_delete_at=_NOW - timedelta(hours=1),
@@ -487,7 +492,7 @@ class TestDispatchTerminatedCleanup:
         assert result["cleanup_eligible"] == 1
         assert isinstance(result["_outbox"], RealtimeOutbox)
         assert region.status == RegionStatus.TERMINATED  # untouched
-        assert session.executes == 0  # read-only -- no UPDATE issued
+        assert region.cleanup_completed_at == _NOW
 
     def test_not_yet_due_region_excluded(self) -> None:
         region = FakeRegionRow(

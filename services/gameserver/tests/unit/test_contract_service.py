@@ -38,10 +38,11 @@ from src.models.contract import (
 from src.models.ship import Ship, ShipType
 from src.models.station import StationStatus
 from src.models.faction import FactionType
-from src.services import contract_bulk, contract_dispute, contract_escrow_core, contract_service, storage_service
+from src.services import contract_bulk, contract_dispute, contract_escrow_core, contract_reputation_service, contract_service, storage_service
 from src.services.contract_service import (
     ContractConflictError,
     ContractError,
+    ContractForbiddenError,
     ContractNotFoundError,
 )
 
@@ -158,10 +159,14 @@ class _FakeSession:
     def __init__(
         self, *, contracts: Optional[List[Any]] = None, players: Optional[List[Any]] = None,
         stations: Optional[List[Any]] = None,
+        direct_relationships: Optional[List[Any]] = None,
+        posting_blocks: Optional[List[Any]] = None,
     ) -> None:
         self.contracts = contracts or []
         self.players = players or []
         self.stations = stations or []
+        self.direct_relationships = direct_relationships or []
+        self.posting_blocks = posting_blocks or []
         self.flush_calls = 0
 
     def query(self, model: Any) -> _FakeQuery:
@@ -173,6 +178,14 @@ class _FakeSession:
         from src.models.station import Station
         if model is Station:
             return _FakeQuery(self.stations)
+        from src.models.player_direct_relationship import (
+            ContractPostingBlock,
+            PlayerDirectRelationship,
+        )
+        if model is PlayerDirectRelationship:
+            return _FakeQuery(self.direct_relationships)
+        if model is ContractPostingBlock:
+            return _FakeQuery(self.posting_blocks)
         raise AssertionError(f"unexpected query for {model!r}")
 
     def execute(self, stmt: Any) -> _FakeResult:
@@ -379,10 +392,134 @@ class TestAccept:
         monkeypatch.setattr(
             contract_service, "_acceptor_hostile_to_issuer", lambda db, a, i: True,
         )
-        with pytest.raises(contract_service.ContractError, match="hostility"):
+        with pytest.raises(ContractForbiddenError, match="hostility"):
             contract_service.accept(db, c.id, acceptor.id, now=_NOW)
         assert acceptor.credits == 500  # feeless — rejected before charge
         assert c.status == ContractStatus.POSTED
+
+    def test_pairwise_block_blocks_player_issuer_accept(self) -> None:
+        """LEG-3994: acceptor blocked issuer → accept 403-class refuse."""
+        issuer = _player()
+        acceptor = _player(credits=500)
+        c = _contract(
+            issuer_type=ContractIssuerType.PLAYER,
+            issuer_id=issuer.id,
+            payment=Decimal("1000.00"),
+            acceptance_fee_pct=Decimal("2.0"),
+        )
+        rel = SimpleNamespace(
+            viewer_player_id=acceptor.id,
+            subject_player_id=issuer.id,
+            reputation=0,
+            is_blocked=True,
+        )
+        db = _FakeSession(
+            contracts=[c],
+            players=[acceptor, issuer],
+            direct_relationships=[rel],
+        )
+        with pytest.raises(ContractForbiddenError, match="blocklisted"):
+            contract_service.accept(db, c.id, acceptor.id, now=_NOW)
+        assert acceptor.credits == 500
+        assert c.status == ContractStatus.POSTED
+
+    def test_pairwise_hostility_from_relationship_row(self) -> None:
+        """LEG-3994: negative direct-relationship reputation → hostility gate."""
+        issuer = _player()
+        acceptor = _player(credits=500)
+        c = _contract(
+            issuer_type=ContractIssuerType.PLAYER,
+            issuer_id=issuer.id,
+            payment=Decimal("1000.00"),
+            acceptance_fee_pct=Decimal("2.0"),
+        )
+        rel = SimpleNamespace(
+            viewer_player_id=acceptor.id,
+            subject_player_id=issuer.id,
+            reputation=-1,
+            is_blocked=False,
+        )
+        db = _FakeSession(
+            contracts=[c],
+            players=[acceptor, issuer],
+            direct_relationships=[rel],
+        )
+        with pytest.raises(ContractForbiddenError, match="hostility"):
+            contract_service.accept(db, c.id, acceptor.id, now=_NOW)
+        assert acceptor.credits == 500
+
+    def test_is_player_blocklisted_pairwise_true_when_acceptor_blocked_issuer(self) -> None:
+        issuer = _player()
+        acceptor = _player()
+        rel = SimpleNamespace(
+            viewer_player_id=acceptor.id,
+            subject_player_id=issuer.id,
+            reputation=0,
+            is_blocked=True,
+        )
+        db = _FakeSession(direct_relationships=[rel])
+        assert contract_service._is_player_blocklisted(
+            db, issuer.id, acceptor_player_id=acceptor.id,
+        ) is True
+        # No block row for a different viewer → False
+        other = _player()
+        assert contract_service._is_player_blocklisted(
+            db, issuer.id, acceptor_player_id=other.id,
+        ) is False
+
+    def test_is_player_blocklisted_false_when_not_blocked(self) -> None:
+        issuer = _player()
+        acceptor = _player()
+        rel = SimpleNamespace(
+            viewer_player_id=acceptor.id,
+            subject_player_id=issuer.id,
+            reputation=5,
+            is_blocked=False,
+        )
+        db = _FakeSession(direct_relationships=[rel])
+        assert contract_service._is_player_blocklisted(
+            db, issuer.id, acceptor_player_id=acceptor.id,
+        ) is False
+
+    def test_acceptor_hostile_true_on_negative_reputation(self) -> None:
+        issuer = _player()
+        acceptor = _player()
+        rel = SimpleNamespace(
+            viewer_player_id=acceptor.id,
+            subject_player_id=issuer.id,
+            reputation=-10,
+            is_blocked=False,
+        )
+        db = _FakeSession(direct_relationships=[rel])
+        assert contract_service._acceptor_hostile_to_issuer(
+            db, acceptor.id, issuer.id,
+        ) is True
+
+    def test_acceptor_hostile_false_when_missing_or_non_negative(self) -> None:
+        issuer = _player()
+        acceptor = _player()
+        db = _FakeSession(direct_relationships=[])
+        assert contract_service._acceptor_hostile_to_issuer(
+            db, acceptor.id, issuer.id,
+        ) is False
+        rel = SimpleNamespace(
+            viewer_player_id=acceptor.id,
+            subject_player_id=issuer.id,
+            reputation=0,
+            is_blocked=False,
+        )
+        db2 = _FakeSession(direct_relationships=[rel])
+        assert contract_service._acceptor_hostile_to_issuer(
+            db2, acceptor.id, issuer.id,
+        ) is False
+
+    def test_platform_posting_block_via_contract_posting_blocks(self) -> None:
+        issuer = _player()
+        block = SimpleNamespace(player_id=issuer.id)
+        db = _FakeSession(posting_blocks=[block])
+        assert contract_service._is_player_blocklisted(db, issuer.id) is True
+        db2 = _FakeSession(posting_blocks=[])
+        assert contract_service._is_player_blocklisted(db2, issuer.id) is False
 
     def test_hostility_seam_skipped_for_npc_issuer(
         self, monkeypatch: pytest.MonkeyPatch,
@@ -2488,6 +2625,62 @@ class TestResolveDispute:
         db = _FakeSession(contracts=[c], players=[acceptor])
         with pytest.raises(ContractError, match="unknown_outcome"):
             contract_service.resolve_dispute(db, c.id, uuid.uuid4(), "not_a_real_outcome", now=_NOW)
+
+    def test_full_payout_applies_dispute_reputation_reward(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """LEG-2071: resolve_dispute wires contract_reputation_service."""
+        calls: List[Any] = []
+        monkeypatch.setattr(
+            contract_reputation_service, "apply_faction_rep_delta",
+            lambda db, pid, ft, delta, reason, faction_name=None: calls.append(
+                (pid, ft, delta, reason)
+            ),
+        )
+        faction = SimpleNamespace(
+            id=uuid.uuid4(), faction_type=FactionType.MINING, name="Test Mining",
+        )
+        c = self._disputed_contract(reputation_reward=30, faction=faction, faction_id=faction.id)
+        acceptor = _player(credits=5000)
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[acceptor])
+
+        contract_service.resolve_dispute(
+            db, c.id, uuid.uuid4(), ContractDisputeResolution.FULL_PAYOUT, now=_NOW,
+        )
+
+        assert len(calls) == 1
+        assert calls[0][0] == acceptor.id
+        assert calls[0][1] == FactionType.MINING
+        assert calls[0][2] == 30
+        assert calls[0][3] == "dispute_full_payout_reputation_reward"
+
+    def test_penalty_applies_doubled_reputation_penalty_after_resolve(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """LEG-2071: PENALTY reputation runs after guarded transition (pause lifted)."""
+        calls: List[Any] = []
+        monkeypatch.setattr(
+            contract_reputation_service, "apply_faction_rep_delta",
+            lambda db, pid, ft, delta, reason, faction_name=None: calls.append(
+                (pid, ft, delta, reason)
+            ),
+        )
+        faction = SimpleNamespace(
+            id=uuid.uuid4(), faction_type=FactionType.FEDERATION, name="Federation",
+        )
+        c = self._disputed_contract(reputation_penalty=-25, faction=faction, faction_id=faction.id)
+        acceptor = _player(credits=5000)
+        c.acceptor_player_id = acceptor.id
+        db = _FakeSession(contracts=[c], players=[acceptor])
+
+        contract_service.resolve_dispute(
+            db, c.id, uuid.uuid4(), ContractDisputeResolution.PENALTY, now=_NOW,
+        )
+
+        assert len(calls) == 1
+        assert calls[0][0] == acceptor.id
+        assert calls[0][1] == FactionType.FEDERATION
+        assert calls[0][2] == -50
+        assert calls[0][3] == "dispute_penalty_doubled_reputation_penalty"
 
 
 @pytest.mark.unit
