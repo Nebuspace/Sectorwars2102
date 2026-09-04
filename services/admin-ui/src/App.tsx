@@ -58,6 +58,7 @@ const MultiAccountReview = lazy(() => import('./components/pages/MultiAccountRev
 const ScopesManager = lazy(() => import('./components/pages/ScopesManager'));
 const AdminActionLogPage = lazy(() => import('./components/pages/AdminActionLogPage'));
 const TranslationManagement = lazy(() => import('./components/pages/TranslationManagement'));
+const OutlawBaseDetail = lazy(() => import('./components/pages/OutlawBaseDetail'));
 const NotFound = lazy(() => import('./components/pages/NotFound'));
 
 // Helper component for protected lazy routes.
@@ -137,6 +138,8 @@ function App() {
                 <Route path="scopes" element={<ProtectedLazyRoute element={<ScopesManager />} />} />
                 <Route path="audit" element={<ProtectedLazyRoute element={<AdminActionLogPage />} />} />
                 <Route path="translations" element={<ProtectedLazyRoute element={<TranslationManagement />} />} />
+                {/* LEG-4212 — read-only OutlawBase inspect (deep-link target) */}
+                <Route path="outlaw-bases/:id" element={<ProtectedLazyRoute element={<OutlawBaseDetail />} />} />
 
                 {/* Redirect root to dashboard */}
                 <Route path="/" element={<Navigate to="/dashboard" replace />} />
