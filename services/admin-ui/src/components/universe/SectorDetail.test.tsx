@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import SectorDetail from './SectorDetail';
 import { api } from '../../utils/auth';
 
@@ -49,7 +50,20 @@ function mockLoads(holdingsPayload: unknown) {
   });
 }
 
-describe('SectorDetail pirate holdings (LEG-4178)', () => {
+function renderSectorDetail() {
+  return render(
+    <MemoryRouter>
+      <SectorDetail
+        sector={sector}
+        onBack={() => undefined}
+        onPortClick={() => undefined}
+        onPlanetClick={() => undefined}
+      />
+    </MemoryRouter>,
+  );
+}
+
+describe('SectorDetail pirate holdings (LEG-4178 / LEG-4196)', () => {
   beforeEach(() => {
     vi.mocked(api.get).mockReset();
     vi.mocked(api.post).mockReset();
@@ -59,14 +73,7 @@ describe('SectorDetail pirate holdings (LEG-4178)', () => {
   it('fetches admin pirate-holdings during loadSectorDetails', async () => {
     mockLoads({ holdings: [] });
 
-    render(
-      <SectorDetail
-        sector={sector}
-        onBack={() => undefined}
-        onPortClick={() => undefined}
-        onPlanetClick={() => undefined}
-      />,
-    );
+    renderSectorDetail();
 
     await waitFor(() => {
       expect(vi.mocked(api.get)).toHaveBeenCalledWith(
@@ -78,14 +85,7 @@ describe('SectorDetail pirate holdings (LEG-4178)', () => {
   it('shows an honest empty state when holdings is empty', async () => {
     mockLoads({ holdings: [] });
 
-    render(
-      <SectorDetail
-        sector={sector}
-        onBack={() => undefined}
-        onPortClick={() => undefined}
-        onPlanetClick={() => undefined}
-      />,
-    );
+    renderSectorDetail();
 
     expect(await screen.findByTestId('pirate-holdings-empty')).toHaveTextContent(
       'No pirate holdings in this sector.',
@@ -95,7 +95,7 @@ describe('SectorDetail pirate holdings (LEG-4178)', () => {
     expect(screen.queryByRole('button', { name: /capture|initiate/i })).toBeNull();
   });
 
-  it('lists present holdings and shows outlaw_base_id when GET includes a non-null value', async () => {
+  it('lists present holdings and deep-links outlaw_base_id when GET includes a non-null value', async () => {
     mockLoads({
       holdings: [
         {
@@ -120,14 +120,7 @@ describe('SectorDetail pirate holdings (LEG-4178)', () => {
       ],
     });
 
-    render(
-      <SectorDetail
-        sector={sector}
-        onBack={() => undefined}
-        onPortClick={() => undefined}
-        onPlanetClick={() => undefined}
-      />,
-    );
+    renderSectorDetail();
 
     const row1 = await screen.findByTestId('pirate-holding-row-hold-1');
     expect(row1).toHaveTextContent('id: hold-1');
@@ -142,6 +135,9 @@ describe('SectorDetail pirate holdings (LEG-4178)', () => {
     expect(row1).toHaveTextContent('outlaw_base_id: base-uuid-111');
     expect(row1).not.toHaveTextContent('must-not-render');
 
+    const link = screen.getByTestId('pirate-holding-outlaw-base-link-hold-1');
+    expect(link).toHaveAttribute('href', '/outlaw-bases/base-uuid-111');
+
     const row2 = screen.getByTestId('pirate-holding-row-hold-2');
     expect(row2).toHaveTextContent('owner: player-3');
     expect(row2).toHaveTextContent('combat lock: none');
@@ -151,6 +147,7 @@ describe('SectorDetail pirate holdings (LEG-4178)', () => {
     expect(row2).toHaveTextContent('region_id: —');
     expect(row2).toHaveTextContent('sector_id: —');
     expect(row2).toHaveTextContent('outlaw_base_id: —');
+    expect(screen.queryByTestId('pirate-holding-outlaw-base-link-hold-2')).toBeNull();
     expect(screen.queryByRole('button', { name: /capture|initiate/i })).toBeNull();
   });
 
@@ -168,14 +165,7 @@ describe('SectorDetail pirate holdings (LEG-4178)', () => {
       ],
     });
 
-    render(
-      <SectorDetail
-        sector={sector}
-        onBack={() => undefined}
-        onPortClick={() => undefined}
-        onPlanetClick={() => undefined}
-      />,
-    );
+    renderSectorDetail();
 
     const row = await screen.findByTestId('pirate-holding-row-hold-nulls');
     expect(row).toHaveTextContent('current_strength: —');
@@ -185,6 +175,7 @@ describe('SectorDetail pirate holdings (LEG-4178)', () => {
     expect(row).not.toHaveTextContent('sector_id: 42');
     expect(row).toHaveTextContent('outlaw_base_id: —');
     expect(row).not.toHaveTextContent('base-uuid-111');
+    expect(screen.queryByTestId(/pirate-holding-outlaw-base-link-/)).toBeNull();
   });
 
   it('treats 404 as empty without a loadError alert', async () => {
@@ -198,14 +189,7 @@ describe('SectorDetail pirate holdings (LEG-4178)', () => {
       throw Object.assign(new Error('HTTP 404'), { response: { status: 404 } });
     });
 
-    render(
-      <SectorDetail
-        sector={sector}
-        onBack={() => undefined}
-        onPortClick={() => undefined}
-        onPlanetClick={() => undefined}
-      />,
-    );
+    renderSectorDetail();
 
     expect(await screen.findByTestId('pirate-holdings-empty')).toBeTruthy();
     expect(screen.queryByRole('alert')).toBeNull();
@@ -222,14 +206,7 @@ describe('SectorDetail pirate holdings (LEG-4178)', () => {
       throw Object.assign(new Error('HTTP 404'), { response: { status: 404 } });
     });
 
-    render(
-      <SectorDetail
-        sector={sector}
-        onBack={() => undefined}
-        onPortClick={() => undefined}
-        onPlanetClick={() => undefined}
-      />,
-    );
+    renderSectorDetail();
 
     await waitFor(() => {
       expect(screen.getByRole('alert')).toBeTruthy();
@@ -250,14 +227,7 @@ describe('SectorDetail pirate holdings (LEG-4178)', () => {
       throw Object.assign(new Error('HTTP 404'), { response: { status: 404 } });
     });
 
-    render(
-      <SectorDetail
-        sector={sector}
-        onBack={() => undefined}
-        onPortClick={() => undefined}
-        onPlanetClick={() => undefined}
-      />,
-    );
+    renderSectorDetail();
 
     await waitFor(() => {
       expect(screen.getByRole('alert')).toBeTruthy();
