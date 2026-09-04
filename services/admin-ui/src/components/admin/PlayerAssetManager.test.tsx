@@ -254,7 +254,7 @@ describe('PlayerAssetManager owned pirate holdings (LEG-4213)', () => {
   });
 
   function mockBaseAssets(holdingsResponse?: { holdings?: unknown[] } | Error) {
-    vi.mocked(api.get).mockImplementation(async (url: string, config?: { params?: Record<string, unknown> }) => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
       if (String(url).includes('/admin/ships')) {
         return { data: { ships: [] } };
       }
