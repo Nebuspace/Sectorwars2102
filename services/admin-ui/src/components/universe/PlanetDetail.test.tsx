@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import PlanetDetail, { buildPlanetPatchPayload, resolvePlanetAdminSectorId } from './PlanetDetail';
 import { api } from '../../utils/auth';
 
@@ -367,7 +368,7 @@ describe('PlanetDetail pirate holdings (LEG-4191)', () => {
     expect(screen.queryByTestId(/pirate-holding-row-/)).toBeNull();
   });
 
-  it('lists present holdings and shows outlaw_base_id when GET includes a non-null value', async () => {
+  it('lists present holdings and deep-links outlaw_base_id when GET includes a non-null value', async () => {
     vi.mocked(api.get).mockResolvedValue({
       data: {
         holdings: [
@@ -381,7 +382,11 @@ describe('PlanetDetail pirate holdings (LEG-4191)', () => {
         ],
       },
     });
-    render(<PlanetDetail planet={{ ...basePlanet, sector_id: 42 }} onBack={() => undefined} />);
+    render(
+      <MemoryRouter>
+        <PlanetDetail planet={{ ...basePlanet, sector_id: 42 }} onBack={() => undefined} />
+      </MemoryRouter>,
+    );
 
     const row1 = await screen.findByTestId('pirate-holding-row-hold-1');
     expect(row1).toHaveTextContent('id: hold-1');
@@ -390,10 +395,14 @@ describe('PlanetDetail pirate holdings (LEG-4191)', () => {
     expect(row1).toHaveTextContent('outlaw_base_id: base-uuid-111');
     expect(row1).not.toHaveTextContent('must-not-render');
 
+    const link = screen.getByTestId('pirate-holding-outlaw-base-link-hold-1');
+    expect(link).toHaveAttribute('href', '/outlaw-bases/base-uuid-111');
+
     const row2 = screen.getByTestId('pirate-holding-row-hold-2');
     expect(row2).toHaveTextContent('owner: player-3');
     expect(row2).toHaveTextContent('tier: —');
     expect(row2).toHaveTextContent('outlaw_base_id: —');
+    expect(screen.queryByTestId('pirate-holding-outlaw-base-link-hold-2')).toBeNull();
     expect(screen.queryByRole('button', { name: /capture|initiate/i })).toBeNull();
   });
 
