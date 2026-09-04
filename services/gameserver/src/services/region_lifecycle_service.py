@@ -20,27 +20,40 @@ Phase 7 of the daily governance sweep) owns the commit.
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
-from sqlalchemy import exists, or_, update
+from sqlalchemy import exists, or_, select, text, update
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from src.models.pirate_holding import PirateHolding
 from src.models.planet import Planet
 from src.models.player import Player
-from src.models.region import Region, RegionStatus
+from src.models.region import Region, RegionStatus, RegionType
+from src.models.takeover_intent import TakeoverIntent, TakeoverIntentStatus
 from src.models.sector import Sector
 from src.models.ship import Ship
 from src.models.station import Station
+from src.models.user import User
 from src.models.warp_gate import WarpGate, WarpGateBeacon
 from src.services.realtime_outbox import RealtimeOutbox
 from src.services.region_termination_cascade_service import (
     dispatch_station_termination,
     process_planet_termination,
 )
+from src.services.paypal_service import paypal_service
+from src.services.scheduler._common import region_lock_key
 from src.services.warp_gate_service import cascade_region_gate_teardown
 
 logger = logging.getLogger(__name__)
+
+# Region GC-subscription takeover (LEG-3764 / SYSTEMS/region-lifecycle.md).
+ERR_REGION_NOT_AVAILABLE_FOR_TAKEOVER = "ERR_REGION_NOT_AVAILABLE_FOR_TAKEOVER"
+ERR_GALACTIC_CITIZEN_REQUIRED = "ERR_GALACTIC_CITIZEN_REQUIRED"
+ERR_ONE_REGION_PER_OWNER = "ERR_ONE_REGION_PER_OWNER"
+ERR_REGION_NOT_FOUND = "ERR_REGION_NOT_FOUND"
+ERR_TAKEOVER_INTENT_PENDING = "ERR_TAKEOVER_INTENT_PENDING"
+TAKEOVER_PAYPAL_FLOW_HOURS = 1
 
 # ADR-0054 X-D1 -- suspended-region stakeholder-ingress error contract
 # (region-lifecycle.md's "The rule keeps stakeholders connected to their
@@ -134,24 +147,20 @@ def dispatch_terminated_cleanup(db: Session, now: Optional[datetime] = None) -> 
     commit bae0abcf) against each eligible region's planets and stations:
     ``process_planet_termination`` per planet (planet-safe transport +
     Genesis compensation), ``dispatch_station_termination`` for the region
-    as a whole (still a discovery-only stub there pending the
-    acquisition_cost/upgrade-capital blocker documented in that module --
-    this dispatch does not change that module's own scope), and
+    as a whole (live since PR #563 — Path A/B relocate/charge/lose), and
     ``cascade_region_gate_teardown`` (ADR-0052 SK38) to tear down every
     player-built warp gate with an endpoint in the region. ADR-0052 SK38
     states no ordering dependency between the gate cascade and the
     planet/station cascade -- each processes a disjoint entity type -- so
     the gate teardown runs alongside them in the same per-region pass.
 
-    Does NOT stamp ``Region.cleanup_completed_at`` while
-    ``dispatch_station_termination`` remains discovery-only
-    (WO-ESCALATE-CYCLE26-DESIGN-FLAGS / DECISIONS.md cycle26-design-flags-fix):
-    asserting "cleanup complete" while stations are never terminated is a
-    data-integrity bug. Planet re-entry is gated by
-    ``Planet.termination_compensated_at`` instead; gate teardown is already
-    status-flip idempotent. Eligibility still filters
-    ``cleanup_completed_at IS NULL`` so a future station-termination
-    implementation can stamp the region marker once and stop re-dispatch.
+    Stamps ``Region.cleanup_completed_at`` once all three cascades finish
+    for a region in this pass (WO-FIX-REGION-CLEANUP-COMPLETED-AT-STAMP /
+    DECISIONS.md cycle26-design-flags-fix update 2026-08-16: station
+    termination is no longer a stub). Planet re-entry remains gated by
+    ``Planet.termination_compensated_at``; gate teardown is status-flip
+    idempotent. Eligibility filters ``cleanup_completed_at IS NULL`` so a
+    stamped region is not re-dispatched on subsequent ticks.
 
     Flush-only -- caller owns the commit, per this codebase's
     route-owns-commit convention (mirrors both cascade functions below it).
@@ -182,12 +191,10 @@ def dispatch_terminated_cleanup(db: Session, now: Optional[datetime] = None) -> 
             process_planet_termination(db, planet, now=now, outbox=outbox)
         dispatch_station_termination(db, region.id)
         cascade_region_gate_teardown(db, region.id)
-        # Intentionally leave cleanup_completed_at NULL until station
-        # termination is real (cycle26-design-flags-fix).
+        region.cleanup_completed_at = now
         logger.info(
             "region_lifecycle: dispatched cleanup cascade for region %s "
-            "(%d planet(s) processed; cleanup_completed_at deferred — "
-            "station termination still discovery-only)",
+            "(%d planet(s) processed; cleanup_completed_at stamped)",
             region.id, len(planets),
         )
     return {"cleanup_eligible": len(eligible), "_outbox": outbox}
@@ -278,3 +285,478 @@ def is_region_stakeholder(db: Session, player_id: uuid.UUID, region_id: uuid.UUI
         return True
 
     return False
+
+
+class AdminRegionTerminationError(Exception):
+    """Business-rule rejection for admin manual region termination."""
+
+    def __init__(self, code: str, detail: str) -> None:
+        self.code = code
+        self.detail = detail
+        super().__init__(detail)
+
+
+def admin_region_terminate_preview(db: Session, region_id: uuid.UUID) -> Dict[str, Any]:
+    """Dependent-entity counts for LEG-DEC-103 multi-step confirmation."""
+    region = db.query(Region).filter(Region.id == region_id).first()
+    if region is None:
+        raise AdminRegionTerminationError("not_found", "Region not found")
+
+    planet_count = db.query(Planet).filter(Planet.region_id == region.id).count()
+    station_count = (
+        db.query(Station)
+        .join(Sector, Sector.id == Station.sector_uuid)
+        .filter(Sector.region_id == region.id)
+        .filter(Station.is_destroyed.is_(False))
+        .count()
+    )
+    sector_count = db.query(Sector).filter(Sector.region_id == region.id).count()
+    planet_owners = (
+        db.query(Planet.owner_id)
+        .filter(Planet.region_id == region.id, Planet.owner_id.isnot(None))
+        .distinct()
+        .count()
+    )
+    station_owners = (
+        db.query(Station.owner_id)
+        .join(Sector, Sector.id == Station.sector_uuid)
+        .filter(Sector.region_id == region.id, Station.owner_id.isnot(None))
+        .filter(Station.is_destroyed.is_(False))
+        .distinct()
+        .count()
+    )
+
+    return {
+        "regionId": str(region.id),
+        "regionName": region.name,
+        "displayName": region.display_name,
+        "status": region.status,
+        "regionType": region.region_type,
+        "planetCount": planet_count,
+        "stationCount": station_count,
+        "sectorCount": sector_count,
+        "playerStakeholderCount": planet_owners + station_owners,
+        "terminable": region.region_type == RegionType.PLAYER_OWNED.value
+        and region.cleanup_completed_at is None,
+    }
+
+
+def admin_execute_region_termination(
+    db: Session,
+    region_id: uuid.UUID,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Admin manual region termination (LEG-DEC-103 / LEG-3205).
+
+    Marks the region TERMINATED and runs the full cleanup cascade atomically
+    within the caller's session. The route wraps this with
+    ``admin_action_attempt`` for commit + AdminActionLog.
+    """
+    now = now or datetime.now(UTC)
+    region = (
+        db.query(Region)
+        .filter(Region.id == region_id)
+        .with_for_update()
+        .first()
+    )
+    if region is None:
+        raise AdminRegionTerminationError("not_found", "Region not found")
+
+    if region.region_type in (
+        RegionType.CENTRAL_NEXUS.value,
+        RegionType.TERRAN_SPACE.value,
+    ):
+        raise AdminRegionTerminationError(
+            "system_region",
+            "System regions (Central Nexus, Terran Space) cannot be terminated",
+        )
+
+    if region.cleanup_completed_at is not None:
+        raise AdminRegionTerminationError(
+            "already_terminated",
+            "Region cleanup already completed",
+        )
+
+    planets = db.query(Planet).filter(Planet.region_id == region.id).all()
+    region.status = RegionStatus.TERMINATED
+    region.terminated_at = now
+    region.scheduled_hard_delete_at = now
+
+    outbox = RealtimeOutbox()
+    for planet in planets:
+        process_planet_termination(db, planet, now=now, outbox=outbox)
+    station_result = dispatch_station_termination(db, region.id)
+    cascade_region_gate_teardown(db, region.id)
+    region.cleanup_completed_at = now
+
+    return {
+        "regionId": str(region.id),
+        "regionName": region.name,
+        "planetsProcessed": len(planets),
+        "stationCascade": station_result,
+        "_outbox": outbox,
+    }
+
+
+class AdminRegionTransferOwnershipError(Exception):
+    """Business-rule rejection for admin unilateral region ownership transfer."""
+
+    def __init__(self, code: str, detail: str) -> None:
+        self.code = code
+        self.detail = detail
+        super().__init__(detail)
+
+
+def admin_execute_region_ownership_transfer(
+    db: Session,
+    region_id: uuid.UUID,
+    new_owner_id: uuid.UUID,
+) -> Dict[str, Any]:
+    """Admin unilateral region ownership transfer (LEG-DEC-500 / LEG-3207).
+
+    Mutates ``Region.owner_id`` only. Caller wraps with ``admin_action_attempt``
+    for commit + AdminActionLog (actor, from, to, timestamp).
+    """
+    region = (
+        db.query(Region)
+        .filter(Region.id == region_id)
+        .with_for_update()
+        .first()
+    )
+    if region is None:
+        raise AdminRegionTransferOwnershipError("not_found", "Region not found")
+
+    if region.region_type in (
+        RegionType.CENTRAL_NEXUS.value,
+        RegionType.TERRAN_SPACE.value,
+    ):
+        raise AdminRegionTransferOwnershipError(
+            "system_region",
+            "System regions (Central Nexus, Terran Space) cannot be transferred",
+        )
+
+    if region.cleanup_completed_at is not None:
+        raise AdminRegionTransferOwnershipError(
+            "already_terminated",
+            "Region cleanup already completed",
+        )
+
+    new_owner = db.query(User).filter(User.id == new_owner_id).first()
+    if new_owner is None:
+        raise AdminRegionTransferOwnershipError(
+            "new_owner_not_found",
+            "New owner user not found",
+        )
+
+    if region.owner_id == new_owner_id:
+        raise AdminRegionTransferOwnershipError(
+            "same_owner",
+            "Region is already owned by the requested new owner",
+        )
+
+    old_owner_id = region.owner_id
+    region.owner_id = new_owner_id
+
+    return {
+        "regionId": str(region.id),
+        "regionName": region.name,
+        "oldOwnerId": str(old_owner_id) if old_owner_id else None,
+        "newOwnerId": str(new_owner_id),
+    }
+
+
+def _serialize_takeover_eligible_region(region: Region) -> Dict[str, Any]:
+    """JSON-safe region summary for takeover discovery (LEG-3956)."""
+    return {
+        "id": str(region.id),
+        "name": region.name,
+        "display_name": region.display_name,
+        "status": region.status,
+        "suspended_at": region.suspended_at.isoformat() if region.suspended_at else None,
+    }
+
+
+async def list_takeover_eligible_regions(db: AsyncSession) -> list[Dict[str, Any]]:
+    """Return suspended/grace regions available for GC-subscription takeover."""
+    result = await db.execute(
+        select(Region)
+        .where(
+            Region.status.in_(
+                (RegionStatus.SUSPENDED.value, RegionStatus.GRACE.value),
+            ),
+        )
+        .order_by(Region.name)
+    )
+    return [_serialize_takeover_eligible_region(r) for r in result.scalars().all()]
+
+
+def _serialize_takeover_intent(intent: TakeoverIntent) -> Dict[str, Any]:
+    """JSON-safe TakeoverIntent payload for the route response."""
+    return {
+        "id": str(intent.id),
+        "region_id": str(intent.region_id),
+        "caller_user_id": str(intent.caller_user_id),
+        "approval_url": intent.approval_url,
+        "status": intent.status,
+        "created_at": intent.created_at.isoformat() if intent.created_at else None,
+        "expires_at": intent.expires_at.isoformat() if intent.expires_at else None,
+        "completed_at": intent.completed_at.isoformat() if intent.completed_at else None,
+    }
+
+
+async def execute_takeover(
+    db: AsyncSession,
+    *,
+    region_id: uuid.UUID,
+    caller_user_id: uuid.UUID,
+    return_url: str,
+    cancel_url: str,
+) -> Dict[str, Any]:
+    """Initiate region GC-subscription takeover for a suspended/grace region.
+
+    Canon: SYSTEMS/region-lifecycle.md § Takeover endpoint (LEG-3764 slice 2).
+    Serializes concurrent claims via per-region advisory lock + ``SELECT FOR
+    UPDATE`` on the ``Region`` row before recording a ``TakeoverIntent``.
+    PayPal activation / ownership commit is a later webhook slice.
+    """
+    now = datetime.now(UTC)
+
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(:key)"),
+        {"key": region_lock_key(region_id)},
+    )
+
+    region_result = await db.execute(
+        select(Region).where(Region.id == region_id).with_for_update()
+    )
+    region = region_result.scalar_one_or_none()
+    if region is None:
+        return {"ok": False, "code": ERR_REGION_NOT_FOUND}
+
+    if region.status not in (RegionStatus.SUSPENDED.value, RegionStatus.GRACE.value):
+        return {"ok": False, "code": ERR_REGION_NOT_AVAILABLE_FOR_TAKEOVER}
+
+    player_result = await db.execute(
+        select(Player).where(Player.user_id == caller_user_id)
+    )
+    player = player_result.scalar_one_or_none()
+    if player is None or not player.is_galactic_citizen:
+        return {"ok": False, "code": ERR_GALACTIC_CITIZEN_REQUIRED}
+
+    owned_region_result = await db.execute(
+        select(Region.id).where(Region.owner_id == caller_user_id).limit(1)
+    )
+    if owned_region_result.scalar_one_or_none() is not None:
+        return {"ok": False, "code": ERR_ONE_REGION_PER_OWNER}
+
+    pending_result = await db.execute(
+        select(TakeoverIntent.id).where(
+            TakeoverIntent.region_id == region_id,
+            TakeoverIntent.caller_user_id == caller_user_id,
+            TakeoverIntent.status == TakeoverIntentStatus.PENDING.value,
+            TakeoverIntent.expires_at > now,
+        ).limit(1)
+    )
+    if pending_result.scalar_one_or_none() is not None:
+        return {"ok": False, "code": ERR_TAKEOVER_INTENT_PENDING}
+
+    intent = TakeoverIntent(
+        region_id=region_id,
+        caller_user_id=caller_user_id,
+        approval_url=return_url,
+        status=TakeoverIntentStatus.PENDING.value,
+        expires_at=now + timedelta(hours=TAKEOVER_PAYPAL_FLOW_HOURS),
+    )
+    db.add(intent)
+    await db.flush()
+
+    paypal_result = await paypal_service.create_regional_ownership_subscription(
+        user_id=str(caller_user_id),
+        region_name=region.name,
+        return_url=return_url,
+        cancel_url=cancel_url,
+        takeover_intent_id=str(intent.id),
+    )
+    approval_url = next(
+        (link["href"] for link in paypal_result.get("links", []) if link.get("rel") == "approve"),
+        None,
+    )
+    if not approval_url:
+        logger.error(
+            "PayPal regional subscription for region %s missing approval link",
+            region.name,
+        )
+        return {"ok": False, "code": "ERR_PAYPAL_APPROVAL_URL_MISSING"}
+
+    intent.approval_url = approval_url
+    await db.flush()
+
+    return {
+        "ok": True,
+        "intent": intent,
+        "takeover_intent": _serialize_takeover_intent(intent),
+        "subscription_id": paypal_result.get("id"),
+    }
+
+
+async def _mark_takeover_intent_lost(
+    intent: TakeoverIntent,
+    *,
+    now: datetime,
+    refund_subscription_id: Optional[str] = None,
+) -> None:
+    """Mark a takeover intent lost and best-effort refund its PayPal subscription."""
+    intent.status = TakeoverIntentStatus.LOST.value
+    intent.completed_at = now
+    if refund_subscription_id:
+        await paypal_service.refund_subscription(refund_subscription_id)
+
+
+async def commit_takeover(
+    db: AsyncSession,
+    *,
+    takeover_intent_id: uuid.UUID | str,
+    paypal_subscription_id: str,
+) -> Dict[str, Any]:
+    """Commit region ownership after PayPal ACTIVATED for a takeover intent.
+
+    Canon: ``SYSTEMS/region-lifecycle.md`` § Takeover endpoint (LEG-3775 slice 3).
+    Serializes via per-region advisory lock + ``SELECT FOR UPDATE`` on the
+    ``Region`` row. Losers are marked ``lost`` in the same transaction as the
+    winner's ``transferred`` commit; PayPal refunds run for the activating
+    subscription when the region is no longer takeover-eligible.
+    """
+    if isinstance(takeover_intent_id, str):
+        takeover_intent_id = uuid.UUID(takeover_intent_id)
+
+    now = datetime.now(UTC)
+
+    intent_result = await db.execute(
+        select(TakeoverIntent)
+        .where(TakeoverIntent.id == takeover_intent_id)
+        .with_for_update()
+    )
+    intent = intent_result.scalar_one_or_none()
+    if intent is None:
+        return {"ok": False, "code": "ERR_TAKEOVER_INTENT_NOT_FOUND"}
+
+    if intent.status == TakeoverIntentStatus.TRANSFERRED.value:
+        return {"ok": True, "code": "ALREADY_TRANSFERRED", "intent_id": str(intent.id)}
+
+    if intent.status == TakeoverIntentStatus.EXPIRED.value:
+        if paypal_subscription_id:
+            await paypal_service.refund_subscription(paypal_subscription_id)
+        return {
+            "ok": False,
+            "code": "ERR_TAKEOVER_INTENT_EXPIRED",
+            "intent_id": str(intent.id),
+        }
+
+    if intent.status != TakeoverIntentStatus.PENDING.value:
+        return {"ok": False, "code": "ERR_TAKEOVER_INTENT_TERMINAL", "status": intent.status}
+
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(:key)"),
+        {"key": region_lock_key(intent.region_id)},
+    )
+
+    region_result = await db.execute(
+        select(Region).where(Region.id == intent.region_id).with_for_update()
+    )
+    region = region_result.scalar_one_or_none()
+    if region is None:
+        await _mark_takeover_intent_lost(intent, now=now, refund_subscription_id=paypal_subscription_id)
+        return {"ok": False, "code": ERR_REGION_NOT_FOUND}
+
+    transferred_exists = await db.execute(
+        select(TakeoverIntent.id).where(
+            TakeoverIntent.region_id == intent.region_id,
+            TakeoverIntent.status == TakeoverIntentStatus.TRANSFERRED.value,
+        ).limit(1)
+    )
+    if transferred_exists.scalar_one_or_none() is not None:
+        await _mark_takeover_intent_lost(intent, now=now, refund_subscription_id=paypal_subscription_id)
+        return {"ok": False, "code": "ERR_TAKEOVER_LOST"}
+
+    if region.status not in (RegionStatus.SUSPENDED.value, RegionStatus.GRACE.value):
+        await _mark_takeover_intent_lost(intent, now=now, refund_subscription_id=paypal_subscription_id)
+        return {"ok": False, "code": ERR_REGION_NOT_AVAILABLE_FOR_TAKEOVER}
+
+    if intent.expires_at and intent.expires_at < now:
+        await _mark_takeover_intent_lost(intent, now=now, refund_subscription_id=paypal_subscription_id)
+        return {"ok": False, "code": "ERR_TAKEOVER_INTENT_EXPIRED"}
+
+    old_owner_id = region.owner_id
+    region.owner_id = intent.caller_user_id
+    region.paypal_subscription_id = paypal_subscription_id
+    region.status = RegionStatus.ACTIVE.value
+    region.subscription_status = "active"
+    region.suspended_at = None
+    region.terminated_at = None
+    region.scheduled_hard_delete_at = None
+
+    intent.status = TakeoverIntentStatus.TRANSFERRED.value
+    intent.completed_at = now
+
+    losers_result = await db.execute(
+        select(TakeoverIntent).where(
+            TakeoverIntent.region_id == intent.region_id,
+            TakeoverIntent.id != intent.id,
+            TakeoverIntent.status == TakeoverIntentStatus.PENDING.value,
+        ).with_for_update()
+    )
+    for loser in losers_result.scalars().all():
+        loser.status = TakeoverIntentStatus.LOST.value
+        loser.completed_at = now
+
+    logger.info(
+        "region takeover committed: region=%s new_owner=%s old_owner=%s intent=%s",
+        region.id,
+        intent.caller_user_id,
+        old_owner_id,
+        intent.id,
+    )
+
+    return {
+        "ok": True,
+        "region_id": str(region.id),
+        "intent_id": str(intent.id),
+        "old_owner_id": str(old_owner_id) if old_owner_id else None,
+        "new_owner_id": str(intent.caller_user_id),
+    }
+
+
+def sweep_expired_takeover_intents(
+    db: Session,
+    *,
+    now: Optional[datetime] = None,
+) -> Dict[str, int]:
+    """Mark overdue pending takeover intents ``expired`` (LEG-3791 slice 4).
+
+    Canon: ``SYSTEMS/region-lifecycle.md`` failure modes — periodic sweep
+    marks intents whose PayPal flow window elapsed; a late
+    ``BILLING.SUBSCRIPTION.ACTIVATED`` callback refunds via
+    ``commit_takeover`` when the intent is already ``expired``.
+
+    FLUSH only — the governance-sweep caller owns commit.
+    """
+    now = now or datetime.now(UTC)
+    overdue = (
+        db.query(TakeoverIntent)
+        .filter(
+            TakeoverIntent.status == TakeoverIntentStatus.PENDING.value,
+            TakeoverIntent.expires_at < now,
+        )
+        .all()
+    )
+    for intent in overdue:
+        intent.status = TakeoverIntentStatus.EXPIRED.value
+        intent.completed_at = now
+
+    if overdue:
+        db.flush()
+        logger.info(
+            "region_lifecycle: %d takeover intent(s) marked expired by sweep",
+            len(overdue),
+        )
+    return {"expired": len(overdue)}

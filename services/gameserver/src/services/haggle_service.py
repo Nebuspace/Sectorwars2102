@@ -595,6 +595,7 @@ def _get_haggle_state(player: Player) -> Dict[str, Any]:
     if not isinstance(state, dict):
         state = {"sessions": {}, "locks": {}, "cooldowns": {}}
     state.setdefault("sessions", {})
+    state.setdefault("narrative_sessions", {})
     state.setdefault("locks", {})       # commodity-locked-for-docking-session (reject)
     state.setdefault("cooldowns", {})   # ISO timestamp until re-entry allowed
     return state
@@ -612,6 +613,7 @@ def clear_docking_session_haggles(player: Player) -> None:
     and in-flight sessions on undock. Cooldowns are real-time and persist."""
     state = _get_haggle_state(player)
     state["sessions"] = {}
+    state["narrative_sessions"] = {}
     state["locks"] = {}
     _save_haggle_state(player, state)
 
@@ -931,7 +933,7 @@ class HaggleService:
         state = _get_haggle_state(player)
         session = state["sessions"].get(key)
         if not session or session.get("status") != "accepted":
-            return None
+            return self.consume_narrative_agreed_price(player, station_id, commodity, side)
         agreed = session.get("agreed_price")
         if agreed is None:
             return None
@@ -1005,3 +1007,303 @@ class HaggleService:
         if counter_price is not None:
             out["counter_price"] = round(counter_price, 2)
         return out
+
+    # -- narrative (LEG-288 slice 1) ------------------------------------------
+    def open_narrative_session(
+        self, player: Player, station: Station, commodity: str, side: str, quantity: int
+    ) -> Dict[str, Any]:
+        """Open a 2-round narrative haggle session (haggling.md § Narrative mode)."""
+        from src.services import ai_haggling_service as nhs
+
+        side = side.lower()
+        if side not in ("buy", "sell"):
+            raise HaggleError("side must be 'buy' or 'sell'")
+        if quantity <= 0:
+            raise HaggleError("quantity must be positive")
+
+        commodities = station.commodities or {}
+        cfg = commodities.get(commodity)
+        if cfg is None:
+            raise HaggleError("station does not trade this commodity")
+        if side == "buy" and not cfg.get("sells", False):
+            raise HaggleError("station does not sell this commodity")
+        if side == "sell" and not cfg.get("buys", False):
+            raise HaggleError("station does not buy this commodity")
+
+        key = _session_key(station.id, commodity, side)
+        state = _get_haggle_state(player)
+
+        if state["locks"].get(f"{station.id}:{commodity}"):
+            raise HaggleError(
+                "this commodity is locked for the rest of this docking session "
+                "(a prior offer was rejected)"
+            )
+
+        existing = state["narrative_sessions"].get(key)
+        if existing and existing.get("status") == "open":
+            existing["quantity"] = int(quantity)
+            state["narrative_sessions"][key] = existing
+            _save_haggle_state(player, state)
+            return self._narrative_card(existing, station)
+
+        cd = state["cooldowns"].get(key)
+        if cd:
+            try:
+                until = datetime.fromisoformat(cd)
+                if _now() < until:
+                    remaining = int((until - _now()).total_seconds())
+                    raise HaggleError(
+                        f"haggling for this commodity is on cooldown for {remaining}s"
+                    )
+            except HaggleError:
+                raise
+            except Exception:
+                pass
+
+        personality = tp.normalize_personality(station.trader_personality)
+        fair = _fair_price(self.db, player, station, commodity, side)
+        session = {
+            "key": key,
+            "station_id": str(station.id),
+            "commodity": commodity,
+            "side": side,
+            "quantity": int(quantity),
+            "round": 1,
+            "fair_price": fair,
+            "status": "open",
+            "agreed_price": None,
+            "mode": "narrative",
+            "prior_lines": [],
+            "opened_at": _now().isoformat(),
+        }
+        state["narrative_sessions"][key] = session
+        _save_haggle_state(player, state)
+        return self._narrative_card(session, station, personality)
+
+    def submit_narrative_line(
+        self,
+        player: Player,
+        station: Station,
+        commodity: str,
+        side: str,
+        submission: str,
+        *,
+        llm_raw: Any = None,
+    ) -> Dict[str, Any]:
+        """Submit a narrative persuasive line for the open session."""
+        from src.services import ai_haggling_service as nhs
+        from src.services.ai_security_service import get_security_service
+
+        side = side.lower()
+        submission = (submission or "").strip()
+        if not submission:
+            raise HaggleError("submission is required")
+
+        is_safe, reason = nhs.validate_submission_security(
+            submission,
+            str(player.id),
+            f"narrative-haggle:{station.id}:{commodity}",
+            seed_from=player,
+        )
+        if not is_safe:
+            raise HaggleError(reason or "submission rejected by security filter")
+
+        key = _session_key(station.id, commodity, side)
+        state = _get_haggle_state(player)
+        session = state["narrative_sessions"].get(key)
+        if not session or session.get("status") != "open":
+            raise HaggleError("no open narrative haggle session — open one first")
+
+        personality = tp.normalize_personality(station.trader_personality)
+        fair = float(session["fair_price"])
+        round_index = int(session["round"])
+        player_context = {
+            "rank": getattr(player, "military_rank", None),
+            "monthly_trade_volume": getattr(player, "monthly_trade_volume", 0),
+        }
+        transaction = {
+            "commodity": commodity,
+            "quantity": session["quantity"],
+            "direction": side,
+            "posted_unit_price": fair,
+            "player_target_unit_price": fair * 0.95 if side == "buy" else fair * 1.05,
+        }
+        session_ctx = {
+            "round": round_index,
+            "max_rounds": nhs.NARRATIVE_MAX_ROUNDS,
+            "prior_lines": list(session.get("prior_lines", [])),
+            "originality_floor": 0.45,
+        }
+
+        security = get_security_service()
+        result = nhs.evaluate_round(
+            personality=personality,
+            player_context=player_context,
+            transaction=transaction,
+            session=session_ctx,
+            submission=submission,
+            posted_unit_price=fair,
+            round_index=round_index,
+            llm_raw=llm_raw,
+            security_sanitize=security.sanitize_output,
+        )
+
+        line_record = {
+            "round": round_index,
+            "line": submission[: nhs.NARRATIVE_MAX_SUBMISSION_CHARS],
+            "scores": result.get("scores"),
+            "outcome": result.get("verdict"),
+        }
+        session.setdefault("prior_lines", []).append(line_record)
+
+        verdict = result["verdict"]
+        pid = str(player.id)
+
+        if verdict == "accept":
+            agreed = float(result["realized_unit_price"])
+            session["status"] = "accepted"
+            session["agreed_price"] = agreed
+            self._set_cooldown(state, key)
+            _record_memory(station, personality, pid, "accept", commodity, agreed)
+            _save_haggle_state(player, state)
+            result.update(
+                {
+                    "round": round_index,
+                    "max_rounds": nhs.NARRATIVE_MAX_ROUNDS,
+                    "status": session["status"],
+                    "agreed_price": round(agreed, 2),
+                    "mode": "narrative",
+                }
+            )
+            return result
+
+        if verdict == "reject":
+            session["status"] = "rejected"
+            state["locks"][f"{station.id}:{commodity}"] = True
+            _record_memory(station, personality, pid, "reject", commodity, None)
+            _save_haggle_state(player, state)
+            result.update(
+                {
+                    "round": round_index,
+                    "max_rounds": nhs.NARRATIVE_MAX_ROUNDS,
+                    "status": session["status"],
+                    "mode": "narrative",
+                }
+            )
+            return result
+
+        if round_index >= nhs.NARRATIVE_MAX_ROUNDS:
+            session["status"] = "closed"
+            session["agreed_price"] = None
+            self._set_cooldown(state, key)
+            _record_memory(station, personality, pid, "timeout", commodity, None)
+            _save_haggle_state(player, state)
+            result.update(
+                {
+                    "round": round_index,
+                    "max_rounds": nhs.NARRATIVE_MAX_ROUNDS,
+                    "status": session["status"],
+                    "verdict": "timeout",
+                    "mode": "narrative",
+                }
+            )
+            return result
+
+        session["round"] = round_index + 1
+        _save_haggle_state(player, state)
+        result.update(
+            {
+                "round": round_index,
+                "next_round": session["round"],
+                "max_rounds": nhs.NARRATIVE_MAX_ROUNDS,
+                "status": session["status"],
+                "mode": "narrative",
+            }
+        )
+        return result
+
+    def get_narrative_status(
+        self, player: Player, station: Station, commodity: str, side: str
+    ) -> Dict[str, Any]:
+        """Return narrative session status for a commodity/side."""
+        from src.services import ai_haggling_service as nhs
+
+        side = side.lower()
+        key = _session_key(station.id, commodity, side)
+        state = _get_haggle_state(player)
+        session = state["narrative_sessions"].get(key)
+        lock = bool(state["locks"].get(f"{station.id}:{commodity}"))
+        cooldown_until = state["cooldowns"].get(key)
+        cooldown_remaining = 0
+        if cooldown_until:
+            try:
+                until = datetime.fromisoformat(cooldown_until)
+                cooldown_remaining = max(0, int((until - _now()).total_seconds()))
+            except Exception:
+                cooldown_remaining = 0
+        return {
+            "commodity": commodity,
+            "side": side,
+            "mode": "narrative",
+            "locked": lock,
+            "cooldown_remaining_seconds": cooldown_remaining,
+            "session": {
+                "status": session.get("status") if session else None,
+                "round": session.get("round") if session else None,
+                "max_rounds": nhs.NARRATIVE_MAX_ROUNDS,
+                "agreed_price": session.get("agreed_price") if session else None,
+            }
+            if session
+            else None,
+        }
+
+    def consume_narrative_agreed_price(
+        self, player: Player, station_id: Any, commodity: str, side: str
+    ) -> Optional[float]:
+        """Single-use agreed price from a narrative accept (mirrors numerical path)."""
+        side = side.lower()
+        key = _session_key(station_id, commodity, side)
+        state = _get_haggle_state(player)
+        session = state["narrative_sessions"].get(key)
+        if not session or session.get("status") != "accepted":
+            return None
+        agreed = session.get("agreed_price")
+        if agreed is None:
+            return None
+        session["status"] = "consumed"
+        session["agreed_price"] = None
+        _save_haggle_state(player, state)
+        try:
+            return float(agreed)
+        except (TypeError, ValueError):
+            return None
+
+    def _narrative_card(
+        self,
+        session: Dict[str, Any],
+        station: Station,
+        personality: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        from src.services import ai_haggling_service as nhs
+
+        if personality is None:
+            personality = tp.normalize_personality(station.trader_personality)
+        fair = float(session["fair_price"])
+        clamp_min = _clamp_realized(fair * PRICE_CLAMP_LO, fair, session["commodity"])
+        clamp_max = _clamp_realized(fair * PRICE_CLAMP_HI, fair, session["commodity"])
+        return {
+            "status": "open",
+            "mode": "narrative",
+            "commodity": session["commodity"],
+            "side": session["side"],
+            "quantity": session["quantity"],
+            "round": session["round"],
+            "max_rounds": nhs.NARRATIVE_MAX_ROUNDS,
+            "personality_type": personality.get("type"),
+            "haggling_difficulty": personality.get("haggling_difficulty"),
+            "price_clamp": {
+                "min": round(clamp_min, 2),
+                "max": round(clamp_max, 2),
+            },
+            "max_submission_chars": nhs.NARRATIVE_MAX_SUBMISSION_CHARS,
+        }

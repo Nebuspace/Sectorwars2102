@@ -1235,21 +1235,23 @@ class CombatService:
             is_good_standing,
             attack_is_penalty_free,
         )
-        # Fed-zone / Federation-Suspect immunity (WO-CMB-SUSPECT-LIFE-1 held
-        # item, applied). Mirrors the grey-flag exemption immediately above:
-        # a defender who is EFFECTIVELY suspect right now (is_live_suspect
-        # checks suspect_until against the clock, not just the possibly-stale
-        # is_suspect boolean) is being lawfully brought to justice, so the
-        # same attack_innocent rep penalty + police routing suspension
-        # applies. attack_innocent carries NO zone gating anywhere in this
-        # module — the suspension is universal-scope, matching the
+        # Fed-zone / Federation-Suspect / Wanted immunity (WO-CMB-SUSPECT-
+        # LIFE-1 + LEG-4137). Mirrors the grey-flag exemption immediately
+        # above: a defender who is EFFECTIVELY suspect OR wanted right now
+        # (is_live_suspect / is_live_wanted check *_until against the clock,
+        # not just the possibly-stale boolean) is being lawfully brought to
+        # justice, so the same attack_innocent rep penalty + police routing
+        # suspension applies. attack_innocent carries NO zone gating anywhere
+        # in this module — the suspension is universal-scope, matching the
         # mechanic's actual reach (canon's fed-space framing + the
         # nonexistent fight-back-cost mechanic are pre-existing DOC-GAPs).
         from src.services.suspect_service import is_live_suspect
+        from src.services.wanted_service import is_live_wanted
 
         defender_was_good_standing = is_good_standing(defender)
         attack_was_penalty_free = attack_is_penalty_free(attacker, defender)
         defender_is_live_suspect = is_live_suspect(defender)
+        defender_is_live_wanted = is_live_wanted(defender)
 
         # Personal reputation + bounty hooks. Deliberately UNWRAPPED — no
         # module-level try/except here (cipher's friendly-fire gate finding,
@@ -1277,6 +1279,31 @@ class CombatService:
             if bounty_result.get("total_collected", 0) > 0:
                 # Bounty paid out — heroic bounty hunting.
                 rep_service.adjust_reputation(attacker.id, 100, "defeat_bounty_target")
+                # LEG-4171: +25 Federation faction-rep when the kill sector
+                # is Fed-controlled. Best-effort; kill + personal rep stand.
+                try:
+                    from src.models.zone import ZoneType
+                    from src.services.emergent_reputation_service import (
+                        apply_emergent_action,
+                    )
+                    kill_sector = self.db.query(Sector).filter(
+                        Sector.sector_id == defender.current_sector_id
+                    ).first()
+                    if (
+                        kill_sector is not None
+                        and getattr(kill_sector, "zone", None) is not None
+                        and kill_sector.zone.zone_type == ZoneType.FEDERATION
+                    ):
+                        apply_emergent_action(
+                            self.db, attacker, "KILL_BOUNTY_TARGET_FED"
+                        )
+                except Exception:
+                    logger.warning(
+                        "KILL_BOUNTY_TARGET_FED rep hook failed for "
+                        "attacker %s; kill still resolves",
+                        attacker.id,
+                        exc_info=True,
+                    )
                 # Medal: combat.bounty_hunter (bounties_collected). Fires only
                 # on a genuine paying collection, inside this combat unit of
                 # work; idempotent on the medals side. Defensive dispatch —
@@ -1293,17 +1320,28 @@ class CombatService:
                 # engagement trigger (attacked_innocent gates that below) —
                 # UNLESS the target is grey and this attacker qualifies for the
                 # penalty-free exemption (WO-BL), OR the target is a LIVE
-                # Federation Suspect (WO-CMB-SUSPECT-LIFE-1): bringing a
-                # flagged aggressor or a wanted suspect to justice is lawful,
-                # so neither the rep penalty nor the police "attack_innocent"
-                # routing fires.
-                if attack_was_penalty_free or defender_is_live_suspect:
+                # Federation Suspect / Wanted (WO-CMB-SUSPECT-LIFE-1 +
+                # LEG-4137 / ranking.md): bringing a flagged aggressor or a
+                # wanted player to justice is lawful, so neither the rep
+                # penalty nor the police "attack_innocent" routing fires.
+                if (
+                    attack_was_penalty_free
+                    or defender_is_live_suspect
+                    or defender_is_live_wanted
+                ):
                     if attack_was_penalty_free:
                         logger.info(
                             "Grey-flag exemption: player %s killed grey target %s "
                             "penalty-free (kind=%s) — attack_innocent rep + police "
                             "skipped (WO-BL)",
                             attacker.id, defender.id, defender.grey_kind,
+                        )
+                    elif defender_is_live_wanted:
+                        logger.info(
+                            "Fed-zone/wanted exemption: player %s killed live-"
+                            "wanted target %s penalty-free — attack_innocent rep "
+                            "+ police skipped (LEG-4137 / ranking.md Wanted)",
+                            attacker.id, defender.id,
                         )
                     else:
                         logger.info(
@@ -1312,6 +1350,33 @@ class CombatService:
                             "+ police skipped (WO-CMB-SUSPECT-LIFE-1)",
                             attacker.id, defender.id,
                         )
+                    # LEG-4165 + LEG-4179: +15 Federation rep for killing a
+                    # Wanted/Suspect player in Fed-controlled space only.
+                    # Grey-flag-only exemption (no wanted/suspect) must not fire.
+                    if defender_is_live_wanted or defender_is_live_suspect:
+                        try:
+                            from src.models.zone import ZoneType
+                            from src.services.emergent_reputation_service import (
+                                apply_emergent_action,
+                            )
+                            kill_sector = self.db.query(Sector).filter(
+                                Sector.sector_id == defender.current_sector_id
+                            ).first()
+                            if (
+                                kill_sector is not None
+                                and getattr(kill_sector, "zone", None) is not None
+                                and kill_sector.zone.zone_type == ZoneType.FEDERATION
+                            ):
+                                apply_emergent_action(
+                                    self.db, attacker, "KILL_WANTED_PLAYER_FED",
+                                )
+                        except Exception:
+                            logger.warning(
+                                "KILL_WANTED_PLAYER_FED rep hook failed for "
+                                "attacker %s; kill still resolves",
+                                attacker.id,
+                                exc_info=True,
+                            )
                 else:
                     rep_service.adjust_reputation(attacker.id, -100, "attack_innocent")
                     attacked_innocent = True
@@ -2509,6 +2574,39 @@ class CombatService:
                 )
             except Exception as e:
                 logger.error("Failed sector-drone defense influence hook: %s", e)
+
+            # LEG-4174: +20 Federation rep to the surviving drone owner when
+            # the sector is Fed-controlled. Award the owner, never the attacker.
+            try:
+                from src.models.zone import ZoneType
+                from src.services.emergent_reputation_service import (
+                    apply_emergent_action,
+                )
+                # Frozen contract: sector.zone_type == ZoneType.FEDERATION
+                # (Sector persists this on sector.zone.zone_type).
+                zone_type = getattr(sector, "zone_type", None)
+                if zone_type is None and getattr(sector, "zone", None) is not None:
+                    zone_type = sector.zone.zone_type
+                if zone_type == ZoneType.FEDERATION:
+                    owner_player = None
+                    for d in target_drones:
+                        owner_id = getattr(d, "player_id", None)
+                        if owner_id is None or getattr(d, "health", 0) <= 0:
+                            continue
+                        owner_player = self.db.query(Player).filter(
+                            Player.id == owner_id
+                        ).first()
+                        if owner_player is not None:
+                            break
+                    if owner_player is not None:
+                        apply_emergent_action(
+                            self.db, owner_player, "DEFEND_FED_SECTOR"
+                        )
+            except Exception:
+                logger.warning(
+                    "DEFEND_FED_SECTOR rep hook failed; combat still commits",
+                    exc_info=True,
+                )
 
         # Commit changes
         self.db.commit()
@@ -3878,6 +3976,16 @@ class CombatService:
             logger.error("Tractor equipment read failed (continuing without lock): %s", e)
             attacker_has_tractor = False
 
+        defender_interdictor_locked = False
+        if defender is not None and defender_ship is not None:
+            from src.services.interdictor_abilities_service import (
+                interdictor_field_blocks_movement,
+                maybe_apply_interdictor_on_npc_attack,
+            )
+            if attacker is None and attacker_ship is not None:
+                maybe_apply_interdictor_on_npc_attack(attacker_ship, defender_ship)
+            defender_interdictor_locked = interdictor_field_blocks_movement(defender_ship)
+
         if defender is not None:
             defender_ship = defender.current_ship
             defender_name = defender.username
@@ -4229,6 +4337,8 @@ class CombatService:
                     # way). Damage/outcome otherwise unchanged.
                     if attacker_has_tractor:
                         escape_pct = 0
+                    if defender_interdictor_locked:
+                        escape_pct = 0
                     if escape_pct > 0 and random.randint(1, 100) <= escape_pct:
                         fled_result = CombatResult.DEFENDER_FLED
                         combat_details.append({
@@ -4267,6 +4377,12 @@ class CombatService:
 
             if fled_result is not None:
                 break
+
+            if defender is not None and defender_ship is not None:
+                from src.services.interdictor_abilities_service import (
+                    decrement_interdictor_field_round,
+                )
+                decrement_interdictor_field_round(defender_ship)
 
             # Check if combat ends due to round limit
             if round_number >= 10:

@@ -63,6 +63,12 @@ class ContractConflictError(ContractError):
     occurred -- the caller's view of the contract was stale."""
 
 
+class ContractForbiddenError(ContractError):
+    """403-class: anti-griefing / authorization refusal (blocklist or
+    pairwise hostility). Detail string carries a stable ``code:`` prefix
+    (``blocklisted:`` / ``hostility:``) for clients."""
+
+
 # --- state machine (real data, not decoration -- see module docstring) ---
 
 LEGAL_TRANSITIONS: Dict[ContractStatus, FrozenSet[ContractStatus]] = {

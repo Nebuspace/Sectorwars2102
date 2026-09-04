@@ -1217,20 +1217,17 @@ def update_cleansed_state_for_region(
 
 
 # ---------------------------------------------------------------------------
-# Raid/capture combat-lock kernel (ADR-0060 G-F2/G-V1). DORMANT — no live
-# caller. No player-facing raid/capture entry point exists anywhere in the
-# codebase at HEAD (verify-first confirmed, orchestrator-ruled 2026-08-07).
-# Awaits WO-PIRATE-ECO-3-ATTEMPT-CAPTURE to wire a real raid-initiation
-# route (see queue-sectorwars.md). Ships now as a fully-tested, correct
-# kernel — mirrors this codebase's established dormant-kernel pattern (e.g.
-# structures.py's CRT-spine kernels, planet_grid.py's K1b2 terraform-grid
-# kernel) rather than leaving the raid/capture math unbuilt until a caller
-# exists.
+# Raid/capture combat-lock kernel (ADR-0060 G-F2/G-V1). LIVE callers:
+# POST /pirate-holdings/{id}/raid/initiate → acquire_combat_lock / can_engage
+# (pirate_holding_raid_service) and POST .../raid/capture → capture_holding
+# (pirate_holdings route, LEG-4153). ``maybe_reset_evolution_clock`` remains
+# unused by those routes — keep its own dormant note below.
 # ---------------------------------------------------------------------------
 
 def acquire_combat_lock(db: Session, holding: PirateHolding, engaging_player: Any) -> None:
-    """G-F2 raid-lock acquisition (ADR-0060 :30-46). DORMANT, see module-
-    section note above.
+    """G-F2 raid-lock acquisition (ADR-0060 :30-46). Live caller:
+    ``POST /pirate-holdings/{id}/raid/initiate`` via
+    ``pirate_holding_raid_service.initiate_raid``.
 
     If ``holding.combat_lock_held_by`` is None, the engaging player takes
     the lock and their CURRENT team membership (``engaging_player.team.
@@ -1285,12 +1282,12 @@ def maybe_reset_evolution_clock(
     holding: PirateHolding, damage_amount: float, citadel_max_hp: float,
     *, now: Optional[datetime] = None,
 ) -> bool:
-    """G-I1 evolution-clock reset threshold (ADR-0060 :76-86). DORMANT, see
-    module-section note above -- writes ``evolution_clock_started_at``,
-    which has no reader yet either (the LIVE evolution clock,
-    ``evolution_tick``, still anchors on ``last_damage_at``/``created_at``
-    per that function's own :288-296 citation; reconciling the two clock
-    columns is ECO-3/raid-wiring territory, not this dormant kernel's call).
+    """G-I1 evolution-clock reset threshold (ADR-0060 :76-86). Still
+    DORMANT — no live caller (initiate/capture routes do not invoke this).
+    Writes ``evolution_clock_started_at``, which has no reader yet either
+    (the LIVE evolution clock, ``evolution_tick``, still anchors on
+    ``last_damage_at``/``created_at`` per that function's own :288-296
+    citation; reconciling the two clock columns remains follow-up work).
 
     Canon's pseudocode (:81-84) reads ``holding.citadel.max_hp`` directly,
     but no ``citadel`` relationship/model exists on ``PirateHolding`` at
@@ -1318,14 +1315,12 @@ def _emit_holding_captured_event(
     holding: PirateHolding, kill_log: PirateKillLog, capturer_player: Any,
     *, now: Optional[datetime] = None,
 ) -> None:
-    """`pirate.holding_captured` (ADR-0060 R-I1). Fires inside the DORMANT
-    ``capture_holding`` kernel, see module-section note above -- built and
-    called from there so the kernel is a complete, self-consistent unit the
-    moment ECO-3 wires a live raid-initiation route, matching this file's
-    own "ships now as a fully-tested, correct kernel" philosophy rather than
-    leaving telemetry as a follow-up gap. ``capturer_team_id`` mirrors
-    ``capture_holding``'s own team-resolution fallback (``.team.id`` else
-    the bare ``.team_id`` attribute) so the two never disagree."""
+    """`pirate.holding_captured` (ADR-0060 R-I1). Fires inside
+    ``capture_holding``, which is reached via
+    ``POST /pirate-holdings/{id}/raid/capture``. ``capturer_team_id``
+    mirrors ``capture_holding``'s own team-resolution fallback
+    (``.team.id`` else the bare ``.team_id`` attribute) so the two never
+    disagree."""
     team = getattr(capturer_player, "team", None)
     team_id = team.id if team is not None else getattr(capturer_player, "team_id", None)
     _broadcast_pirate_event(holding.region_id, {
@@ -1345,24 +1340,28 @@ def capture_holding(
     capturer_player: Any,
     kill_log_entry_kwargs: Dict[str, Any],
 ) -> PirateKillLog:
-    """G-V1 kill-log atomicity with capture (ADR-0060 :48-52). DORMANT, see
-    module-section note above.
+    """G-V1 kill-log atomicity with capture (ADR-0060 :48-52). Live caller:
+    ``POST /pirate-holdings/{id}/raid/capture`` (LEG-4153).
 
     Inserts a ``PirateKillLog`` row (``disposition=CAPTURED``) and mutates
-    ``holding.owner_team_id`` / ``holding.captured_at`` / releases the
-    combat lock, all inside ONE savepoint -- mirrors this file's own
-    established multi-write-atomicity idiom (npc_spawn_service.py's
-    PirateKillLog feeder, ``with db.begin_nested(): ... db.flush()``) rather
-    than inventing a new transaction pattern. A flush failure inside the
-    savepoint rolls back only this capture, never the caller's open unit of
-    work.
+    ``holding.owner_player_id`` / ``holding.owner_team_id`` /
+    ``holding.captured_at`` / releases the combat lock, all inside ONE
+    savepoint -- mirrors this file's own established multi-write-atomicity
+    idiom (npc_spawn_service.py's PirateKillLog feeder,
+    ``with db.begin_nested(): ... db.flush()``) rather than inventing a new
+    transaction pattern. A flush failure inside the savepoint rolls back
+    only this capture, never the caller's open unit of work.
+
+    ``owner_player_id`` is always the capturer (canon attempt_capture /
+    ADR-0047). ``owner_team_id`` resolves from ``.team.id`` when a live
+    team relationship exists, else the bare ``.team_id`` attribute (null
+    when the capturer has no team).
 
     ``kill_log_entry_kwargs`` supplies the row's remaining fields
     (region_id, region_id_snapshot, holding_id, tier, kill_weight,
     attacker_player_id, attacker_team_id) -- left to the caller rather than
-    re-derived here, since ECO-3's real raid-resolution call site is the
-    one with the actual combat context (kill_weight per TIER_WEIGHT,
-    attacker identity, etc.), not this dormant kernel.
+    re-derived here, since the route owns the combat context
+    (kill_weight per TIER_WEIGHT, attacker identity, etc.).
     """
     with db.begin_nested():
         kill_log = PirateKillLog(
@@ -1372,6 +1371,7 @@ def capture_holding(
         db.add(kill_log)
 
         team = getattr(capturer_player, "team", None)
+        holding.owner_player_id = capturer_player.id
         holding.owner_team_id = team.id if team is not None else getattr(
             capturer_player, "team_id", None
         )
@@ -1426,7 +1426,8 @@ __all__ = [
     "CLEANSED_MEDAL_TOP_N",
     "top_attackers_by_kill_weight",
     "update_cleansed_state_for_region",
-    # ADR-0060 raid/capture kernel -- DORMANT, no live caller yet.
+    # ADR-0060 raid/capture kernel -- live via initiate+capture routes;
+    # maybe_reset_evolution_clock remains unused by those callers.
     "acquire_combat_lock",
     "can_engage",
     "release_combat_lock",
