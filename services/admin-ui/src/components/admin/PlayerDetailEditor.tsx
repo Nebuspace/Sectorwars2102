@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { api } from '../../utils/auth';
 import { axiosResponseStatus, formatAdminApiError } from '../../utils/adminApiError';
 import { PlayerModel } from '../../types/playerManagement';
@@ -69,6 +70,13 @@ function formatHoldingInspectValue(value: unknown): string {
   }
   const s = String(value).trim();
   return s === '' ? '—' : s;
+}
+
+/** Non-empty outlaw_base_id for deep-link; null when absent/blank (LEG-4226). */
+function outlawBaseIdForLink(value: string | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  const s = String(value).trim();
+  return s === '' ? null : s;
 }
 
 const PlayerDetailEditor: React.FC<PlayerDetailEditorProps> = ({ player, onClose, onSave }) => {
@@ -438,7 +446,9 @@ const PlayerDetailEditor: React.FC<PlayerDetailEditorProps> = ({ player, onClose
             <p data-testid="pirate-holdings-empty">No pirate holdings in this sector.</p>
           ) : pirateHoldings.length > 0 ? (
             <div className="assets-readonly">
-              {pirateHoldings.map((holding) => (
+              {pirateHoldings.map((holding) => {
+                const outlawBaseId = outlawBaseIdForLink(holding.outlaw_base_id);
+                return (
                 <div
                   key={holding.id}
                   className="asset-item"
@@ -448,10 +458,21 @@ const PlayerDetailEditor: React.FC<PlayerDetailEditorProps> = ({ player, onClose
                   <span className="asset-value">tier: {formatHoldingTier(holding.tier)}</span>
                   <span className="asset-value">owner: {formatHoldingOwner(holding)}</span>
                   <span className="asset-value">
-                    outlaw_base_id: {formatHoldingInspectValue(holding.outlaw_base_id)}
+                    outlaw_base_id:{' '}
+                    {outlawBaseId ? (
+                      <Link
+                        to={`/outlaw-bases/${outlawBaseId}`}
+                        data-testid={`pirate-holding-outlaw-base-link-${holding.id}`}
+                      >
+                        {outlawBaseId}
+                      </Link>
+                    ) : (
+                      formatHoldingInspectValue(holding.outlaw_base_id)
+                    )}
                   </span>
                 </div>
-              ))}
+                );
+              })}
             </div>
           ) : null}
         </div>

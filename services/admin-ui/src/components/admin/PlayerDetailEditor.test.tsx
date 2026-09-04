@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import PlayerDetailEditor from './PlayerDetailEditor';
 import { api } from '../../utils/auth';
 import { PlayerModel } from '../../types/playerManagement';
@@ -348,7 +349,7 @@ describe('PlayerDetailEditor pirate holdings (LEG-4195)', () => {
     );
   });
 
-  it('renders honest holding rows and shows outlaw_base_id when GET includes a non-null value', async () => {
+  it('renders honest holding rows and deep-links outlaw_base_id when GET includes a non-null value', async () => {
     mockMetaLoads({
       holdings: [
         {
@@ -362,7 +363,9 @@ describe('PlayerDetailEditor pirate holdings (LEG-4195)', () => {
     });
 
     render(
-      <PlayerDetailEditor player={basePlayer} onClose={onClose} onSave={onSave} />,
+      <MemoryRouter>
+        <PlayerDetailEditor player={basePlayer} onClose={onClose} onSave={onSave} />
+      </MemoryRouter>,
     );
 
     expect(await screen.findByTestId('pirate-holding-row-h1')).toHaveTextContent(
@@ -374,12 +377,15 @@ describe('PlayerDetailEditor pirate holdings (LEG-4195)', () => {
     expect(screen.getByTestId('pirate-holding-row-h1')).toHaveTextContent(
       /outlaw_base_id: base-uuid-111/,
     );
+    const link = screen.getByTestId('pirate-holding-outlaw-base-link-h1');
+    expect(link).toHaveAttribute('href', '/outlaw-bases/base-uuid-111');
     expect(screen.getByTestId('pirate-holding-row-h2')).toHaveTextContent(
       /owner: pirate-controlled/,
     );
     expect(screen.getByTestId('pirate-holding-row-h2')).toHaveTextContent(
       /outlaw_base_id: —/,
     );
+    expect(screen.queryByTestId('pirate-holding-outlaw-base-link-h2')).toBeNull();
     expect(screen.queryByTestId('pirate-holdings-empty')).toBeNull();
   });
 
