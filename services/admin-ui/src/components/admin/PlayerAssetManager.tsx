@@ -1,8 +1,16 @@
 import React, { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { api } from '../../utils/auth';
 import { formatAdminApiError } from '../../utils/adminApiError';
 import { PlayerModel } from '../../types/playerManagement';
 import './player-asset-manager.css';
+
+/** Non-empty outlaw_base_id for deep-link; null when absent/blank (LEG-4227). */
+function outlawBaseIdForLink(value: string | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  const s = String(value).trim();
+  return s === '' ? null : s;
+}
 
 interface PlayerAssetManagerProps {
   player: PlayerModel;
@@ -299,7 +307,9 @@ const PlayerAssetManager: React.FC<PlayerAssetManagerProps> = ({
     }
     return (
       <div className="asset-list" data-testid="owned-pirate-holdings-list">
-        {ownedHoldings.map((holding) => (
+        {ownedHoldings.map((holding) => {
+          const outlawBaseId = outlawBaseIdForLink(holding.outlaw_base_id);
+          return (
           <div
             key={holding.id}
             className="asset-item"
@@ -310,12 +320,25 @@ const PlayerAssetManager: React.FC<PlayerAssetManagerProps> = ({
                 <span>id: {holding.id}</span>
                 <span>sector_id: {holding.sector_id ?? '—'}</span>
                 <span>tier: {holding.tier ?? '—'}</span>
-                <span>outlaw_base_id: {holding.outlaw_base_id ?? '—'}</span>
+                <span>
+                  outlaw_base_id:{' '}
+                  {outlawBaseId ? (
+                    <Link
+                      to={`/outlaw-bases/${outlawBaseId}`}
+                      data-testid={`owned-pirate-holding-outlaw-base-link-${holding.id}`}
+                    >
+                      {outlawBaseId}
+                    </Link>
+                  ) : (
+                    '—'
+                  )}
+                </span>
                 <span>current_strength: {holding.current_strength ?? '—'}</span>
               </div>
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
     );
   };

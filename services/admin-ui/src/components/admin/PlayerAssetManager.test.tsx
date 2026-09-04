@@ -1,8 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
+import type { ReactElement } from 'react';
 import PlayerAssetManager from './PlayerAssetManager';
 import { api } from '../../utils/auth';
 import type { PlayerModel } from '../../types/playerManagement';
+
+function renderManager(ui: ReactElement) {
+  return render(<MemoryRouter>{ui}</MemoryRouter>);
+}
 
 vi.mock('../../utils/auth', () => ({
   api: {
@@ -35,7 +41,7 @@ describe('PlayerAssetManager scope honesty (LEG-1207)', () => {
   it('surfaces PLAYERS_VIEW denial on 403 instead of silent empty list', async () => {
     vi.mocked(api.get).mockRejectedValue(axiosError(403));
 
-    render(
+    renderManager(
       <PlayerAssetManager player={player} onClose={() => {}} onUpdate={() => {}} />
     );
 
@@ -51,7 +57,7 @@ describe('PlayerAssetManager scope honesty (LEG-1207)', () => {
   it('surfaces admin rate-limit on 429', async () => {
     vi.mocked(api.get).mockRejectedValue(axiosError(429));
 
-    render(
+    renderManager(
       <PlayerAssetManager player={player} onClose={() => {}} onUpdate={() => {}} />
     );
 
@@ -65,7 +71,7 @@ describe('PlayerAssetManager scope honesty (LEG-1207)', () => {
   it('surfaces honest fallback on non-RBAC network collapse (LEG-2962)', async () => {
     vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
 
-    render(
+    renderManager(
       <PlayerAssetManager player={player} onClose={() => {}} onUpdate={() => {}} />
     );
 
@@ -83,7 +89,7 @@ describe('PlayerAssetManager scope honesty (LEG-1207)', () => {
   it('collapses axios-shaped Network Error to gameserver-unreachable fallback (LEG-3313)', async () => {
     vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
 
-    render(
+    renderManager(
       <PlayerAssetManager player={player} onClose={() => {}} onUpdate={() => {}} />
     );
 
@@ -158,7 +164,7 @@ describe('PlayerAssetManager pirate-holding indicator (LEG-4193)', () => {
   it('shows Holding badge on owned planets/ports whose sector has_pirate_holding', async () => {
     mockOwnedAssets();
 
-    render(
+    renderManager(
       <PlayerAssetManager player={player} onClose={() => {}} onUpdate={() => {}} />,
     );
 
@@ -195,7 +201,7 @@ describe('PlayerAssetManager pirate-holding indicator (LEG-4193)', () => {
       ],
     });
 
-    render(
+    renderManager(
       <PlayerAssetManager player={player} onClose={() => {}} onUpdate={() => {}} />,
     );
 
@@ -217,7 +223,7 @@ describe('PlayerAssetManager pirate-holding indicator (LEG-4193)', () => {
       }),
     });
 
-    render(
+    renderManager(
       <PlayerAssetManager player={player} onClose={() => {}} onUpdate={() => {}} />,
     );
 
@@ -229,7 +235,7 @@ describe('PlayerAssetManager pirate-holding indicator (LEG-4193)', () => {
   it('skips sectors list when player owns no planets or ports', async () => {
     mockOwnedAssets({ planets: [], ports: [], sectors: [] });
 
-    render(
+    renderManager(
       <PlayerAssetManager player={player} onClose={() => {}} onUpdate={() => {}} />,
     );
 
@@ -288,7 +294,7 @@ describe('PlayerAssetManager owned pirate holdings (LEG-4213)', () => {
       ],
     });
 
-    render(
+    renderManager(
       <PlayerAssetManager player={player} onClose={() => {}} onUpdate={() => {}} />,
     );
 
@@ -304,9 +310,11 @@ describe('PlayerAssetManager owned pirate holdings (LEG-4213)', () => {
       });
     });
 
-    expect(await screen.findByTestId('owned-pirate-holding-row-h1')).toBeTruthy();
-    expect(screen.getByText(/sector_id: 7/)).toBeTruthy();
-    expect(screen.getByText(/outlaw_base_id: ob1/)).toBeTruthy();
+    const row = await screen.findByTestId('owned-pirate-holding-row-h1');
+    expect(row).toHaveTextContent('sector_id: 7');
+    expect(row).toHaveTextContent('outlaw_base_id: ob1');
+    const link = screen.getByTestId('owned-pirate-holding-outlaw-base-link-h1');
+    expect(link).toHaveAttribute('href', '/outlaw-bases/ob1');
 
     // One by-owner GET — no sector pirate-holdings N+1
     const pirateCalls = vi
@@ -316,10 +324,40 @@ describe('PlayerAssetManager owned pirate holdings (LEG-4213)', () => {
     expect(pirateCalls[0][0]).toBe('/api/v1/admin/pirate-holdings');
   });
 
+  it('shows honest — and no dead link when outlaw_base_id is null', async () => {
+    mockBaseAssets({
+      holdings: [
+        {
+          id: 'h-null',
+          tier: 'camp',
+          sector_id: 3,
+          outlaw_base_id: null,
+          current_strength: 4,
+        },
+      ],
+    });
+
+    renderManager(
+      <PlayerAssetManager player={player} onClose={() => {}} onUpdate={() => {}} />,
+    );
+
+    await waitFor(() => {
+      expect(api.get).toHaveBeenCalledWith(expect.stringContaining('/admin/ships'));
+    });
+
+    fireEvent.click(screen.getByTestId('owned-pirate-holdings-tab'));
+
+    const row = await screen.findByTestId('owned-pirate-holding-row-h-null');
+    expect(row).toHaveTextContent('outlaw_base_id: —');
+    expect(
+      screen.queryByTestId('owned-pirate-holding-outlaw-base-link-h-null'),
+    ).toBeNull();
+  });
+
   it('shows honest empty state when by-owner list is empty', async () => {
     mockBaseAssets({ holdings: [] });
 
-    render(
+    renderManager(
       <PlayerAssetManager player={player} onClose={() => {}} onUpdate={() => {}} />,
     );
 
@@ -342,7 +380,7 @@ describe('PlayerAssetManager owned pirate holdings (LEG-4213)', () => {
       }),
     );
 
-    render(
+    renderManager(
       <PlayerAssetManager player={player} onClose={() => {}} onUpdate={() => {}} />,
     );
 
