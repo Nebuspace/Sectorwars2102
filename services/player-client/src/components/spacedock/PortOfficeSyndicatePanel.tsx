@@ -11,6 +11,17 @@ type SyndicateInvite = {
   expires_at?: string;
 };
 
+type StakeTransferProposal = {
+  proposal_id: string;
+  from_player_id: string;
+  to_player_id: string;
+  pct: number;
+  status: string;
+  remaining_stake_pct?: number;
+  approving_weight?: number;
+  approvals?: Array<{ player_id: string; at?: string }>;
+};
+
 type SyndicateStatus = {
   station_id: string;
   owner_id: string | null;
@@ -19,6 +30,33 @@ type SyndicateStatus = {
   pending_invites: SyndicateInvite[];
   is_primary: boolean;
 };
+
+function parseProposal(raw: unknown): StakeTransferProposal | null {
+  const r = asRecord(raw);
+  if (!r || typeof r.proposal_id !== 'string') return null;
+  if (typeof r.from_player_id !== 'string' || typeof r.to_player_id !== 'string') return null;
+  const pct = typeof r.pct === 'number' ? r.pct : Number(r.pct);
+  if (!Number.isFinite(pct)) return null;
+  const approvalsRaw = Array.isArray(r.approvals) ? r.approvals : [];
+  const approvals = approvalsRaw
+    .map((row) => {
+      const a = asRecord(row);
+      if (!a || typeof a.player_id !== 'string') return null;
+      return { player_id: a.player_id, at: typeof a.at === 'string' ? a.at : undefined };
+    })
+    .filter((a): a is { player_id: string; at?: string } => a !== null);
+  return {
+    proposal_id: r.proposal_id,
+    from_player_id: r.from_player_id,
+    to_player_id: r.to_player_id,
+    pct,
+    status: typeof r.status === 'string' ? r.status : 'pending',
+    remaining_stake_pct:
+      typeof r.remaining_stake_pct === 'number' ? r.remaining_stake_pct : undefined,
+    approving_weight: typeof r.approving_weight === 'number' ? r.approving_weight : undefined,
+    approvals,
+  };
+}
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -119,8 +157,9 @@ export interface PortOfficeSyndicatePanelProps {
 }
 
 /**
- * Port Office co-ownership syndicate — tip GS /syndicate* (LEG-4117).
- * invent=0: stake ledger, invite/accept/decline, buyout confirmation only.
+ * Port Office co-ownership syndicate — tip GS /syndicate* (LEG-4117) + stake-transfer (LEG-4237).
+ * invent=0: stake ledger, invite/accept/decline, buyout, propose/approve/reject stake transfer.
+ * Pending stake-transfers tracked from propose/approve responses only (GET enrichment = LEG-4238).
  */
 const PortOfficeSyndicatePanel: React.FC<PortOfficeSyndicatePanelProps> = ({
   stationId,
@@ -138,6 +177,18 @@ const PortOfficeSyndicatePanel: React.FC<PortOfficeSyndicatePanelProps> = ({
   const [inviteeId, setInviteeId] = useState('');
   const [invitePct, setInvitePct] = useState(10);
   const [buyoutArmed, setBuyoutArmed] = useState(false);
+
+  const [xferTargetId, setXferTargetId] = useState('');
+  const [xferPct, setXferPct] = useState(10);
+  const [localTransfers, setLocalTransfers] = useState<StakeTransferProposal[]>([]);
+
+  const upsertLocalTransfer = useCallback((proposal: StakeTransferProposal) => {
+    setLocalTransfers((prev) => {
+      const rest = prev.filter((p) => p.proposal_id !== proposal.proposal_id);
+      if (proposal.status !== 'pending') return rest;
+      return [...rest, proposal];
+    });
+  }, []);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -159,6 +210,12 @@ const PortOfficeSyndicatePanel: React.FC<PortOfficeSyndicatePanelProps> = ({
     void reload();
   }, [reload]);
 
+  useEffect(() => {
+    setLocalTransfers([]);
+    setXferTargetId('');
+    setXferPct(10);
+  }, [stationId]);
+
   const isShareholder =
     !!playerId &&
     !!status &&
@@ -178,10 +235,15 @@ const PortOfficeSyndicatePanel: React.FC<PortOfficeSyndicatePanelProps> = ({
     try {
       const result = await action();
       const body = asRecord(result);
+      const proposal = parseProposal(body?.proposal);
+      if (proposal) upsertLocalTransfer(proposal);
       const serverMsg = typeof body?.message === 'string' ? body.message : okText;
       let extra = '';
       if (typeof body?.fair_value === 'number' && typeof body?.total_payout === 'number') {
         extra = ` Fair value ${formatCredits(body.fair_value)}; total payout ${formatCredits(body.total_payout)}.`;
+      }
+      if (proposal?.status === 'applied') {
+        extra = `${extra} Stake transfer applied.`.trimStart();
       }
       setMsg({ ok: true, text: `${serverMsg}${extra}` });
       if (refreshPlayerState) await refreshPlayerState();
@@ -227,8 +289,8 @@ const PortOfficeSyndicatePanel: React.FC<PortOfficeSyndicatePanelProps> = ({
     <div className="po-section" data-testid="po-syndicate-panel">
       <h3 className="po-section-title">🤝 Co-Ownership Syndicate</h3>
       <p className="section-description">
-        Mode: <strong>{status.mode}</strong> at {stationName}. Stake ledger and pending share
-        invites — no sale votes or upgrade catalog here.
+        Mode: <strong>{status.mode}</strong> at {stationName}. Stake ledger, share invites, and
+        stake-transfer proposals — no sale votes or upgrade catalog here.
       </p>
 
       <div className="po-defense-grid" data-testid="po-syndicate-shares">
@@ -329,6 +391,109 @@ const PortOfficeSyndicatePanel: React.FC<PortOfficeSyndicatePanelProps> = ({
                       {busy === `decline-${inv.invite_id}` ? 'Declining...' : 'Decline'}
                     </button>
                   </>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {status.mode === 'syndicate' && isShareholder && (
+        <div className="po-bid-row" data-testid="po-syndicate-xfer-form">
+          <label htmlFor="po-syndicate-xfer-target">Transfer stake to player UUID</label>
+          <input
+            id="po-syndicate-xfer-target"
+            data-testid="po-syndicate-xfer-target"
+            type="text"
+            value={xferTargetId}
+            onChange={(e) => setXferTargetId(e.target.value.trim())}
+            placeholder="player UUID"
+            disabled={Boolean(busy)}
+          />
+          <label htmlFor="po-syndicate-xfer-pct">Transfer %</label>
+          <input
+            id="po-syndicate-xfer-pct"
+            data-testid="po-syndicate-xfer-pct"
+            type="number"
+            min={1}
+            max={99}
+            value={xferPct}
+            onChange={(e) => setXferPct(Math.max(1, Math.min(99, Number(e.target.value) || 1)))}
+            disabled={Boolean(busy)}
+          />
+          <button
+            type="button"
+            className="action-button primary"
+            data-testid="po-syndicate-xfer-submit"
+            disabled={Boolean(busy) || !xferTargetId}
+            onClick={() =>
+              void run(
+                'xfer-propose',
+                () => portOwnershipAPI.proposeStakeTransfer(stationId, xferTargetId, xferPct),
+                `Stake transfer ${xferPct}% proposed.`,
+              )
+            }
+          >
+            {busy === 'xfer-propose' ? 'Proposing...' : 'Propose Stake Transfer'}
+          </button>
+        </div>
+      )}
+
+      {localTransfers.length > 0 && (
+        <div data-testid="po-syndicate-xfer-pending">
+          <h4 className="po-section-title">Pending stake transfers</h4>
+          {localTransfers.map((xfer) => {
+            const alreadyApproved =
+              !!playerId &&
+              (xfer.approvals ?? []).some((a) => String(a.player_id) === String(playerId));
+            return (
+              <div
+                className="po-bid-row"
+                key={xfer.proposal_id}
+                data-testid={`po-syndicate-xfer-${xfer.proposal_id}`}
+              >
+                <span>
+                  {xfer.pct}% {xfer.from_player_id.slice(0, 8)} → {xfer.to_player_id.slice(0, 8)}
+                  {typeof xfer.approving_weight === 'number' &&
+                  typeof xfer.remaining_stake_pct === 'number'
+                    ? ` (weight ${xfer.approving_weight}/${xfer.remaining_stake_pct})`
+                    : ''}
+                </span>
+                {isShareholder && !alreadyApproved && (
+                  <button
+                    type="button"
+                    className="action-button primary"
+                    data-testid={`po-syndicate-xfer-approve-${xfer.proposal_id}`}
+                    disabled={Boolean(busy)}
+                    onClick={() =>
+                      void run(
+                        `xfer-approve-${xfer.proposal_id}`,
+                        () =>
+                          portOwnershipAPI.approveStakeTransfer(stationId, xfer.proposal_id),
+                        'Stake transfer approved.',
+                      )
+                    }
+                  >
+                    {busy === `xfer-approve-${xfer.proposal_id}` ? 'Approving...' : 'Approve'}
+                  </button>
+                )}
+                {isShareholder && (
+                  <button
+                    type="button"
+                    className="action-button"
+                    data-testid={`po-syndicate-xfer-reject-${xfer.proposal_id}`}
+                    disabled={Boolean(busy)}
+                    onClick={() =>
+                      void run(
+                        `xfer-reject-${xfer.proposal_id}`,
+                        () =>
+                          portOwnershipAPI.rejectStakeTransfer(stationId, xfer.proposal_id),
+                        'Stake transfer rejected.',
+                      )
+                    }
+                  >
+                    {busy === `xfer-reject-${xfer.proposal_id}` ? 'Rejecting...' : 'Reject'}
+                  </button>
                 )}
               </div>
             );
