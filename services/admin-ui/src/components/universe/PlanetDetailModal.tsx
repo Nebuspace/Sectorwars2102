@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { api } from '../../utils/auth';
 import { formatUniverseAdminError } from '../../utils/universeAdminError';
 import './planet-detail-modal.css';
@@ -73,6 +74,13 @@ function formatHoldingInspectValue(value: unknown): string {
   }
   const s = String(value).trim();
   return s === '' ? '—' : s;
+}
+
+/** Non-empty outlaw_base_id for deep-link; null when absent/blank (LEG-4226). */
+function outlawBaseIdForLink(value: string | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  const s = String(value).trim();
+  return s === '' ? null : s;
 }
 
 function httpStatus(err: unknown): number | undefined {
@@ -251,7 +259,9 @@ const PlanetDetailModal: React.FC<PlanetDetailModalProps> = ({
               <p data-testid="pirate-holdings-empty">No pirate holdings in this sector.</p>
             ) : (
               <ul>
-                {pirateHoldings.map((holding) => (
+                {pirateHoldings.map((holding) => {
+                  const outlawBaseId = outlawBaseIdForLink(holding.outlaw_base_id);
+                  return (
                   <li
                     key={holding.id}
                     data-testid={`pirate-holding-row-${holding.id}`}
@@ -260,10 +270,21 @@ const PlanetDetailModal: React.FC<PlanetDetailModalProps> = ({
                     <span>tier: {formatHoldingTier(holding.tier)}</span>
                     <span>owner: {formatHoldingOwner(holding)}</span>
                     <span>
-                      outlaw_base_id: {formatHoldingInspectValue(holding.outlaw_base_id)}
+                      outlaw_base_id:{' '}
+                      {outlawBaseId ? (
+                        <Link
+                          to={`/outlaw-bases/${outlawBaseId}`}
+                          data-testid={`pirate-holding-outlaw-base-link-${holding.id}`}
+                        >
+                          {outlawBaseId}
+                        </Link>
+                      ) : (
+                        formatHoldingInspectValue(holding.outlaw_base_id)
+                      )}
                     </span>
                   </li>
-                ))}
+                  );
+                })}
               </ul>
             )}
           </div>
