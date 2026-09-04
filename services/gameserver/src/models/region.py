@@ -191,6 +191,11 @@ class Region(Base):
     # place it elsewhere in the Federation Zone. Nullable for legacy rows.
     capital_sector_number = Column(Integer, nullable=True)
     total_sectors = Column(Integer, nullable=False, default=500)
+    # galaxy-generation.md:228 / central-nexus-clusters.md failure modes —
+    # False while generation is incomplete or failed; True only after a
+    # full successful populate pass. Idempotent skip checks this before
+    # returning "exists"; force_regenerate drops and re-seeds regardless.
+    is_populated = Column(Boolean, nullable=False, server_default="false", default=False)
     active_players_30d = Column(Integer, nullable=False, default=0)
     total_trade_volume = Column(DECIMAL(20,2), nullable=False, default=0.0)
     # Region treasury (Phase 2): funds region-funded TradeDock construction and
