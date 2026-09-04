@@ -38,9 +38,9 @@ from src.models.warp_tunnel import WarpTunnel
 from src.models.station import Station
 from src.models.planet import Planet
 from src.models.pirate_holding import PirateHolding
+from src.models.outlaw_base import OutlawBase
 from src.models.team import Team
 from src.models.game_event import GameEvent, EventEffect, EventParticipation, EventType, EventStatus
-from src.models.pirate_holding import PirateHolding
 
 # Request schemas for universe management
 class SectorAddRequest(BaseModel):
@@ -1893,6 +1893,74 @@ async def get_sector_pirate_holdings(
         .all()
     )
     return {"holdings": [_admin_pirate_holding_payload(h) for h in rows]}
+
+
+@router.get("/pirate-holdings", response_model=dict)
+async def get_pirate_holdings_by_owner(
+    owner_player_id: uuid.UUID,
+    _: User = Depends(require_scope(PLAYERS_VIEW)),
+    db: Session = Depends(get_db),
+):
+    """List pirate holdings owned by a player (LEG-4211). Empty list, never 404."""
+    rows = (
+        db.query(PirateHolding)
+        .filter(PirateHolding.owner_player_id == owner_player_id)
+        .all()
+    )
+    return {"holdings": [_admin_pirate_holding_payload(h) for h in rows]}
+
+
+_ADMIN_OUTLAW_BASE_FIELDS = (
+    "id",
+    "name",
+    "sector_id",
+    "home_region_id",
+    "faction_code",
+    "archetype",
+    "capacity",
+    "current_occupants_count",
+    "is_player_discoverable",
+    "raid_cooldown_until",
+    "last_raided_at",
+    "relocation_pending",
+)
+
+
+def _admin_outlaw_base_payload(base: OutlawBase) -> dict:
+    """Operator inspect payload — committed OutlawBase columns only (LEG-4210)."""
+    return {
+        "id": str(base.id),
+        "name": base.name,
+        "sector_id": base.sector_id,
+        "home_region_id": (
+            str(base.home_region_id) if base.home_region_id is not None else None
+        ),
+        "faction_code": base.faction_code,
+        "archetype": base.archetype.value if base.archetype is not None else None,
+        "capacity": base.capacity,
+        "current_occupants_count": base.current_occupants_count,
+        "is_player_discoverable": base.is_player_discoverable,
+        "raid_cooldown_until": (
+            base.raid_cooldown_until.isoformat() if base.raid_cooldown_until else None
+        ),
+        "last_raided_at": (
+            base.last_raided_at.isoformat() if base.last_raided_at else None
+        ),
+        "relocation_pending": base.relocation_pending,
+    }
+
+
+@router.get("/outlaw-bases/{base_id}", response_model=dict)
+async def get_admin_outlaw_base(
+    base_id: uuid.UUID,
+    _: User = Depends(require_scope(PLAYERS_VIEW)),
+    db: Session = Depends(get_db),
+):
+    """Read-only operator inspect for a single OutlawBase (LEG-4210)."""
+    base = db.query(OutlawBase).filter(OutlawBase.id == base_id).first()
+    if base is None:
+        raise HTTPException(status_code=404, detail="OutlawBase not found")
+    return _admin_outlaw_base_payload(base)
 
 
 @router.get("/alliances", response_model=dict)
