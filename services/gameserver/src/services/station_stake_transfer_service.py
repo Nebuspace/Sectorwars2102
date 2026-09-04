@@ -143,6 +143,18 @@ def _payload(proposal: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def pending_stake_transfers_for(station: Station) -> List[Dict[str, Any]]:
+    """Public payloads for pending proposals on this station (LEG-4238).
+
+    Caller decides visibility (co-owners only on syndicate GET).
+    """
+    return [
+        _payload(t)
+        for t in _transfers(station)
+        if t.get("status") == "pending"
+    ]
+
+
 def _apply_transfer(
     station: Station,
     shares: List[Dict[str, Any]],
