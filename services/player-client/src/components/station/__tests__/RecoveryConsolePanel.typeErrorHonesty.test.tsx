@@ -104,6 +104,31 @@ describe('RecoveryConsolePanel action transport collapse densify (LEG-3738)', ()
     expect(feedback?.textContent).toBe(FALLBACK);
     expect(feedback?.textContent).not.toMatch(/Network Error/i);
   });
+
+  // LEG-4223 Soft-ORDER — action catch surfaces GS detail via formatRecoveryActionError
+  it('distress beacon GS refusal detail surfaces in feedback (not fallback)', async () => {
+    mockFireDistress.mockRejectedValue({
+      data: { detail: 'Distress beacon on cooldown — try again later' },
+    });
+
+    await act(async () => {
+      root.render(<RecoveryConsolePanel />);
+      await flush();
+    });
+    await act(async () => {
+      (container.querySelector('[data-testid="recovery-console-open"]') as HTMLButtonElement).click();
+      await flush();
+    });
+    await act(async () => {
+      (container.querySelector('[data-testid="recovery-distress-fire"]') as HTMLButtonElement).click();
+      await flush();
+      await flush();
+    });
+
+    const feedback = container.querySelector('.recovery-console-feedback');
+    expect(feedback?.textContent).toBe('Distress beacon on cooldown — try again later');
+    expect(feedback?.textContent).not.toBe(FALLBACK);
+  });
 });
 
 describe('formatRecoveryActionError 403/429 densify (LEG-4084)', () => {
