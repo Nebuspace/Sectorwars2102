@@ -99,11 +99,15 @@ const PlayerAssetManager: React.FC<PlayerAssetManagerProps> = ({
     ports: []
   });
 
-  const [activeTab, setActiveTab] = useState<'ships' | 'planets' | 'ports'>('ships');
+  const [activeTab, setActiveTab] = useState<'ships' | 'planets' | 'ports' | 'holdings'>('ships');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [holdingSectorIds, setHoldingSectorIds] = useState<Set<number>>(new Set());
   const [holdingsError, setHoldingsError] = useState<string | null>(null);
+  const [ownedHoldings, setOwnedHoldings] = useState<any[]>([]);
+  const [ownedHoldingsLoading, setOwnedHoldingsLoading] = useState(false);
+  const [ownedHoldingsError, setOwnedHoldingsError] = useState<string | null>(null);
+  const [ownedHoldingsLoadedFor, setOwnedHoldingsLoadedFor] = useState<string | null>(null);
 
   const ASSET_ASSIGN_ENDPOINT = 'POST /api/v1/admin/players/{id}/assets/assign';
   const ASSET_REMOVE_ENDPOINT = 'POST /api/v1/admin/players/{id}/assets/remove';
@@ -112,10 +116,49 @@ const PlayerAssetManager: React.FC<PlayerAssetManagerProps> = ({
     loadPlayerAssets();
   }, [player.id]);
 
+  useEffect(() => {
+    if (activeTab !== 'holdings') return;
+    if (ownedHoldingsLoadedFor === player.id) return;
+
+    let cancelled = false;
+    const loadOwnedHoldings = async () => {
+      setOwnedHoldingsLoading(true);
+      setOwnedHoldingsError(null);
+      try {
+        const response = await api.get('/api/v1/admin/pirate-holdings', {
+          params: { owner_player_id: player.id },
+        });
+        if (cancelled) return;
+        const holdings = (response.data as { holdings?: unknown[] })?.holdings;
+        setOwnedHoldings(Array.isArray(holdings) ? holdings : []);
+        setOwnedHoldingsLoadedFor(player.id);
+      } catch (err: unknown) {
+        if (cancelled) return;
+        setOwnedHoldings([]);
+        setOwnedHoldingsLoadedFor(null);
+        setOwnedHoldingsError(
+          formatAdminApiError(err, {
+            fallback: 'Failed to load owned pirate holdings',
+            scopeHint: 'PLAYERS_VIEW scope required to list pirate holdings by owner',
+          }),
+        );
+      } finally {
+        if (!cancelled) setOwnedHoldingsLoading(false);
+      }
+    };
+    void loadOwnedHoldings();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, player.id, ownedHoldingsLoadedFor]);
+
   const loadPlayerAssets = async () => {
     setLoading(true);
     setError(null);
     setHoldingsError(null);
+    setOwnedHoldings([]);
+    setOwnedHoldingsError(null);
+    setOwnedHoldingsLoadedFor(null);
     try {
       const [shipsRes, planetsRes, portsRes] = await Promise.all([
         api.get(`/api/v1/admin/ships?ownerId=${player.id}`),
@@ -228,6 +271,55 @@ const PlayerAssetManager: React.FC<PlayerAssetManagerProps> = ({
     );
   };
 
+  const renderOwnedHoldings = () => {
+    if (ownedHoldingsLoading) {
+      return (
+        <div className="empty-state" data-testid="owned-pirate-holdings-loading">
+          <p>Loading owned pirate holdings…</p>
+        </div>
+      );
+    }
+    if (ownedHoldingsError) {
+      return (
+        <div
+          role="alert"
+          className="error-banner"
+          data-testid="owned-pirate-holdings-error"
+        >
+          {ownedHoldingsError}
+        </div>
+      );
+    }
+    if (ownedHoldings.length === 0) {
+      return (
+        <div className="empty-state" data-testid="owned-pirate-holdings-empty">
+          <p>No pirate holdings owned by this player.</p>
+        </div>
+      );
+    }
+    return (
+      <div className="asset-list" data-testid="owned-pirate-holdings-list">
+        {ownedHoldings.map((holding) => (
+          <div
+            key={holding.id}
+            className="asset-item"
+            data-testid={`owned-pirate-holding-row-${holding.id}`}
+          >
+            <div className="asset-info">
+              <div className="asset-details">
+                <span>id: {holding.id}</span>
+                <span>sector_id: {holding.sector_id ?? '—'}</span>
+                <span>tier: {holding.tier ?? '—'}</span>
+                <span>outlaw_base_id: {holding.outlaw_base_id ?? '—'}</span>
+                <span>current_strength: {holding.current_strength ?? '—'}</span>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
   if (loading) {
     return (
       <div className="player-asset-manager loading">
@@ -258,7 +350,7 @@ const PlayerAssetManager: React.FC<PlayerAssetManagerProps> = ({
     );
   }
 
-  const currentAssets = assets[activeTab];
+  const currentAssets = activeTab === 'holdings' ? [] : assets[activeTab];
 
   return (
     <div className="player-asset-manager" onClick={(e) => e.stopPropagation()}>
@@ -311,14 +403,27 @@ const PlayerAssetManager: React.FC<PlayerAssetManagerProps> = ({
         >
           🏪 Ports ({assets.ports.length})
         </button>
+        <button
+          type="button"
+          className={`tab ${activeTab === 'holdings' ? 'active' : ''}`}
+          onClick={() => setActiveTab('holdings')}
+          data-testid="owned-pirate-holdings-tab"
+        >
+          🏴 Pirate Holdings
+          {ownedHoldingsLoadedFor === player.id ? ` (${ownedHoldings.length})` : ''}
+        </button>
       </div>
 
       <div className="asset-sections">
         <div className="owned-section">
           <div className="section-header">
-            <h4>Owned {activeTab.charAt(0).toUpperCase() + activeTab.slice(1)}</h4>
+            <h4>
+              {activeTab === 'holdings'
+                ? 'Owned Pirate Holdings'
+                : `Owned ${activeTab.charAt(0).toUpperCase() + activeTab.slice(1)}`}
+            </h4>
           </div>
-          {renderAssetList(currentAssets)}
+          {activeTab === 'holdings' ? renderOwnedHoldings() : renderAssetList(currentAssets)}
         </div>
       </div>
 
