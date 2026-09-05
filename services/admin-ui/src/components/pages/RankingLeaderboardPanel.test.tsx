@@ -136,6 +136,19 @@ describe('RankingLeaderboardPanel', () => {
     });
   });
 
+  it('surfaces honest fallback on load TypeError/network collapse (LEG-3019)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<RankingLeaderboardPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/Failed to load leaderboard/i);
+    });
+    const text = screen.getByRole('alert').textContent ?? '';
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
   it('reports a 429 as an admin rate-limit', async () => {
     vi.mocked(api.get).mockRejectedValue({ response: { status: 429 } });
 
@@ -144,5 +157,41 @@ describe('RankingLeaderboardPanel', () => {
     await waitFor(() => {
       expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
     });
+  });
+
+  it('surfaces honest fallback on load TypeError/network collapse (LEG-3006)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<RankingLeaderboardPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/Failed to load leaderboard/i);
+    });
+
+    const msg = screen.getByRole('alert').textContent ?? '';
+    expect(msg).not.toMatch(/Failed to fetch/i);
+    expect(msg).not.toMatch(/TypeError/i);
+  });
+});
+
+describe('RankingLeaderboardPanel axios Network Error densify (LEG-3533)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('collapses axios-shaped Network Error on leaderboard load', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
+
+    render(<RankingLeaderboardPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/Failed to load leaderboard/i);
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Failed to load leaderboard/i);
+    expect(alert).not.toBe('Network Error');
+    expect(alert).not.toContain('Network Error');
   });
 });

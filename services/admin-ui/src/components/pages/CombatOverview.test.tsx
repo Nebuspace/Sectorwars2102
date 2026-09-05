@@ -228,6 +228,59 @@ describe('CombatOverview restore_shields honesty (LEG-482 / LEG-1348)', () => {
   });
 });
 
+describe('CombatOverview load transport errors (LEG-3349)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('collapses axios-shaped Network Error on full load to honest per-endpoint fallbacks', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
+
+    render(<CombatOverview />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Combat feed unavailable/i)).toBeInTheDocument();
+    });
+
+    const text = document.querySelector('.alert-message')?.textContent ?? '';
+    expect(text).toMatch(/Combat feed unavailable/i);
+    expect(text).toMatch(/Combat statistics unavailable/i);
+    expect(text).toMatch(/Combat disputes unavailable/i);
+    expect(text).not.toBe('Network Error');
+    expect(text).not.toContain('Network Error');
+    expect(text).not.toMatch(/TypeError/i);
+    expect(text).not.toContain('Failed to fetch');
+  });
+
+  it('preserves server scope detail when one load path fails with 403 alongside transport errors', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('dashboard-summary')) {
+        throw Object.assign(new Error('HTTP 403'), {
+          response: {
+            status: 403,
+            data: { detail: 'Missing scope admin.combat.view' },
+          },
+        });
+      }
+      throw new Error('Network Error');
+    });
+
+    render(<CombatOverview />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Missing scope admin\.combat\.view/i)).toBeInTheDocument();
+    });
+
+    const text = screen.getByText(/Missing scope admin\.combat\.view/i).closest('.alert-message')
+      ?.textContent ?? screen.getByText(/Missing scope admin\.combat\.view/i).textContent ?? '';
+    expect(text).toMatch(/Missing scope admin\.combat\.view/i);
+    expect(text).not.toBe('Network Error');
+    expect(text).not.toContain('Network Error');
+  });
+});
+
 describe('CombatOverview scope errors (LEG-921)', () => {
   beforeEach(() => {
     vi.mocked(api.get).mockReset();

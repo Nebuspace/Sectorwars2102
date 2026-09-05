@@ -61,6 +61,20 @@ describe('MultiAccountReview (LEG-1098 honesty banner)', () => {
       expect(document.body.textContent).toMatch(/rate limit/i);
     });
   });
+
+  it('surfaces honest fallback on cluster load TypeError/network collapse (LEG-3007)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<MultiAccountReview />);
+
+    await waitFor(() => {
+      expect(document.body.textContent).toMatch(/Failed to load clusters/i);
+    });
+
+    const text = document.body.textContent ?? '';
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
 });
 
 describe('MultiAccountReview scope errors (LEG-968)', () => {
@@ -91,12 +105,24 @@ describe('MultiAccountReview scope errors (LEG-968)', () => {
   });
 });
 
-const sampleCluster = {
+const sampleCluster: {
+  id: string;
+  signal_summary: Record<string, unknown>;
+  severity: 'hard' | 'soft';
+  all_paid_subscribers: boolean;
+  admin_decision: 'pending' | 'confirmed' | 'overridden' | 'escalated';
+  admin_decision_reason: string | null;
+  admin_decision_at: string | null;
+  admin_decision_by: string | null;
+  created_at: string;
+  updated_at: string;
+  member_count: number;
+} = {
   id: 'cluster-1',
   signal_summary: { shared_ip: true },
-  severity: 'soft' as const,
+  severity: 'soft',
   all_paid_subscribers: false,
-  admin_decision: 'pending' as const,
+  admin_decision: 'pending',
   admin_decision_reason: null,
   admin_decision_at: null,
   admin_decision_by: null,
@@ -161,11 +187,13 @@ describe('MultiAccountReview cluster detail GET (LEG-2679)', () => {
       );
     });
 
-    const detailError = screen.getByRole('alert');
-    expect(detailError.textContent).toMatch(
-      /admin multi-account review scopes required|Access denied/i,
-    );
-    expect(detailError.textContent).not.toMatch(/^Failed to load cluster detail$/);
+    await waitFor(() => {
+      const detailError = screen.getByRole('alert');
+      expect(detailError.textContent).toMatch(
+        /admin multi-account review scopes required|Access denied/i,
+      );
+      expect(detailError.textContent).not.toMatch(/^Failed to load cluster detail$/);
+    });
   });
 
   it('surfaces rate-limit copy on cluster detail GET 429', async () => {
@@ -193,9 +221,11 @@ describe('MultiAccountReview cluster detail GET (LEG-2679)', () => {
       );
     });
 
-    const detailError = screen.getByRole('alert');
-    expect(detailError.textContent).toMatch(/rate limit/i);
-    expect(detailError.textContent).not.toMatch(/^Failed to load cluster detail$/);
+    await waitFor(() => {
+      const detailError = screen.getByRole('alert');
+      expect(detailError.textContent).toMatch(/rate limit/i);
+      expect(detailError.textContent).not.toMatch(/^Failed to load cluster detail$/);
+    });
   });
 });
 
@@ -218,9 +248,11 @@ describe('MultiAccountReview decide POST (LEG-2765)', () => {
       );
     });
 
-    const decideError = screen.getByRole('alert');
-    expect(decideError.textContent).toMatch(/admin multi-account review scopes required|Access denied/i);
-    expect(decideError.textContent).not.toMatch(/^Failed to record decision$/);
+    await waitFor(() => {
+      const decideError = screen.getByRole('alert');
+      expect(decideError.textContent).toMatch(/admin multi-account review scopes required|Access denied/i);
+      expect(decideError.textContent).not.toMatch(/^Failed to record decision$/);
+    });
   });
 
   it('decide POST 429 surfaces rate-limit copy', async () => {
@@ -233,8 +265,216 @@ describe('MultiAccountReview decide POST (LEG-2765)', () => {
       expect(api.post).toHaveBeenCalled();
     });
 
-    const decideError = screen.getByRole('alert');
-    expect(decideError.textContent).toMatch(/rate limit/i);
-    expect(decideError.textContent).not.toMatch(/^Failed to record decision$/);
+    await waitFor(() => {
+      const decideError = screen.getByRole('alert');
+      expect(decideError.textContent).toMatch(/rate limit/i);
+      expect(decideError.textContent).not.toMatch(/^Failed to record decision$/);
+    });
+  });
+});
+
+describe('MultiAccountReview TypeError densify (LEG-3068)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+  });
+
+  it('surfaces honest fallback on clusters load network collapse', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<MultiAccountReview />);
+
+    await waitFor(() => {
+      expect(document.body.textContent).toMatch(/Failed to load clusters/i);
+    });
+
+    const text = document.body.textContent ?? '';
+    expect(text).toMatch(/Failed to load clusters/i);
+    expect(text).not.toMatch(/TypeError/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+  });
+});
+
+describe('MultiAccountReview axios Network Error densify (LEG-3534)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('collapses axios-shaped Network Error on clusters load', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
+
+    render(<MultiAccountReview />);
+
+    await waitFor(() => {
+      expect(document.body.textContent).toMatch(/Failed to load clusters/i);
+    });
+
+    const text = document.body.textContent ?? '';
+    expect(text).toMatch(/Failed to load clusters/i);
+    expect(text).not.toBe('Network Error');
+    expect(text).not.toContain('Network Error');
+  });
+
+  it('collapses axios-shaped Network Error on decide POST', async () => {
+    await openDecideForm();
+    vi.mocked(api.post).mockRejectedValue(new Error('Network Error'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Submit Ruling' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/multi-account/clusters/cluster-1/decide',
+        expect.objectContaining({ decision: 'confirmed' }),
+      );
+    });
+
+    await waitFor(() => {
+      const decideError = screen.getByRole('alert');
+      expect(decideError.textContent).toMatch(/Failed to record decision/i);
+      expect(decideError.textContent).not.toBe('Network Error');
+      expect(decideError.textContent).not.toContain('Network Error');
+    });
+  });
+});
+
+type ClusterFixture = typeof sampleCluster & {
+  flags?: Array<{
+    id: string;
+    player_id: string;
+    signal: string;
+    severity: 'hard' | 'soft';
+    created_at: string | null;
+  }>;
+};
+
+async function openClusterDetail(detail: ClusterFixture) {
+  const listItem = { ...detail };
+  delete (listItem as { flags?: unknown }).flags;
+
+  vi.mocked(api.get).mockImplementation(async (url: string) => {
+    if (url.includes(`/clusters/${detail.id}`)) {
+      return { data: detail };
+    }
+    if (url.includes('/clusters')) {
+      return { data: [listItem] };
+    }
+    return { data: [] };
+  });
+
+  render(<MultiAccountReview />);
+  await waitFor(() => {
+    expect(screen.getByText(new RegExp(`${detail.member_count} member`, 'i'))).toBeTruthy();
+  });
+  fireEvent.click(screen.getByText(new RegExp(`${detail.member_count} member`, 'i')));
+  await waitFor(() => {
+    expect(screen.getByText(/Franchise impact/i)).toBeTruthy();
+  });
+}
+
+describe('MultiAccountReview franchise impact (LEG-4243)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+  });
+
+  it('HARD unpaid cluster communicates franchise/vote block (weight 0 / blocks_vote)', async () => {
+    await openClusterDetail({
+      ...sampleCluster,
+      id: 'cluster-hard',
+      severity: 'hard',
+      all_paid_subscribers: false,
+      member_count: 2,
+      flags: [
+        {
+          id: 'flag-1',
+          player_id: 'player-a',
+          signal: 'shared_ip',
+          severity: 'hard',
+          created_at: '2026-01-01T00:00:00Z',
+        },
+      ],
+    });
+
+    const text = document.body.textContent ?? '';
+    expect(text).toMatch(/franchise blocked/i);
+    expect(text).toMatch(/participation weight 0/i);
+    expect(text).toMatch(/blocks_vote/i);
+    expect(screen.getAllByText(/Blocked \(0 \/ blocks_vote\)/).length).toBeGreaterThan(0);
+  });
+
+  it('SOFT unpaid cluster communicates 0.5× participation discount', async () => {
+    await openClusterDetail({
+      ...sampleCluster,
+      id: 'cluster-soft',
+      severity: 'soft',
+      all_paid_subscribers: false,
+      member_count: 3,
+      flags: [
+        {
+          id: 'flag-2',
+          player_id: 'player-b',
+          signal: 'device_fingerprint',
+          severity: 'soft',
+          created_at: '2026-01-02T00:00:00Z',
+        },
+      ],
+    });
+
+    const text = document.body.textContent ?? '';
+    expect(text).toMatch(/0\.5× participation weight/i);
+    expect(screen.getAllByText(/0\.5× weight/).length).toBeGreaterThan(0);
+  });
+
+  it('all_paid_subscribers communicates paid bypass (full weight)', async () => {
+    await openClusterDetail({
+      ...sampleCluster,
+      id: 'cluster-paid',
+      severity: 'hard',
+      all_paid_subscribers: true,
+      member_count: 2,
+      flags: [
+        {
+          id: 'flag-3',
+          player_id: 'player-c',
+          signal: 'shared_ip',
+          severity: 'hard',
+          created_at: '2026-01-03T00:00:00Z',
+        },
+      ],
+    });
+
+    const text = document.body.textContent ?? '';
+    expect(text).toMatch(/Paid bypass/i);
+    expect(text).toMatch(/full participation weight \(1\.0\)/i);
+    expect(text).toMatch(/discount not applied/i);
+    expect(screen.getAllByText(/Full weight \(1\.0\)/).length).toBeGreaterThan(0);
+  });
+
+  it('names the API gap for per-member tier/age/activity without fabricating fields', async () => {
+    await openClusterDetail({
+      ...sampleCluster,
+      id: 'cluster-honesty',
+      severity: 'soft',
+      all_paid_subscribers: false,
+      member_count: 2,
+      flags: [
+        {
+          id: 'flag-4',
+          player_id: 'player-d',
+          signal: 'shared_ip',
+          severity: 'soft',
+          created_at: '2026-01-04T00:00:00Z',
+        },
+      ],
+    });
+
+    const text = document.body.textContent ?? '';
+    expect(text).toMatch(/subscription tier/i);
+    expect(text).toMatch(/account age/i);
+    expect(text).toMatch(/recent activity/i);
+    expect(text).toMatch(/not returned by the current admin multi-account API/i);
+    expect(text).not.toMatch(/subscription tier:\s*\w+/i);
+    expect(text).not.toMatch(/account age:\s*\d+/i);
+    expect(text).not.toMatch(/recent activity:\s*\d+/i);
   });
 });

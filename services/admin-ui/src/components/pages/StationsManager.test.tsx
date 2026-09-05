@@ -430,3 +430,120 @@ describe('StationsManager AddPortModal load honesty (LEG-2399)', () => {
     );
   });
 });
+
+describe('StationsManager axios Network Error densify (LEG-3399)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    toastSuccess.mockReset();
+    toastError.mockReset();
+    confirmMock.mockReset();
+    confirmMock.mockResolvedValue(true);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('collapses axios-shaped Network Error on load to honest fallback', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
+
+    render(<StationsManager />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/An unexpected error occurred/i)).toBeTruthy();
+    });
+    const text = screen.getByText(/An unexpected error occurred/i).textContent ?? '';
+    expect(text).toMatch(/An unexpected error occurred/i);
+    expect(text).not.toBe('Network Error');
+    expect(text).not.toContain('Network Error');
+  });
+
+  it('collapses axios-shaped Network Error on stock-levels POST to honest toast', async () => {
+    vi.mocked(api.get).mockResolvedValue({ data: { stations: [], total: 0 } });
+    vi.mocked(api.post).mockRejectedValue(new Error('Network Error'));
+
+    render(<StationsManager />);
+    fireEvent.click(await screen.findByLabelText('Update port stock levels'));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith('/api/v1/admin/ports/update-stock-levels');
+    });
+    const msg = String(toastError.mock.calls.map((call) => call[0]).join('\n'));
+    expect(msg).toMatch(/Failed to update port stock levels/i);
+    expect(msg).not.toBe('Network Error');
+    expect(msg).not.toContain('Network Error');
+  });
+});
+
+describe('StationsManager Holding badge from sector has_pirate_holding (LEG-4200)', () => {
+  const mockListLoad = (sectors: Array<Record<string, unknown>>) => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/stations')) {
+        return { data: { stations: [sampleStation], total: 1 } };
+      }
+      if (String(url).includes('/sectors')) {
+        return { data: { sectors, total: sectors.length } };
+      }
+      return { data: {} };
+    });
+  };
+
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    toastSuccess.mockReset();
+    toastError.mockReset();
+    confirmMock.mockReset();
+    confirmMock.mockResolvedValue(false);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('shows a Holding badge when the station sector has has_pirate_holding true', async () => {
+    mockListLoad([
+      { id: 'sec-uuid', sector_id: 42, name: 'Alpha', has_pirate_holding: true },
+    ]);
+
+    render(<StationsManager />);
+
+    expect(await screen.findByText('Alpha Dock')).toBeTruthy();
+    expect(screen.getByTitle('Pirate Holding')).toHaveTextContent('Holding');
+    const urls = vi.mocked(api.get).mock.calls.map((c) => String(c[0]));
+    expect(urls.some((u) => u.includes('pirate-holdings'))).toBe(false);
+  });
+
+  it('does not show a Holding badge when has_pirate_holding is false', async () => {
+    mockListLoad([
+      { id: 'sec-uuid', sector_id: 42, name: 'Alpha', has_pirate_holding: false },
+    ]);
+
+    render(<StationsManager />);
+
+    expect(await screen.findByText('Alpha Dock')).toBeTruthy();
+    expect(screen.queryByTitle('Pirate Holding')).toBeNull();
+    expect(screen.queryByText('Holding')).toBeNull();
+  });
+
+  it('does not show a Holding badge when has_pirate_holding is omitted', async () => {
+    mockListLoad([{ id: 'sec-uuid', sector_id: 42, name: 'Alpha' }]);
+
+    render(<StationsManager />);
+
+    expect(await screen.findByText('Alpha Dock')).toBeTruthy();
+    expect(screen.queryByTitle('Pirate Holding')).toBeNull();
+    expect(screen.queryByText('Holding')).toBeNull();
+  });
+
+  it('still lists stations when the sectors fetch fails (no invented holdings)', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/stations')) {
+        return { data: { stations: [sampleStation], total: 1 } };
+      }
+      if (String(url).includes('/sectors')) {
+        throw axiosError(500);
+      }
+      return { data: {} };
+    });
+
+    render(<StationsManager />);
+
+    expect(await screen.findByText('Alpha Dock')).toBeTruthy();
+    expect(screen.queryByTitle('Pirate Holding')).toBeNull();
+  });
+});

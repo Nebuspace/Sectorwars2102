@@ -94,6 +94,21 @@ describe('ReEngagementQueuePanel', () => {
     expect(screen.getByText(/No rows for this filter/i)).toBeTruthy();
   });
 
+  it('surfaces honest fallback on load TypeError/network collapse (LEG-3011)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<ReEngagementQueuePanel />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(
+        /Failed to load re-engagement queue/i,
+      );
+    });
+    const text = screen.getByRole('alert').textContent ?? '';
+    expect(text).not.toMatch(/TypeError/i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+  });
+
   it('surfaces admin rate-limit copy on load 429', async () => {
     vi.mocked(api.get).mockRejectedValue(
       Object.assign(new Error('HTTP 429'), {
@@ -152,5 +167,50 @@ describe('ReEngagementQueuePanel', () => {
       expect(mockToastError).toHaveBeenCalled();
     });
     expect(mockToastError.mock.calls[0][0]).toMatch(/rate limit/i);
+  });
+});
+
+describe('ReEngagementQueuePanel axios Network Error densify (LEG-3535)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.patch).mockReset();
+    mockToastError.mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('collapses axios-shaped Network Error on queue load', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
+
+    render(<ReEngagementQueuePanel />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/Failed to load re-engagement queue/i);
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).not.toBe('Network Error');
+    expect(alert).not.toContain('Network Error');
+  });
+
+  it('collapses axios-shaped Network Error on status mutate', async () => {
+    openQueueMocks();
+    vi.mocked(api.patch).mockRejectedValue(new Error('Network Error'));
+
+    render(<ReEngagementQueuePanel />);
+
+    await waitFor(() => {
+      expect(screen.getByText('AtRisk')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Mark contacted' }));
+
+    await waitFor(() => {
+      expect(mockToastError).toHaveBeenCalled();
+    });
+
+    const msg = String(mockToastError.mock.calls.map((call) => call[0]).join('\n'));
+    expect(msg).toMatch(/Failed to update status/i);
+    expect(msg).not.toBe('Network Error');
+    expect(msg).not.toContain('Network Error');
   });
 });

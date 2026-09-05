@@ -123,7 +123,9 @@ const EconomyLeversPanel: React.FC = () => {
       setCommodityDrafts(cDrafts);
     } catch (err) {
       console.error(err);
-      toast.error(economyLeversApiError(err, 'Failed to load economy levers'));
+      toast.error(
+        economyLeversApiError(err, 'Gameserver unreachable — network error loading economy levers'),
+      );
     } finally {
       setLoading(false);
     }

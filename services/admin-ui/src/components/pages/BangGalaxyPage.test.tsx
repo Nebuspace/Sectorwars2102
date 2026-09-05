@@ -165,4 +165,62 @@ describe('BangGalaxyPage scope errors (LEG-1039)', () => {
     });
     expect(screen.queryByText('Failed to add player-owned region')).toBeNull();
   });
+
+  it('surfaces honest fallback on add-region TypeError/network collapse (LEG-2993)', async () => {
+    addPlayerOwnedRegion.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<BangGalaxyPage />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open add region' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm add region' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(
+        /Failed to add player-owned region/i,
+      );
+    });
+    const msg = String(screen.getByRole('alert').textContent ?? '');
+    expect(msg).not.toMatch(/Failed to fetch/i);
+    expect(msg).not.toMatch(/TypeError/i);
+  });
+});
+
+describe('BangGalaxyPage axios Network Error densify (LEG-3406)', () => {
+  beforeEach(() => {
+    wipeGalaxy.mockReset();
+    loadGalaxyInfo.mockReset();
+    addPlayerOwnedRegion.mockReset();
+  });
+
+  it('collapses axios-shaped Network Error on wipe to honest fallback', async () => {
+    wipeGalaxy.mockRejectedValue(new Error('Network Error'));
+
+    render(<BangGalaxyPage />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open wipe' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm wipe' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+    const msg = String(screen.getByRole('alert').textContent ?? '');
+    expect(msg.length).toBeGreaterThan(0);
+    expect(msg).not.toBe('Network Error');
+    expect(msg).not.toContain('Network Error');
+  });
+
+  it('collapses axios-shaped Network Error on add-region to honest fallback', async () => {
+    addPlayerOwnedRegion.mockRejectedValue(new Error('Network Error'));
+
+    render(<BangGalaxyPage />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open add region' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm add region' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(
+        /Failed to add player-owned region/i,
+      );
+    });
+    const msg = String(screen.getByRole('alert').textContent ?? '');
+    expect(msg).not.toBe('Network Error');
+    expect(msg).not.toContain('Network Error');
+  });
 });

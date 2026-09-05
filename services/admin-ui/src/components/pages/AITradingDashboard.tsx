@@ -171,7 +171,7 @@ const AITradingDashboard: React.FC = () => {
       </div>
 
       {error && (
-        <div className="alert error">
+        <div className="alert error" role="alert">
           <span className="alert-icon">⚠️</span>
           <span className="alert-message">{error}</span>
         </div>
