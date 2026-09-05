@@ -13,6 +13,70 @@ import './spacedock.css';
 // closure itself closed over (identical resulting behavior).
 // =====================================================================
 
+export const GAMBLING_VENUE_FALLBACK = 'Connection error. Please try again.';
+
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+/** Soft-ORDER invent=0 — Gambling Hall API honesty (LEG-4071). */
+export function formatGamblingVenueError(error: unknown, fallback: string): string {
+  const status = httpStatus(error);
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === 'string'
+        ? error
+        : undefined;
+  const detail =
+    error && typeof error === 'object'
+      ? (error as { detail?: unknown }).detail
+      : undefined;
+  const detailStr = typeof detail === 'string' && detail.trim() ? detail.trim() : undefined;
+  const hasServerDetail =
+    !(error instanceof TypeError) &&
+    ((typeof message === 'string' &&
+      message.trim().length > 0 &&
+      !/^API Error: \d+$/.test(message.trim()) &&
+      !isNetworkCollapseMessage(message)) ||
+      Boolean(detailStr));
+
+  if (status === 403) {
+    if (detailStr) return detailStr;
+    if (hasServerDetail && message) return message.trim();
+    return 'You do not have permission to play at the Gambling Hall.';
+  }
+  if (status === 429) {
+    return 'Gambling Hall rate limit exceeded — wait a moment and try again.';
+  }
+  if (error instanceof TypeError) return fallback;
+  if (detailStr) return detailStr;
+  if (error instanceof Error && error.message) {
+    if (isNetworkCollapseMessage(error.message)) return fallback;
+    return error.message;
+  }
+  if (typeof error === 'string') {
+    if (isNetworkCollapseMessage(error)) return fallback;
+    return error;
+  }
+  return fallback;
+}
+
 export type GamblingGame = 'menu' | 'slots' | 'dice' | 'blackjack' | 'lottery';
 
 // Blackjack card types — mirror SpaceDockInterface.tsx's identically-named

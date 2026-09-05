@@ -198,4 +198,23 @@ describe('formatSpaceDockMarketIntelError (LEG-2958)', () => {
       'Access denied — you cannot view market intelligence right now.',
     );
   });
+
+  it('falls back on TypeError network collapse (LEG-3063)', () => {
+    const text = formatSpaceDockMarketIntelError(new TypeError('Failed to fetch'));
+    expect(text).toMatch(/Could not load market intelligence\./i);
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('falls back on axios Network Error / Failed to fetch non-TypeError (LEG-3575)', () => {
+    expect(formatSpaceDockMarketIntelError(new Error('Network Error'))).toBe(
+      'Could not load market intelligence.',
+    );
+    expect(formatSpaceDockMarketIntelError(new Error('Failed to fetch'))).toBe(
+      'Could not load market intelligence.',
+    );
+    expect(formatSpaceDockMarketIntelError(new Error('Network Error'))).not.toMatch(
+      /Network Error/i,
+    );
+  });
 });

@@ -59,6 +59,64 @@ const loadoutKeyForItem = (itemId: string): 'attack_drones' | 'defense_drones' |
   return null;
 };
 
+/** Transport collapse copy is not gameserver detail (LEG-3771 densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+export const ARMORY_CATALOG_LOAD_FALLBACK = 'Connection error. Please try again.';
+
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+export function formatArmoryCatalogError(error: unknown, fallback: string): string {
+  const status = httpStatus(error);
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === 'string'
+        ? error
+        : undefined;
+  const hasServerDetail =
+    !(error instanceof TypeError) &&
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNetworkCollapseMessage(message);
+
+  if (status === 403) {
+    if (hasServerDetail) return message!.trim();
+    return 'You do not have permission to view the armory catalog.';
+  }
+
+  if (status === 429) {
+    return 'Armory catalog rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (error instanceof TypeError) return fallback;
+  if (error instanceof Error && error.message) {
+    if (isNetworkCollapseMessage(error.message)) return fallback;
+    return error.message;
+  }
+  if (typeof error === 'string') {
+    if (isNetworkCollapseMessage(error)) return fallback;
+    return error;
+  }
+  return fallback;
+}
+
 interface ArmoryVenueProps {
   armoryCatalog: ArmoryCatalogItem[] | null;
   armoryLoading: boolean;
@@ -237,7 +295,7 @@ const ArmoryVenue: React.FC<ArmoryVenueProps> = ({
         {armoryCatalogError && !armoryLoading && (
           <div className="genesis-error-message">
             <span className="error-icon">❌</span>
-            {armoryCatalogError}
+            {formatArmoryCatalogError(armoryCatalogError, ARMORY_CATALOG_LOAD_FALLBACK)}
             <button className="action-button" onClick={fetchArmoryCatalog}>Retry</button>
           </div>
         )}

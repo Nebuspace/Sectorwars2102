@@ -29,19 +29,67 @@ const formatCountdown = (ms: number): string => {
   return hours > 0 ? `${hours}:${mm}:${ss}` : `${mm}:${ss}`;
 };
 
-const errDetail = (e: unknown, fallback: string): string => {
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
+};
+
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+/** RefiningVenue surfaces errors via this panel — exported for TypeError densify tests. */
+export function formatCrystalRefiningError(e: unknown, fallback: string): string {
+  if (e instanceof TypeError) return fallback;
+
+  const status = httpStatus(e);
+  let detail: string | undefined;
   if (e && typeof e === 'object') {
     const resp = (e as { response?: { data?: unknown } }).response;
     const data = resp?.data ?? (e as { data?: unknown }).data;
     if (data && typeof data === 'object') {
-      const detail = (data as Record<string, unknown>).detail;
-      if (typeof detail === 'string' && detail) return detail;
+      const d = (data as Record<string, unknown>).detail;
+      if (typeof d === 'string' && d.trim()) detail = d.trim();
     }
-    const msg = (e as { message?: string }).message;
-    if (typeof msg === 'string' && msg) return msg;
+  }
+  const message = e instanceof Error ? e.message : undefined;
+  const messageDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNetworkCollapseMessage(message)
+      ? message.trim()
+      : undefined;
+  const serverCopy = detail ?? messageDetail;
+
+  if (status === 403) {
+    if (serverCopy) return serverCopy;
+    return 'You do not have permission to refine crystals.';
+  }
+
+  if (status === 429) {
+    return 'Crystal refining rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (detail) return detail;
+  if (messageDetail) return messageDetail;
+  if (typeof message === 'string' && message && isNetworkCollapseMessage(message)) {
+    return fallback;
   }
   return fallback;
-};
+}
 
 const CrystalRefiningPanel: React.FC<CrystalRefiningPanelProps> = ({
   shards,
@@ -110,7 +158,7 @@ const CrystalRefiningPanel: React.FC<CrystalRefiningPanelProps> = ({
           `Refined 1 Quantum Crystal (balance ${result.quantum_crystals ?? crystals + 1}).`,
       );
     } catch (e) {
-      setError(errDetail(e, 'Crystal refine rejected.'));
+      setError(formatCrystalRefiningError(e, 'Crystal refine rejected.'));
     } finally {
       setBusy(null);
     }
@@ -132,7 +180,7 @@ const CrystalRefiningPanel: React.FC<CrystalRefiningPanelProps> = ({
       }
       await afterSuccess(result.message || 'Lumen refine started — 12h wall clock.');
     } catch (e) {
-      setError(errDetail(e, 'Lumen refine start rejected.'));
+      setError(formatCrystalRefiningError(e, 'Lumen refine start rejected.'));
     } finally {
       setBusy(null);
     }
@@ -146,7 +194,7 @@ const CrystalRefiningPanel: React.FC<CrystalRefiningPanelProps> = ({
       const result = (await refiningAPI.collectLumen()) as { message?: string };
       await afterSuccess(result.message || 'Lumen Crystal collected.');
     } catch (e) {
-      setError(errDetail(e, 'Lumen collect rejected.'));
+      setError(formatCrystalRefiningError(e, 'Lumen collect rejected.'));
     } finally {
       setBusy(null);
     }

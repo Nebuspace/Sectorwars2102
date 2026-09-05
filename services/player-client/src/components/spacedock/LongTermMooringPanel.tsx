@@ -17,9 +17,31 @@ export const LONG_TERM_MOORING_MAX_DAYS = 30;
 
 type Busy = 'acquire' | 'release' | null;
 
-function errMessage(e: unknown): string {
+const MOORING_FAILED_FALLBACK = 'Long-term mooring request failed';
+
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed) ||
+    /^networkerror$/i.test(trimmed)
+  );
+};
+
+/** Exported for TypeError/network honesty Vitest (LEG-3255 / LEG-3267); 403/429 densify LEG-4062. */
+export function errMessage(e: unknown): string {
+  if (e instanceof TypeError) return MOORING_FAILED_FALLBACK;
   if (e && typeof e === 'object') {
     const any = e as { message?: string; status?: number; data?: any };
+    if (any.status === 403) {
+      const msg = typeof any.message === 'string' ? any.message.trim() : '';
+      if (msg && !/^API Error: \d+$/.test(msg) && !isNetworkCollapseMessage(msg)) return msg;
+      return 'Access denied — you cannot request long-term mooring right now.';
+    }
+    if (any.status === 429) {
+      return 'Long-term mooring rate limit exceeded — wait a moment and try again.';
+    }
     if (any.status === 409) {
       const slips = any.data?.slips;
       const detail =
@@ -34,9 +56,12 @@ function errMessage(e: unknown): string {
       }
       return detail || 'All long-term mooring slips are occupied';
     }
-    if (typeof any.message === 'string' && any.message) return any.message;
+    if (typeof any.message === 'string' && any.message) {
+      if (isNetworkCollapseMessage(any.message)) return MOORING_FAILED_FALLBACK;
+      return any.message;
+    }
   }
-  return 'Long-term mooring request failed';
+  return MOORING_FAILED_FALLBACK;
 }
 
 const LongTermMooringPanel: React.FC = () => {

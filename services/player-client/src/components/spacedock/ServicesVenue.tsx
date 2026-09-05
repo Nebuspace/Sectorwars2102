@@ -22,6 +22,65 @@ interface ShipData {
   current_value?: number;
 }
 
+export const SERVICES_VENUE_FALLBACK = 'Connection error. Please try again.';
+
+/** Transport collapse copy is not gameserver detail (Soft-ORDER densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+/** Soft-ORDER invent=0 — 403/429 + TypeError densify for Ship Services API paths (LEG-4069). */
+export function formatServicesVenueError(error: unknown, fallback: string): string {
+  const status = httpStatus(error);
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === 'string'
+        ? error
+        : undefined;
+  const hasServerDetail =
+    !(error instanceof TypeError) &&
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNetworkCollapseMessage(message);
+
+  if (status === 403) {
+    if (hasServerDetail) return message!.trim();
+    return 'You do not have permission to use ship services right now.';
+  }
+
+  if (status === 429) {
+    return 'Ship services rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (error instanceof TypeError) return fallback;
+  if (error instanceof Error && error.message) {
+    if (isNetworkCollapseMessage(error.message)) return fallback;
+    return error.message;
+  }
+  if (typeof error === 'string') {
+    if (isNetworkCollapseMessage(error)) return fallback;
+    return error;
+  }
+  return fallback;
+}
+
 interface ServicesVenueProps {
   shipData: ShipData | null;
   displayCredits: number;

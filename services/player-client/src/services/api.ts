@@ -109,7 +109,10 @@ async function apiRequest(
 /** LEG-372 / LEG-304 — player-scoped combat history list item (GS shape). */
 export interface CombatHistoryOpponent {
   id: string | null;
-  name: string;
+  name?: string;
+  displayName?: string;
+  pinned_medal_id?: string | null;
+  medal_count?: number | null;
 }
 
 export interface CombatHistoryTarget {
@@ -139,6 +142,44 @@ export interface CombatHistoryResponse {
   offset: number;
 }
 
+/** POST /combat/retreat — flee current sector to a connected warp (LEG-3107). */
+export interface SectorRetreatResponse {
+  success: boolean;
+  message: string;
+  newSectorId?: number | null;
+  escapeChance?: number | null;
+  turnsConsumed: number;
+  turnsRemaining: number;
+}
+
+/** POST /combat/attack-sector-drones — clear hostile deployed drones (LEG-3968). */
+export interface SectorDroneAttackResponse {
+  success: boolean;
+  message: string;
+  combatResult?: string | null;
+  combatDetails?: unknown[] | null;
+  dronesDestroyed?: number | null;
+  dronesRemaining?: number | null;
+  turnsConsumed?: number | null;
+  turnsRemaining?: number | null;
+  combatLogId?: string | null;
+}
+
+/** POST /combat/attack-warp-gate — destroy gate or Phase-1 beacon (LEG-4116). */
+export interface AttackWarpGateResponse {
+  success: boolean;
+  message: string;
+  destroyed?: boolean;
+  gateHpRemaining?: number | null;
+  salvageGranted?: Record<string, unknown> | null;
+  turnsConsumed?: number | null;
+  turnsRemaining?: number | null;
+}
+
+export type AttackWarpGateTarget =
+  | { gateId: string; beaconId?: never }
+  | { beaconId: string; gateId?: never };
+
 // Combat APIs
 export const combatAPI = {
   engage: (targetType: 'ship' | 'planet' | 'port', targetId: string) =>
@@ -152,6 +193,21 @@ export const combatAPI = {
 
   retreat: (combatId: string) =>
     apiRequest(`/api/v1/combat/${combatId}/retreat`, { method: 'POST' }),
+
+  /** Sector flee — random connected warp; costs 3 turns (LEG-3107). */
+  retreatFromSector: (): Promise<SectorRetreatResponse> =>
+    apiRequest('/api/v1/combat/retreat', { method: 'POST' }),
+
+  /** Attack hostile drones in the current sector; costs 2 turns (LEG-3968). */
+  attackSectorDrones: (): Promise<SectorDroneAttackResponse> =>
+    apiRequest('/api/v1/combat/attack-sector-drones', { method: 'POST' }),
+
+  /** Attack a warp gate or Phase-1 beacon; body exactly one of gateId|beaconId (LEG-4116). */
+  attackWarpGate: (body: AttackWarpGateTarget): Promise<AttackWarpGateResponse> =>
+    apiRequest('/api/v1/combat/attack-warp-gate', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
 
   /** Paginated own-combat log (LEG-372). Server scopes to current player. */
   getHistory: (opts?: { limit?: number; offset?: number }): Promise<CombatHistoryResponse> => {
@@ -176,6 +232,50 @@ export const combatAPI = {
     apiRequest(`/api/v1/drones/${deploymentId}/recall`, {
       method: 'DELETE'
     })
+};
+
+/** GET /pirate-holdings?sector_id= — discovery payload (LEG-4109 / LEG-4107). */
+export interface PirateHoldingDiscovery {
+  id: string;
+  tier: string | null;
+  sector_id: number;
+}
+
+/** POST /pirate-holdings/{id}/raid/initiate — G-F2 lock acquire (LEG-1105). */
+export interface PirateHoldingRaidInitiateResponse {
+  holding_id: string;
+  tier: string;
+  initiated: boolean;
+  lock_applied: boolean;
+  combat_lock_held_by?: string | null;
+  combat_lock_team_snapshot?: string[] | null;
+}
+
+/** POST /pirate-holdings/{id}/raid/capture — G-F2 capture completion (LEG-4154). */
+export interface PirateHoldingCaptureResponse {
+  holding_id: string;
+  captured_at: string | null;
+  owner_team_id: string | null;
+}
+
+/** Pirate holdings discovery + raid initiate + capture (LEG-4107, LEG-4154). */
+export const pirateHoldingsAPI = {
+  listBySector: (sectorId: number): Promise<PirateHoldingDiscovery[]> =>
+    apiRequest(
+      `/api/v1/pirate-holdings?sector_id=${encodeURIComponent(String(sectorId))}`,
+    ),
+
+  initiateRaid: (holdingId: string): Promise<PirateHoldingRaidInitiateResponse> =>
+    apiRequest(
+      `/api/v1/pirate-holdings/${encodeURIComponent(holdingId)}/raid/initiate`,
+      { method: 'POST' },
+    ),
+
+  captureHolding: (holdingId: string): Promise<PirateHoldingCaptureResponse> =>
+    apiRequest(
+      `/api/v1/pirate-holdings/${encodeURIComponent(holdingId)}/raid/capture`,
+      { method: 'POST' },
+    ),
 };
 
 /**
@@ -248,6 +348,10 @@ export const droneFleetAPI = {
   /** Recall a deployed drone by drone id (POST /drones/{id}/recall). */
   recall: (droneId: string) =>
     apiRequest(`/api/v1/drones/${droneId}/recall`, { method: 'POST' }),
+
+  /** Active drones in a sector (tactical intel — LEG-3968 hostile count). */
+  getSectorDrones: (sectorId: string) =>
+    apiRequest(`/api/v1/drones/sector/${sectorId}`),
 };
 
 // Armory — sector mine laying (open space). Distinct from combatAPI.deployDrones.
@@ -526,10 +630,63 @@ export const planetaryAPI = {
       method: 'POST',
       body: JSON.stringify({ profession, trainee_count: traineeCount }),
     }),
+
+  assignPlanetProfession: (
+    planetId: string,
+    profession: string,
+    activeCount: number,
+  ) =>
+    apiRequest(`/api/v1/planets/${planetId}/professions/assign`, {
+      method: 'POST',
+      body: JSON.stringify({ profession, active_count: activeCount }),
+    }),
 };
+
+/** GET/POST /station-security/stations/{id} — security tier readout + owner upgrade/downgrade (LEG-3105/3106). */
+export interface StationSecurityStatus {
+  station_id: string;
+  tier: 'none' | 'basic' | 'standard' | 'premium' | string;
+  pending_upgrade_to?: string | null;
+  upgrade_completes_at?: string | null;
+  pending_downgrade?: boolean;
+  downgrade_completes_at?: string | null;
+  upkeep_collected?: number;
+}
+
+export interface StationSecurityUpgradeResponse {
+  message: string;
+  station_id: string;
+  current_tier: string;
+  upgrade_to: string;
+  cost: number;
+  completes_at: string;
+  credits?: number;
+}
+
+export interface StationSecurityDowngradeResponse {
+  message: string;
+  station_id: string;
+  current_tier: string;
+  downgrade_to: string;
+  cost: number;
+  completes_at: string;
+}
 
 /** Station-protection tractor lock (Guarantee #2) — player responses. */
 export const stationSecurityAPI = {
+  getSecurityStatus: (stationId: string): Promise<StationSecurityStatus> =>
+    apiRequest(`/api/v1/station-security/stations/${stationId}`),
+
+  upgradeSecurity: (stationId: string): Promise<StationSecurityUpgradeResponse> =>
+    apiRequest(`/api/v1/station-security/stations/${stationId}/upgrade`, {
+      method: 'POST',
+    }),
+
+  downgradeSecurity: (stationId: string): Promise<StationSecurityDowngradeResponse> =>
+    apiRequest(`/api/v1/station-security/stations/${stationId}/downgrade`, {
+      method: 'POST',
+    }),
+
   getTractorLock: (stationId: string): Promise<{
     locked: boolean;
     reason?: string;
@@ -713,6 +870,18 @@ export const teamAPI = {
     apiRequest(`/api/v1/teams/${teamId}/wars/ceasefire`, {
       method: 'POST',
       body: JSON.stringify({ target_team_id: targetTeamId }),
+    }),
+
+  /** One-time bulk share of caller's known warps to other current members (LEG-4118). */
+  shareWarpKnowledge: (
+    teamId: string,
+  ): Promise<{
+    shared_warp_count: number;
+    recipient_count: number;
+    rows_created: number;
+  }> =>
+    apiRequest(`/api/v1/teams/${teamId}/share-warp-knowledge`, {
+      method: 'POST',
     }),
 };
 
@@ -940,6 +1109,9 @@ export const playerAPI = {
   scanLatentTunnels: () =>
     apiRequest('/api/v1/player/scan-latent-tunnels', { method: 'POST' }),
 
+  scanAdjacentSector: (sectorId: number) =>
+    apiRequest(`/api/v1/player/scan/${sectorId}`, { method: 'POST' }),
+
   /** One-time reward for a discovered special formation (WO-UI-ANOMALY). */
   investigateFormation: (formationId: string) =>
     apiRequest(`/api/v1/player/formations/${formationId}/investigate`, {
@@ -1069,6 +1241,15 @@ export const shipRegistryAPI = {
       method: 'POST',
       body: JSON.stringify({ port_id: portId, pin }),
     }),
+
+  /** Force-entry on a drifting pin-locked hull (ship-registry.md Salvage break). */
+  salvageBreak: (shipId: string): Promise<{
+    ship_id: string;
+    started_at: string;
+    duration_seconds: number;
+    completes_at: string;
+  }> =>
+    apiRequest(`/api/v1/ships/${shipId}/salvage-break`, { method: 'POST' }),
 };
 
 // Ranking & Reputation APIs
@@ -1271,6 +1452,27 @@ export const gridAPI = {
     apiRequest(`/api/v1/planets/${planetId}/grid/decommission`, {
       method: 'POST',
       body: JSON.stringify({ building_id: buildingId }),
+    }),
+
+  /** Reveal one fogged/unsurveyed plot. Requires Orbital Survey Suite (grid_survey). */
+  survey: (planetId: string, x: number, y: number) =>
+    apiRequest(`/api/v1/planets/${planetId}/grid/survey`, {
+      method: 'POST',
+      body: JSON.stringify({ x, y }),
+    }),
+
+  /** Clear uncleared non-hazard land. Requires Land Clearance (plot_clear). */
+  clearPlot: (planetId: string, x: number, y: number) =>
+    apiRequest(`/api/v1/planets/${planetId}/grid/clear-plot`, {
+      method: 'POST',
+      body: JSON.stringify({ x, y }),
+    }),
+
+  /** Remediate a hazard plot. Requires Hazard Remediation (hazard_clear). */
+  clearHazard: (planetId: string, x: number, y: number) =>
+    apiRequest(`/api/v1/planets/${planetId}/grid/clear-hazard`, {
+      method: 'POST',
+      body: JSON.stringify({ x, y }),
     }),
 };
 
@@ -1841,6 +2043,45 @@ export const regionOwnerAPI = {
     apiRequest(`/api/v1/regions/treaties/${treatyId}/terminate`, { method: 'POST' }),
 };
 
+/** Suspended/grace region eligible for GC-subscription takeover (LEG-3956/3957). */
+export interface TakeoverEligibleRegion {
+  id: string;
+  name: string;
+  display_name: string;
+  status: string;
+  suspended_at: string | null;
+}
+
+/** POST /regions/{id}/takeover response body (TakeoverIntent, LEG-3764). */
+export interface RegionTakeoverIntent {
+  id: string;
+  region_id: string;
+  caller_user_id: string;
+  approval_url: string;
+  status: string;
+  created_at: string | null;
+  expires_at: string | null;
+  completed_at: string | null;
+}
+
+export const regionTakeoverAPI = {
+  listTakeoverEligible: (): Promise<TakeoverEligibleRegion[]> =>
+    apiRequest('/api/v1/regions/takeover-eligible'),
+
+  beginTakeover: (
+    regionId: string,
+    opts?: { return_url?: string; cancel_url?: string },
+  ): Promise<RegionTakeoverIntent> => {
+    const body: Record<string, string> = {};
+    if (opts?.return_url) body.return_url = opts.return_url;
+    if (opts?.cancel_url) body.cancel_url = opts.cancel_url;
+    return apiRequest(`/api/v1/regions/${regionId}/takeover`, {
+      method: 'POST',
+      body: Object.keys(body).length ? JSON.stringify(body) : undefined,
+    });
+  },
+};
+
 // Ship-construction reservation reads (routes/construction.py — the live
 // slip-rental pipeline). Ownership-gated server-side to the caller's own
 // Player row; a region-funded TradeDock reservation (ship_type
@@ -1851,6 +2092,24 @@ export const constructionAPI = {
 
   getReservation: (reservationId: string) =>
     apiRequest(`/api/v1/construction/reservations/${reservationId}`),
+
+  assignEngineer: (
+    reservationId: string,
+    body: { planet_id: string; count: number },
+  ) =>
+    apiRequest(`/api/v1/construction/reservations/${reservationId}/assign-engineer`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  unassignEngineer: (
+    reservationId: string,
+    body: { planet_id: string; count: number },
+  ) =>
+    apiRequest(`/api/v1/construction/reservations/${reservationId}/unassign-engineer`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
 };
 
 // Haggle APIs (ADR-0079 — numerical price negotiation)
@@ -1977,6 +2236,44 @@ export const tradingAPI = {
         resource_type: resourceType,
         quantity,
       }),
+    }),
+};
+
+/** GET /trading/syndicate-fence/{station_id} — tip-PRESENT (LEG-4112). */
+export interface SyndicateFenceInfo {
+  station_id: string;
+  has_syndicate_fence: boolean;
+  services: string[];
+  payout_percent: number;
+}
+
+/** POST /trading/syndicate-fence/fence success body (LEG-4112). */
+export interface SyndicateFenceCargoResult {
+  success: boolean;
+  reason: string;
+  commodity: string;
+  quantity: number;
+  market_value: number;
+  payout: number;
+  payout_percent: number;
+  credits: number;
+}
+
+/** Shadow Syndicate cargo fencing — tip GET/POST only; invent=0 (LEG-4112). */
+export const syndicateFenceAPI = {
+  getFence: (stationId: string): Promise<SyndicateFenceInfo> =>
+    apiRequest(
+      `/api/v1/trading/syndicate-fence/${encodeURIComponent(stationId)}`,
+    ),
+
+  fenceCargo: (body: {
+    station_id: string;
+    commodity: string;
+    quantity: number;
+  }): Promise<SyndicateFenceCargoResult> =>
+    apiRequest('/api/v1/trading/syndicate-fence/fence', {
+      method: 'POST',
+      body: JSON.stringify(body),
     }),
 };
 
@@ -2359,6 +2656,13 @@ export const portOwnershipAPI = {
       body: JSON.stringify({ amount }),
     }),
 
+  // Owner cash-injection into station treasury (port-ownership.md § Cash-injection) — tip GS LEG-4123.
+  inject: (stationId: string, amount: number) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/inject`, {
+      method: 'POST',
+      body: JSON.stringify({ amount }),
+    }),
+
   // Owner defense_policy levers (port-ownership.md § Defense system).
   // GS DefensePolicyRequest — patrol_radius must stay 0 (deferred).
   getDefensePolicy: (stationId: string) =>
@@ -2440,12 +2744,96 @@ export const portOwnershipAPI = {
       body: JSON.stringify({ defense_pct: defensePct, owner_pct: ownerPct }),
     }),
 
+  // Team ownership (port-ownership.md § Team-owned) — tip GS Soft-ORDER LEG-2033 / LEG-4120.
+  getTeamOwnershipStatus: (stationId: string) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/team`),
+
+  bindStationToTeam: (stationId: string, teamId: string, memberSharePct: number) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/team/bind`, {
+      method: 'POST',
+      body: JSON.stringify({ team_id: teamId, member_share_pct: memberSharePct }),
+    }),
+
+  setTeamMemberShare: (stationId: string, memberSharePct: number) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/team/member-share`, {
+      method: 'POST',
+      body: JSON.stringify({ member_share_pct: memberSharePct }),
+    }),
+
   // Military takeover (port-ownership.md § Military takeover) — tip GS
   // MilitaryActionRequest.action ∈ {declare, siege, occupy}.
   militaryTakeover: (stationId: string, action: 'declare' | 'siege' | 'occupy') =>
     apiRequest(`/api/v1/port-ownership/stations/${stationId}/military`, {
       method: 'POST',
       body: JSON.stringify({ action }),
+    }),
+
+  // Co-ownership syndicate (port-ownership.md § Forming a syndicate) — tip GS (LEG-4117).
+  getSyndicateStatus: (stationId: string) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/syndicate`),
+
+  inviteShare: (stationId: string, inviteePlayerId: string, pct: number) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/syndicate/invite`, {
+      method: 'POST',
+      body: JSON.stringify({ invitee_player_id: inviteePlayerId, pct }),
+    }),
+
+  acceptShareInvite: (stationId: string, inviteId: string) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/syndicate/accept`, {
+      method: 'POST',
+      body: JSON.stringify({ invite_id: inviteId }),
+    }),
+
+  declineShareInvite: (stationId: string, inviteId: string) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/syndicate/decline`, {
+      method: 'POST',
+      body: JSON.stringify({ invite_id: inviteId }),
+    }),
+
+  syndicateBuyout: (stationId: string) =>
+    apiRequest(`/api/v1/port-ownership/stations/${stationId}/syndicate/buyout`, {
+      method: 'POST',
+    }),
+
+  // Syndicate stake-transfer propose/approve/reject (port-ownership.md § Syndicate) — tip GS LEG-4236.
+  // Paths under /api/v1/stations/{id}/… (NOT under /port-ownership/), same as castGovernanceVote.
+  proposeStakeTransfer: (stationId: string, toPlayerId: string, pct: number) =>
+    apiRequest(`/api/v1/stations/${stationId}/syndicate/stake-transfer`, {
+      method: 'POST',
+      body: JSON.stringify({ to_player_id: toPlayerId, pct }),
+    }),
+
+  approveStakeTransfer: (stationId: string, proposalId: string) =>
+    apiRequest(
+      `/api/v1/stations/${stationId}/syndicate/stake-transfer/${proposalId}/approve`,
+      { method: 'POST' },
+    ),
+
+  rejectStakeTransfer: (stationId: string, proposalId: string) =>
+    apiRequest(
+      `/api/v1/stations/${stationId}/syndicate/stake-transfer/${proposalId}/reject`,
+      { method: 'POST' },
+    ),
+
+  // Syndicate co-owner policy vote (port-ownership.md § Syndicate policy votes) — tip GS LEG-301 / LEG-4121.
+  // Path is /api/v1/stations/{id}/governance/vote (NOT under /port-ownership/).
+  castGovernanceVote: (
+    stationId: string,
+    body: {
+      vote_type: string;
+      proposed_value: unknown;
+      voter_stake_pct: number;
+      position: string;
+    },
+  ) =>
+    apiRequest(`/api/v1/stations/${stationId}/governance/vote`, {
+      method: 'POST',
+      body: JSON.stringify({
+        vote_type: body.vote_type,
+        proposed_value: body.proposed_value,
+        voter_stake_pct: body.voter_stake_pct,
+        position: body.position,
+      }),
     }),
 };
 
@@ -2774,6 +3162,44 @@ export type TradeCascadeResponse = TradeCascadePlan | TradeCascadeRefusal;
 export const isTradeCascadeRefusal = (
   payload: TradeCascadeResponse,
 ): payload is TradeCascadeRefusal => 'error' in payload && typeof payload.error === 'string';
+
+export type ExplorationSuggestion = {
+  kind: 'repeat_visit' | 'expand' | 'risky';
+  sector_id: string;
+  sector_number?: number;
+  sector_name?: string;
+  visit_count?: number;
+  trade_opportunity_score?: number;
+  safety_rating?: number;
+  summary: string;
+};
+
+export type ExplorationSuggestionsResponse = {
+  suggestions: ExplorationSuggestion[];
+  empty_message?: string | null;
+};
+
+export type CombatAdviceResponse = {
+  has_history: boolean;
+  opponent_ship_type: string;
+  summary: string;
+  weapon_suggestion?: string | null;
+  encounters: number;
+  wins: number;
+  losses: number;
+};
+
+export const ariaExplorationAPI = {
+  getSuggestions: (): Promise<ExplorationSuggestionsResponse> =>
+    apiRequest('/api/v1/ai/exploration-suggestions'),
+};
+
+export const ariaCombatAdviceAPI = {
+  getAdvice: (opponentShipType: string): Promise<CombatAdviceResponse> => {
+    const params = new URLSearchParams({ opponent_ship_type: opponentShipType });
+    return apiRequest(`/api/v1/ai/combat-advice?${params.toString()}`);
+  },
+};
 
 export const ariaTradeCascadeAPI = {
   planTradeCascade: (body: TradeCascadeRequest): Promise<TradeCascadeResponse> =>
