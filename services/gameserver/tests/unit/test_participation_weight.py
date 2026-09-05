@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any, List, Optional
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -26,6 +26,12 @@ from src.services import multi_account_service as mas
 from src.services import message_beacon_service as beacon_svc
 from src.services.regional_governance_service import RegionalGovernanceService
 
+
+def _stub_vote_eligibility(mock_db, created_at, personal_reputation=0):
+    """Match ``_is_account_vote_eligible`` execute().one_or_none() row shape."""
+    row = MagicMock()
+    row.one_or_none.return_value = (created_at, personal_reputation)
+    mock_db.execute = AsyncMock(return_value=row)
 
 # --- minimal sync fake session (mirrors beacon deploy test shape) ---------- #
 
@@ -235,11 +241,10 @@ class TestHardFlaggedLosesBeaconAndVote:
     async def test_hard_flagged_loses_vote_eligibility(self) -> None:
         player_id = uuid.uuid4()
         mock_db = AsyncMock()
-        # Age half: old enough to vote.
-        mock_db.scalar = AsyncMock(
-            return_value=datetime.now(timezone.utc) - timedelta(days=90)
+        # Age + Neutral rep halves clear; multi-account blocks.
+        _stub_vote_eligibility(
+            mock_db, datetime.now(timezone.utc) - timedelta(days=90), personal_reputation=0
         )
-        # Multi-account half: run_sync(blocks_vote, player_id) → True.
         mock_db.run_sync = AsyncMock(return_value=True)
 
         eligible = await RegionalGovernanceService._is_account_vote_eligible(
@@ -254,8 +259,8 @@ class TestHardFlaggedLosesBeaconAndVote:
     async def test_clear_account_keeps_vote_when_age_ok(self) -> None:
         player_id = uuid.uuid4()
         mock_db = AsyncMock()
-        mock_db.scalar = AsyncMock(
-            return_value=datetime.now(timezone.utc) - timedelta(days=90)
+        _stub_vote_eligibility(
+            mock_db, datetime.now(timezone.utc) - timedelta(days=90), personal_reputation=0
         )
         mock_db.run_sync = AsyncMock(return_value=False)
 
