@@ -78,4 +78,46 @@ describe('LoginForm', () => {
     expect(screen.getByRole('button', { name: /logging in/i })).toBeDisabled();
     resolveLogin({ requiresMFA: false });
   });
+
+  it('surfaces formatAdminApiError fallback on login TypeError (LEG-3322)', async () => {
+    const user = userEvent.setup();
+    mockLogin.mockRejectedValue(new TypeError('Failed to fetch'));
+    render(<LoginForm />);
+
+    await user.type(screen.getByLabelText('Username'), 'admin');
+    await user.type(screen.getByLabelText('Password'), 'hunter2');
+    await user.click(screen.getByRole('button', { name: /^login$/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Login failed/i)).toBeInTheDocument();
+    });
+
+    const alert = screen.getByText(/Login failed/i).textContent ?? '';
+    expect(alert).not.toMatch(/Failed to fetch/i);
+    expect(alert).not.toMatch(/TypeError/i);
+  });
+});
+
+describe('LoginForm axios Network Error densify (LEG-3511)', () => {
+  beforeEach(() => {
+    mockLogin.mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('collapses axios-shaped Network Error on login to honest fallback', async () => {
+    const user = userEvent.setup();
+    mockLogin.mockRejectedValue(new Error('Network Error'));
+    render(<LoginForm />);
+
+    await user.type(screen.getByLabelText('Username'), 'admin');
+    await user.type(screen.getByLabelText('Password'), 'hunter2');
+    await user.click(screen.getByRole('button', { name: /^login$/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Login failed/i)).toBeInTheDocument();
+    });
+
+    const alert = screen.getByText(/Login failed/i).textContent ?? '';
+    expect(alert).not.toMatch(/Network Error/i);
+  });
 });

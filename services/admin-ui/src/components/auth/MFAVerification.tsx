@@ -1,5 +1,38 @@
 import React, { useState } from 'react';
+import { axiosResponseStatus, detailFromResponse, formatAdminApiError } from '../../utils/adminApiError';
 import './mfa-verification.css';
+
+const MFA_VERIFY_FALLBACK = 'Verification failed';
+
+function isNetworkTransportFailure(err: unknown): boolean {
+  if (err instanceof TypeError) {
+    return true;
+  }
+  if (err instanceof Error) {
+    const msg = err.message;
+    return msg === 'Failed to fetch' || msg === 'Network Error';
+  }
+  return false;
+}
+
+/** Collapse fetch/network failures; route HTTP status via formatAdminApiError; preserve intentional verify errors. */
+export function mfaVerificationError(err: unknown): string {
+  if (isNetworkTransportFailure(err)) {
+    return formatAdminApiError(err, { fallback: MFA_VERIFY_FALLBACK });
+  }
+  const status = axiosResponseStatus(err);
+  if (status !== undefined) {
+    const detail = detailFromResponse(err);
+    if (detail) {
+      return detail;
+    }
+    return formatAdminApiError(err, { fallback: MFA_VERIFY_FALLBACK });
+  }
+  if (err instanceof Error) {
+    return err.message;
+  }
+  return MFA_VERIFY_FALLBACK;
+}
 
 interface MFAVerificationProps {
   onVerify: (code: string) => Promise<void>;
@@ -34,7 +67,7 @@ export const MFAVerification: React.FC<MFAVerificationProps> = ({
     try {
       await onVerify(code);
     } catch (err) {
-      setInternalError(err instanceof Error ? err.message : 'Verification failed');
+      setInternalError(mfaVerificationError(err));
     } finally {
       setLoading(false);
     }
