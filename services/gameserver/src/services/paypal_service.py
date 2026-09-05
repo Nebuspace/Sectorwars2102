@@ -4,7 +4,6 @@ import hashlib
 import json
 import os
 import random
-import re
 import httpx
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any
@@ -234,8 +233,9 @@ class PayPalService:
                 raise ValueError(f"Unsupported HTTP method: {method}")
         
         if response.status_code not in [200, 201, 202]:
-            safe_endpoint = re.sub(r"subscriptions/[^/?]+", "subscriptions/[id]", endpoint)
-            logger.error("PayPal API request failed: %s %s - status=%s", method, safe_endpoint, response.status_code)
+            # invent=0 (LEG-DEC-1095 / D#1113 option 2930): do not log endpoint path —
+            # CodeQL taints through re.sub; method+status is enough for ops.
+            logger.error("PayPal API request failed: %s - status=%s", method, response.status_code)
             raise Exception(f"PayPal API error: {response.status_code}")
         
         return response.json()
