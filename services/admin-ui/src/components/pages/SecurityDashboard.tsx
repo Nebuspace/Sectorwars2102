@@ -2,7 +2,6 @@ import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import PageHeader from '../ui/PageHeader';
 import { AuditLogViewer } from '../security/AuditLogViewer';
-import { AriaPlayerSecurityOpsPanel } from '../security/AriaPlayerSecurityOpsPanel';
 import { MFASetup } from '../auth/MFASetup';
 import { useAuth } from '../../contexts/AuthContext';
 import { api } from '../../utils/auth';
@@ -10,6 +9,8 @@ import { formatAdminApiError, formatSettledRejection } from '../../utils/adminAp
 import { useToast, useConfirm } from '../../contexts/ToastContext';
 import { useSystemAlerts } from '../../contexts/WebSocketContext';
 import './security-dashboard.css';
+
+type PlayerSecurityActionKind = 'block' | 'unblock' | 'reset_violations' | 'reset_trust';
 
 // Shape of GET /api/v1/admin/security/report
 // (admin_comprehensive.py -> AISecurityService.generate_security_report)
@@ -66,6 +67,10 @@ export const SecurityDashboard: React.FC = () => {
   const [showMFASetup, setShowMFASetup] = useState(false);
   const [activeTab, setActiveTab] = useState<'overview' | 'audit' | 'threats' | 'settings'>('overview');
   const [daysToKeep, setDaysToKeep] = useState(7);
+  const [playerId, setPlayerId] = useState('');
+  const [playerAction, setPlayerAction] = useState<PlayerSecurityActionKind>('block');
+  const [durationHours, setDurationHours] = useState('');
+  const [actionReason, setActionReason] = useState('');
 
   useEffect(() => {
     fetchSecurityOverview();
@@ -137,6 +142,44 @@ export const SecurityDashboard: React.FC = () => {
       void fetchSecurityOverview();
     } catch (err: unknown) {
       toast.error(securityActError(err, 'Failed to clean up security data'));
+    }
+  };
+
+  /** Tip GS: POST /api/v1/admin/security/player/{id}/action (LEG-1713). */
+  const handlePlayerSecurityAction = async () => {
+    const id = playerId.trim();
+    if (!id) {
+      toast.error('Player id is required');
+      return;
+    }
+    if (playerAction === 'block' && durationHours.trim() === '') {
+      toast.error('Block duration in hours is required');
+      return;
+    }
+
+    const body: {
+      action: PlayerSecurityActionKind;
+      duration_hours?: number;
+      reason?: string;
+    } = { action: playerAction };
+    if (playerAction === 'block') {
+      body.duration_hours = Number(durationHours);
+    }
+    const reason = actionReason.trim();
+    if (reason) {
+      body.reason = reason;
+    }
+
+    try {
+      const response = await api.post(
+        `/api/v1/admin/security/player/${id}/action`,
+        body
+      );
+      const data = response.data as { message?: string } | undefined;
+      toast.success(data?.message ?? `Player security action ${playerAction} completed`);
+      void fetchSecurityOverview();
+    } catch (err: unknown) {
+      toast.error(securityActError(err, 'Failed to take player security action'));
     }
   };
 
@@ -312,8 +355,8 @@ export const SecurityDashboard: React.FC = () => {
               <div className="security-ops" role="region" aria-label="Security operations">
                 <h3>Security operations</h3>
                 <p className="security-ops-note">
-                  Tip route only: cleanup old security tracking (SECURITY_ACT). Per-player ARIA
-                  risk/status/actions live in the panel below (admin.aria.audit).
+                  Tip routes only: cleanup old security tracking, or take a player security action
+                  (block, unblock, reset violations, reset trust). SECURITY_ACT required.
                 </p>
                 <div className="security-ops-row">
                   <label>
@@ -336,7 +379,60 @@ export const SecurityDashboard: React.FC = () => {
                     Clean up old data
                   </button>
                 </div>
-                <AriaPlayerSecurityOpsPanel />
+                <div className="security-ops-row">
+                  <label>
+                    Player id
+                    <input
+                      type="text"
+                      value={playerId}
+                      onChange={(e) => setPlayerId(e.target.value)}
+                      aria-label="Player id for security action"
+                      placeholder="player uuid"
+                    />
+                  </label>
+                  <label>
+                    Action
+                    <select
+                      value={playerAction}
+                      onChange={(e) => setPlayerAction(e.target.value as PlayerSecurityActionKind)}
+                      aria-label="Player security action type"
+                    >
+                      <option value="block">block</option>
+                      <option value="unblock">unblock</option>
+                      <option value="reset_violations">reset_violations</option>
+                      <option value="reset_trust">reset_trust</option>
+                    </select>
+                  </label>
+                  {playerAction === 'block' && (
+                    <label>
+                      Duration (hours)
+                      <input
+                        type="number"
+                        min={1}
+                        value={durationHours}
+                        onChange={(e) => setDurationHours(e.target.value)}
+                        aria-label="Block duration in hours"
+                      />
+                    </label>
+                  )}
+                  <label>
+                    Reason (optional)
+                    <input
+                      type="text"
+                      value={actionReason}
+                      onChange={(e) => setActionReason(e.target.value)}
+                      aria-label="Reason for player security action"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={handlePlayerSecurityAction}
+                    aria-label="Take player security action"
+                  >
+                    Take action
+                  </button>
+                </div>
               </div>
 
               <div className="recent-threats">

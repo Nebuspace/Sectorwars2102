@@ -332,35 +332,6 @@
   font-size: 0.85rem;
 }
 
-.rgd-franchise-honesty {
-  margin: 10px 0 0;
-  padding: 8px 10px;
-  font-size: 0.85rem;
-  font-style: italic;
-  color: #92400e;
-  background: #fffbeb;
-  border-left: 3px solid #f59e0b;
-  border-radius: 4px;
-}
-
-.rgd-franchise-badge {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 0.8rem;
-  font-weight: 600;
-}
-
-.rgd-franchise-badge.eligible {
-  background: #d1fae5;
-  color: #065f46;
-}
-
-.rgd-franchise-badge.ineligible {
-  background: #fee2e2;
-  color: #991b1b;
-}
-
 .trade-bonuses {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));

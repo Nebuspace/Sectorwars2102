@@ -2,14 +2,6 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { formatAdminApiError, axiosResponseStatus } from '../../utils/adminApiError';
 import { api } from '../../utils/auth';
-import { postRegionTerminate } from '../../services/regionTerminateApi';
-import { postRegionTransferOwnership } from '../../services/regionTransferApi';
-import RegionTerminateConfirmDialog, {
-  formatRegionTerminateError,
-} from './RegionTerminateConfirmDialog';
-import RegionTransferOwnershipConfirmDialog, {
-  formatRegionTransferError,
-} from './RegionTransferOwnershipConfirmDialog';
 import './regional-governor-dashboard.css';
 
 interface Region {
@@ -49,15 +41,6 @@ interface RegionalMember {
 
 // Canon citizen-tier voting_power target (SYSTEMS/regional-governance.md:71-76).
 const CITIZEN_DEFAULT_VOTING_POWER = 1.5;
-
-/** Membership-layer franchise — mirrors RegionalMembership.can_vote (region.py). */
-export function membershipCanVote(
-  membershipType: string,
-  votingPower: number,
-): boolean {
-  const type = membershipType.toLowerCase();
-  return (type === 'citizen' || type === 'resident') && votingPower > 0;
-}
 
 function regionAdminError(err: unknown, fallback: string): string {
   return formatAdminApiError(err, {
@@ -168,16 +151,6 @@ const RegionalGovernorDashboard: React.FC = () => {
   const [beaconCap, setBeaconCap] = useState<number | null>(null);
   const [beaconCapInput, setBeaconCapInput] = useState<number>(10);
   const [beaconCapLoading, setBeaconCapLoading] = useState(false);
-
-  // Admin region termination (LEG-3206 / LEG-DEC-103)
-  const [showTerminateDialog, setShowTerminateDialog] = useState(false);
-  const [terminateBusy, setTerminateBusy] = useState(false);
-  const [terminateError, setTerminateError] = useState<string | null>(null);
-
-  // Admin region ownership transfer (LEG-3967 / LEG-DEC-500)
-  const [showTransferDialog, setShowTransferDialog] = useState(false);
-  const [transferBusy, setTransferBusy] = useState(false);
-  const [transferError, setTransferError] = useState<string | null>(null);
 
   useEffect(() => {
     loadRegionalData();
@@ -443,50 +416,6 @@ const RegionalGovernorDashboard: React.FC = () => {
     }
   };
 
-  const handleRegionTransferOwnership = async (newOwnerId: string, reason: string) => {
-    if (!region?.id) return;
-    setTransferBusy(true);
-    setTransferError(null);
-    try {
-      await postRegionTransferOwnership(region.id, newOwnerId, reason);
-      setShowTransferDialog(false);
-      setSuccess(`Region "${region.display_name}" ownership transferred successfully`);
-      await loadRegionalData();
-    } catch (err) {
-      if (err instanceof TypeError) {
-        setTransferError(
-          'Network error — could not reach the gameserver. Check your connection and try again.',
-        );
-      } else {
-        setTransferError(formatRegionTransferError(err));
-      }
-    } finally {
-      setTransferBusy(false);
-    }
-  };
-
-  const handleRegionTerminate = async (confirmRegionName: string, reason: string) => {
-    if (!region?.id) return;
-    setTerminateBusy(true);
-    setTerminateError(null);
-    try {
-      await postRegionTerminate(region.id, confirmRegionName, reason);
-      setShowTerminateDialog(false);
-      setSuccess(`Region "${region.display_name}" terminated successfully`);
-      await loadRegionalData();
-    } catch (err) {
-      if (err instanceof TypeError) {
-        setTerminateError(
-          'Network error — could not reach the gameserver. Check your connection and try again.',
-        );
-      } else {
-        setTerminateError(formatRegionTerminateError(err));
-      }
-    } finally {
-      setTerminateBusy(false);
-    }
-  };
-
   const formatNumber = (num: number | null | undefined) => {
     if (num == null || Number.isNaN(num)) return '—';
     return num.toLocaleString();
@@ -659,53 +588,6 @@ const RegionalGovernorDashboard: React.FC = () => {
                 </button>
               </div>
             </div>
-
-            {isAdmin && (
-              <div
-                className="admin-danger-zone"
-                style={{
-                  margin: '16px 0',
-                  padding: '12px 16px',
-                  border: '1px solid rgba(239, 68, 68, 0.45)',
-                  borderRadius: '6px',
-                  background: 'rgba(239, 68, 68, 0.08)',
-                }}
-              >
-                <h3 style={{ margin: '0 0 8px 0', color: '#fca5a5' }}>Admin — Danger Zone</h3>
-                <p style={{ margin: '0 0 12px 0', fontSize: '0.85rem', color: '#fecaca' }}>
-                  Requires scoped admin grants. Transfer needs{' '}
-                  <code>admin.regions.transfer_ownership</code> (LEG-DEC-500). Terminate needs{' '}
-                  <code>admin.regions.terminate</code> — irreversible teardown with typed-name
-                  confirmation (LEG-DEC-103).
-                </p>
-                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                  <button
-                    type="button"
-                    className="action-button"
-                    style={{ background: '#b45309', color: '#fff' }}
-                    onClick={() => {
-                      setTransferError(null);
-                      setShowTransferDialog(true);
-                    }}
-                    disabled={loading || transferBusy || terminateBusy}
-                  >
-                    Transfer Ownership…
-                  </button>
-                  <button
-                    type="button"
-                    className="action-button"
-                    style={{ background: '#b91c1c', color: '#fff' }}
-                    onClick={() => {
-                      setTerminateError(null);
-                      setShowTerminateDialog(true);
-                    }}
-                    disabled={loading || terminateBusy || transferBusy}
-                  >
-                    Terminate Region…
-                  </button>
-                </div>
-              </div>
-            )}
             {/* Regional Overview */}
             <div className="overview-grid">
               <div className="stat-card">
@@ -1124,15 +1006,8 @@ const RegionalGovernorDashboard: React.FC = () => {
             <div className="form-group">
               <small>
                 Voting power ranges 0.0–5.0 (citizen tier target {CITIZEN_DEFAULT_VOTING_POWER.toFixed(1)});
-                dialing power to 0.0 clears membership franchise for citizens and residents.
-                Visitor type never votes on this membership layer, regardless of voting power.
-                Local rank is a free-text title (max 50 characters).
+                setting a member to 0.0 revokes their voting rights. Local rank is a free-text title (max 50 characters).
               </small>
-              <p className="rgd-franchise-honesty">
-                ADR-0056 account-age, personal_rep, and multi-account blocks_vote gates are enforced on
-                the gameserver cast path and are not returned by GET /api/v1/regions/my-region/members —
-                this Franchise column is membership-layer only (type + voting_power).
-              </p>
             </div>
 
             <div className="members-list">
@@ -1145,17 +1020,11 @@ const RegionalGovernorDashboard: React.FC = () => {
                       <th>Reputation</th>
                       <th>Local Rank</th>
                       <th>Voting Power</th>
-                      <th>Franchise</th>
                       <th>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {members.map(member => {
-                      const canVote = membershipCanVote(
-                        member.membership_type,
-                        member.voting_power,
-                      );
-                      return (
+                    {members.map(member => (
                       <tr key={member.player_id}>
                         <td>{member.username}</td>
                         <td>{member.membership_type}</td>
@@ -1181,13 +1050,6 @@ const RegionalGovernorDashboard: React.FC = () => {
                           />
                         </td>
                         <td>
-                          <span
-                            className={`rgd-franchise-badge ${canVote ? 'eligible' : 'ineligible'}`}
-                          >
-                            {canVote ? 'Can vote' : 'No franchise'}
-                          </span>
-                        </td>
-                        <td>
                           <div style={{ display: 'flex', gap: '8px' }}>
                             <button
                               onClick={() => handleMemberFieldChange(member.player_id, 'voting_power', CITIZEN_DEFAULT_VOTING_POWER)}
@@ -1207,8 +1069,7 @@ const RegionalGovernorDashboard: React.FC = () => {
                           </div>
                         </td>
                       </tr>
-                      );
-                    })}
+                    ))}
                   </tbody>
                 </table>
               ) : (
@@ -1312,38 +1173,6 @@ const RegionalGovernorDashboard: React.FC = () => {
           </div>
         )}
       </div>
-
-      {showTransferDialog && region?.id && (
-        <RegionTransferOwnershipConfirmDialog
-          regionId={region.id}
-          regionDisplayName={region.display_name}
-          currentOwnerId={region.owner_id}
-          onCancel={() => {
-            if (!transferBusy) {
-              setShowTransferDialog(false);
-              setTransferError(null);
-            }
-          }}
-          onConfirm={handleRegionTransferOwnership}
-          busy={transferBusy}
-          error={transferError}
-        />
-      )}
-
-      {showTerminateDialog && region?.id && (
-        <RegionTerminateConfirmDialog
-          regionId={region.id}
-          onCancel={() => {
-            if (!terminateBusy) {
-              setShowTerminateDialog(false);
-              setTerminateError(null);
-            }
-          }}
-          onConfirm={handleRegionTerminate}
-          busy={terminateBusy}
-          error={terminateError}
-        />
-      )}
     </div>
   );
 };

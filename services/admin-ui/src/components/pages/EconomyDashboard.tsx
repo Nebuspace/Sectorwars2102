@@ -8,7 +8,6 @@ import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import { useToast, useConfirm } from '../../contexts/ToastContext';
 import EconomyLeversPanel from './EconomyLeversPanel';
 import BountyAdminPanel from './BountyAdminPanel';
-import GalacticCitizenAdminPanel from '../admin/GalacticCitizenAdminPanel';
 import './economy-dashboard.css';
 
 interface MarketData {
@@ -672,8 +671,6 @@ const EconomyDashboard: React.FC = () => {
       <EconomyLeversPanel />
 
       <BountyAdminPanel />
-
-      <GalacticCitizenAdminPanel />
       
       {loading ? (
         <div className="loading-spinner">Loading economic data...</div>
