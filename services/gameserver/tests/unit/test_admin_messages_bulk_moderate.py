@@ -103,3 +103,69 @@ def test_bulk_route_uses_security_act_dependency():
     single_dep_names = {d.name for d in single.dependant.dependencies}
     assert "admin" in bulk_dep_names
     assert "admin" in single_dep_names
+
+
+def test_list_admin_messages_unexpected_is_opaque_500():
+    """LEG-3561 — list catch must not echo raw Exception text."""
+    from fastapi import HTTPException
+
+    class _BoomDB:
+        def query(self, *args, **kwargs):
+            raise RuntimeError("secret-db-dsn-should-not-leak")
+
+    try:
+        asyncio.run(am._list_admin_messages(page=1, flagged=True, db=_BoomDB()))
+        assert False, "expected HTTPException"
+    except HTTPException as exc:
+        assert exc.status_code == 500
+        assert exc.detail == {
+            "error_code": "ERR_ADMIN_MESSAGES_LIST_FAILED",
+            "detail": "Failed to list admin messages",
+        }
+        assert "secret-db-dsn-should-not-leak" not in str(exc.detail)
+
+
+def test_moderate_message_unexpected_is_opaque_500():
+    """LEG-3561 — moderate catch must not echo raw Exception text."""
+    from fastapi import HTTPException
+
+    mid = uuid.uuid4()
+    with patch.object(
+        MessageService,
+        "moderate_message",
+        new=AsyncMock(side_effect=RuntimeError("secret-moderation-stack")),
+    ):
+        body = am.ModerateMessageRequest(action="delete")
+        admin = type("U", (), {"id": uuid.uuid4()})()
+        try:
+            asyncio.run(
+                am.moderate_message(message_id=mid, request=body, admin=admin, db=object())
+            )
+            assert False, "expected HTTPException"
+        except HTTPException as exc:
+            assert exc.status_code == 500
+            assert exc.detail == {
+                "error_code": "ERR_ADMIN_MESSAGES_MODERATE_FAILED",
+                "detail": "Failed to moderate message",
+            }
+            assert "secret-moderation-stack" not in str(exc.detail)
+
+
+def test_admin_messages_http500_catches_have_no_detail_str_e():
+    """LEG-3561 / LEG-3879 — static pin: the three HTTP 500 catch paths stay opaque."""
+    from pathlib import Path
+
+    src = Path(am.__file__).read_text(encoding="utf-8")
+    for code in (
+        "ERR_ADMIN_MESSAGES_LIST_FAILED",
+        "ERR_ADMIN_MESSAGES_MODERATE_FAILED",
+        "ERR_ADMIN_MESSAGES_STATS_FAILED",
+    ):
+        assert code in src
+    assert "route_internal_error" in src
+    assert 'detail="Failed to list admin messages"' not in src
+    assert 'detail="Failed to moderate message"' not in src
+    assert 'detail="Failed to load message statistics"' not in src
+    # Outer HTTP 500 catches must not use detail=str(e); bulk per-id soft-fail
+    # may still truncate Exception text into result rows (not an HTTP 500).
+    assert src.count("raise HTTPException(status_code=500, detail=str(e))") == 0
