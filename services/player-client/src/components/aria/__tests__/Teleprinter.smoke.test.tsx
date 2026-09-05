@@ -95,6 +95,17 @@ const SEED_ARIA_MESSAGES = [
     timestamp: '2026-01-01T00:00:10.500Z',
     isNarration: true as const,
   },
+  // LEG-4259 — P-A1-shaped combat-victory aria_narration (canon sample from
+  // sw2102-docs FEATURES/gameplay/aria-companion.md). Pins NARRATION display
+  // of isNarration catalog prose; no production filter invent.
+  {
+    id: 'narr-p-a1',
+    type: 'ai' as const,
+    content:
+      "Got 'em. Their hull went at the third volley — looks like the laser stack worked. Logged.",
+    timestamp: '2026-01-01T00:00:11.000Z',
+    isNarration: true as const,
+  },
 ];
 
 vi.mock('../../../contexts/WebSocketContext', () => ({
@@ -311,11 +322,34 @@ describe('Teleprinter — live-mount smoke', () => {
     await flush();
 
     // narr-2 ('+00:00'-suffixed) and narr-3 ('Z'-suffixed) tie at the same
-    // epoch millisecond; narr-3 is later in SEED_ARIA_MESSAGES (the true-
-    // latest arrival). A raw-string compare would have ranked narr-2 ('Z'
-    // sorts above any digit at their divergent 4th fractional character)
-    // as "later" and shown its content instead — see toEpoch's doc-comment.
-    expect(container.querySelector('.tline')?.textContent).toBe('Arrival: Sector 12.');
+    // epoch millisecond; narr-p-a1 is later still (true-latest arrival).
+    // A raw-string compare would have ranked narr-2 ('Z' sorts above any
+    // digit at their divergent 4th fractional character) as "later" than
+    // narr-3 — see toEpoch's doc-comment. With narr-p-a1 present, the
+    // ticker must show the combat-victory line, not a format-sort artifact.
+    expect(container.querySelector('.tline')?.textContent).toBe(
+      "Got 'em. Their hull went at the third volley — looks like the laser stack worked. Logged."
+    );
+
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  it('LEG-4259: NARRATION shows P-A1-shaped aria_narration; DIALOGUE does not (partition honesty)', async () => {
+    const pA1 =
+      "Got 'em. Their hull went at the third volley — looks like the laser stack worked. Logged.";
+
+    await act(async () => {
+      root.render(<ControlledTeleprinter />);
+    });
+    await flush();
+
+    // Default mode = narration — existing isNarration display path only.
+    expect(container.querySelector('.tp-mode-narration.active')).not.toBeNull();
+    expect(container.querySelector('#tp-log')?.textContent ?? '').toContain(pA1);
+
+    await clickTab('dialogue');
+    expect(container.querySelector('.tp-mode-dialogue.active')).not.toBeNull();
+    expect(container.querySelector('#tp-log')?.textContent ?? '').not.toContain(pA1);
 
     expect(errorSpy).not.toHaveBeenCalled();
   });
