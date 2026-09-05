@@ -35,6 +35,63 @@ export function isStealthModuleHullCompatible(
   return (STEALTH_MODULE_COMPATIBLE_HULLS as readonly string[]).includes(norm);
 }
 
+/** Transport collapse copy is not gameserver detail (network-collapse densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+export function formatStealthModuleInstallError(err: unknown): string {
+  const fallback = 'Stealth Module install failed';
+  const status = httpStatus(err);
+  const responseDetail =
+    (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+  const message = (err as { message?: string })?.message;
+  const detailCandidate =
+    typeof responseDetail === 'string' && responseDetail.trim()
+      ? responseDetail.trim()
+      : typeof message === 'string' && message.trim()
+        ? message.trim()
+        : undefined;
+  const hasServerDetail =
+    !(err instanceof TypeError) &&
+    typeof detailCandidate === 'string' &&
+    detailCandidate.length > 0 &&
+    !/^API Error: \d+$/.test(detailCandidate) &&
+    !isNetworkCollapseMessage(detailCandidate);
+
+  if (status === 403) {
+    if (hasServerDetail) return detailCandidate!;
+    return 'You do not have permission to install a Stealth Module.';
+  }
+
+  if (status === 429) {
+    return 'Stealth Module install rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (err instanceof TypeError) return fallback;
+  if (hasServerDetail) return detailCandidate!;
+  if (typeof message === 'string' && message) {
+    if (isNetworkCollapseMessage(message)) return fallback;
+    return message;
+  }
+  return fallback;
+}
+
 export interface StealthModuleInstallCtaProps {
   shipId?: string | null;
   shipType?: string | null;
@@ -111,13 +168,8 @@ const StealthModuleInstallCta: React.FC<StealthModuleInstallCtaProps> = ({
         message: result?.message,
       });
       void refreshEquipment();
-    } catch (err: any) {
-      const detail = err?.response?.data?.detail ?? err?.message;
-      setInstallError(
-        typeof detail === 'string' && detail
-          ? detail
-          : 'Stealth Module install failed',
-      );
+    } catch (err: unknown) {
+      setInstallError(formatStealthModuleInstallError(err));
     } finally {
       setIsInstalling(false);
     }

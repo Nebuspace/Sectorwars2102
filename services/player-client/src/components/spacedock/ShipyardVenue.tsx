@@ -35,6 +35,52 @@ export interface ShipCatalogEntry {
 const normalizeShipType = (shipType?: string | null): string =>
   (shipType || '').toUpperCase().replace(/[\s-]+/g, '_');
 
+/** Transport collapse copy is not gameserver detail (LEG-3772 densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
+export const SHIPYARD_CATALOG_LOAD_FALLBACK = 'Connection error. Please try again.';
+
+function httpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { status?: number }).status;
+    if (typeof direct === 'number') return direct;
+    const resp = (err as { response?: { status?: number } }).response;
+    if (typeof resp?.status === 'number') return resp.status;
+  }
+  return undefined;
+}
+
+export function formatShipyardCatalogError(error: unknown, fallback: string): string {
+  if (error instanceof TypeError) return fallback;
+  const status = httpStatus(error);
+  const message =
+    error instanceof Error ? error.message : typeof error === 'string' ? error : undefined;
+  const hasServerDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNetworkCollapseMessage(message);
+
+  if (status === 403) {
+    if (hasServerDetail) return message!;
+    return 'You do not have permission to load the shipyard catalog.';
+  }
+
+  if (status === 429) {
+    return 'Shipyard catalog rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (hasServerDetail) return message!;
+  return fallback;
+}
+
 interface ShipyardVenueProps {
   shipId: string | undefined;
   shipType: string | undefined;
@@ -121,7 +167,7 @@ const ShipyardVenue: React.FC<ShipyardVenueProps> = ({
             {shipCatalogError && !shipCatalogLoading && (
               <div className="genesis-error-message">
                 <span className="error-icon">❌</span>
-                {shipCatalogError}
+                {formatShipyardCatalogError(shipCatalogError, SHIPYARD_CATALOG_LOAD_FALLBACK)}
                 <button className="action-button" onClick={fetchShipCatalog}>Retry</button>
               </div>
             )}

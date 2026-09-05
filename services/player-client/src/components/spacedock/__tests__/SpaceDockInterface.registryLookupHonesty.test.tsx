@@ -36,4 +36,23 @@ describe('formatSpaceDockRegistryLookupError (LEG-2959)', () => {
       'Registry lookup rate limit exceeded — wait a moment and try again.',
     );
   });
+
+  it('falls back on TypeError network collapse (LEG-3575)', () => {
+    const text = formatSpaceDockRegistryLookupError(new TypeError('Failed to fetch'), 'Nova');
+    expect(text).toBe('Lookup failed.');
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('falls back on axios Network Error / Failed to fetch non-TypeError (LEG-3575)', () => {
+    expect(formatSpaceDockRegistryLookupError(new Error('Network Error'), 'Nova')).toBe(
+      'Lookup failed.',
+    );
+    expect(formatSpaceDockRegistryLookupError(new Error('Failed to fetch'), 'Nova')).toBe(
+      'Lookup failed.',
+    );
+    expect(formatSpaceDockRegistryLookupError(new Error('Network Error'), 'Nova')).not.toMatch(
+      /Network Error/i,
+    );
+  });
 });

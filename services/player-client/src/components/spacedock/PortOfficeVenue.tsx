@@ -2,6 +2,10 @@ import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { useGame } from '../../contexts/GameContext';
 import { formatCredits } from '../../utils/formatters';
 import DeckPageTabs from '../cockpit/DeckPageTabs';
+import StationSecurityMonitoringPane from '../station/StationSecurityMonitoringPane';
+import PortOfficeGovernancePanel from './PortOfficeGovernancePanel';
+import PortOfficeSyndicatePanel from './PortOfficeSyndicatePanel';
+import PortOfficeTeamPanel from './PortOfficeTeamPanel';
 import './port-office-venue.css';
 
 // =====================================================================
@@ -42,27 +46,65 @@ const pickBool = (...candidates: unknown[]): boolean | null => {
   return null;
 };
 
+/** Transport collapse copy is not gameserver detail (LEG-3274 densify). */
+const isNetworkCollapseMessage = (msg: string): boolean => {
+  const trimmed = msg.trim();
+  return (
+    !trimmed ||
+    /^failed to fetch$/i.test(trimmed) ||
+    /^network\s*error$/i.test(trimmed)
+  );
+};
+
 // Pull a readable message out of an axios error. FastAPI 422 validation
 // errors arrive as detail: [{loc, msg, type}, ...] — flatten the msg fields.
-const axiosErrorMessage = (error: unknown, fallback: string): string => {
+export function formatPortOfficeVenueError(error: unknown, fallback: string): string {
+  // Network collapse (fetch TypeError) is not gameserver copy.
+  if (error instanceof TypeError) return fallback;
   const e = asRecord(error);
   const response = asRecord(e?.response);
+  const status =
+    (typeof e?.status === 'number' ? e.status : undefined) ??
+    (typeof response?.status === 'number' ? response.status : undefined);
   const data = asRecord(response?.data);
   const raw = data?.message ?? data?.detail;
-  if (typeof raw === 'string' && raw) return raw;
-  if (Array.isArray(raw)) {
+  let detailCopy: string | undefined;
+  if (typeof raw === 'string' && raw.trim()) detailCopy = raw.trim();
+  else if (Array.isArray(raw)) {
     const msgs = raw
       .map(item => {
         const rec = asRecord(item);
         return typeof rec?.msg === 'string' && rec.msg ? rec.msg : null;
       })
       .filter((m): m is string => m !== null);
-    if (msgs.length > 0) return msgs.join('; ');
+    if (msgs.length > 0) detailCopy = msgs.join('; ');
   }
-  // Non-HTTP failures (e.g. 'Not authenticated' thrown by the context helpers)
-  if (!response && typeof e?.message === 'string' && e.message) return e.message;
+  const message = typeof e?.message === 'string' ? e.message : undefined;
+  const messageDetail =
+    typeof message === 'string' &&
+    message.trim().length > 0 &&
+    !/^API Error: \d+$/.test(message.trim()) &&
+    !isNetworkCollapseMessage(message)
+      ? message.trim()
+      : undefined;
+  const serverCopy = detailCopy ?? messageDetail;
+
+  if (status === 403) {
+    if (serverCopy) return serverCopy;
+    return 'You do not have permission to perform this port office action.';
+  }
+
+  if (status === 429) {
+    return 'Port office action rate limit exceeded — wait a moment and try again.';
+  }
+
+  if (detailCopy) return detailCopy;
+  // Non-HTTP failures (e.g. 'Not authenticated' thrown by the context helpers).
+  // Axios "Network Error" / empty transport is not operator copy (LEG-3274).
+  if (!response && messageDetail) return messageDetail;
+  if (message && isNetworkCollapseMessage(message)) return fallback;
   return fallback;
-};
+}
 
 // Countdown formatting against a ticking clock (house pattern from
 // ConstructionVenue — wall-clock ISO deadlines arrive pre-scaled)
@@ -155,6 +197,10 @@ interface MyStationView {
   dockingFeeEnabled: boolean | null;
   serviceChargeMultiplier: number | null;
   storageRentalPerDay: number | null;
+  /** LEG-4125 — tip revenue_summary / my-stations insolvency advance */
+  insolvencyMonths: number | null;
+  insolvencyPending: boolean | null;
+  insolvencySellAt: string | null;
 }
 
 interface MonthView {
@@ -222,6 +268,12 @@ const normalizeMyStation = (raw: unknown): MyStationView => {
       return { label: pickString(e.month, e.label) ?? `Month ${idx + 1}`, amount };
     })
     .filter((e): e is { label: string; amount: number } => e !== null);
+  // Tip nests insolvency_* on revenue_summary; also accept top-level twins.
+  const insolvencyMonths = pickNumber(revenue.insolvency_months, o.insolvency_months);
+  const insolvencyPending =
+    pickBool(revenue.insolvency_pending) ?? pickBool(o.insolvency_pending);
+  const insolvencySellAt =
+    pickString(revenue.insolvency_sell_at) ?? pickString(o.insolvency_sell_at);
   return {
     taxRate: pickNumber(o.tax_rate),
     treasury: pickNumber(o.treasury_balance, o.treasury),
@@ -235,8 +287,14 @@ const normalizeMyStation = (raw: unknown): MyStationView => {
     dockingFeeEnabled: pickBool(o.docking_fee_enabled),
     serviceChargeMultiplier: pickNumber(o.service_charge_multiplier),
     storageRentalPerDay: pickNumber(o.storage_rental_per_day),
+    insolvencyMonths,
+    insolvencyPending,
+    insolvencySellAt,
   };
 };
+
+/** Exported for LEG-4125 Vitest — tip my-stations insolvency hydrate. */
+export { normalizeMyStation };
 
 // Find this station inside the my-stations payload (bare array or {stations})
 const findMyStation = (raw: unknown, stationId: string): MyStationView | null => {
@@ -435,6 +493,7 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
     setServiceCharge,
     setStorageRental,
     withdrawTreasury,
+    injectTreasury,
     getDefensePolicy,
     setDefensePolicy,
     getTakeoverStatus,
@@ -484,6 +543,7 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
   // Owner console inputs
   const [taxPctInput, setTaxPctInput] = useState<number | null>(null);
   const [withdrawInput, setWithdrawInput] = useState('');
+  const [injectInput, setInjectInput] = useState('');
 
   // Revenue levers (LEG-366) — defaults match tip GS Field baselines when unset.
   const [priceLeverPct, setPriceLeverPct] = useState(0);
@@ -521,7 +581,7 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
       setListing(normalizeListing(data));
       setListingError(null);
     } catch (error) {
-      setListingError(axiosErrorMessage(error, 'The registry clerk is not answering. Please try again.'));
+      setListingError(formatPortOfficeVenueError(error, 'The registry clerk is not answering. Please try again.'));
     } finally {
       setListingLoading(false);
     }
@@ -535,7 +595,7 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
       setMyStation(findMyStation(data, stationId));
       setOwnerError(null);
     } catch (error) {
-      setOwnerError(axiosErrorMessage(error, 'Could not open your holdings ledger. Please try again.'));
+      setOwnerError(formatPortOfficeVenueError(error, 'Could not open your holdings ledger. Please try again.'));
     } finally {
       setOwnerLoading(false);
     }
@@ -549,7 +609,7 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
       setDefenseForm(normalizeDefensePolicy(data));
       setDefenseError(null);
     } catch (error) {
-      setDefenseError(axiosErrorMessage(error, 'Defense policy feed is down. Please try again.'));
+      setDefenseError(formatPortOfficeVenueError(error, 'Defense policy feed is down. Please try again.'));
     } finally {
       setDefenseLoading(false);
     }
@@ -563,7 +623,7 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
       setTakeover(normalizeTakeover(data));
       setTakeoverError(null);
     } catch (error) {
-      setTakeoverError(axiosErrorMessage(error, 'War-room intelligence feed is down. Please try again.'));
+      setTakeoverError(formatPortOfficeVenueError(error, 'War-room intelligence feed is down. Please try again.'));
     } finally {
       setTakeoverLoading(false);
     }
@@ -658,7 +718,7 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
     try {
       return await fn();
     } catch (error) {
-      setError(axiosErrorMessage(error, fallback));
+      setError(formatPortOfficeVenueError(error, fallback));
       return null;
     } finally {
       setBusyAction(null);
@@ -811,6 +871,52 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
       await Promise.allSettled([fetchOwner(), fetchListing()]);
     }
   }, [withdrawInput, myStation?.treasury, listing?.treasuryBalance, runAction, withdrawTreasury, stationId, onCreditsSet, fetchOwner, fetchListing]);
+
+  const submitInject = useCallback(async () => {
+    const amount = parseInt(injectInput, 10);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setConsoleError('Enter an amount to inject.');
+      return;
+    }
+    if (amount > credits) {
+      setConsoleError(
+        `Insufficient credits to inject. Need ${formatCredits(amount)}, have ${formatCredits(credits)}.`,
+      );
+      return;
+    }
+    setConsoleSuccess(null);
+    const result = await runAction(
+      'inject',
+      () => injectTreasury(stationId, amount),
+      setConsoleError,
+      'Vault injection failed.',
+    );
+    if (result !== null) {
+      const body = asRecord(result);
+      const newCredits = creditsFromResponse(result);
+      if (newCredits !== null) onCreditsSet(newCredits);
+      const treasuryBal = body ? pickNumber(body.treasury_balance) : null;
+      const serverMsg = typeof body?.message === 'string' ? body.message : null;
+      const balanceNote =
+        treasuryBal !== null ? ` Vault now holds ${formatCredits(treasuryBal)}.` : '';
+      setConsoleSuccess(
+        serverMsg
+          ? `${serverMsg}${balanceNote}`
+          : `${formatCredits(amount)} injected into the station vault from your account.${balanceNote}`,
+      );
+      setInjectInput('');
+      await Promise.allSettled([fetchOwner(), fetchListing()]);
+    }
+  }, [
+    injectInput,
+    credits,
+    runAction,
+    injectTreasury,
+    stationId,
+    onCreditsSet,
+    fetchOwner,
+    fetchListing,
+  ]);
 
   const submitDefensePolicy = useCallback(async () => {
     const mult = Math.max(1, Math.min(5, Number(defenseForm.punitiveFeeMult)));
@@ -1242,6 +1348,8 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
           </div>
         )}
 
+        <PortOfficeTeamPanel stationId={stationId} stationName={stationName} />
+
         {/* Tariff lever */}
         <div className="po-section">
           <h3 className="po-section-title">🧾 Trade Tariff</h3>
@@ -1395,6 +1503,48 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
         {/* Treasury vault — citadel vault gauge visual language */}
         <div className="po-section">
           <h3 className="po-section-title">🔐 Station Vault</h3>
+          {myStation?.insolvencyPending === true && myStation.insolvencySellAt && (
+            <div
+              className="genesis-error-message"
+              role="alert"
+              data-testid="po-insolvency-advance-banner"
+            >
+              <span className="error-icon">⚠️</span>
+              <div>
+                <strong>Insolvency advance — auto-sale pending.</strong>{' '}
+                Operating shortfalls have triggered the 7-day notice window. This station is
+                scheduled to auto-list at depreciated value at{' '}
+                <time dateTime={myStation.insolvencySellAt} data-testid="po-insolvency-sell-at">
+                  {myStation.insolvencySellAt}
+                </time>
+                {typeof myStation.insolvencyMonths === 'number'
+                  ? ` (${myStation.insolvencyMonths} shortfall month${
+                      myStation.insolvencyMonths === 1 ? '' : 's'
+                    } on the ledger).`
+                  : '.'}{' '}
+                Inject personal credits into the vault below to recover before the sale —
+                rescue offers and compel-injection votes are not available here.
+              </div>
+              <button
+                type="button"
+                className="action-button"
+                data-testid="po-insolvency-focus-vault"
+                onClick={() => {
+                  const inject = document.querySelector(
+                    '[data-testid="po-vault-inject-input"]',
+                  ) as HTMLInputElement | null;
+                  const withdraw = document.querySelector(
+                    'input[aria-label="Credits to withdraw from the station vault"]',
+                  ) as HTMLInputElement | null;
+                  const target = inject ?? withdraw;
+                  target?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                  target?.focus();
+                }}
+              >
+                Go to vault
+              </button>
+            </div>
+          )}
           {vault === null ? (
             <p className="section-description">The vault ledger has not arrived from the registry yet.</p>
           ) : (
@@ -1425,6 +1575,7 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
                   placeholder="Amount"
                   disabled={Boolean(busyAction) || vault <= 0}
                   aria-label="Credits to withdraw from the station vault"
+                  data-testid="po-vault-withdraw-input"
                 />
                 <button
                   className="po-max-btn"
@@ -1437,8 +1588,38 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
                   className="action-button primary"
                   onClick={submitWithdraw}
                   disabled={Boolean(busyAction) || vault <= 0 || !withdrawInput}
+                  data-testid="po-vault-withdraw-btn"
                 >
                   {busyAction === 'withdraw' ? 'Transferring...' : 'Withdraw'}
+                </button>
+              </div>
+              <div className="po-withdraw-row" data-testid="po-vault-inject-row">
+                <input
+                  type="number"
+                  min={1}
+                  max={credits}
+                  value={injectInput}
+                  onChange={e => setInjectInput(e.target.value)}
+                  placeholder="Amount"
+                  disabled={Boolean(busyAction) || credits <= 0}
+                  aria-label="Credits to inject into the station vault"
+                  data-testid="po-vault-inject-input"
+                />
+                <button
+                  className="po-max-btn"
+                  onClick={() => setInjectInput(String(credits))}
+                  disabled={Boolean(busyAction) || credits <= 0}
+                  data-testid="po-vault-inject-max"
+                >
+                  Max
+                </button>
+                <button
+                  className="action-button"
+                  onClick={submitInject}
+                  disabled={Boolean(busyAction) || credits <= 0 || !injectInput}
+                  data-testid="po-vault-inject-btn"
+                >
+                  {busyAction === 'inject' ? 'Injecting...' : 'Inject'}
                 </button>
               </div>
             </>
@@ -1567,6 +1748,8 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
             {busyAction === 'defense' ? 'Posting...' : 'Post Defense Policy'}
           </button>
         </div>
+
+        <StationSecurityMonitoringPane stationId={stationId} isOwner={isMine} />
 
         {/* Economic takeover defense — owner only (LEG-INI-35) */}
         <div className="po-section" data-testid="po-econ-defense">
@@ -2031,6 +2214,9 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
             except the bids.
           </p>
         </div>
+
+        <PortOfficeSyndicatePanel stationId={stationId} stationName={stationName} />
+        <PortOfficeGovernancePanel stationId={stationId} stationName={stationName} />
 
         <DeckPageTabs
           pages={[
