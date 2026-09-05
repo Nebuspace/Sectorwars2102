@@ -43,6 +43,43 @@ const FILTER_OPTIONS: Array<{ value: string; label: string }> = [
   { value: 'escalated', label: 'Escalated' },
 ];
 
+/** ADR-0056 E-V5 / N-V3 franchise impact from cluster severity + paid bypass. */
+export function franchiseImpactFromCluster(
+  severity: 'hard' | 'soft',
+  allPaid: boolean,
+): {
+  weight: number;
+  blocksVote: boolean;
+  summary: string;
+  badge: string;
+} {
+  if (allPaid) {
+    return {
+      weight: 1.0,
+      blocksVote: false,
+      summary:
+        'Paid bypass — full participation weight (1.0); multi-account discount not applied. Confirm still records the cluster; Override dismisses it.',
+      badge: 'Full weight (1.0)',
+    };
+  }
+  if (severity === 'hard') {
+    return {
+      weight: 0,
+      blocksVote: true,
+      summary:
+        'HARD cluster — franchise blocked (participation weight 0; blocks_vote). Confirm enforces the vote block; Override restores franchise.',
+      badge: 'Blocked (0 / blocks_vote)',
+    };
+  }
+  return {
+    weight: 0.5,
+    blocksVote: false,
+    summary:
+      'SOFT cluster — 0.5× participation weight (discount applies). Confirm keeps the discount; Override clears it.',
+    badge: '0.5× weight',
+  };
+}
+
 export const MultiAccountReview: React.FC = () => {
   const [clusters, setClusters] = useState<MultiAccountCluster[]>([]);
   const [selected, setSelected] = useState<MultiAccountCluster | null>(null);
@@ -135,6 +172,10 @@ export const MultiAccountReview: React.FC = () => {
       </div>
     );
   }
+
+  const selectedFranchise = selected
+    ? franchiseImpactFromCluster(selected.severity, selected.all_paid_subscribers)
+    : null;
 
   return (
     <div className="mar-page">
@@ -235,6 +276,29 @@ export const MultiAccountReview: React.FC = () => {
               <label>All Paid Subscribers</label>
               <span>{selected.all_paid_subscribers ? 'Yes (discount bypass)' : 'No'}</span>
             </div>
+            <div className="mar-detail-section mar-franchise-impact">
+              <label>Franchise impact</label>
+              {selectedFranchise && (
+                <>
+                  <span
+                    className={`mar-franchise-badge mar-franchise-${
+                      selectedFranchise.blocksVote
+                        ? 'blocked'
+                        : selectedFranchise.weight < 1
+                          ? 'discount'
+                          : 'full'
+                    }`}
+                  >
+                    {selectedFranchise.badge}
+                  </span>
+                  <p className="mar-franchise-summary">{selectedFranchise.summary}</p>
+                </>
+              )}
+            </div>
+            <p className="mar-honest-gap mar-member-fields-honesty">
+              Per-member subscription tier, account age, and recent activity are not returned by
+              the current admin multi-account API, so they are not shown here.
+            </p>
             <div className="mar-detail-section">
               <label>Current Decision</label>
               <span>{selected.admin_decision}</span>
@@ -331,26 +395,46 @@ export const MultiAccountReview: React.FC = () => {
                       <th>Player ID</th>
                       <th>Signal</th>
                       <th>Severity</th>
+                      <th>Franchise</th>
                       <th>Detected</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {selected.flags.map((f) => (
-                      <tr key={f.id}>
-                        <td className="mar-mono">{f.player_id}</td>
-                        <td>{f.signal}</td>
-                        <td>
-                          <span className={`mar-severity mar-severity-${f.severity}`}>
-                            {f.severity}
-                          </span>
-                        </td>
-                        <td>
-                          {f.created_at
-                            ? new Date(f.created_at).toLocaleDateString()
-                            : '—'}
-                        </td>
-                      </tr>
-                    ))}
+                    {selected.flags.map((f) => {
+                      const flagImpact = franchiseImpactFromCluster(
+                        f.severity,
+                        selected.all_paid_subscribers,
+                      );
+                      return (
+                        <tr key={f.id}>
+                          <td className="mar-mono">{f.player_id}</td>
+                          <td>{f.signal}</td>
+                          <td>
+                            <span className={`mar-severity mar-severity-${f.severity}`}>
+                              {f.severity}
+                            </span>
+                          </td>
+                          <td>
+                            <span
+                              className={`mar-franchise-badge mar-franchise-${
+                                flagImpact.blocksVote
+                                  ? 'blocked'
+                                  : flagImpact.weight < 1
+                                    ? 'discount'
+                                    : 'full'
+                              }`}
+                            >
+                              {flagImpact.badge}
+                            </span>
+                          </td>
+                          <td>
+                            {f.created_at
+                              ? new Date(f.created_at).toLocaleDateString()
+                              : '—'}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
