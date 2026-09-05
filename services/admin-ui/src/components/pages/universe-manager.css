@@ -527,21 +527,6 @@ h2, h3, h4 {
   padding: 20px;
 }
 
-.universe-holding-filter {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 16px;
-}
-
-.universe-holding-filter .form-label {
-  color: #94a3b8;
-  font-size: 13px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
 .no-sectors {
   text-align: center;
   padding: 60px;
@@ -575,10 +560,6 @@ h2, h3, h4 {
 
 .sector-card.has-planet {
   border-color: rgba(124, 179, 66, 0.3);
-}
-
-.sector-card.has-holding {
-  border-color: rgba(249, 115, 22, 0.35);
 }
 
 .sector-header {
@@ -648,11 +629,6 @@ h2, h3, h4 {
 .feature-badge.warp {
   background: rgba(156, 39, 176, 0.2);
   color: #d8b4fe;
-}
-
-.feature-badge.holding {
-  background: rgba(249, 115, 22, 0.2);
-  color: #fdba74;
 }
 
 /* Galaxy Map Placeholder */
