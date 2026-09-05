@@ -160,6 +160,42 @@
   font-size: 11px;
 }
 
+.mar-franchise-badge {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.mar-franchise-blocked {
+  background: #7f1d1d;
+  color: #fca5a5;
+}
+
+.mar-franchise-discount {
+  background: #713f12;
+  color: #fcd34d;
+}
+
+.mar-franchise-full {
+  background: #064e3b;
+  color: #6ee7b7;
+}
+
+.mar-franchise-summary {
+  margin-top: 6px;
+  color: #cbd5e1;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.mar-member-fields-honesty {
+  margin-top: 4px;
+  margin-bottom: 12px;
+}
+
 /* Evidence panel */
 .mar-evidence {
   background: #374151;
