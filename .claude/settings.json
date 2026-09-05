@@ -1,5 +1,4 @@
 {
-  "outputStyle": "Samantha",
   "hooks": {
     "PreToolUse": [
       {

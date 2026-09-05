@@ -111,3 +111,13 @@ services/player-client/.tmp-overlay-screenshots/
 # instance (the PostCompact hook reads it to re-anchor), so committing it would thrash
 # between concurrent seats.
 .samantha/plan.md
+
+# Fibril seat evidence + Samantha working state (coord files, closer evidence, tmp
+# dirs, plans) — not read by any runtime; ahead-of-cache-boundary git-status churn
+# from these was found to invalidate prompt caching for concurrent seats.
+.fibril-evidence/
+.samantha/closer-evidence/
+.samantha/fibril-artifacts/
+.samantha/tmp*/
+.samantha/plans/
+.neon-proof/
