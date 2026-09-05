@@ -863,11 +863,22 @@ class TestAccountAgeVoteGate:
         db.run_sync = AsyncMock(return_value=False)
         return db
 
+    @staticmethod
+    def _stub_eligibility_row(mock_db, created_at, personal_reputation=0):
+        """``_is_account_vote_eligible`` reads (created_at, personal_reputation)
+        via execute().one_or_none()."""
+        row = MagicMock()
+        if created_at is None and personal_reputation is None:
+            row.one_or_none.return_value = None
+        else:
+            row.one_or_none.return_value = (created_at, personal_reputation)
+        mock_db.execute = AsyncMock(return_value=row)
+
     @pytest.mark.asyncio
     async def test_fresh_account_is_ineligible(self, mock_db):
         """An account created today is under the 60-day window -> ineligible."""
         from datetime import timezone as _tz
-        mock_db.scalar = AsyncMock(return_value=datetime.now(_tz.utc))
+        self._stub_eligibility_row(mock_db, datetime.now(_tz.utc))
         eligible = await RegionalGovernanceService._is_account_vote_eligible(
             mock_db, uuid.uuid4()
         )
@@ -878,8 +889,8 @@ class TestAccountAgeVoteGate:
         """A 90-day-old account clears the 60-day window -> eligible. This is the
         migration-backfilled-citizen case (real historical created_at)."""
         from datetime import timezone as _tz
-        mock_db.scalar = AsyncMock(
-            return_value=datetime.now(_tz.utc) - timedelta(days=90)
+        self._stub_eligibility_row(
+            mock_db, datetime.now(_tz.utc) - timedelta(days=90), personal_reputation=0
         )
         eligible = await RegionalGovernanceService._is_account_vote_eligible(
             mock_db, uuid.uuid4()
@@ -890,8 +901,10 @@ class TestAccountAgeVoteGate:
     async def test_exactly_60_days_is_eligible(self, mock_db):
         """The boundary is inclusive: an account exactly 60 days old can vote."""
         from datetime import timezone as _tz
-        mock_db.scalar = AsyncMock(
-            return_value=datetime.now(_tz.utc) - timedelta(days=60, seconds=1)
+        self._stub_eligibility_row(
+            mock_db,
+            datetime.now(_tz.utc) - timedelta(days=60, seconds=1),
+            personal_reputation=0,
         )
         eligible = await RegionalGovernanceService._is_account_vote_eligible(
             mock_db, uuid.uuid4()
@@ -902,7 +915,7 @@ class TestAccountAgeVoteGate:
     async def test_unresolvable_account_fails_closed(self, mock_db):
         """No resolvable account (orphaned player / missing user) -> ineligible
         (never hand a vote to an account of unknown age)."""
-        mock_db.scalar = AsyncMock(return_value=None)
+        self._stub_eligibility_row(mock_db, None, personal_reputation=None)
         eligible = await RegionalGovernanceService._is_account_vote_eligible(
             mock_db, uuid.uuid4()
         )
@@ -912,8 +925,67 @@ class TestAccountAgeVoteGate:
     async def test_naive_created_at_treated_as_utc(self, mock_db):
         """A naive created_at (defensive: hand-built/legacy row) is treated as
         UTC and does not raise a naive/aware TypeError."""
-        mock_db.scalar = AsyncMock(
-            return_value=datetime.utcnow() - timedelta(days=90)
+        self._stub_eligibility_row(
+            mock_db, datetime.utcnow() - timedelta(days=90), personal_reputation=0
+        )
+        eligible = await RegionalGovernanceService._is_account_vote_eligible(
+            mock_db, uuid.uuid4()
+        )
+        assert eligible is True
+
+    @pytest.mark.asyncio
+    async def test_negative_personal_rep_is_ineligible(self, mock_db):
+        """LEG-4241 / ADR-0056 N-V3: age≥60 but personal_reputation=-5 → False."""
+        from datetime import timezone as _tz
+        self._stub_eligibility_row(
+            mock_db,
+            datetime.now(_tz.utc) - timedelta(days=90),
+            personal_reputation=-5,
+        )
+        eligible = await RegionalGovernanceService._is_account_vote_eligible(
+            mock_db, uuid.uuid4()
+        )
+        assert eligible is False
+        # blocks_vote must not be consulted when rep already fails (fail closed early)
+        mock_db.run_sync.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_neutral_personal_rep_is_eligible(self, mock_db):
+        """LEG-4241: age≥60, personal_reputation=0 (Neutral), blocks_vote=False → True."""
+        from datetime import timezone as _tz
+        self._stub_eligibility_row(
+            mock_db,
+            datetime.now(_tz.utc) - timedelta(days=90),
+            personal_reputation=0,
+        )
+        eligible = await RegionalGovernanceService._is_account_vote_eligible(
+            mock_db, uuid.uuid4()
+        )
+        assert eligible is True
+        mock_db.run_sync.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_positive_personal_rep_is_eligible(self, mock_db):
+        """LEG-4241: age≥60, personal_reputation>0, blocks_vote=False → True."""
+        from datetime import timezone as _tz
+        self._stub_eligibility_row(
+            mock_db,
+            datetime.now(_tz.utc) - timedelta(days=90),
+            personal_reputation=10,
+        )
+        eligible = await RegionalGovernanceService._is_account_vote_eligible(
+            mock_db, uuid.uuid4()
+        )
+        assert eligible is True
+
+    @pytest.mark.asyncio
+    async def test_null_personal_rep_treated_as_neutral(self, mock_db):
+        """NULL personal_reputation → Neutral (0) → eligible when age ok."""
+        from datetime import timezone as _tz
+        self._stub_eligibility_row(
+            mock_db,
+            datetime.now(_tz.utc) - timedelta(days=90),
+            personal_reputation=None,
         )
         eligible = await RegionalGovernanceService._is_account_vote_eligible(
             mock_db, uuid.uuid4()
@@ -965,3 +1037,38 @@ class TestAccountAgeVoteGate:
             mock_db, set()
         )
         assert result == set()
+        mock_db.execute.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_age_eligible_player_ids_excludes_negative_rep(self, mock_db):
+        """LEG-4241: batch franchise filter drops personal_reputation < 0 from
+        the quorum denominator (same seam cast uses)."""
+        keep_id = uuid.uuid4()
+        drop_id = uuid.uuid4()
+        # Simulate DB returning only the non-negative-rep player after the
+        # coalesce(personal_reputation,0) >= 0 filter in SQL.
+        rows = MagicMock()
+        rows.all.return_value = [(keep_id,)]
+        mock_db.execute = AsyncMock(return_value=rows)
+        result = await RegionalGovernanceService._age_eligible_player_ids(
+            mock_db, {keep_id, drop_id}
+        )
+        assert result == {keep_id}
+        mock_db.execute.assert_awaited_once()
+        # WHERE clause must include personal_reputation coalesce / >= 0
+        compiled = str(mock_db.execute.await_args.args[0])
+        assert "personal_reputation" in compiled
+
+    @pytest.mark.asyncio
+    async def test_can_vote_property_untouched_by_rep(self):
+        """RegionalMembership.can_vote stays membership_type + voting_power only."""
+        citizen = RegionalMembership(
+            player_id=uuid.uuid4(),
+            region_id=uuid.uuid4(),
+            membership_type=MembershipType.CITIZEN.value,
+            voting_power=Decimal("1.0"),
+        )
+        assert citizen.can_vote is True
+        # Property has no personal_reputation / age inputs
+        assert "personal_reputation" not in RegionalMembership.can_vote.fget.__code__.co_names
+        assert "created_at" not in RegionalMembership.can_vote.fget.__code__.co_names

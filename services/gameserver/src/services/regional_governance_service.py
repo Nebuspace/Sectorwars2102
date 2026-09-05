@@ -93,8 +93,8 @@ QUORUM_PCT_MAX = Decimal("0.60")
 # Companion gates:
 #   - not multi_account_flag.blocks_vote — WIRED via multi_account_service
 #     (HARD-flagged → blocked; same participation_weight seam beacons use).
-#   - personal_rep ≥ neutral is a no-op at the default (new players start at
-#     score 0 = Neutral), so it adds zero anti-abuse value alone — deferred.
+#   - personal_rep ≥ Neutral (score 0 / ranking.md REPUTATION_TIERS) — WIRED;
+#     reject when Player.personal_reputation < 0 (NULL treated as 0).
 # Account age is measured from User.created_at (the account, not the player game
 # record). Migration-backfilled citizens (create_default_memberships) carry
 # their real historical creation dates, which predate any 60-day window, so they
@@ -1262,8 +1262,9 @@ class RegionalGovernanceService:
         db: AsyncSession,
         player_id: uuid.UUID,
     ) -> bool:
-        """True iff this player's ACCOUNT is at least VOTE_ACCOUNT_AGE_MIN old
-        AND not blocked by ADR-0056 N-V3 ``multi_account_flag.blocks_vote``.
+        """True iff this player's ACCOUNT is at least VOTE_ACCOUNT_AGE_MIN old,
+        personal_reputation ≥ Neutral (0), AND not blocked by ADR-0056 N-V3
+        ``multi_account_flag.blocks_vote``.
 
         Joins Player -> User and compares now() against User.created_at (the
         account-creation timestamp; the User row is created before the Player
@@ -1273,26 +1274,31 @@ class RegionalGovernanceService:
         silently acquire a vote). Migration-backfilled citizens predate any
         60-day window, so they always pass the age half.
 
-        ``blocks_vote`` is the shared ``participation_weight`` seam
-        (multi_account_service): HARD-flagged → blocked. personal_rep ≥
-        neutral remains deferred (no-op at default-0 Neutral starting score).
+        personal_rep ≥ Neutral (ranking.md score 0): negative scores fail closed.
+        NULL is treated as 0. ``blocks_vote`` is the shared ``participation_weight``
+        seam (multi_account_service): HARD-flagged → blocked.
         """
-        created_at = await db.scalar(
-            select(User.created_at)
+        row = await db.execute(
+            select(User.created_at, Player.personal_reputation)
             .select_from(User)
             .join(Player, Player.user_id == User.id)
             .where(Player.id == player_id)
         )
-        if created_at is None:
+        result = row.one_or_none()
+        if result is None:
             # No resolvable account (orphaned player / missing user) — fail
             # closed: never hand a vote to a player whose account age is unknown.
             return False
+        created_at, personal_reputation = result
         # User.created_at is timezone-aware (DateTime(timezone=True)); compare in
         # UTC. A naive value (defensive — e.g. a hand-built test row) is treated
         # as UTC so the subtraction never raises a naive/aware TypeError.
         if created_at.tzinfo is None:
             created_at = created_at.replace(tzinfo=timezone.utc)
         if (datetime.now(timezone.utc) - created_at) < VOTE_ACCOUNT_AGE_MIN:
+            return False
+        # ADR-0056 N-V3: personal_rep ≥ Neutral (0). NULL → Neutral.
+        if (personal_reputation or 0) < 0:
             return False
         # AsyncSession → sync participation_weight / blocks_vote via run_sync
         # (same bridge drone_service uses for turn_service).
@@ -1305,14 +1311,17 @@ class RegionalGovernanceService:
         db: AsyncSession,
         player_ids: set,
     ) -> set:
-        """Subset of player_ids whose accounts are ≥ VOTE_ACCOUNT_AGE_MIN old.
+        """Subset of player_ids whose accounts clear franchise gates that can be
+        batch-evaluated: age ≥ VOTE_ACCOUNT_AGE_MIN AND personal_rep ≥ Neutral (0).
 
         One batched Player -> User join (no N+1) so the quorum denominator in
-        _count_eligible_voters applies the same 60-day account-age gate as
+        _count_eligible_voters applies the same ADR-0056 N-V3 gates as
         cast_election_vote / cast_policy_vote — keeping quorum representative of
-        only age-eligible voters (an under-age citizen is on the roll for
-        presence but not for the franchise, so must not inflate the denominator
-        they cannot help reach). Returns an empty set for an empty input.
+        only franchise-eligible voters (an under-age or negative-rep citizen is
+        on the roll for presence but not for the franchise, so must not inflate
+        the denominator they cannot help reach). Returns an empty set for an
+        empty input. ``blocks_vote`` stays cast-path only (not batchable here
+        without N+1 into multi_account_service).
         """
         if not player_ids:
             return set()
@@ -1325,6 +1334,7 @@ class RegionalGovernanceService:
                 and_(
                     Player.id.in_(player_ids),
                     User.created_at <= cutoff,
+                    func.coalesce(Player.personal_reputation, 0) >= 0,
                 )
             )
         )
@@ -1342,10 +1352,11 @@ class RegionalGovernanceService:
         - ownership of ≥1 colony in the region (PATH A), regardless of whether
           the membership row has been upgraded yet.
 
-        Then the ADR-0056 N-V3 / human-D5 60-day ACCOUNT-AGE gate is applied to the
-        union: an under-age citizen is on the roll for presence but cannot vote,
-        so must not inflate the quorum denominator (cast_election_vote /
-        cast_policy_vote reject them at the same threshold). Migration-backfilled
+        Then ADR-0056 N-V3 franchise filters (60-day ACCOUNT-AGE + personal_rep
+        ≥ Neutral) are applied to the union via ``_age_eligible_player_ids``:
+        under-age or negative-rep citizens stay on the presence roll but must
+        not inflate the quorum denominator (cast_election_vote /
+        cast_policy_vote reject them at the same thresholds). Migration-backfilled
         citizens predate any 60-day window and are retained.
 
         Counted as DISTINCT players so a colony owner who already has an eligible
@@ -1363,7 +1374,7 @@ class RegionalGovernanceService:
         eligible |= await RegionalGovernanceService._player_ids_owning_colony_in_region(
             db, region_id
         )
-        # Exclude citizens whose accounts are younger than the 60-day vote gate.
+        # Exclude citizens who fail age / personal_rep franchise gates.
         eligible = await RegionalGovernanceService._age_eligible_player_ids(
             db, eligible
         )
