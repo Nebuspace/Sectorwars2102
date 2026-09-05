@@ -185,4 +185,205 @@ describe('AuthContext / AuthProvider', () => {
       })
     ).rejects.toThrow('Invalid username or password');
   });
+
+  describe('TypeError densify (LEG-3319)', () => {
+    beforeEach(() => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+    });
+
+    it('login() collapses fetch TypeError to gameserver-unreachable fallback', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
+
+      let hookRef: ReturnType<typeof useAuth> | null = null;
+      function Capture() {
+        hookRef = useAuth();
+        return null;
+      }
+      render(
+        <AuthProvider>
+          <Capture />
+        </AuthProvider>
+      );
+      await waitFor(() => expect(hookRef).not.toBeNull());
+
+      let caught: Error | undefined;
+      await act(async () => {
+        try {
+          await hookRef!.login('bob', 'pw');
+        } catch (err) {
+          caught = err as Error;
+        }
+      });
+
+      expect(caught?.message).toMatch(
+        /Gameserver unreachable — network error during login/i,
+      );
+      expect(caught?.message).not.toMatch(/Failed to fetch/i);
+      expect(caught?.message).not.toMatch(/TypeError/i);
+    });
+
+    it('refreshToken() collapses fetch TypeError to gameserver-unreachable fallback', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
+
+      let hookRef: ReturnType<typeof useAuth> | null = null;
+      function Capture() {
+        hookRef = useAuth();
+        return null;
+      }
+      render(
+        <AuthProvider>
+          <Capture />
+        </AuthProvider>
+      );
+      await waitFor(() => expect(hookRef).not.toBeNull());
+      // Mount checkAuth clears storage when no accessToken — set refresh after bootstrap.
+      localStorage.setItem('refreshToken', 'RT');
+
+      let caught: Error | undefined;
+      await act(async () => {
+        try {
+          await hookRef!.refreshToken();
+        } catch (err) {
+          caught = err as Error;
+        }
+      });
+
+      expect(caught?.message).toMatch(
+        /Gameserver unreachable — network error refreshing session/i,
+      );
+      expect(caught?.message).not.toMatch(/Failed to fetch/i);
+      expect(caught?.message).not.toMatch(/TypeError/i);
+      expect(localStorage.getItem('refreshToken')).toBeNull();
+    });
+
+    it('verifyMFA() collapses fetch TypeError to gameserver-unreachable fallback', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
+
+      let hookRef: ReturnType<typeof useAuth> | null = null;
+      function Capture() {
+        hookRef = useAuth();
+        return null;
+      }
+      render(
+        <AuthProvider>
+          <Capture />
+        </AuthProvider>
+      );
+      await waitFor(() => expect(hookRef).not.toBeNull());
+
+      let caught: Error | undefined;
+      await act(async () => {
+        try {
+          await hookRef!.verifyMFA('123456', 'sess-token');
+        } catch (err) {
+          caught = err as Error;
+        }
+      });
+
+      expect(caught?.message).toMatch(
+        /Gameserver unreachable — network error verifying MFA/i,
+      );
+      expect(caught?.message).not.toMatch(/Failed to fetch/i);
+      expect(caught?.message).not.toMatch(/TypeError/i);
+    });
+  });
+
+  describe('Network Error densify (LEG-3577)', () => {
+    beforeEach(() => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+    });
+
+    it('login() collapses axios-shaped Network Error to gameserver-unreachable fallback', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('Network Error')));
+
+      let hookRef: ReturnType<typeof useAuth> | null = null;
+      function Capture() {
+        hookRef = useAuth();
+        return null;
+      }
+      render(
+        <AuthProvider>
+          <Capture />
+        </AuthProvider>
+      );
+      await waitFor(() => expect(hookRef).not.toBeNull());
+
+      let caught: Error | undefined;
+      await act(async () => {
+        try {
+          await hookRef!.login('bob', 'pw');
+        } catch (err) {
+          caught = err as Error;
+        }
+      });
+
+      expect(caught?.message).toMatch(
+        /Gameserver unreachable — network error during login/i,
+      );
+      expect(caught?.message).not.toBe('Network Error');
+    });
+
+    it('refreshToken() collapses axios-shaped Network Error to gameserver-unreachable fallback', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('Network Error')));
+
+      let hookRef: ReturnType<typeof useAuth> | null = null;
+      function Capture() {
+        hookRef = useAuth();
+        return null;
+      }
+      render(
+        <AuthProvider>
+          <Capture />
+        </AuthProvider>
+      );
+      await waitFor(() => expect(hookRef).not.toBeNull());
+      // Mount checkAuth clears storage when no accessToken — set refresh after bootstrap.
+      localStorage.setItem('refreshToken', 'RT');
+
+      let caught: Error | undefined;
+      await act(async () => {
+        try {
+          await hookRef!.refreshToken();
+        } catch (err) {
+          caught = err as Error;
+        }
+      });
+
+      expect(caught?.message).toMatch(
+        /Gameserver unreachable — network error refreshing session/i,
+      );
+      expect(caught?.message).not.toBe('Network Error');
+      expect(localStorage.getItem('refreshToken')).toBeNull();
+    });
+
+    it('verifyMFA() collapses axios-shaped Network Error to gameserver-unreachable fallback', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('Network Error')));
+
+      let hookRef: ReturnType<typeof useAuth> | null = null;
+      function Capture() {
+        hookRef = useAuth();
+        return null;
+      }
+      render(
+        <AuthProvider>
+          <Capture />
+        </AuthProvider>
+      );
+      await waitFor(() => expect(hookRef).not.toBeNull());
+
+      let caught: Error | undefined;
+      await act(async () => {
+        try {
+          await hookRef!.verifyMFA('123456', 'sess-token');
+        } catch (err) {
+          caught = err as Error;
+        }
+      });
+
+      expect(caught?.message).toMatch(
+        /Gameserver unreachable — network error verifying MFA/i,
+      );
+      expect(caught?.message).not.toBe('Network Error');
+    });
+  });
 });
