@@ -639,3 +639,111 @@ describe('RegionalGovernorDashboard region terminate (LEG-3206)', () => {
     });
   });
 });
+
+describe('RegionalGovernorDashboard membership franchise (LEG-4244)', () => {
+  beforeEach(() => {
+    vi.mocked(useAuth).mockReturnValue({ user: { is_admin: false } } as any);
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.put).mockReset();
+    vi.mocked(api.post).mockReset();
+    vi.mocked(api.patch).mockReset();
+  });
+
+  async function openMembersWith(
+    members: Array<{
+      player_id: string;
+      username: string;
+      membership_type: string;
+      reputation_score: number;
+      local_rank: string | null;
+      voting_power: number;
+      joined_at: string;
+      last_visit: string;
+      total_visits: number;
+    }>,
+  ) {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url === '/api/v1/regions/my-region') return { data: region };
+      if (url.endsWith('/stats')) return { data: {} };
+      if (url.endsWith('/policies')) return { data: [] };
+      if (url.endsWith('/elections')) return { data: [] };
+      if (url.endsWith('/treaties')) return { data: [] };
+      if (url.endsWith('/members')) return { data: members };
+      return { data: {} };
+    });
+
+    render(<RegionalGovernorDashboard />);
+    await waitFor(() => expect(screen.getByText('Sol Reach')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Members' }));
+  }
+
+  it('shows citizen with voting_power > 0 as franchise-eligible', async () => {
+    await openMembersWith([
+      {
+        ...member,
+        player_id: 'p-citizen',
+        username: 'citizen-alice',
+        membership_type: 'citizen',
+        voting_power: 1.5,
+      },
+    ]);
+
+    await waitFor(() => expect(screen.getByText('citizen-alice')).toBeTruthy());
+    expect(screen.getByText('Can vote')).toBeTruthy();
+    expect(screen.getByRole('columnheader', { name: 'Franchise' })).toBeTruthy();
+  });
+
+  it('shows resident with voting_power = 0 as franchise-ineligible', async () => {
+    await openMembersWith([
+      {
+        ...member,
+        player_id: 'p-resident',
+        username: 'resident-bob',
+        membership_type: 'resident',
+        voting_power: 0,
+      },
+    ]);
+
+    await waitFor(() => expect(screen.getByText('resident-bob')).toBeTruthy());
+    expect(screen.getByText('No franchise')).toBeTruthy();
+  });
+
+  it('shows visitor as franchise-ineligible even with voting_power > 0', async () => {
+    await openMembersWith([
+      {
+        ...member,
+        player_id: 'p-visitor',
+        username: 'visitor-cara',
+        membership_type: 'visitor',
+        voting_power: 2.0,
+      },
+    ]);
+
+    await waitFor(() => expect(screen.getByText('visitor-cara')).toBeTruthy());
+    expect(screen.getByText('No franchise')).toBeTruthy();
+    expect(screen.queryByText('Can vote')).toBeNull();
+  });
+
+  it('names ADR-0056 cast-path gates as API-absent without fabricating age/rep/flag columns', async () => {
+    await openMembersWith([
+      {
+        ...member,
+        username: 'honesty-dave',
+        membership_type: 'citizen',
+        voting_power: 1.0,
+      },
+    ]);
+
+    await waitFor(() => expect(screen.getByText('honesty-dave')).toBeTruthy());
+    const text = document.body.textContent ?? '';
+    expect(text).toMatch(/ADR-0056/i);
+    expect(text).toMatch(/account-age/i);
+    expect(text).toMatch(/personal_rep/i);
+    expect(text).toMatch(/blocks_vote/i);
+    expect(text).toMatch(/cast path/i);
+    expect(text).toMatch(/not returned by GET \/api\/v1\/regions\/my-region\/members/i);
+    expect(text).not.toMatch(/account age:\s*\d+/i);
+    expect(text).not.toMatch(/blocks_vote:\s*(true|false)/i);
+    expect(screen.queryByRole('columnheader', { name: /account age/i })).toBeNull();
+  });
+});
