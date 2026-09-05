@@ -2517,12 +2517,24 @@ def get_syndicate_status(
         i for i in invites if str(i.get("invitee_player_id")) == str(player.id)
     ]
     ownership = station.ownership or {}
+    # LEG-4238: peer co-owners need proposal_id discovery for approve/reject.
+    # Late import avoids cycle (stake_transfer imports from this module).
+    from src.services.station_stake_transfer_service import (
+        pending_stake_transfers_for,
+    )
+
+    member_ids = {str(s.get("player_id")) for s in shares}
+    is_co_owner = str(player.id) in member_ids
+    pending_xfer = (
+        pending_stake_transfers_for(station) if is_co_owner else []
+    )
     return {
         "station_id": str(station.id),
         "owner_id": str(station.owner_id) if station.owner_id else None,
         "mode": mode,
         "shares": shares,
         "pending_invites": visible_invites,
+        "pending_stake_transfers": pending_xfer,
         "is_primary": is_owner,
         "withdrawal_schedule": ownership.get(WITHDRAWAL_SCHEDULE_KEY),
     }
