@@ -100,10 +100,10 @@ describe('SecurityDashboard cleanup + player action (LEG-1713)', () => {
     mockSecurityGets();
   });
 
-  it('exposes cleanup and player-action controls', async () => {
+  it('exposes cleanup control and ARIA per-player security ops panel', async () => {
     renderDash();
     expect(await screen.findByLabelText('Clean up old security data')).toBeTruthy();
-    expect(screen.getByLabelText('Take player security action')).toBeTruthy();
+    expect(screen.getByRole('region', { name: 'ARIA per-player security operations' })).toBeTruthy();
   });
 
   it('posts tip security/cleanup with days_to_keep and toasts message', async () => {
@@ -147,6 +147,22 @@ describe('SecurityDashboard cleanup + player action (LEG-1713)', () => {
     });
   });
 
+  it('surfaces honest fallback on cleanup POST TypeError/network collapse (LEG-3030)', async () => {
+    vi.mocked(api.post).mockRejectedValue(new TypeError('Failed to fetch'));
+    renderDash();
+
+    fireEvent.click(await screen.findByLabelText('Clean up old security data'));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith(
+        expect.stringMatching(/Failed to clean up security data/i),
+      );
+    });
+    const msg = String(toastError.mock.calls.map((call) => call[0]).join('\n'));
+    expect(msg).not.toMatch(/Failed to fetch/i);
+    expect(msg).not.toMatch(/TypeError/i);
+  });
+
   it('skips cleanup POST when operator cancels confirm', async () => {
     confirmMock.mockResolvedValue(false);
     renderDash();
@@ -159,61 +175,6 @@ describe('SecurityDashboard cleanup + player action (LEG-1713)', () => {
     expect(api.post).not.toHaveBeenCalled();
   });
 
-  it('posts tip player/{id}/action with block payload', async () => {
-    vi.mocked(api.post).mockResolvedValue({ data: { message: 'Player blocked' } });
-    renderDash();
-
-    fireEvent.change(await screen.findByLabelText('Player id for security action'), {
-      target: { value: 'player-uuid-1' },
-    });
-    fireEvent.change(screen.getByLabelText('Block duration in hours'), {
-      target: { value: '24' },
-    });
-    fireEvent.click(screen.getByLabelText('Take player security action'));
-
-    await waitFor(() => {
-      expect(api.post).toHaveBeenCalledWith(
-        '/api/v1/admin/security/player/player-uuid-1/action',
-        { action: 'block', duration_hours: 24 },
-      );
-    });
-    expect(toastSuccess).toHaveBeenCalledWith('Player blocked');
-  });
-
-  it('player action 403 surfaces SECURITY_ACT scope copy', async () => {
-    vi.mocked(api.post).mockRejectedValue({ response: { status: 403, data: {} } });
-    renderDash();
-
-    fireEvent.change(await screen.findByLabelText('Player id for security action'), {
-      target: { value: 'player-uuid-1' },
-    });
-    fireEvent.change(screen.getByLabelText('Block duration in hours'), {
-      target: { value: '2' },
-    });
-    fireEvent.click(screen.getByLabelText('Take player security action'));
-
-    await waitFor(() => {
-      expect(toastError).toHaveBeenCalled();
-    });
-    expect(String(toastError.mock.calls[0][0])).toMatch(/SECURITY_ACT|Access denied/i);
-  });
-
-  it('player action 429 surfaces admin rate-limit helper copy', async () => {
-    vi.mocked(api.post).mockRejectedValue({ response: { status: 429, data: {} } });
-    renderDash();
-
-    fireEvent.change(await screen.findByLabelText('Player id for security action'), {
-      target: { value: 'player-uuid-1' },
-    });
-    fireEvent.change(screen.getByLabelText('Block duration in hours'), {
-      target: { value: '2' },
-    });
-    fireEvent.click(screen.getByLabelText('Take player security action'));
-
-    await waitFor(() => {
-      expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/rate limit/i));
-    });
-  });
 });
 
 describe('SecurityDashboard overview load errors (LEG-2682)', () => {
@@ -305,3 +266,133 @@ describe('SecurityDashboard overview load errors (LEG-2682)', () => {
     expect(screen.getByRole('alert').textContent).toMatch(/security alerts/i);
   });
 });
+
+describe('SecurityDashboard overview Network Error densify (LEG-3503)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    toastSuccess.mockReset();
+    toastError.mockReset();
+    confirmMock.mockReset();
+    confirmMock.mockResolvedValue(true);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('collapses axios-shaped Network Error on security report overview load', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/security/report')) {
+        throw new Error('Network Error');
+      }
+      if (String(url).includes('/security/alerts')) {
+        return { data: { alerts: [], alert_count: 0, high_priority_count: 0 } };
+      }
+      return { data: {} };
+    });
+
+    renderDash();
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/security report/i);
+    });
+    const text = screen.getByRole('alert').textContent ?? '';
+    expect(text).toMatch(/unavailable/i);
+    expect(text).not.toBe('Network Error');
+    expect(text).not.toContain('Network Error');
+  });
+
+  it('collapses axios-shaped Network Error on security alerts overview load', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/security/report')) {
+        return { data: sampleReport };
+      }
+      if (String(url).includes('/security/alerts')) {
+        throw new Error('Network Error');
+      }
+      return { data: {} };
+    });
+
+    renderDash();
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/security alerts/i);
+    });
+    const text = screen.getByRole('alert').textContent ?? '';
+    expect(text).toMatch(/unavailable/i);
+    expect(text).not.toBe('Network Error');
+    expect(text).not.toContain('Network Error');
+  });
+});
+
+describe('SecurityDashboard axios Network Error densify (LEG-3393)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    toastSuccess.mockReset();
+    toastError.mockReset();
+    confirmMock.mockReset();
+    confirmMock.mockResolvedValue(true);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('collapses axios-shaped Network Error on security report load', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/security/report')) {
+        throw new Error('Network Error');
+      }
+      if (String(url).includes('/security/alerts')) {
+        return { data: { alerts: [], alert_count: 0, high_priority_count: 0 } };
+      }
+      return { data: {} };
+    });
+
+    renderDash();
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/security report:\s*unavailable/i);
+    expect(alert).not.toBe('Network Error');
+    expect(alert).not.toContain('Network Error');
+  });
+
+  it('collapses axios-shaped Network Error on security alerts load', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/security/report')) {
+        return { data: sampleReport };
+      }
+      if (String(url).includes('/security/alerts')) {
+        throw new Error('Network Error');
+      }
+      return { data: {} };
+    });
+
+    renderDash();
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/security alerts:\s*unavailable/i);
+    expect(alert).not.toBe('Network Error');
+    expect(alert).not.toContain('Network Error');
+  });
+
+  it('collapses axios-shaped Network Error on cleanup POST', async () => {
+    mockSecurityGets();
+    vi.mocked(api.post).mockRejectedValue(new Error('Network Error'));
+    renderDash();
+
+    fireEvent.click(await screen.findByLabelText('Clean up old security data'));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith(
+        expect.stringMatching(/Failed to clean up security data/i),
+      );
+    });
+    const msg = String(toastError.mock.calls.map((call) => call[0]).join('\n'));
+    expect(msg).not.toBe('Network Error');
+    expect(msg).not.toContain('Network Error');
+  });
+});
+

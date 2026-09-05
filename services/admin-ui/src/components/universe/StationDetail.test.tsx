@@ -1,12 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import PortDetail, { buildPortPatchPayload } from './StationDetail';
+import { MemoryRouter } from 'react-router-dom';
+import PortDetail, { buildPortPatchPayload, resolvePortAdminSectorId } from './StationDetail';
 import { api } from '../../utils/auth';
 
 vi.mock('../../utils/auth', () => ({
   api: {
     patch: vi.fn(),
+    get: vi.fn(),
   },
 }));
 
@@ -227,6 +229,45 @@ describe('StationDetail Soft-HOLD scope errors (LEG-1213 residual after Soft-ORD
       expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
     });
   });
+
+  it('surfaces formatAdminApiError fallback on update TypeError (LEG-3059)', async () => {
+    vi.mocked(api.patch).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<PortDetail port={basePort} onBack={() => {}} />);
+    fireEvent.click(screen.getByText('Outpost Alpha'));
+    const input = await screen.findByDisplayValue('Outpost Alpha');
+    fireEvent.change(input, { target: { value: 'Renamed' } });
+    fireEvent.click(screen.getByRole('button', { name: '✓' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Failed to update name/i);
+    expect(alert).not.toMatch(/TypeError/i);
+    expect(alert).not.toMatch(/Failed to fetch/i);
+  });
+
+  it('surfaces formatAdminApiError fallback on update Network Error (LEG-3552)', async () => {
+    vi.mocked(api.patch).mockRejectedValue(new Error('Network Error'));
+
+    render(<PortDetail port={basePort} onBack={() => {}} />);
+    fireEvent.click(screen.getByText('Outpost Alpha'));
+    const input = await screen.findByDisplayValue('Outpost Alpha');
+    fireEvent.change(input, { target: { value: 'Renamed' } });
+    fireEvent.click(screen.getByRole('button', { name: '✓' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Failed to update name/i);
+    expect(alert).not.toBe('Network Error');
+    expect(alert).not.toContain('Network Error');
+    expect(alert).not.toMatch(/TypeError/i);
+  });
 });
 
 describe('StationDetail Soft-ORDER demote silent no-ops (LEG-1472)', () => {
@@ -253,5 +294,141 @@ describe('StationDetail Soft-ORDER demote silent no-ops (LEG-1472)', () => {
     expect(screen.queryByText('Adjust Station Shields')).toBeNull();
     // port_shields/buy_rate/sell_rate/max_maintenance demoted — only defense_drones stays clickable in services-grid
     expect(services!.querySelectorAll('.editable-field.clickable').length).toBe(1);
+  });
+});
+
+
+function httpErr(status: number, detail?: string) {
+  return Object.assign(new Error(`HTTP ${status}`), {
+    response: { status, data: detail ? { detail } : {} },
+  });
+}
+
+describe('resolvePortAdminSectorId', () => {
+  it('prefers port.sector_id when it is a finite integer', () => {
+    expect(resolvePortAdminSectorId({ sector_id: 42, station: { sector_id: 7 } })).toBe(42);
+    expect(resolvePortAdminSectorId({ sector_id: '42' })).toBe(42);
+  });
+
+  it('falls back to nested port.station.sector_id', () => {
+    expect(resolvePortAdminSectorId({ station: { sector_id: 9 } })).toBe(9);
+  });
+
+  it('rejects UUID / missing / non-integer values', () => {
+    expect(resolvePortAdminSectorId(basePort)).toBeNull();
+    expect(resolvePortAdminSectorId({ sector_id: 's1' })).toBeNull();
+    expect(resolvePortAdminSectorId({ sector_id: 1.5 })).toBeNull();
+  });
+});
+
+describe('StationDetail pirate holdings (LEG-4192)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.patch).mockReset();
+  });
+
+  it('fetches admin pirate-holdings once using port.sector_id', async () => {
+    vi.mocked(api.get).mockResolvedValue({ data: { holdings: [] } });
+    render(<PortDetail port={{ ...basePort, sector_id: 42 }} onBack={() => undefined} />);
+
+    await waitFor(() => {
+      expect(vi.mocked(api.get)).toHaveBeenCalledWith(
+        '/api/v1/admin/sectors/42/pirate-holdings',
+      );
+    });
+    expect(
+      vi.mocked(api.get).mock.calls.every(
+        ([url]) => url === '/api/v1/admin/sectors/42/pirate-holdings',
+      ),
+    ).toBe(true);
+    expect(await screen.findByTestId('pirate-holdings-empty')).toHaveTextContent(
+      'No pirate holdings in this sector.',
+    );
+  });
+
+  it('fetches using nested port.station.sector_id when top-level is missing', async () => {
+    vi.mocked(api.get).mockResolvedValue({ data: { holdings: [] } });
+    render(
+      <PortDetail
+        port={{ ...basePort, station: { sector_id: 77 } }}
+        onBack={() => undefined}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(vi.mocked(api.get)).toHaveBeenCalledWith(
+        '/api/v1/admin/sectors/77/pirate-holdings',
+      );
+    });
+  });
+
+  it('treats omitted holdings key as empty without fabricating rows', async () => {
+    vi.mocked(api.get).mockResolvedValue({ data: {} });
+    render(<PortDetail port={{ ...basePort, sector_id: 42 }} onBack={() => undefined} />);
+
+    expect(await screen.findByTestId('pirate-holdings-empty')).toBeTruthy();
+    expect(screen.queryByTestId(/pirate-holding-row-/)).toBeNull();
+  });
+
+  it('lists present holdings and deep-links outlaw_base_id when GET includes a non-null value', async () => {
+    vi.mocked(api.get).mockResolvedValue({
+      data: {
+        holdings: [
+          {
+            id: 'hold-1',
+            tier: 'OUTPOST',
+            owner_player_id: null,
+            outlaw_base_id: 'base-uuid-111',
+          },
+          { id: 'hold-2', owner_player_id: 'player-3' },
+        ],
+      },
+    });
+    render(
+      <MemoryRouter>
+        <PortDetail port={{ ...basePort, sector_id: 42 }} onBack={() => undefined} />
+      </MemoryRouter>,
+    );
+
+    const row1 = await screen.findByTestId('pirate-holding-row-hold-1');
+    expect(row1).toHaveTextContent('id: hold-1');
+    expect(row1).toHaveTextContent('tier: OUTPOST');
+    expect(row1).toHaveTextContent('owner: pirate-controlled');
+    expect(row1).toHaveTextContent('outlaw_base_id: base-uuid-111');
+    expect(row1).not.toHaveTextContent('must-not-render');
+
+    const link = screen.getByTestId('pirate-holding-outlaw-base-link-hold-1');
+    expect(link).toHaveAttribute('href', '/outlaw-bases/base-uuid-111');
+
+    const row2 = screen.getByTestId('pirate-holding-row-hold-2');
+    expect(row2).toHaveTextContent('owner: player-3');
+    expect(row2).toHaveTextContent('tier: —');
+    expect(row2).toHaveTextContent('outlaw_base_id: —');
+    expect(screen.queryByTestId('pirate-holding-outlaw-base-link-hold-2')).toBeNull();
+    expect(screen.queryByRole('button', { name: /capture|initiate/i })).toBeNull();
+  });
+
+  it('does not GET when neither sector_id path is a finite integer', () => {
+    render(<PortDetail port={basePort} onBack={() => undefined} />);
+
+    expect(vi.mocked(api.get)).not.toHaveBeenCalled();
+    expect(screen.getByTestId('pirate-holdings-unavailable')).toHaveTextContent(
+      /cannot be loaded/i,
+    );
+    expect(screen.queryByTestId('pirate-holdings-empty')).toBeNull();
+  });
+
+  it('surfaces holdings load 403 via formatAdminApiError', async () => {
+    vi.mocked(api.get).mockRejectedValue(
+      httpErr(403, 'Missing scope admin.universe.manage'),
+    );
+    render(<PortDetail port={{ ...basePort, sector_id: 42 }} onBack={() => undefined} />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(
+        /Missing scope admin\.universe\.manage/i,
+      );
+    });
+    expect(await screen.findByTestId('pirate-holdings-empty')).toBeTruthy();
   });
 });
