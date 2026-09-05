@@ -111,3 +111,11 @@ services/player-client/.tmp-overlay-screenshots/
 # instance (the PostCompact hook reads it to re-anchor), so committing it would thrash
 # between concurrent seats.
 .samantha/plan.md
+
+# Fibril seat evidence + Samantha working state: not read by any runtime; untracked
+# churn here sits ahead of the instruction blocks and moves the prompt-cache boundary.
+.fibril-evidence/
+.samantha/closer-evidence/
+.samantha/fibril-artifacts/
+.samantha/tmp*/
+.samantha/plans/
