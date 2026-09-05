@@ -99,6 +99,7 @@ function buildMockGameValue(mode: ShellMode): NonNullable<React.ContextType<type
     moveToSector: asyncNoop,
     getAvailableMoves: asyncNoop,
     scanForLatentTunnels: async () => undefined,
+    scanAdjacentSector: async () => ({ success: true, sector_id: 0 }),
 
     dockAtStation: asyncNoop,
     undockFromStation: asyncNoop,
@@ -159,6 +160,7 @@ function buildMockGameValue(mode: ShellMode): NonNullable<React.ContextType<type
     setServiceCharge: asyncNoop,
     setStorageRental: asyncNoop,
     withdrawTreasury: asyncNoop,
+    injectTreasury: asyncNoop,
     getDefensePolicy: asyncNoop,
     setDefensePolicy: asyncNoop,
     getTakeoverStatus: asyncNoop,
