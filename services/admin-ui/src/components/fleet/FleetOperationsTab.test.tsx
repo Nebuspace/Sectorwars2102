@@ -118,6 +118,17 @@ describe('FleetOperationsTab scope errors', () => {
       expect(document.body.textContent).toMatch(/rate limit/i);
     });
   });
+
+  it('surfaces honest fallback on load TypeError/network collapse (LEG-3014)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+    render(<FleetOperationsTab />);
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to load fleet operations data/i)).toBeTruthy();
+    });
+    const text = screen.getByText(/Failed to load fleet operations data/i).textContent ?? '';
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
 });
 
 describe('FleetOperationsTab battle intervene POST (LEG-2764)', () => {

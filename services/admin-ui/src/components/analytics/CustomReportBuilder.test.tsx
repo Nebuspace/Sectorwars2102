@@ -134,6 +134,24 @@ describe('CustomReportBuilder (LEG-162)', () => {
     expect(alert).not.toContain('not implemented');
   });
 
+  it('reports TypeError Failed to fetch as gameserver-unreachable fallback, not raw TypeError', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<CustomReportBuilder onGenerate={() => {}} />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(
+      /Gameserver unreachable — network error fetching report builder data/i
+    );
+    expect(alert).not.toMatch(/Failed to fetch/i);
+    expect(alert).not.toMatch(/TypeError/i);
+    expect(alert).not.toContain('not implemented');
+  });
+
   it('reports a 429 as an admin rate-limit, distinct from 404 honesty', async () => {
     vi.mocked(api.get).mockRejectedValue(axiosError(429));
 

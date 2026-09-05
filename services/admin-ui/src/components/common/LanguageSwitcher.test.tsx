@@ -124,3 +124,66 @@ describe('LanguageSwitcher progress HTTP honesty (LEG-1265)', () => {
     expect(screen.getByRole('alert').textContent ?? '').toMatch(/rate limit/i);
   });
 });
+
+describe('LanguageSwitcher TypeError densify (LEG-3174)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('surfaces operator-safe alert on progress TypeError without raw transport text in DOM', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+    render(<LanguageSwitcher />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Could not load translation progress|connection/i);
+    expect(alert).not.toMatch(/Failed to fetch/i);
+    expect(alert).not.toMatch(/TypeError/i);
+  });
+});
+
+/**
+ * LEG-3543 Soft-ORDER — axios Network Error densify (invent=0).
+ * Progress transport failures stay silent (static launch-complete %); no raw
+ * axios "Network Error" / "Failed to fetch" leak. Tip does not use
+ * formatAdminApiError on this path — densify matches existing collapse.
+ */
+describe('LanguageSwitcher axios Network Error densify (LEG-3543)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('surfaces operator-safe alert on progress Network Error without raw transport text', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
+    render(<LanguageSwitcher />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Could not load translation progress|connection/i);
+    expect(alert).not.toBe('Network Error');
+    expect(alert).not.toContain('Network Error');
+    expect(alert).not.toMatch(/TypeError/i);
+  });
+
+  it('surfaces operator-safe alert on progress Error Failed to fetch without raw transport text', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Failed to fetch'));
+    render(<LanguageSwitcher />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Could not load translation progress|connection/i);
+    expect(alert).not.toMatch(/Failed to fetch/i);
+    expect(alert).not.toMatch(/TypeError/i);
+  });
+});

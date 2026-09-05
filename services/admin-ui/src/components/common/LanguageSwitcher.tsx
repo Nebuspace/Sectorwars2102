@@ -6,6 +6,7 @@ import React, { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { SUPPORTED_LANGUAGES } from '../../i18n';
 import { api } from '../../utils/auth';
+import { formatAdminApiError } from '../../utils/adminApiError';
 import './language-switcher.css';
 
 interface Language {
@@ -38,6 +39,7 @@ const LanguageSwitcher: React.FC = () => {
   const [languages, setLanguages] = useState<Language[]>([]);
   const [loading, setLoading] = useState(false);
   const [progressError, setProgressError] = useState<string | null>(null);
+  const [changeLanguageError, setChangeLanguageError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -77,8 +79,13 @@ const LanguageSwitcher: React.FC = () => {
                 'Access denied — translation progress requires the admin i18n / players view scope.';
             } else if (status === 429) {
               httpHonesty = 'Admin rate limit exceeded — wait a moment and try again.';
+            } else if (status === undefined) {
+              httpHonesty = formatAdminApiError(err, {
+                fallback:
+                  'Could not load translation progress — check your connection and try again.',
+              });
             }
-            // Transport/non-HTTP: static fallback — launch-complete stay 100%, never a 0% bar.
+            // Non-HTTP with status already handled above; static % fallback — launch-complete stay 100%.
           }
           return lang;
         })
@@ -98,11 +105,19 @@ const LanguageSwitcher: React.FC = () => {
     if (languageCode === i18n.language) return;
 
     setLoading(true);
+    setChangeLanguageError(null);
     try {
       await i18n.changeLanguage(languageCode);
       setIsOpen(false);
     } catch (error) {
       console.error('Failed to change language:', error);
+      if (error instanceof TypeError) {
+        setChangeLanguageError(
+          'Could not switch language — check your connection and try again.',
+        );
+      } else {
+        setChangeLanguageError('Could not switch language. Try again.');
+      }
     } finally {
       setLoading(false);
     }
@@ -117,6 +132,11 @@ const LanguageSwitcher: React.FC = () => {
       {progressError && (
         <div className="language-progress-error" role="alert">
           {progressError}
+        </div>
+      )}
+      {changeLanguageError && (
+        <div className="language-change-error" role="alert">
+          {changeLanguageError}
         </div>
       )}
       <button
