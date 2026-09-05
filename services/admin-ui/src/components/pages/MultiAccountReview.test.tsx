@@ -105,12 +105,24 @@ describe('MultiAccountReview scope errors (LEG-968)', () => {
   });
 });
 
-const sampleCluster = {
+const sampleCluster: {
+  id: string;
+  signal_summary: Record<string, unknown>;
+  severity: 'hard' | 'soft';
+  all_paid_subscribers: boolean;
+  admin_decision: 'pending' | 'confirmed' | 'overridden' | 'escalated';
+  admin_decision_reason: string | null;
+  admin_decision_at: string | null;
+  admin_decision_by: string | null;
+  created_at: string;
+  updated_at: string;
+  member_count: number;
+} = {
   id: 'cluster-1',
   signal_summary: { shared_ip: true },
-  severity: 'soft' as const,
+  severity: 'soft',
   all_paid_subscribers: false,
-  admin_decision: 'pending' as const,
+  admin_decision: 'pending',
   admin_decision_reason: null,
   admin_decision_at: null,
   admin_decision_by: null,
@@ -323,5 +335,146 @@ describe('MultiAccountReview axios Network Error densify (LEG-3534)', () => {
       expect(decideError.textContent).not.toBe('Network Error');
       expect(decideError.textContent).not.toContain('Network Error');
     });
+  });
+});
+
+type ClusterFixture = typeof sampleCluster & {
+  flags?: Array<{
+    id: string;
+    player_id: string;
+    signal: string;
+    severity: 'hard' | 'soft';
+    created_at: string | null;
+  }>;
+};
+
+async function openClusterDetail(detail: ClusterFixture) {
+  const listItem = { ...detail };
+  delete (listItem as { flags?: unknown }).flags;
+
+  vi.mocked(api.get).mockImplementation(async (url: string) => {
+    if (url.includes(`/clusters/${detail.id}`)) {
+      return { data: detail };
+    }
+    if (url.includes('/clusters')) {
+      return { data: [listItem] };
+    }
+    return { data: [] };
+  });
+
+  render(<MultiAccountReview />);
+  await waitFor(() => {
+    expect(screen.getByText(new RegExp(`${detail.member_count} member`, 'i'))).toBeTruthy();
+  });
+  fireEvent.click(screen.getByText(new RegExp(`${detail.member_count} member`, 'i')));
+  await waitFor(() => {
+    expect(screen.getByText(/Franchise impact/i)).toBeTruthy();
+  });
+}
+
+describe('MultiAccountReview franchise impact (LEG-4243)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+  });
+
+  it('HARD unpaid cluster communicates franchise/vote block (weight 0 / blocks_vote)', async () => {
+    await openClusterDetail({
+      ...sampleCluster,
+      id: 'cluster-hard',
+      severity: 'hard',
+      all_paid_subscribers: false,
+      member_count: 2,
+      flags: [
+        {
+          id: 'flag-1',
+          player_id: 'player-a',
+          signal: 'shared_ip',
+          severity: 'hard',
+          created_at: '2026-01-01T00:00:00Z',
+        },
+      ],
+    });
+
+    const text = document.body.textContent ?? '';
+    expect(text).toMatch(/franchise blocked/i);
+    expect(text).toMatch(/participation weight 0/i);
+    expect(text).toMatch(/blocks_vote/i);
+    expect(screen.getAllByText(/Blocked \(0 \/ blocks_vote\)/).length).toBeGreaterThan(0);
+  });
+
+  it('SOFT unpaid cluster communicates 0.5× participation discount', async () => {
+    await openClusterDetail({
+      ...sampleCluster,
+      id: 'cluster-soft',
+      severity: 'soft',
+      all_paid_subscribers: false,
+      member_count: 3,
+      flags: [
+        {
+          id: 'flag-2',
+          player_id: 'player-b',
+          signal: 'device_fingerprint',
+          severity: 'soft',
+          created_at: '2026-01-02T00:00:00Z',
+        },
+      ],
+    });
+
+    const text = document.body.textContent ?? '';
+    expect(text).toMatch(/0\.5× participation weight/i);
+    expect(screen.getAllByText(/0\.5× weight/).length).toBeGreaterThan(0);
+  });
+
+  it('all_paid_subscribers communicates paid bypass (full weight)', async () => {
+    await openClusterDetail({
+      ...sampleCluster,
+      id: 'cluster-paid',
+      severity: 'hard',
+      all_paid_subscribers: true,
+      member_count: 2,
+      flags: [
+        {
+          id: 'flag-3',
+          player_id: 'player-c',
+          signal: 'shared_ip',
+          severity: 'hard',
+          created_at: '2026-01-03T00:00:00Z',
+        },
+      ],
+    });
+
+    const text = document.body.textContent ?? '';
+    expect(text).toMatch(/Paid bypass/i);
+    expect(text).toMatch(/full participation weight \(1\.0\)/i);
+    expect(text).toMatch(/discount not applied/i);
+    expect(screen.getAllByText(/Full weight \(1\.0\)/).length).toBeGreaterThan(0);
+  });
+
+  it('names the API gap for per-member tier/age/activity without fabricating fields', async () => {
+    await openClusterDetail({
+      ...sampleCluster,
+      id: 'cluster-honesty',
+      severity: 'soft',
+      all_paid_subscribers: false,
+      member_count: 2,
+      flags: [
+        {
+          id: 'flag-4',
+          player_id: 'player-d',
+          signal: 'shared_ip',
+          severity: 'soft',
+          created_at: '2026-01-04T00:00:00Z',
+        },
+      ],
+    });
+
+    const text = document.body.textContent ?? '';
+    expect(text).toMatch(/subscription tier/i);
+    expect(text).toMatch(/account age/i);
+    expect(text).toMatch(/recent activity/i);
+    expect(text).toMatch(/not returned by the current admin multi-account API/i);
+    expect(text).not.toMatch(/subscription tier:\s*\w+/i);
+    expect(text).not.toMatch(/account age:\s*\d+/i);
+    expect(text).not.toMatch(/recent activity:\s*\d+/i);
   });
 });
