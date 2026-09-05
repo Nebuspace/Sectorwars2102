@@ -86,4 +86,60 @@ describe('SectorDetail load scope errors (LEG-2820)', () => {
     const alert = screen.getByRole('alert').textContent ?? '';
     expect(alert).toMatch(/rate limit/i);
   });
+
+  it('surfaces honest fallback on port load TypeError/network collapse (LEG-3065)', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.endsWith('/port')) {
+        throw new TypeError('Failed to fetch');
+      }
+      if (url.endsWith('/ships')) {
+        return { data: { ships: [] } };
+      }
+      throw Object.assign(new Error('HTTP 404'), { response: { status: 404 } });
+    });
+
+    render(
+      <SectorDetail
+        sector={sector}
+        onBack={() => undefined}
+        onPortClick={() => undefined}
+        onPlanetClick={() => undefined}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Failed to load port data/i);
+    expect(alert).not.toMatch(/Failed to fetch/i);
+    expect(alert).not.toMatch(/TypeError/i);
+  });
+
+  it('surfaces pirate-holdings load 403 via noteLoadFailure', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.endsWith('/pirate-holdings')) {
+        throw axiosError(403);
+      }
+      if (url.endsWith('/ships')) {
+        return { data: { ships: [] } };
+      }
+      throw Object.assign(new Error('HTTP 404'), { response: { status: 404 } });
+    });
+
+    render(
+      <SectorDetail
+        sector={sector}
+        onBack={() => undefined}
+        onPortClick={() => undefined}
+        onPlanetClick={() => undefined}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/admin\.universe\.manage|Access denied/i);
+  });
 });

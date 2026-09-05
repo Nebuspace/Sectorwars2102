@@ -17,35 +17,59 @@ vi.mock('react-chartjs-2', () => ({
 const productionPayload = {
   history: [
     {
-      timestamp: '2026-08-16T12:00:00Z',
-      energy: 100,
-      minerals: 80,
-      food: 120,
-      water: 60,
+      timestamp: '2026-08-31T12:00:00Z',
+      fuel_ore: 1200,
+      organics: 800,
+      equipment: 450,
     },
   ],
   trends: [
     {
-      resource: 'energy',
-      current: 100,
-      average: 90,
-      peak: 110,
+      resource: 'fuel_ore',
+      current: 1200,
+      average: 1200,
+      peak: 1200,
       trend: 'stable' as const,
-      efficiency: 90.9,
+      efficiency: 95.0,
+    },
+    {
+      resource: 'organics',
+      current: 800,
+      average: 800,
+      peak: 800,
+      trend: 'stable' as const,
+      efficiency: 88.5,
     },
   ],
-  alerts: [],
+  alerts: [
+    {
+      id: 'planet-1-overflow-fuel_ore',
+      type: 'overflow' as const,
+      severity: 'high' as const,
+      resource: 'fuel_ore',
+      colony: 'Alpha Colony',
+      message: 'Storage overflow at Alpha Colony: 50 fuel_ore wasted (cap 10,000)',
+      timestamp: '2026-08-31T11:55:00Z',
+    },
+  ],
   stats: {
-    totalProduction: { energy: 100, minerals: 80, food: 120, water: 60 },
+    totalProduction: { fuel_ore: 1200, organics: 800, equipment: 450 },
     topProducers: [
       {
         colonyId: '1',
         colonyName: 'Alpha Colony',
-        resource: 'energy',
-        amount: 50,
+        resource: 'fuel_ore',
+        amount: 1200,
       },
     ],
-    bottlenecks: [],
+    bottlenecks: [
+      {
+        colonyId: '1',
+        colonyName: 'Alpha Colony',
+        issue: 'Storage overflow — production wasted',
+        impact: 100,
+      },
+    ],
   },
 };
 
@@ -54,13 +78,13 @@ const axiosError = (status: number) =>
     response: { status },
   });
 
-describe('ProductionMonitoring (LEG-144)', () => {
+describe('ProductionMonitoring (LEG-3194)', () => {
   beforeEach(() => {
     vi.mocked(api.get).mockReset();
     vi.spyOn(console, 'error').mockImplementation(() => {});
   });
 
-  it('loads production data via shared api and hydrates without not-implemented copy', async () => {
+  it('loads real-shaped commodity stockpiles and tick warnings', async () => {
     vi.mocked(api.get).mockResolvedValue({ data: productionPayload });
 
     render(<ProductionMonitoring />);
@@ -74,10 +98,26 @@ describe('ProductionMonitoring (LEG-144)', () => {
         /\/api\/v1\/admin\/colonization\/production\?timeRange=day&resource=all/
       )
     );
-    expect(screen.getByText('Alpha Colony')).toBeTruthy();
-    expect(screen.getByText('Resource Trends')).toBeTruthy();
-    expect(screen.getByText(/Efficiency: 90\.9%/)).toBeTruthy();
+    expect(screen.getByText(/Storage overflow at Alpha Colony/)).toBeTruthy();
+    expect(screen.getByText('Commodity Totals')).toBeTruthy();
+    expect(screen.getByText(/Within cap: 95%/)).toBeTruthy();
+    expect(screen.getByText('Commodity Stockpiles')).toBeTruthy();
     expect(screen.queryByText(/not implemented/i)).toBeNull();
+  });
+
+  it('shows empty state when no tick warnings exist', async () => {
+    vi.mocked(api.get).mockResolvedValue({
+      data: { ...productionPayload, alerts: [], stats: { ...productionPayload.stats, bottlenecks: [] } },
+    });
+
+    render(<ProductionMonitoring />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('production-alerts-empty')).toBeTruthy();
+    });
+
+    expect(screen.getByText(/No overflow or starvation warnings/)).toBeTruthy();
+    expect(screen.getByTestId('production-bottlenecks-empty')).toBeTruthy();
   });
 
   it('reports a 403 as a scope problem, never as unimplemented', async () => {
@@ -137,5 +177,39 @@ describe('ProductionMonitoring (LEG-144)', () => {
     expect(alert).not.toMatch(/TypeError/i);
     expect(alert).not.toBe('Failed to fetch');
     expect(alert).not.toMatch(/Failed to load production data/i);
+  });
+
+  it('collapses axios-shaped Network Error to gameserver-unreachable fallback (LEG-3337)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
+
+    render(<ProductionMonitoring />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Gameserver unreachable|network error fetching production/i);
+    expect(alert).not.toBe('Network Error');
+    expect(alert).not.toContain('Network Error');
+    expect(alert).not.toContain('Failed to fetch');
+    expect(alert).not.toContain('TypeError');
+  });
+
+  it('collapses non-TypeError Failed to fetch to gameserver-unreachable fallback (LEG-3337)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Failed to fetch'));
+
+    render(<ProductionMonitoring />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Gameserver unreachable|network error fetching production/i);
+    expect(alert).not.toBe('Failed to fetch');
+    expect(alert).not.toContain('Failed to fetch');
+    expect(alert).not.toContain('Network Error');
+    expect(alert).not.toContain('TypeError');
   });
 });

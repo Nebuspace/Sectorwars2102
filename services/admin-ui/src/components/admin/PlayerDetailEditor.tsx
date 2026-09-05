@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { api } from '../../utils/auth';
-import { formatAdminApiError } from '../../utils/adminApiError';
+import { axiosResponseStatus, formatAdminApiError } from '../../utils/adminApiError';
 import { PlayerModel } from '../../types/playerManagement';
 import './player-detail-editor.css';
 
@@ -22,6 +23,62 @@ interface PlayerEditData {
   is_active: boolean;
 }
 
+type PirateHoldingRow = {
+  id: string;
+  tier?: string | null;
+  owner_player_id?: string | null;
+  outlaw_base_id?: string | null;
+};
+
+function asIntegerSectorId(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const n = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(n) || !Number.isInteger(n)) return null;
+  return n;
+}
+
+function asPirateHoldings(data: unknown): PirateHoldingRow[] {
+  const holdings = (data as { holdings?: unknown } | null)?.holdings;
+  if (!Array.isArray(holdings)) return [];
+  return holdings.filter(
+    (row): row is PirateHoldingRow =>
+      row !== null &&
+      typeof row === 'object' &&
+      typeof (row as PirateHoldingRow).id === 'string',
+  );
+}
+
+function formatHoldingOwner(holding: PirateHoldingRow): string {
+  const owner = holding.owner_player_id;
+  if (owner === null || owner === undefined || String(owner).trim() === '') {
+    return 'pirate-controlled';
+  }
+  return String(owner);
+}
+
+function formatHoldingTier(tier: unknown): string {
+  if (tier === null || tier === undefined) return '—';
+  const s = String(tier).trim();
+  return s === '' ? '—' : s;
+}
+
+/** Honest inspect placeholder when a GET key is omitted, null, or blank. Never invent. */
+function formatHoldingInspectValue(value: unknown): string {
+  if (value === null || value === undefined) return '—';
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? String(value) : '—';
+  }
+  const s = String(value).trim();
+  return s === '' ? '—' : s;
+}
+
+/** Non-empty outlaw_base_id for deep-link; null when absent/blank (LEG-4226). */
+function outlawBaseIdForLink(value: string | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  const s = String(value).trim();
+  return s === '' ? null : s;
+}
+
 const PlayerDetailEditor: React.FC<PlayerDetailEditorProps> = ({ player, onClose, onSave }) => {
   const [editData, setEditData] = useState<PlayerEditData>({
     username: player.username,
@@ -41,15 +98,56 @@ const PlayerDetailEditor: React.FC<PlayerDetailEditorProps> = ({ player, onClose
   const [availableRegions, setAvailableRegions] = useState<any[]>([]);
   const [unsavedChanges, setUnsavedChanges] = useState(false);
   const [metaLoadError, setMetaLoadError] = useState<string | null>(null);
+  const [pirateHoldings, setPirateHoldings] = useState<PirateHoldingRow[]>([]);
+  const [holdingsError, setHoldingsError] = useState<string | null>(null);
 
   // Honesty: player-scoped emergency route does not exist (only ship-scoped
   // at admin_ships.py:224). Do not invent teleport/rescue/reset/clear chrome.
   const EMERGENCY_ENDPOINT = 'POST /api/v1/admin/players/{id}/emergency';
 
+  // Persist prop — not mid-edit editData (LEG-4195).
+  const sectorId = asIntegerSectorId(player.current_sector_id);
+
   useEffect(() => {
     loadAvailableTeams();
     loadAvailableRegions();
   }, []);
+
+  useEffect(() => {
+    if (sectorId === null) {
+      setPirateHoldings([]);
+      setHoldingsError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setHoldingsError(null);
+    (async () => {
+      try {
+        const holdingsResponse = await api.get(
+          `/api/v1/admin/sectors/${sectorId}/pirate-holdings`,
+        );
+        if (!cancelled) {
+          setPirateHoldings(asPirateHoldings(holdingsResponse.data));
+        }
+      } catch (err: unknown) {
+        if (cancelled) return;
+        setPirateHoldings([]);
+        if (axiosResponseStatus(err) !== 404) {
+          setHoldingsError(
+            formatAdminApiError(err, {
+              fallback: 'Failed to load pirate holdings',
+              scopeHint: 'admin.universe.manage',
+            }),
+          );
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sectorId]);
 
   useEffect(() => {
     // Check for unsaved changes
@@ -331,6 +429,52 @@ const PlayerDetailEditor: React.FC<PlayerDetailEditorProps> = ({ player, onClose
               />
             </div>
           </div>
+        </div>
+
+        <div className="editor-section" data-testid="pirate-holdings-panel">
+          <h4>Pirate holdings (current sector)</h4>
+          {holdingsError ? (
+            <div className="error-banner" role="alert" data-testid="pirate-holdings-error">
+              <div className="error-message">{holdingsError}</div>
+            </div>
+          ) : null}
+          {sectorId === null ? (
+            <p data-testid="pirate-holdings-unavailable">
+              Pirate holdings cannot be loaded: player has no resolvable current sector id.
+            </p>
+          ) : pirateHoldings.length === 0 && !holdingsError ? (
+            <p data-testid="pirate-holdings-empty">No pirate holdings in this sector.</p>
+          ) : pirateHoldings.length > 0 ? (
+            <div className="assets-readonly">
+              {pirateHoldings.map((holding) => {
+                const outlawBaseId = outlawBaseIdForLink(holding.outlaw_base_id);
+                return (
+                <div
+                  key={holding.id}
+                  className="asset-item"
+                  data-testid={`pirate-holding-row-${holding.id}`}
+                >
+                  <span className="asset-label">id: {holding.id}</span>
+                  <span className="asset-value">tier: {formatHoldingTier(holding.tier)}</span>
+                  <span className="asset-value">owner: {formatHoldingOwner(holding)}</span>
+                  <span className="asset-value">
+                    outlaw_base_id:{' '}
+                    {outlawBaseId ? (
+                      <Link
+                        to={`/outlaw-bases/${outlawBaseId}`}
+                        data-testid={`pirate-holding-outlaw-base-link-${holding.id}`}
+                      >
+                        {outlawBaseId}
+                      </Link>
+                    ) : (
+                      formatHoldingInspectValue(holding.outlaw_base_id)
+                    )}
+                  </span>
+                </div>
+                );
+              })}
+            </div>
+          ) : null}
         </div>
 
         <div className="editor-section">

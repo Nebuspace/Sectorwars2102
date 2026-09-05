@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { api } from '../../utils/auth';
-import { formatAdminApiError } from '../../utils/adminApiError';
+import { axiosResponseStatus, formatAdminApiError } from '../../utils/adminApiError';
 import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import './universe-detail.css';
 
@@ -54,12 +55,114 @@ export function buildPlanetPatchPayload(field: string, value: unknown): Record<s
   return { [field]: value };
 }
 
+type PirateHoldingRow = {
+  id: string;
+  tier?: string | null;
+  owner_player_id?: string | null;
+  outlaw_base_id?: string | null;
+};
+
+function asIntegerSectorId(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const n = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(n) || !Number.isInteger(n)) return null;
+  return n;
+}
+
+/** Global integer sector_id from planet payload (LEG-4176 path shape — never a UUID). */
+export function resolvePlanetAdminSectorId(planet: unknown): number | null {
+  if (planet === null || typeof planet !== 'object') return null;
+  const p = planet as { sector_id?: unknown; planet?: { sector_id?: unknown } };
+  return asIntegerSectorId(p.sector_id) ?? asIntegerSectorId(p.planet?.sector_id);
+}
+
+function asPirateHoldings(data: unknown): PirateHoldingRow[] {
+  const holdings = (data as { holdings?: unknown } | null)?.holdings;
+  if (!Array.isArray(holdings)) return [];
+  return holdings.filter(
+    (row): row is PirateHoldingRow =>
+      row !== null &&
+      typeof row === 'object' &&
+      typeof (row as PirateHoldingRow).id === 'string',
+  );
+}
+
+function formatHoldingOwner(holding: PirateHoldingRow): string {
+  const owner = holding.owner_player_id;
+  if (owner === null || owner === undefined || String(owner).trim() === '') {
+    return 'pirate-controlled';
+  }
+  return String(owner);
+}
+
+function formatHoldingTier(tier: unknown): string {
+  if (tier === null || tier === undefined) return '—';
+  const s = String(tier).trim();
+  return s === '' ? '—' : s;
+}
+
+/** Honest inspect placeholder when a GET key is omitted, null, or blank. Never invent. */
+function formatHoldingInspectValue(value: unknown): string {
+  if (value === null || value === undefined) return '—';
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? String(value) : '—';
+  }
+  const s = String(value).trim();
+  return s === '' ? '—' : s;
+}
+
+/** Non-empty outlaw_base_id for deep-link; null when absent/blank (LEG-4225). */
+function outlawBaseIdForLink(value: string | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  const s = String(value).trim();
+  return s === '' ? null : s;
+}
+
 const PlanetDetail: React.FC<PlanetDetailProps> = ({ planet, onBack, onUpdate }) => {
   const { getIcon, getLabel } = useResourceCatalog();
   const [editingField, setEditingField] = useState<string | null>(null);
   const [editValues, setEditValues] = useState<any>({});
   const [isLoading, setIsLoading] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [pirateHoldings, setPirateHoldings] = useState<PirateHoldingRow[]>([]);
+  const [holdingsError, setHoldingsError] = useState<string | null>(null);
+  const sectorId = resolvePlanetAdminSectorId(planet);
+
+  useEffect(() => {
+    if (sectorId === null) {
+      setPirateHoldings([]);
+      setHoldingsError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setHoldingsError(null);
+    (async () => {
+      try {
+        const holdingsResponse = await api.get(
+          `/api/v1/admin/sectors/${sectorId}/pirate-holdings`,
+        );
+        if (!cancelled) {
+          setPirateHoldings(asPirateHoldings(holdingsResponse.data));
+        }
+      } catch (err: unknown) {
+        if (cancelled) return;
+        setPirateHoldings([]);
+        if (axiosResponseStatus(err) !== 404) {
+          setHoldingsError(
+            formatAdminApiError(err, {
+              fallback: 'Failed to load pirate holdings',
+              scopeHint: 'admin.universe.manage',
+            }),
+          );
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sectorId]);
 
   const handleSave = async (field: string) => {
     const newValue = editValues[field];
@@ -301,6 +404,11 @@ const PlanetDetail: React.FC<PlanetDetailProps> = ({ planet, onBack, onUpdate })
         {saveError ? (
           <div className="admin-save-error" role="alert">
             {saveError}
+          </div>
+        ) : null}
+        {holdingsError ? (
+          <div className="admin-save-error" role="alert">
+            {holdingsError}
           </div>
         ) : null}
         <div className="planet-overview">
@@ -551,6 +659,47 @@ const PlanetDetail: React.FC<PlanetDetailProps> = ({ planet, onBack, onUpdate })
               </div>
             </div>
           </div>
+        </div>
+
+        <div className="ships-panel" data-testid="pirate-holdings-panel">
+          <h3>Pirate holdings</h3>
+          {sectorId === null ? (
+            <p data-testid="pirate-holdings-unavailable">
+              Pirate holdings cannot be loaded: sector id is missing or not an integer.
+            </p>
+          ) : pirateHoldings.length === 0 ? (
+            <p data-testid="pirate-holdings-empty">No pirate holdings in this sector.</p>
+          ) : (
+            <div className="ships-list">
+              {pirateHoldings.map((holding) => {
+                const outlawBaseId = outlawBaseIdForLink(holding.outlaw_base_id);
+                return (
+                <div
+                  key={holding.id}
+                  className="ship-item"
+                  data-testid={`pirate-holding-row-${holding.id}`}
+                >
+                  <span>id: {holding.id}</span>
+                  <span>tier: {formatHoldingTier(holding.tier)}</span>
+                  <span>owner: {formatHoldingOwner(holding)}</span>
+                  <span>
+                    outlaw_base_id:{' '}
+                    {outlawBaseId ? (
+                      <Link
+                        to={`/outlaw-bases/${outlawBaseId}`}
+                        data-testid={`pirate-holding-outlaw-base-link-${holding.id}`}
+                      >
+                        {outlawBaseId}
+                      </Link>
+                    ) : (
+                      formatHoldingInspectValue(holding.outlaw_base_id)
+                    )}
+                  </span>
+                </div>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         {!planet.owner_id && (

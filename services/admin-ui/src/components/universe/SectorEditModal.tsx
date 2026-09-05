@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../../utils/auth';
 import { useConfirm } from '../../contexts/ToastContext';
 import { formatUniverseAdminError } from '../../utils/universeAdminError';
@@ -42,6 +42,59 @@ interface SectorEditModalProps {
   onSave: (updatedSector: Sector) => void;
 }
 
+type PirateHoldingRow = {
+  id: string;
+  tier?: string | null;
+  owner_player_id?: string | null;
+  outlaw_base_id?: string | null;
+};
+
+function asPirateHoldings(data: unknown): PirateHoldingRow[] {
+  const holdings = (data as { holdings?: unknown } | null)?.holdings;
+  if (!Array.isArray(holdings)) return [];
+  return holdings.filter(
+    (row): row is PirateHoldingRow =>
+      row !== null &&
+      typeof row === 'object' &&
+      typeof (row as PirateHoldingRow).id === 'string',
+  );
+}
+
+function formatHoldingOwner(holding: PirateHoldingRow): string {
+  const owner = holding.owner_player_id;
+  if (owner === null || owner === undefined || String(owner).trim() === '') {
+    return 'pirate-controlled';
+  }
+  return String(owner);
+}
+
+function formatHoldingTier(tier: unknown): string {
+  if (tier === null || tier === undefined) return '—';
+  const s = String(tier).trim();
+  return s === '' ? '—' : s;
+}
+
+/** Honest inspect placeholder when a GET key is omitted, null, or blank. Never invent. */
+function formatHoldingInspectValue(value: unknown): string {
+  if (value === null || value === undefined) return '—';
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? String(value) : '—';
+  }
+  const s = String(value).trim();
+  return s === '' ? '—' : s;
+}
+
+/** Non-empty outlaw_base_id for deep-link; null when absent/blank (LEG-4226). */
+function outlawBaseIdForLink(value: string | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  const s = String(value).trim();
+  return s === '' ? null : s;
+}
+
+function httpStatus(err: unknown): number | undefined {
+  return (err as { response?: { status?: number } })?.response?.status;
+}
+
 const SECTOR_TYPES = [
   'STANDARD',
   'NEBULA', 
@@ -72,6 +125,8 @@ const SectorEditModal: React.FC<SectorEditModalProps> = ({
   const [planetDetails, setPlanetDetails] = useState<any>(null);
   const [portDetails, setPortDetails] = useState<any>(null);
   const [loadingDetails, setLoadingDetails] = useState(false);
+  const [pirateHoldings, setPirateHoldings] = useState<PirateHoldingRow[]>([]);
+  const [loadingHoldings, setLoadingHoldings] = useState(false);
   const [warpTunnels, setWarpTunnels] = useState<any>(null);
   const [loadingTunnels, setLoadingTunnels] = useState(false);
   const [showTunnelForm, setShowTunnelForm] = useState(false);
@@ -136,6 +191,7 @@ const SectorEditModal: React.FC<SectorEditModalProps> = ({
 
       // Fetch detailed planet and port information
       fetchSectorDetails();
+      fetchPirateHoldings();
     }
   }, [sector]);
 
@@ -158,6 +214,27 @@ const SectorEditModal: React.FC<SectorEditModalProps> = ({
       setPortDetails({ has_port: false, port: null });
     } finally {
       setLoadingDetails(false);
+    }
+  };
+
+  const fetchPirateHoldings = async () => {
+    if (!sector) return;
+
+    setLoadingHoldings(true);
+    try {
+      const holdingsResponse = await api.get(
+        `/api/v1/admin/sectors/${sector.sector_id}/pirate-holdings`,
+      );
+      setPirateHoldings(asPirateHoldings(holdingsResponse.data));
+    } catch (err) {
+      if (httpStatus(err) === 404) {
+        setPirateHoldings([]);
+      } else {
+        setPirateHoldings([]);
+        setError(formatUniverseAdminError(err, 'Failed to load pirate holdings'));
+      }
+    } finally {
+      setLoadingHoldings(false);
     }
   };
 
@@ -609,6 +686,47 @@ const SectorEditModal: React.FC<SectorEditModalProps> = ({
                   Create Port
                 </button>
               </div>
+            )}
+          </div>
+
+          <div className="content-item" data-testid="pirate-holdings-panel">
+            <div className="content-header">
+              <span className="content-label">Pirate holdings</span>
+            </div>
+            {loadingHoldings ? (
+              <div className="content-loading">Loading pirate holdings...</div>
+            ) : pirateHoldings.length === 0 ? (
+              <p data-testid="pirate-holdings-empty">No pirate holdings in this sector.</p>
+            ) : (
+              <ul className="pirate-holdings-list">
+                {pirateHoldings.map((holding) => {
+                  const outlawBaseId = outlawBaseIdForLink(holding.outlaw_base_id);
+                  return (
+                  <li
+                    key={holding.id}
+                    className="pirate-holding-row"
+                    data-testid={`pirate-holding-row-${holding.id}`}
+                  >
+                    <span>id: {holding.id}</span>
+                    <span>tier: {formatHoldingTier(holding.tier)}</span>
+                    <span>owner: {formatHoldingOwner(holding)}</span>
+                    <span>
+                      outlaw_base_id:{' '}
+                      {outlawBaseId ? (
+                        <Link
+                          to={`/outlaw-bases/${outlawBaseId}`}
+                          data-testid={`pirate-holding-outlaw-base-link-${holding.id}`}
+                        >
+                          {outlawBaseId}
+                        </Link>
+                      ) : (
+                        formatHoldingInspectValue(holding.outlaw_base_id)
+                      )}
+                    </span>
+                  </li>
+                  );
+                })}
+              </ul>
             )}
           </div>
         </div>

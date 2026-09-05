@@ -163,6 +163,32 @@ describe('RegionalGovernorDashboard (LEG-213)', () => {
     expect(screen.queryByText('Failed to load regional stats')).toBeNull();
   });
 
+  it('surfaces honest fallback on stats load TypeError/network collapse (LEG-3032)', async () => {
+    // Outer loadRegionalData 'Failed to load regional data' catch is unreachable when
+    // per-loader try/catch swallows — densify the live stats path (invent=0).
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url === '/api/v1/regions/my-region') return { data: region };
+      if (url === '/api/v1/regions/my-region/stats') {
+        throw new TypeError('Failed to fetch');
+      }
+      if (url.endsWith('/policies')) return { data: [] };
+      if (url.endsWith('/elections')) return { data: [] };
+      if (url.endsWith('/treaties')) return { data: [] };
+      if (url.endsWith('/members')) return { data: [] };
+      return { data: {} };
+    });
+
+    render(<RegionalGovernorDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/Failed to load regional stats/i);
+    });
+    const msg = screen.getByRole('alert').textContent ?? '';
+    expect(msg).not.toMatch(/Failed to fetch/i);
+    expect(msg).not.toMatch(/TypeError/i);
+  });
+
   it('shows admin rate-limit copy on 429 economy save', async () => {
     render(<RegionalGovernorDashboard />);
     await waitFor(() => expect(screen.getByText('Sol Reach')).toBeTruthy());
@@ -368,6 +394,57 @@ describe('RegionalGovernorDashboard (LEG-213)', () => {
     });
     expect(screen.queryByText('Failed to start election')).toBeNull();
   });
+
+  it('collapses axios-shaped Network Error on regional stats load (LEG-3356)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url === '/api/v1/regions/my-region') return { data: region };
+      if (url === '/api/v1/regions/my-region/stats') {
+        throw new Error('Network Error');
+      }
+      if (url.endsWith('/policies')) return { data: [] };
+      if (url.endsWith('/elections')) return { data: [] };
+      if (url.endsWith('/treaties')) return { data: [] };
+      if (url.endsWith('/members')) return { data: [] };
+      return { data: {} };
+    });
+
+    render(<RegionalGovernorDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/Failed to load regional stats/i);
+    });
+    const msg = screen.getByRole('alert').textContent ?? '';
+    expect(msg).not.toBe('Network Error');
+    expect(msg).not.toContain('Network Error');
+    expect(msg).not.toMatch(/TypeError/i);
+  });
+
+  it('collapses axios-shaped Network Error on economy save mutation (LEG-3356)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    render(<RegionalGovernorDashboard />);
+    await waitFor(() => expect(screen.getByText('Sol Reach')).toBeTruthy());
+
+    vi.mocked(api.put).mockRejectedValueOnce(new Error('Network Error'));
+
+    fireEvent.click(screen.getByRole('button', { name: /economy/i }));
+
+    const saveBtn = await waitFor(() => {
+      const buttons = screen.getAllByRole('button');
+      const match = buttons.find((b) => /save|update/i.test(b.textContent || ''));
+      if (!match) throw new Error('save button not found');
+      return match;
+    });
+    fireEvent.click(saveBtn);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/Failed to update economic configuration/i);
+    });
+    const msg = screen.getByRole('alert').textContent ?? '';
+    expect(msg).not.toBe('Network Error');
+    expect(msg).not.toContain('Network Error');
+    expect(msg).not.toMatch(/TypeError/i);
+  });
 });
 
 describe('BeaconSectorCap (LEG-1014)', () => {
@@ -446,5 +523,227 @@ describe('BeaconSectorCap (LEG-1014)', () => {
     await waitFor(() => {
       expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
     });
+  });
+});
+
+describe('RegionalGovernorDashboard region terminate (LEG-3206)', () => {
+  beforeEach(() => {
+    vi.mocked(useAuth).mockReturnValue({ user: { is_admin: true } } as any);
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    mockRegionalGets(false);
+  });
+
+  it('shows admin danger zone and posts terminate with reason + confirm header', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url === '/api/v1/regions/my-region') return { data: region };
+      if (url.endsWith('/stats')) return { data: {} };
+      if (url.endsWith('/policies')) return { data: [] };
+      if (url.endsWith('/elections')) return { data: [] };
+      if (url.endsWith('/treaties')) return { data: [] };
+      if (url.endsWith('/members')) return { data: [] };
+      if (url.includes('/terminate-preview')) {
+        return {
+          data: {
+            regionId: region.id,
+            regionName: region.name,
+            displayName: region.display_name,
+            status: 'active',
+            regionType: 'player_owned',
+            planetCount: 1,
+            stationCount: 0,
+            sectorCount: 12,
+            playerStakeholderCount: 0,
+            terminable: true,
+          },
+        };
+      }
+      if (url === '/api/v1/admin/regions') return { data: { regions: [region] } };
+      return { data: {} };
+    });
+    vi.mocked(api.post).mockResolvedValue({ data: { success: true } });
+
+    render(<RegionalGovernorDashboard />);
+    await waitFor(() => screen.getByText('Sol Reach'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Terminate Region…' }));
+    await waitFor(() => screen.getByLabelText(/Type the region name/i));
+
+    fireEvent.change(screen.getByLabelText(/Type the region name/i), {
+      target: { value: region.name },
+    });
+    fireEvent.change(screen.getByLabelText(/Reason \(required/i), {
+      target: { value: 'nonpayment' },
+    });
+    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.click(screen.getByRole('button', { name: 'Terminate Region' }));
+
+    await waitFor(() => {
+      expect(vi.mocked(api.post)).toHaveBeenCalledWith(
+        `/api/v1/admin/regions/${region.id}/terminate`,
+        { reason: 'nonpayment' },
+        expect.objectContaining({
+          headers: expect.objectContaining({ 'X-Confirm-Region-Name': region.name }),
+        }),
+      );
+    });
+  });
+
+  it('surfaces scope denial on terminate POST 403', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url === '/api/v1/regions/my-region') return { data: region };
+      if (url.endsWith('/stats')) return { data: {} };
+      if (url.endsWith('/policies')) return { data: [] };
+      if (url.endsWith('/elections')) return { data: [] };
+      if (url.endsWith('/treaties')) return { data: [] };
+      if (url.endsWith('/members')) return { data: [] };
+      if (url.includes('/terminate-preview')) {
+        return {
+          data: {
+            regionId: region.id,
+            regionName: region.name,
+            displayName: region.display_name,
+            status: 'active',
+            regionType: 'player_owned',
+            planetCount: 0,
+            stationCount: 0,
+            sectorCount: 0,
+            playerStakeholderCount: 0,
+            terminable: true,
+          },
+        };
+      }
+      if (url === '/api/v1/admin/regions') return { data: { regions: [region] } };
+      return { data: {} };
+    });
+    vi.mocked(api.post).mockRejectedValue(
+      httpErr(403, 'Missing scope admin.regions.terminate'),
+    );
+
+    render(<RegionalGovernorDashboard />);
+    await waitFor(() => screen.getByText('Sol Reach'));
+    fireEvent.click(screen.getByRole('button', { name: 'Terminate Region…' }));
+    await waitFor(() => screen.getByLabelText(/Type the region name/i));
+
+    fireEvent.change(screen.getByLabelText(/Type the region name/i), {
+      target: { value: region.name },
+    });
+    fireEvent.change(screen.getByLabelText(/Reason \(required/i), {
+      target: { value: 'test' },
+    });
+    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.click(screen.getByRole('button', { name: 'Terminate Region' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/Missing scope admin\.regions\.terminate/i);
+    });
+  });
+});
+
+describe('RegionalGovernorDashboard membership franchise (LEG-4244)', () => {
+  beforeEach(() => {
+    vi.mocked(useAuth).mockReturnValue({ user: { is_admin: false } } as any);
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.put).mockReset();
+    vi.mocked(api.post).mockReset();
+    vi.mocked(api.patch).mockReset();
+  });
+
+  async function openMembersWith(
+    members: Array<{
+      player_id: string;
+      username: string;
+      membership_type: string;
+      reputation_score: number;
+      local_rank: string | null;
+      voting_power: number;
+      joined_at: string;
+      last_visit: string;
+      total_visits: number;
+    }>,
+  ) {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url === '/api/v1/regions/my-region') return { data: region };
+      if (url.endsWith('/stats')) return { data: {} };
+      if (url.endsWith('/policies')) return { data: [] };
+      if (url.endsWith('/elections')) return { data: [] };
+      if (url.endsWith('/treaties')) return { data: [] };
+      if (url.endsWith('/members')) return { data: members };
+      return { data: {} };
+    });
+
+    render(<RegionalGovernorDashboard />);
+    await waitFor(() => expect(screen.getByText('Sol Reach')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Members' }));
+  }
+
+  it('shows citizen with voting_power > 0 as franchise-eligible', async () => {
+    await openMembersWith([
+      {
+        ...member,
+        player_id: 'p-citizen',
+        username: 'citizen-alice',
+        membership_type: 'citizen',
+        voting_power: 1.5,
+      },
+    ]);
+
+    await waitFor(() => expect(screen.getByText('citizen-alice')).toBeTruthy());
+    expect(screen.getByText('Can vote')).toBeTruthy();
+    expect(screen.getByRole('columnheader', { name: 'Franchise' })).toBeTruthy();
+  });
+
+  it('shows resident with voting_power = 0 as franchise-ineligible', async () => {
+    await openMembersWith([
+      {
+        ...member,
+        player_id: 'p-resident',
+        username: 'resident-bob',
+        membership_type: 'resident',
+        voting_power: 0,
+      },
+    ]);
+
+    await waitFor(() => expect(screen.getByText('resident-bob')).toBeTruthy());
+    expect(screen.getByText('No franchise')).toBeTruthy();
+  });
+
+  it('shows visitor as franchise-ineligible even with voting_power > 0', async () => {
+    await openMembersWith([
+      {
+        ...member,
+        player_id: 'p-visitor',
+        username: 'visitor-cara',
+        membership_type: 'visitor',
+        voting_power: 2.0,
+      },
+    ]);
+
+    await waitFor(() => expect(screen.getByText('visitor-cara')).toBeTruthy());
+    expect(screen.getByText('No franchise')).toBeTruthy();
+    expect(screen.queryByText('Can vote')).toBeNull();
+  });
+
+  it('names ADR-0056 cast-path gates as API-absent without fabricating age/rep/flag columns', async () => {
+    await openMembersWith([
+      {
+        ...member,
+        username: 'honesty-dave',
+        membership_type: 'citizen',
+        voting_power: 1.0,
+      },
+    ]);
+
+    await waitFor(() => expect(screen.getByText('honesty-dave')).toBeTruthy());
+    const text = document.body.textContent ?? '';
+    expect(text).toMatch(/ADR-0056/i);
+    expect(text).toMatch(/account-age/i);
+    expect(text).toMatch(/personal_rep/i);
+    expect(text).toMatch(/blocks_vote/i);
+    expect(text).toMatch(/cast path/i);
+    expect(text).toMatch(/not returned by GET \/api\/v1\/regions\/my-region\/members/i);
+    expect(text).not.toMatch(/account age:\s*\d+/i);
+    expect(text).not.toMatch(/blocks_vote:\s*(true|false)/i);
+    expect(screen.queryByRole('columnheader', { name: /account age/i })).toBeNull();
   });
 });

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { api } from '../../utils/auth';
 import { useToast } from '../../contexts/ToastContext';
 import { formatUniverseAdminError } from '../../utils/universeAdminError';
@@ -57,6 +58,55 @@ function normalizeControllingFaction(value: unknown): string | null {
   return s;
 }
 
+type PirateHoldingRow = {
+  id: string;
+  tier?: string | null;
+  owner_player_id?: string | null;
+  combat_lock_held_by?: string | null;
+  captured_at?: string | null;
+  current_strength?: number | string | null;
+  owner_team_id?: string | number | null;
+  region_id?: number | string | null;
+  sector_id?: number | string | null;
+  outlaw_base_id?: string | null;
+};
+
+function asPirateHoldings(data: unknown): PirateHoldingRow[] {
+  const holdings = (data as { holdings?: unknown } | null)?.holdings;
+  if (!Array.isArray(holdings)) return [];
+  return holdings.filter(
+    (row): row is PirateHoldingRow =>
+      row !== null &&
+      typeof row === 'object' &&
+      typeof (row as PirateHoldingRow).id === 'string',
+  );
+}
+
+function formatHoldingOwner(holding: PirateHoldingRow): string {
+  const owner = holding.owner_player_id;
+  if (owner === null || owner === undefined || String(owner).trim() === '') {
+    return 'pirate-controlled';
+  }
+  return String(owner);
+}
+
+/** Honest inspect placeholder when a GET key is omitted, null, or blank. Never invent. */
+function formatHoldingInspectValue(value: unknown): string {
+  if (value === null || value === undefined) return '—';
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? String(value) : '—';
+  }
+  const s = String(value).trim();
+  return s === '' ? '—' : s;
+}
+
+/** Non-empty outlaw_base_id for deep-link; null when absent/blank (LEG-4196). */
+function outlawBaseIdForLink(value: string | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  const s = String(value).trim();
+  return s === '' ? null : s;
+}
+
 interface SectorDetailProps {
   sector: any;
   onBack: () => void;
@@ -70,6 +120,7 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
   const [portData, setPortData] = useState<any>(null);
   const [planetData, setPlanetData] = useState<any>(null);
   const [shipsInSector, setShipsInSector] = useState<any[]>([]);
+  const [pirateHoldings, setPirateHoldings] = useState<PirateHoldingRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [editingField, setEditingField] = useState<string | null>(null);
@@ -84,7 +135,9 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
 
   const noteLoadFailure = (err: unknown, fallback: string) => {
     const status = (err as { response?: { status?: number } })?.response?.status;
-    if (status === 403 || status === 429) {
+    // 403/429 honesty (LEG-2820) + TypeError/network collapse (LEG-3065).
+    // Keep expected 404 silent (port/planet may be absent).
+    if (status === 403 || status === 429 || status === undefined) {
       setLoadError(formatUniverseAdminError(err, fallback));
     }
   };
@@ -123,6 +176,17 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
       } catch (shipsError) {
         noteLoadFailure(shipsError, 'Failed to load ships data');
         setShipsInSector([]);
+      }
+
+      // Pirate holdings (LEG-4178) — always inspect; 404 → honest empty.
+      try {
+        const holdingsResponse = await api.get(
+          `/api/v1/admin/sectors/${sector.sector_id}/pirate-holdings`,
+        );
+        setPirateHoldings(asPirateHoldings(holdingsResponse.data));
+      } catch (holdingsError) {
+        noteLoadFailure(holdingsError, 'Failed to load pirate holdings');
+        setPirateHoldings([]);
       }
 
     } catch (error) {
@@ -525,6 +589,63 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
               </div>
             </div>
           )}
+
+            <div className="ships-panel" data-testid="pirate-holdings-panel">
+              <h3>Pirate holdings</h3>
+              {pirateHoldings.length === 0 ? (
+                <p data-testid="pirate-holdings-empty">No pirate holdings in this sector.</p>
+              ) : (
+                <div className="ships-list">
+                  {pirateHoldings.map((holding) => {
+                    const outlawBaseId = outlawBaseIdForLink(holding.outlaw_base_id);
+                    return (
+                    <div
+                      key={holding.id}
+                      className="ship-item"
+                      data-testid={`pirate-holding-row-${holding.id}`}
+                    >
+                      <span>id: {holding.id}</span>
+                      <span>tier: {holding.tier ?? '—'}</span>
+                      <span>owner: {formatHoldingOwner(holding)}</span>
+                      <span>
+                        combat lock:{' '}
+                        {holding.combat_lock_held_by && String(holding.combat_lock_held_by).trim() !== ''
+                          ? holding.combat_lock_held_by
+                          : 'none'}
+                      </span>
+                      <span>
+                        captured_at:{' '}
+                        {holding.captured_at && String(holding.captured_at).trim() !== ''
+                          ? holding.captured_at
+                          : '—'}
+                      </span>
+                      <span>
+                        current_strength: {formatHoldingInspectValue(holding.current_strength)}
+                      </span>
+                      <span>
+                        owner_team_id: {formatHoldingInspectValue(holding.owner_team_id)}
+                      </span>
+                      <span>region_id: {formatHoldingInspectValue(holding.region_id)}</span>
+                      <span>sector_id: {formatHoldingInspectValue(holding.sector_id)}</span>
+                      <span>
+                        outlaw_base_id:{' '}
+                        {outlawBaseId ? (
+                          <Link
+                            to={`/outlaw-bases/${outlawBaseId}`}
+                            data-testid={`pirate-holding-outlaw-base-link-${holding.id}`}
+                          >
+                            {outlawBaseId}
+                          </Link>
+                        ) : (
+                          formatHoldingInspectValue(holding.outlaw_base_id)
+                        )}
+                      </span>
+                    </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </div>
         )}
 

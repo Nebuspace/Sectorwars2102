@@ -171,6 +171,32 @@ describe('PlayerBountyPanel', () => {
     });
   });
 
+  it('surfaces honest fallback on load TypeError/network collapse (LEG-3018)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<PlayerBountyPanel targetId="t1" />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/Failed to load bounties/i);
+    });
+    const text = screen.getByRole('alert').textContent ?? '';
+    expect(text).not.toMatch(/Failed to fetch/i);
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('collapses axios Network Error on initial bounty load to honest fallback (LEG-3517)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
+
+    render(<PlayerBountyPanel targetId="t1" />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/Failed to load bounties/i);
+    });
+    const text = screen.getByRole('alert').textContent ?? '';
+    expect(text).not.toBe('Network Error');
+    expect(text).not.toMatch(/Network Error/i);
+  });
+
   it('shows admin rate-limit on load 429', async () => {
     vi.mocked(api.get).mockRejectedValue(axiosError(429));
 
