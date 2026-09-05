@@ -843,6 +843,31 @@ class CombatService:
         team_b = self.db.query(Player.team_id).filter(Player.id == player_b_id).scalar()
         return team_a is not None and team_a == team_b
 
+    def _emit_aria_combat_victory_narration(self, winner: Player, loser: Player) -> None:
+        """ADR-0068 P-A1 — emit combat-victory aria_narration for the winner.
+
+        Best-effort: mirrors ranking_service P-F8 / movement_service P-A2.
+        Dedupe key is the combat partner id (catalog: per-partner suppression
+        via existing ever-scope dedupe). Never raises into the host resolve path.
+        """
+        try:
+            from src.services.aria_narration_service import (
+                dispatch_narration_push,
+                get_aria_narration_service,
+                resolve_assistance_level,
+            )
+            narration_line = get_aria_narration_service().record_event(
+                "P-A1",
+                winner.id,
+                assistance_level=resolve_assistance_level(self.db, winner.id),
+                dedupe_key=str(loser.id),
+                context={},
+            )
+            if narration_line is not None and narration_line.delivered_immediately:
+                dispatch_narration_push(winner, narration_line)
+        except Exception as e:
+            logger.error("ARIA narration hook failed (P-A1): %s", e)
+
     def attack_player(self, attacker_id: uuid.UUID, defender_id: uuid.UUID) -> Dict[str, Any]:
         """Initiate ship-to-ship combat between two players."""
         # Self-attack guard (combat-resolver.md Invariant 5:
@@ -1189,6 +1214,12 @@ class CombatService:
                 # _dispatch_combat_medals below — the legacy inline
                 # check_combat_medals call was removed to fire the medal hook
                 # exactly once per kill.)
+                # ADR-0068 P-A1 — combat victory narration
+                # (aria-companion.md catalog). Best-effort; never fails combat.
+                self._emit_aria_combat_victory_narration(
+                    winner,
+                    loser=defender if winner is attacker else attacker,
+                )
         except Exception as e:
             logger.error("Failed ARIA hooks after combat: %s", e)
 

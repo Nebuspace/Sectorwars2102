@@ -1,10 +1,10 @@
 """ARIA narration kernel (WO-ARIA-NARRATE-KERNEL / ADR-0068).
 
 Manual, template-only narration for the ARIA narration hooks event
-catalog (aria-companion.md:208-241). This kernel covers the 5 rows
-buildable without further design work: P-F1, P-F7, P-F8, P-A2, P-A3.
-ZERO LLM -- every line is rendered from a fixed ``str.format`` template
-in ``REGISTRY`` below.
+catalog (aria-companion.md:208-241). This kernel covers the catalog
+rows buildable without further design work (P-F*, P-A* atmospheric),
+including P-A1 combat victory. ZERO LLM -- every line is rendered from
+a fixed ``str.format`` template in ``REGISTRY`` below.
 
 The kernel is deliberately DB-free: suppression state, the global
 narration ceiling, and the priority-aware backlog queue all live in
@@ -115,6 +115,20 @@ REGISTRY: Dict[str, NarrationEventDef] = {
                 "max-turn cap up by {max_turns_bonus}. Crews notice."
             ),
             priority_rank=PRIORITY_P_F,
+            suppression_scope="ever",
+        ),
+        NarrationEventDef(
+            event_id="P-A1",
+            trigger="Combat resolves with player as winner",
+            template=(
+                "Got 'em. Their hull went at the third volley — looks like "
+                "the laser stack worked. Logged."
+            ),
+            priority_rank=PRIORITY_P_A,
+            # Catalog: "5 min per combat partner". Kernel only has
+            # session|ever; callers pass dedupe_key=str(partner_id) so
+            # ever-scope suppresses per partner for process lifetime
+            # (stricter than 5 min; matches existing dedupe machinery).
             suppression_scope="ever",
         ),
         NarrationEventDef(
