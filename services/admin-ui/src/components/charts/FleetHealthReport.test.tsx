@@ -45,4 +45,21 @@ describe('FleetHealthReport scope honesty (LEG-1208)', () => {
 
     expect(screen.getByRole('alert').textContent ?? '').toMatch(/rate limit/i);
   });
+
+  it('reports TypeError Failed to fetch as gameserver-unreachable fallback, not raw TypeError', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<FleetHealthReport />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(
+      /Gameserver unreachable — network error fetching fleet health report/i
+    );
+    expect(alert).not.toMatch(/Failed to fetch/i);
+    expect(alert).not.toMatch(/TypeError/i);
+  });
 });

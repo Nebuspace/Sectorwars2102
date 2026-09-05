@@ -47,4 +47,59 @@ describe('BalanceAnalytics (LEG-1099 scope errors)', () => {
     expect(alert).toMatch(/rate limit/i);
     expect(alert).not.toContain('HTTP 429');
   });
+
+  it('reports TypeError Failed to fetch as balance-analytics fallback, not raw TypeError', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<BalanceAnalytics />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(
+      /Failed to load balance analytics\. Please check if the gameserver is running\./i
+    );
+    expect(alert).not.toMatch(/Failed to fetch/i);
+    expect(alert).not.toMatch(/TypeError/i);
+  });
+
+  it('collapses axios-shaped Network Error to balance-analytics fallback (LEG-3334)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
+
+    render(<BalanceAnalytics />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(
+      /Failed to load balance analytics\. Please check if the gameserver is running\./i
+    );
+    expect(alert).not.toBe('Network Error');
+    expect(alert).not.toContain('Network Error');
+    expect(alert).not.toContain('Failed to fetch');
+    expect(alert).not.toContain('TypeError');
+  });
+
+  it('collapses non-TypeError Failed to fetch to balance-analytics fallback (LEG-3334)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Failed to fetch'));
+
+    render(<BalanceAnalytics />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(
+      /Failed to load balance analytics\. Please check if the gameserver is running\./i
+    );
+    expect(alert).not.toBe('Failed to fetch');
+    expect(alert).not.toContain('Failed to fetch');
+    expect(alert).not.toContain('Network Error');
+    expect(alert).not.toContain('TypeError');
+  });
 });

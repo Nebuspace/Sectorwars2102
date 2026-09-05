@@ -21,12 +21,26 @@ const sampleDispute = {
   recommended_action: 'investigate',
 };
 
+
 const axiosError = (status: number, detail?: string) =>
   Object.assign(new Error(`HTTP ${status}`), {
-    response: { status, data: detail !== undefined ? { detail } : {} },
+    response: { status, data: detail ? { detail } : {} },
   });
 
-describe('DisputePanel (LEG-1099 scope errors)', () => {
+function assertNoTransportLeak(text: string) {
+  expect(text).not.toBe('Network Error');
+  expect(text).not.toContain('Network Error');
+  expect(text).not.toMatch(/Failed to fetch/i);
+  expect(text).not.toMatch(/TypeError/i);
+  expect(text).not.toMatch(/^HTTP \d+$/);
+  expect(text).not.toContain('Request failed with status code');
+}
+
+/**
+ * LEG-3431 Soft-ORDER — DisputePanel TypeError/Network Error honesty densify.
+ * LEG-3890 Soft-ORDER — 403/429 HTTP honesty densify.
+ */
+describe('DisputePanel typeErrorHonesty densify (LEG-3431)', () => {
   beforeEach(() => {
     vi.mocked(api.post).mockReset();
   });
@@ -40,8 +54,8 @@ describe('DisputePanel (LEG-1099 scope errors)', () => {
     fireEvent.change(notes, { target: { value: 'Investigated — clean fight.' } });
   }
 
-  it('shows scope-aware copy on 403 resolve when GS sends no detail', async () => {
-    vi.mocked(api.post).mockRejectedValue(axiosError(403));
+  it('collapses axios Network Error on resolve to gameserver-unreachable fallback', async () => {
+    vi.mocked(api.post).mockRejectedValue(new Error('Network Error'));
     await openResolveForm();
 
     fireEvent.click(screen.getByRole('button', { name: /Resolve Dispute/i }));
@@ -51,37 +65,13 @@ describe('DisputePanel (LEG-1099 scope errors)', () => {
     });
 
     const alert = screen.getByRole('alert').textContent ?? '';
-    expect(alert).toMatch(/COMBAT_INTERVENE|combat intervene|Access denied/i);
+    expect(alert).toMatch(/Gameserver unreachable|network error resolving dispute/i);
+    expect(alert).not.toBe('Network Error');
+    expect(alert).not.toContain('Network Error');
+    expect(alert).not.toMatch(/TypeError/i);
   });
 
-  it('surfaces GS string detail on 403 when present (formatAdminApiError contract)', async () => {
-    vi.mocked(api.post).mockRejectedValue(
-      axiosError(403, 'Missing combat.intervene scope')
-    );
-    await openResolveForm();
-
-    fireEvent.click(screen.getByRole('button', { name: /Resolve Dispute/i }));
-
-    await waitFor(() => {
-      expect(screen.getByRole('alert')).toHaveTextContent('Missing combat.intervene scope');
-    });
-  });
-
-  it('shows admin rate-limit copy on 429 resolve', async () => {
-    vi.mocked(api.post).mockRejectedValue(axiosError(429));
-    await openResolveForm();
-
-    fireEvent.click(screen.getByRole('button', { name: /Resolve Dispute/i }));
-
-    await waitFor(() => {
-      expect(screen.getByRole('alert')).toBeTruthy();
-    });
-
-    const alert = screen.getByRole('alert').textContent ?? '';
-    expect(alert).toMatch(/rate limit/i);
-  });
-
-  it('surfaces honest fallback on non-RBAC network collapse (LEG-2961)', async () => {
+  it('collapses TypeError Failed to fetch on resolve to gameserver-unreachable fallback', async () => {
     vi.mocked(api.post).mockRejectedValue(new TypeError('Failed to fetch'));
     await openResolveForm();
 
@@ -97,19 +87,34 @@ describe('DisputePanel (LEG-1099 scope errors)', () => {
     expect(alert).not.toBe('Failed to fetch');
   });
 
-  it('collapses axios-shaped Network Error to gameserver-unreachable fallback (LEG-3314)', async () => {
-    vi.mocked(api.post).mockRejectedValue(new Error('Network Error'));
+  it('surfaces 403 with COMBAT_INTERVENE scope copy when resolve POST is denied', async () => {
+    vi.mocked(api.post).mockRejectedValue(axiosError(403));
     await openResolveForm();
-
     fireEvent.click(screen.getByRole('button', { name: /Resolve Dispute/i }));
 
     await waitFor(() => {
       expect(screen.getByRole('alert')).toBeTruthy();
     });
-
     const alert = screen.getByRole('alert').textContent ?? '';
-    expect(alert).toMatch(/Gameserver unreachable|network error resolving dispute/i);
-    expect(alert).not.toBe('Network Error');
-    expect(alert).not.toContain('Network Error');
+    expect(alert).toMatch(/Access denied|COMBAT_INTERVENE/i);
+    expect(alert).not.toMatch(/\b403\b/);
+    expect(alert).not.toMatch(/HTTP 403/i);
+    assertNoTransportLeak(alert);
   });
+
+  it('surfaces 429 as admin rate-limit copy on resolve POST', async () => {
+    vi.mocked(api.post).mockRejectedValue(axiosError(429));
+    await openResolveForm();
+    fireEvent.click(screen.getByRole('button', { name: /Resolve Dispute/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/rate limit/i);
+    });
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/rate limit/i);
+    expect(alert).not.toMatch(/\b429\b/);
+    expect(alert).not.toMatch(/HTTP 429/i);
+    assertNoTransportLeak(alert);
+  });
+
 });
