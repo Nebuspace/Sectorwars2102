@@ -407,4 +407,39 @@ describe('BountyAdminPanel', () => {
     expect(alert).toMatch(/rate limit/i);
     expect(alert).not.toMatch(/Failed to load bounties/);
   });
+
+  it('collapses axios-shaped Network Error to load fallback (LEG-3350)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
+    render(<BountyAdminPanel />);
+    fireEvent.change(screen.getByLabelText('Target player UUID'), { target: { value: 't1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Load' }));
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy();
+    });
+    const alert = screen.getByRole('alert').textContent ?? '';
+    expect(alert).toMatch(/Failed to load bounties/i);
+    expect(alert).not.toBe('Network Error');
+    expect(alert).not.toContain('Network Error');
+    expect(alert).not.toMatch(/TypeError/i);
+  });
+
+  it('collapses axios-shaped Network Error to force-cancel fallback (LEG-3350)', async () => {
+    await loadTargetWithBounty();
+    vi.mocked(api.post).mockRejectedValue(new Error('Network Error'));
+
+    await confirmForceCancel();
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/players/t1/bounties/b1/force-cancel',
+      );
+    });
+    expect(toastError).toHaveBeenCalledWith(
+      expect.stringMatching(/Force-cancel failed/i),
+    );
+    const msg = String(toastError.mock.calls.map((call) => call[0]).join('\n'));
+    expect(msg).not.toBe('Network Error');
+    expect(msg).not.toContain('Network Error');
+    expect(msg).not.toMatch(/TypeError/i);
+  });
 });

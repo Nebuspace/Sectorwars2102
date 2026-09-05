@@ -1182,3 +1182,109 @@ describe('MessageModeration', () => {
     expect(toastError).not.toHaveBeenCalledWith('Failed to bulk-clear flags.');
   });
 });
+
+describe('MessageModeration axios Network Error densify (LEG-3380)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    toastError.mockReset();
+    confirmMock.mockReset();
+    confirmMock.mockResolvedValue(true);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('collapses axios-shaped Network Error on flagged messages load', async () => {
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url.startsWith('/api/v1/admin/messages/flagged')) {
+        return Promise.reject(new Error('Network Error'));
+      }
+      if (url === '/api/v1/admin/messages/stats') {
+        return Promise.resolve({ data: emptyStats });
+      }
+      return Promise.resolve({ data: emptyBeacons });
+    });
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(
+        screen.getByText('Failed to load the flagged-message review queue.'),
+      ).toBeTruthy();
+    });
+    const text =
+      screen.getByText('Failed to load the flagged-message review queue.')
+        .textContent ?? '';
+    expect(text).not.toBe('Network Error');
+    expect(text).not.toContain('Network Error');
+  });
+
+  it('collapses axios-shaped Network Error on flagged beacons load', async () => {
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url.startsWith('/api/v1/admin/beacons/flagged')) {
+        return Promise.reject(new Error('Network Error'));
+      }
+      if (url.startsWith('/api/v1/admin/messages/flagged')) {
+        return Promise.resolve({ data: emptyMessages });
+      }
+      if (url === '/api/v1/admin/messages/stats') {
+        return Promise.resolve({ data: emptyStats });
+      }
+      return Promise.reject(new Error(`unexpected GET ${url}`));
+    });
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(
+        screen.getByText('Failed to load the flagged-beacon review queue.'),
+      ).toBeTruthy();
+    });
+    const text =
+      screen.getByText('Failed to load the flagged-beacon review queue.')
+        .textContent ?? '';
+    expect(text).not.toBe('Network Error');
+    expect(text).not.toContain('Network Error');
+  });
+
+  it('collapses axios-shaped Network Error on confirm-abuse POST', async () => {
+    const user = userEvent.setup();
+    mockLoad({ beacons: { ...emptyBeacons, beacons: [beacon], total: 1 } });
+    vi.mocked(api.post).mockRejectedValue(new Error('Network Error'));
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bob')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: 'Confirm Abuse' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/beacons/b1/confirm-abuse',
+      );
+    });
+    const msg = String(toastError.mock.calls.map((call) => call[0]).join('\n'));
+    expect(msg).toMatch(/Failed to confirm abuse for this beacon/i);
+    expect(msg).not.toBe('Network Error');
+    expect(msg).not.toContain('Network Error');
+  });
+
+  it('collapses axios-shaped Network Error on beacon clear-flag POST', async () => {
+    const user = userEvent.setup();
+    mockLoad({ beacons: { ...emptyBeacons, beacons: [beacon], total: 1 } });
+    vi.mocked(api.post).mockRejectedValue(new Error('Network Error'));
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bob')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: 'Clear Flag' }));
+
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/v1/admin/beacons/b1/clear-flag',
+      );
+    });
+    const msg = String(toastError.mock.calls.map((call) => call[0]).join('\n'));
+    expect(msg).toMatch(/Failed to clear the beacon flag/i);
+    expect(msg).not.toBe('Network Error');
+    expect(msg).not.toContain('Network Error');
+  });
+});

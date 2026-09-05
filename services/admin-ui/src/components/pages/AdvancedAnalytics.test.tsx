@@ -157,6 +157,24 @@ describe('AdvancedAnalytics generate/export (LEG-165)', () => {
     expect(msg).not.toContain('not implemented');
   });
 
+  it('surfaces honest generate fallback on TypeError/network collapse (LEG-3033)', async () => {
+    vi.mocked(api.post).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<AdvancedAnalytics />);
+    fireEvent.click(screen.getByTestId('trigger-generate'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('analytics-save-message')).toBeTruthy();
+    });
+
+    const msg = screen.getByTestId('analytics-save-message').textContent ?? '';
+    expect(msg).toMatch(/gameserver unreachable \(network error\)/i);
+    expect(msg).toMatch(/Failed to generate report/i);
+    expect(msg).not.toMatch(/Failed to fetch/i);
+    expect(msg).not.toMatch(/TypeError/i);
+    expect(msg).not.toContain('not implemented');
+  });
+
   it('exports via shared api with blob responseType', async () => {
     const blob = new Blob(['a,b\n1,2\n'], { type: 'text/csv' });
     vi.mocked(api.get).mockResolvedValue({
@@ -244,6 +262,34 @@ describe('AdvancedAnalytics generate/export (LEG-165)', () => {
     expect(msg).toMatch(/5\/hour/i);
     expect(msg).toMatch(/rate limit/i);
     expect(msg).not.toMatch(/^Export failed/i);
+    expect(msg).not.toContain('not implemented');
+  });
+
+  it('surfaces honest export fallback on TypeError/network collapse (LEG-3033)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<AdvancedAnalytics />);
+    fireEvent.click(screen.getByRole('button', { name: /Data Export/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Player Data')).toBeTruthy();
+    });
+
+    const cardExport = screen
+      .getByText('Player Data')
+      .closest('.export-card')
+      ?.querySelector('button.btn-primary');
+    fireEvent.click(cardExport!);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('analytics-save-message')).toBeTruthy();
+    });
+
+    const msg = screen.getByTestId('analytics-save-message').textContent ?? '';
+    expect(msg).toMatch(/gameserver unreachable \(network error\)/i);
+    expect(msg).toMatch(/Export failed/i);
+    expect(msg).not.toMatch(/Failed to fetch/i);
+    expect(msg).not.toMatch(/TypeError/i);
     expect(msg).not.toContain('not implemented');
   });
 });

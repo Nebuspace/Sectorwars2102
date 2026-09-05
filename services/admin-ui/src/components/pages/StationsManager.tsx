@@ -41,6 +41,8 @@ const StationsManager: React.FC = () => {
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage] = useState(100);
   const [total, setTotal] = useState(0);
+  /** Sector ids with has_pirate_holding === true (from one sectors list fetch — no N+1). */
+  const [holdingSectorIds, setHoldingSectorIds] = useState<Set<string>>(() => new Set());
 
   // Modal states
   const [selectedPort, setSelectedPort] = useState<Station | null>(null);
@@ -52,12 +54,32 @@ const StationsManager: React.FC = () => {
     try {
       setLoading(true);
       const offset = (currentPage - 1) * itemsPerPage;
-      const response = await api.get('/api/v1/admin/stations', {
-        params: { limit: itemsPerPage, offset, ...(searchTerm ? { search: searchTerm } : {}) }
-      });
-      setPorts(response.data.stations || []);
-      setTotal(response.data.total ?? (response.data.stations || []).length);
+      const [stationsResponse, sectorsResult] = await Promise.all([
+        api.get('/api/v1/admin/stations', {
+          params: { limit: itemsPerPage, offset, ...(searchTerm ? { search: searchTerm } : {}) },
+        }),
+        api
+          .get('/api/v1/admin/sectors', { params: { limit: 1000 } })
+          .then((res) => res)
+          .catch(() => null),
+      ]);
+      setPorts(stationsResponse.data.stations || []);
+      setTotal(stationsResponse.data.total ?? (stationsResponse.data.stations || []).length);
       setError(null);
+
+      if (sectorsResult) {
+        const sectors: Array<{ sector_id?: number | string; has_pirate_holding?: boolean }> =
+          sectorsResult.data.sectors || [];
+        const next = new Set<string>();
+        for (const sector of sectors) {
+          if (sector.has_pirate_holding === true && sector.sector_id != null) {
+            next.add(String(sector.sector_id));
+          }
+        }
+        setHoldingSectorIds(next);
+      } else {
+        setHoldingSectorIds(new Set());
+      }
     } catch (err: unknown) {
       setError(getErrorMessage(err));
     } finally {
@@ -252,6 +274,12 @@ const StationsManager: React.FC = () => {
               <tr key={port.id}>
                 <td className="name-cell">
                   <strong>{port.name}</strong>
+                  {holdingSectorIds.has(String(port.sector_id)) && (
+                    <>
+                      {' '}
+                      <span className="badge badge-warning" title="Pirate Holding">Holding</span>
+                    </>
+                  )}
                 </td>
                 <td>{port.sector_name || port.sector_id}</td>
                 <td>

@@ -164,6 +164,20 @@ describe('EconomyLeversPanel (LEG-30)', () => {
     expect(String(toastError.mock.calls[0][0])).toMatch(/rate limit/i);
   });
 
+  it('collapses axios-shaped Network Error to gameserver-unreachable fallback on load (LEG-3326)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
+
+    render(<EconomyLeversPanel />);
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalled();
+    });
+    const msg = String(toastError.mock.calls[0][0]);
+    expect(msg).toMatch(/Gameserver unreachable|network error loading economy levers/i);
+    expect(msg).not.toBe('Network Error');
+    expect(msg).not.toContain('Network Error');
+  });
+
   it('reports a 403 on insurance save via formatAdminApiError (LEG-2740)', async () => {
     vi.mocked(api.get).mockResolvedValue({ data: emptySnapshot });
     vi.mocked(api.patch).mockRejectedValue({ response: { status: 403 } });
@@ -210,6 +224,34 @@ describe('EconomyLeversPanel (LEG-30)', () => {
       expect(toastError).toHaveBeenCalled();
     });
     expect(String(toastError.mock.calls[0][0])).toMatch(/rate limit/i);
+  });
+
+  it('surfaces honest fallback on insurance save TypeError/network collapse (LEG-2996)', async () => {
+    vi.mocked(api.get).mockResolvedValue({ data: emptySnapshot });
+    vi.mocked(api.patch).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<EconomyLeversPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('BASIC insurance premium percent')).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByLabelText('BASIC insurance premium percent'), {
+      target: { value: '12' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save insurance levers' }));
+
+    await waitFor(() => {
+      expect(api.patch).toHaveBeenCalledWith('/api/v1/admin/economy/levers/insurance', {
+        insurance_premium_pct: { BASIC: 0.12, STANDARD: 0.1, PREMIUM: 0.15 },
+        insurance_net_payout_pct: { BASIC: 0.5, STANDARD: 0.7, PREMIUM: 0.9 },
+      });
+      expect(toastError).toHaveBeenCalled();
+    });
+    const msg = String(toastError.mock.calls[0][0]);
+    expect(msg).toMatch(/Failed to save insurance levers/i);
+    expect(msg).not.toMatch(/Failed to fetch/i);
+    expect(msg).not.toMatch(/TypeError/i);
   });
 
   it('reports a 403 on bounty save via formatAdminApiError (LEG-2730)', async () => {

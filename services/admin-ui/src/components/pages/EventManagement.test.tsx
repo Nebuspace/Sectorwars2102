@@ -77,6 +77,66 @@ const mockLoad = (events = [sampleEvent]) => {
   });
 };
 
+describe('EventManagement Network Error densify (LEG-3504)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.post).mockReset();
+    toastSuccess.mockReset();
+    toastError.mockReset();
+    toastInfo.mockReset();
+    toastWarning.mockReset();
+    confirmMock.mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('collapses axios-shaped Network Error on primary events load', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/events/templates')) {
+        return { data: [] };
+      }
+      if (url.includes('/events/')) {
+        throw new Error('Network Error');
+      }
+      return { data: {} };
+    });
+
+    render(<EventManagement />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to fetch event data/i)).toBeTruthy();
+    });
+    const text = screen.getByText(/Failed to fetch event data/i).textContent ?? '';
+    expect(text).toMatch(/Failed to fetch event data/i);
+    expect(text).not.toBe('Network Error');
+    expect(text).not.toContain('Network Error');
+  });
+
+  it('collapses axios-shaped Network Error on stats load when events list succeeds', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url.includes('/events/templates')) {
+        return { data: [] };
+      }
+      if (url.includes('/events/stats')) {
+        throw new Error('Network Error');
+      }
+      if (url.includes('/events/')) {
+        return { data: { events: [sampleEvent], total_pages: 1 } };
+      }
+      return { data: {} };
+    });
+
+    render(<EventManagement />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to fetch event data/i)).toBeTruthy();
+    });
+    const text = screen.getByText(/Failed to fetch event data/i).textContent ?? '';
+    expect(text).toMatch(/Failed to fetch event data/i);
+    expect(text).not.toBe('Network Error');
+    expect(text).not.toContain('Network Error');
+  });
+});
+
 describe('EventManagement scope errors (LEG-967)', () => {
   beforeEach(() => {
     vi.mocked(api.get).mockReset();

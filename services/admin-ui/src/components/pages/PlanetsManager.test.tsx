@@ -68,6 +68,20 @@ describe('PlanetsManager scope errors (LEG-966)', () => {
       expect(screen.getByText(/rate limit/i)).toBeTruthy();
     });
   });
+
+  it('surfaces honest fallback on load TypeError/network collapse (LEG-2999)', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<PlanetsManager />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to fetch planets/i)).toBeTruthy();
+    });
+
+    const text = screen.getByText(/Failed to fetch planets/i).textContent ?? '';
+    expect(text).not.toMatch(/TypeError/i);
+    expect(text).not.toBe('Failed to fetch');
+  });
 });
 
 describe('PlanetsManager delete errors (LEG-2647)', () => {
@@ -117,3 +131,171 @@ describe('PlanetsManager delete errors (LEG-2647)', () => {
     expect(screen.queryByText(/Failed to delete planet "Test Planet"/i)).toBeNull();
   });
 });
+
+describe('PlanetsManager axios Network Error densify (LEG-3391)', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.delete).mockReset();
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+  });
+
+  it('collapses axios-shaped Network Error on load to honest fallback', async () => {
+    vi.mocked(api.get).mockRejectedValue(new Error('Network Error'));
+
+    render(<PlanetsManager />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to fetch planets/i)).toBeTruthy();
+    });
+
+    const text = screen.getByText(/Failed to fetch planets/i).textContent ?? '';
+    expect(text).toMatch(/Failed to fetch planets/i);
+    expect(text).not.toBe('Network Error');
+    expect(text).not.toContain('Network Error');
+  });
+
+  it('collapses Failed to fetch TypeError on load to honest fallback', async () => {
+    vi.mocked(api.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(<PlanetsManager />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to fetch planets/i)).toBeTruthy();
+    });
+
+    const text = screen.getByText(/Failed to fetch planets/i).textContent ?? '';
+    expect(text).not.toMatch(/Failed to fetch$/);
+    expect(text).not.toBe('Failed to fetch');
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('collapses axios-shaped Network Error on delete to honest fallback', async () => {
+    mockPlanetsLoaded();
+    vi.mocked(api.delete).mockRejectedValue(new Error('Network Error'));
+    const user = userEvent.setup();
+
+    render(<PlanetsManager />);
+    await waitFor(() => expect(screen.getByText('Test Planet')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+
+    await waitFor(() => {
+      expect(api.delete).toHaveBeenCalledWith('/api/v1/admin/planets/p1');
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to delete planet "Test Planet"/i)).toBeTruthy();
+    });
+    const text =
+      screen.getByText(/Failed to delete planet "Test Planet"/i).textContent ?? '';
+    expect(text).not.toBe('Network Error');
+    expect(text).not.toContain('Network Error');
+  });
+
+  it('collapses Failed to fetch TypeError on delete to honest fallback', async () => {
+    mockPlanetsLoaded();
+    vi.mocked(api.delete).mockRejectedValue(new TypeError('Failed to fetch'));
+    const user = userEvent.setup();
+
+    render(<PlanetsManager />);
+    await waitFor(() => expect(screen.getByText('Test Planet')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+
+    await waitFor(() => {
+      expect(api.delete).toHaveBeenCalledWith('/api/v1/admin/planets/p1');
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to delete planet "Test Planet"/i)).toBeTruthy();
+    });
+    const text =
+      screen.getByText(/Failed to delete planet "Test Planet"/i).textContent ?? '';
+    expect(text).not.toBe('Failed to fetch');
+    expect(text).not.toMatch(/TypeError/i);
+  });
+
+  it('preserves scope detail on delete 403 (not collapsed away)', async () => {
+    mockPlanetsLoaded();
+    vi.mocked(api.delete).mockRejectedValue(
+      axiosError(403, 'Missing scope admin.universe.planets'),
+    );
+    const user = userEvent.setup();
+
+    render(<PlanetsManager />);
+    await waitFor(() => expect(screen.getByText('Test Planet')).toBeTruthy());
+
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Missing scope admin\.universe\.planets/i)).toBeTruthy();
+    });
+  });
+});
+
+describe('PlanetsManager Holding badge from sector has_pirate_holding (LEG-4199)', () => {
+  const mockListLoad = (sectors: Array<Record<string, unknown>>) => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/planets/comprehensive')) {
+        return { data: { planets: [samplePlanet], total_count: 1 } };
+      }
+      if (String(url).includes('/sectors')) {
+        return { data: { sectors, total: sectors.length } };
+      }
+      return { data: {} };
+    });
+  };
+
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.delete).mockReset();
+  });
+
+  it('shows a Holding badge when the planet sector has has_pirate_holding true', async () => {
+    mockListLoad([{ id: 'sec-s1', sector_id: 's1', name: 'Alpha', has_pirate_holding: true }]);
+
+    render(<PlanetsManager />);
+
+    expect(await screen.findByText('Test Planet')).toBeTruthy();
+    expect(screen.getByTitle('Pirate Holding')).toHaveTextContent('Holding');
+    const urls = vi.mocked(api.get).mock.calls.map((c) => String(c[0]));
+    expect(urls.filter((u) => u.includes('/admin/sectors')).length).toBe(1);
+    expect(urls.some((u) => u.includes('pirate-holdings'))).toBe(false);
+  });
+
+  it('does not show a Holding badge when has_pirate_holding is false', async () => {
+    mockListLoad([{ id: 'sec-s1', sector_id: 's1', name: 'Alpha', has_pirate_holding: false }]);
+
+    render(<PlanetsManager />);
+
+    expect(await screen.findByText('Test Planet')).toBeTruthy();
+    expect(screen.queryByTitle('Pirate Holding')).toBeNull();
+    expect(screen.queryByText('Holding')).toBeNull();
+  });
+
+  it('does not show a Holding badge when has_pirate_holding is omitted', async () => {
+    mockListLoad([{ id: 'sec-s1', sector_id: 's1', name: 'Alpha' }]);
+
+    render(<PlanetsManager />);
+
+    expect(await screen.findByText('Test Planet')).toBeTruthy();
+    expect(screen.queryByTitle('Pirate Holding')).toBeNull();
+    expect(screen.queryByText('Holding')).toBeNull();
+  });
+
+  it('still lists planets when the sectors fetch fails (no invented holdings)', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (String(url).includes('/planets/comprehensive')) {
+        return { data: { planets: [samplePlanet], total_count: 1 } };
+      }
+      if (String(url).includes('/sectors')) {
+        throw axiosError(500);
+      }
+      return { data: {} };
+    });
+
+    render(<PlanetsManager />);
+
+    expect(await screen.findByText('Test Planet')).toBeTruthy();
+    expect(screen.queryByTitle('Pirate Holding')).toBeNull();
+  });
+});
+
