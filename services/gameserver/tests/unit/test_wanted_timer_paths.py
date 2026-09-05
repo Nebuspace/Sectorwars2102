@@ -79,6 +79,19 @@ def test_is_live_wanted_requires_flag_and_future_until():
 
 
 @pytest.mark.unit
+def test_is_live_wanted_tolerates_simple_namespace_without_law_flags():
+    """Regression: combat DB-free mocks often omit is_wanted/wanted_until.
+
+    Closer bounce on LEG-4137/#1473 — unconditional attr access broke 9
+    unit tests after attack_player started calling is_live_wanted.
+    """
+    from types import SimpleNamespace
+
+    stub = SimpleNamespace(id=uuid.uuid4())
+    assert wanted_service.is_live_wanted(stub, now=FROZEN_NOW) is False
+
+
+@pytest.mark.unit
 def test_apply_wanted_event_first_acquisition_stamps_declared_at():
     player = _player()
     first = wanted_service.apply_wanted_event(None, player, now=FROZEN_NOW)
