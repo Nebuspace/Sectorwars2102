@@ -97,6 +97,7 @@ from src.services.faction_service import (
     adjust_sector_influence,
     sector_spawn_bias,
 )
+from src.services.multi_account_service import participation_weight
 
 logger = logging.getLogger(__name__)
 
@@ -3799,9 +3800,12 @@ def _apply_reputation(db: Session, player_id, amount: int, reason: str) -> None:
     old = player.personal_reputation or 0
     new = max(-1000, min(1000, old + amount))
     player.personal_reputation = new
-    tier, color = PersonalReputationService._get_tier_for_score(new)
+    tier, _color = PersonalReputationService._get_tier_for_score(new)
     player.reputation_tier = tier
-    player.name_color = color
+    # LEG-4135: do not clobber Wanted/Suspect name_color with tier color.
+    from src.services.law_name_color import apply_law_name_color
+
+    apply_law_name_color(player)
     logger.info(
         "Reputation %+d for %s (%s): %d -> %d (%s)",
         amount, player_id, reason, old, new, tier,
@@ -3856,6 +3860,40 @@ def launch_campaign(
     return campaign
 
 
+def _weighted_transaction_volume(
+    db: Session,
+    q,
+    *,
+    player_id=None,
+) -> int:
+    """Sum ``total_value * participation_weight(player)`` for rows in ``q``.
+
+    When ``player_id`` is set the caller already filtered to that player —
+    apply one weight to the gross sum. Otherwise weight each row's player
+    independently (canon multi-account-detection.md station-takeover discount).
+    """
+    if player_id is not None:
+        raw = int(
+            q.with_entities(func.coalesce(func.sum(MarketTransaction.total_value), 0))
+            .scalar()
+            or 0
+        )
+        return int(raw * participation_weight(db, player_id))
+
+    rows = q.with_entities(
+        MarketTransaction.player_id, MarketTransaction.total_value
+    ).all()
+    if not rows:
+        return 0
+    cache: Dict[uuid.UUID, float] = {}
+    total = 0.0
+    for pid, tv in rows:
+        if pid not in cache:
+            cache[pid] = participation_weight(db, pid)
+        total += float(tv or 0) * cache[pid]
+    return int(total)
+
+
 def monthly_volume(
     db: Session,
     station: Station,
@@ -3867,9 +3905,12 @@ def monthly_volume(
     """Gross BUY+SELL volume at the station during scaled month
     `month_index` (30 canonical days each, anchored at `anchor`),
     optionally restricted to one player (pass either the ORM `player`
-    or a bare `player_id`)."""
+    or a bare `player_id`).
+
+    Each transaction is credited at ``total_value * participation_weight``
+    for the acting player (HARD → 0, SOFT → 0.5×, clean → 1.0×)."""
     start, end = _month_bounds(_aware(anchor), month_index)
-    q = db.query(func.coalesce(func.sum(MarketTransaction.total_value), 0)).filter(
+    q = db.query(MarketTransaction).filter(
         MarketTransaction.station_id == station.id,
         MarketTransaction.transaction_type.in_([TransactionType.BUY, TransactionType.SELL]),
         MarketTransaction.timestamp >= start,
@@ -3878,7 +3919,7 @@ def monthly_volume(
     pid = player_id if player_id is not None else (player.id if player is not None else None)
     if pid is not None:
         q = q.filter(MarketTransaction.player_id == pid)
-    return int(q.scalar() or 0)
+    return _weighted_transaction_volume(db, q, player_id=pid)
 
 
 def _month_hostility(
@@ -3931,17 +3972,8 @@ def _month_stats(
     start, end = _month_bounds(anchor, month_index)
     station_vol = monthly_volume(db, station, month_index, anchor)
     defense_vol = defense_volume_for_month(station, campaign.id, month_index)
-    challenger_vol = int(
-        db.query(func.coalesce(func.sum(MarketTransaction.total_value), 0))
-        .filter(
-            MarketTransaction.station_id == station.id,
-            MarketTransaction.player_id == campaign.challenger_id,
-            MarketTransaction.transaction_type.in_([TransactionType.BUY, TransactionType.SELL]),
-            MarketTransaction.timestamp >= start,
-            MarketTransaction.timestamp < end,
-        )
-        .scalar()
-        or 0
+    challenger_vol = monthly_volume(
+        db, station, month_index, anchor, player_id=campaign.challenger_id
     )
     share = month_share_with_defense(station_vol, challenger_vol, defense_vol)
     hostile = _month_hostility(db, station.id, campaign.challenger_id, start, end)

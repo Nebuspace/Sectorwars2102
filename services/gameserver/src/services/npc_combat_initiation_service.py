@@ -205,6 +205,9 @@ def _initiate_npc_combat_inner(
     if failure is not None:
         return failure
 
+    from src.services.interdictor_abilities_service import maybe_apply_interdictor_on_npc_attack
+    maybe_apply_interdictor_on_npc_attack(npc_ship, defender.current_ship)
+
     # Resolution via the PUBLIC entry point — no private reach-around into
     # _resolve_ship_combat. npc_attack_player is itself flush-only (its own
     # docstring/combat_service.py:1611) and does its own guard re-checks

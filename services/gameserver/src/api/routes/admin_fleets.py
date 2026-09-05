@@ -9,6 +9,7 @@ BEFORE parameterized routes (e.g., /{fleet_id}) to avoid FastAPI
 treating the named path segment as a path parameter.
 """
 
+import logging
 from typing import List, Optional, Dict, Any
 from uuid import UUID
 from datetime import datetime
@@ -24,6 +25,11 @@ from src.models.user import User
 from src.models.fleet import Fleet, FleetBattle, FleetBattleCasualty, FleetStatus
 from src.services.fleet_service import FleetService
 from src.services.audit_service import AuditService, AuditAction
+from src.utils.error_handling import route_internal_error
+
+logger = logging.getLogger(__name__)
+
+ERR_ADMIN_FLEETS_LIST_FAILED = "ERR_ADMIN_FLEETS_LIST_FAILED"
 
 router = APIRouter(prefix="/admin/fleets", tags=["admin", "fleets"])
 
@@ -131,55 +137,61 @@ async def get_all_fleets(
     db: Session = Depends(get_db)
 ):
     """Get all fleets with optional filters."""
-    query = db.query(Fleet)
+    try:
+        query = db.query(Fleet)
 
-    if status:
-        try:
-            validated_status = FleetStatus(status).value
-        except ValueError:
-            valid_values = [s.value for s in FleetStatus]
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid fleet status '{status}'. Valid values: {valid_values}"
+        if status:
+            try:
+                validated_status = FleetStatus(status).value
+            except ValueError:
+                valid_values = [s.value for s in FleetStatus]
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid fleet status '{status}'. Valid values: {valid_values}"
+                )
+            query = query.filter(Fleet.status == validated_status)
+        if team_id:
+            query = query.filter(Fleet.team_id == team_id)
+        if sector_id:
+            query = query.filter(Fleet.sector_id == sector_id)
+        if in_battle is not None:
+            if in_battle:
+                query = query.filter(Fleet.status == FleetStatus.IN_BATTLE.value)
+            else:
+                query = query.filter(Fleet.status != FleetStatus.IN_BATTLE.value)
+
+        fleets = query.offset(skip).limit(limit).all()
+
+        return [
+            AdminFleetResponse(
+                id=fleet.id,
+                team_id=fleet.team_id,
+                team_name=fleet.team.name if fleet.team else "Unknown",
+                name=fleet.name,
+                status=fleet.status,
+                formation=fleet.formation,
+                total_ships=fleet.total_ships,
+                total_firepower=fleet.total_firepower,
+                total_shields=fleet.total_shields,
+                total_hull=fleet.total_hull,
+                average_speed=fleet.average_speed,
+                morale=fleet.morale,
+                supply_level=fleet.supply_level,
+                commander_id=fleet.commander_id,
+                commander_name=fleet.commander.name if fleet.commander else None,
+                sector_id=fleet.sector_id,
+                sector_name=fleet.sector.name if fleet.sector else None,
+                member_count=len(fleet.members),
+                created_at=fleet.created_at,
+                last_battle=fleet.last_battle
             )
-        query = query.filter(Fleet.status == validated_status)
-    if team_id:
-        query = query.filter(Fleet.team_id == team_id)
-    if sector_id:
-        query = query.filter(Fleet.sector_id == sector_id)
-    if in_battle is not None:
-        if in_battle:
-            query = query.filter(Fleet.status == FleetStatus.IN_BATTLE.value)
-        else:
-            query = query.filter(Fleet.status != FleetStatus.IN_BATTLE.value)
-
-    fleets = query.offset(skip).limit(limit).all()
-
-    return [
-        AdminFleetResponse(
-            id=fleet.id,
-            team_id=fleet.team_id,
-            team_name=fleet.team.name if fleet.team else "Unknown",
-            name=fleet.name,
-            status=fleet.status,
-            formation=fleet.formation,
-            total_ships=fleet.total_ships,
-            total_firepower=fleet.total_firepower,
-            total_shields=fleet.total_shields,
-            total_hull=fleet.total_hull,
-            average_speed=fleet.average_speed,
-            morale=fleet.morale,
-            supply_level=fleet.supply_level,
-            commander_id=fleet.commander_id,
-            commander_name=fleet.commander.name if fleet.commander else None,
-            sector_id=fleet.sector_id,
-            sector_name=fleet.sector.name if fleet.sector else None,
-            member_count=len(fleet.members),
-            created_at=fleet.created_at,
-            last_battle=fleet.last_battle
-        )
-        for fleet in fleets
-    ]
+            for fleet in fleets
+        ]
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Error in get_all_fleets")
+        raise route_internal_error(ERR_ADMIN_FLEETS_LIST_FAILED, "Failed to fetch fleets")
 
 
 @router.get("/stats", response_model=FleetStatsResponse)

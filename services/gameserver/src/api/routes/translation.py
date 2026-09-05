@@ -12,8 +12,20 @@ from src.auth.admin_scopes import GALAXY_MANAGE, PLAYERS_VIEW
 from src.auth.dependencies import get_current_user, require_scope
 from src.models.user import User
 from src.services.admin_action_log_service import log_admin_action
+from src.utils.error_handling import route_internal_error
 
 logger = logging.getLogger(__name__)
+
+ERR_I18N_LANGUAGES_FAILED = "ERR_I18N_LANGUAGES_FAILED"
+ERR_I18N_DETECT_FAILED = "ERR_I18N_DETECT_FAILED"
+ERR_I18N_TRANSLATIONS_GET_FAILED = "ERR_I18N_TRANSLATIONS_GET_FAILED"
+ERR_I18N_PREF_GET_FAILED = "ERR_I18N_PREF_GET_FAILED"
+ERR_I18N_PREF_SET_FAILED = "ERR_I18N_PREF_SET_FAILED"
+ERR_I18N_AI_CONTEXT_FAILED = "ERR_I18N_AI_CONTEXT_FAILED"
+ERR_I18N_PROGRESS_FAILED = "ERR_I18N_PROGRESS_FAILED"
+ERR_I18N_SET_FAILED = "ERR_I18N_SET_FAILED"
+ERR_I18N_IMPORT_FAILED = "ERR_I18N_IMPORT_FAILED"
+ERR_I18N_INIT_FAILED = "ERR_I18N_INIT_FAILED"
 
 # Create router
 router = APIRouter(prefix="/i18n", tags=["Internationalization"])
@@ -68,9 +80,9 @@ async def get_supported_languages(
     try:
         languages = await translation_service.get_supported_languages(active_only)
         return languages
-    except Exception as e:
-        logger.error(f"Failed to get languages: {e}")
-        raise HTTPException(status_code=500, detail="Failed to retrieve languages")
+    except Exception:
+        logger.exception("Failed to get languages")
+        raise route_internal_error(ERR_I18N_LANGUAGES_FAILED, "Failed to retrieve languages")
 
 
 @router.get("/detect")
@@ -83,9 +95,9 @@ async def detect_language(
     try:
         detected_language = await translation_service.detect_user_language(accept_language or "")
         return {"detectedLanguage": detected_language}
-    except Exception as e:
-        logger.error(f"Failed to detect language: {e}")
-        return {"detectedLanguage": "en"}
+    except Exception:
+        logger.exception("Failed to detect language")
+        raise route_internal_error(ERR_I18N_DETECT_FAILED, "Failed to detect language")
 
 
 @router.get("/{language_code}")
@@ -103,7 +115,10 @@ async def get_translations(
         return translations
     except Exception as e:
         logger.error(f"Failed to get translations: {e}")
-        raise HTTPException(status_code=500, detail="Failed to retrieve translations")
+        raise route_internal_error(
+            ERR_I18N_TRANSLATIONS_GET_FAILED,
+            "Failed to retrieve translations",
+        )
 
 
 @router.get("/{language_code}/{namespace}")
@@ -120,7 +135,10 @@ async def get_namespace_translations(
         return translations
     except Exception as e:
         logger.error(f"Failed to get namespace translations: {e}")
-        raise HTTPException(status_code=500, detail="Failed to retrieve translations")
+        raise route_internal_error(
+            ERR_I18N_TRANSLATIONS_GET_FAILED,
+            "Failed to retrieve translations",
+        )
 
 
 # User-authenticated endpoints
@@ -136,7 +154,10 @@ async def get_user_language_preference(
         return {"languageCode": language_code}
     except Exception as e:
         logger.error(f"Failed to get user language preference: {e}")
-        raise HTTPException(status_code=500, detail="Failed to get language preference")
+        raise route_internal_error(
+            ERR_I18N_PREF_GET_FAILED,
+            "Failed to get language preference",
+        )
 
 
 @router.post("/user/preference")
@@ -158,7 +179,10 @@ async def set_user_language_preference(
             
     except Exception as e:
         logger.error(f"Failed to set user language preference: {e}")
-        raise HTTPException(status_code=500, detail="Failed to set language preference")
+        raise route_internal_error(
+            ERR_I18N_PREF_SET_FAILED,
+            "Failed to set language preference",
+        )
 
 
 @router.get("/user/ai-context")
@@ -176,7 +200,10 @@ async def get_ai_language_context(
         }
     except Exception as e:
         logger.error(f"Failed to get AI language context: {e}")
-        raise HTTPException(status_code=500, detail="Failed to get AI context")
+        raise route_internal_error(
+            ERR_I18N_AI_CONTEXT_FAILED,
+            "Failed to get AI context",
+        )
 
 
 # Admin-only endpoints
@@ -193,7 +220,10 @@ async def get_translation_progress(
         return progress
     except Exception as e:
         logger.error(f"Failed to get translation progress: {e}")
-        raise HTTPException(status_code=500, detail="Failed to get translation progress")
+        raise route_internal_error(
+            ERR_I18N_PROGRESS_FAILED,
+            "Failed to get translation progress",
+        )
 
 
 @router.post("/admin/translation/{language_code}/{namespace}")
@@ -243,7 +273,10 @@ async def set_translation(
             
     except Exception as e:
         logger.error(f"Failed to set translation: {e}")
-        raise HTTPException(status_code=500, detail="Failed to set translation")
+        raise route_internal_error(
+            ERR_I18N_SET_FAILED,
+            "Failed to set translation",
+        )
 
 
 @router.post("/admin/bulk/{language_code}/{namespace}")
@@ -285,7 +318,10 @@ async def bulk_import_translations(
         return result
     except Exception as e:
         logger.error(f"Failed to bulk import translations: {e}")
-        raise HTTPException(status_code=500, detail="Failed to import translations")
+        raise route_internal_error(
+            ERR_I18N_IMPORT_FAILED,
+            "Failed to import translations",
+        )
 
 
 @router.post("/admin/initialize")
@@ -311,10 +347,16 @@ async def initialize_translation_data(
         if success:
             return {"success": True, "message": "Translation data initialized"}
         else:
-            raise HTTPException(status_code=500, detail="Failed to initialize translation data")
+            raise route_internal_error(
+            ERR_I18N_INIT_FAILED,
+            "Failed to initialize translation data",
+        )
     except Exception as e:
         logger.error(f"Failed to initialize translation data: {e}")
-        raise HTTPException(status_code=500, detail="Failed to initialize translation data")
+        raise route_internal_error(
+            ERR_I18N_INIT_FAILED,
+            "Failed to initialize translation data",
+        )
 
 
 @router.get("/admin/languages/all")
@@ -328,7 +370,10 @@ async def get_all_languages(
         return languages
     except Exception as e:
         logger.error(f"Failed to get all languages: {e}")
-        raise HTTPException(status_code=500, detail="Failed to retrieve languages")
+        raise route_internal_error(
+            ERR_I18N_LANGUAGES_FAILED,
+            "Failed to retrieve languages",
+        )
 
 
 # Health check endpoint

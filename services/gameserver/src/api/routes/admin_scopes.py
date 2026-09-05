@@ -8,6 +8,7 @@ self-logs to AdminActionLog (acting admin cannot suppress the write).
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -30,8 +31,14 @@ from src.core.database import get_db
 from src.models.admin_scope_grant import AdminScopeGrant
 from src.models.user import User
 from src.services.admin_action_attempt import admin_action_attempt
+from src.utils.error_handling import route_internal_error
 
 router = APIRouter(prefix="/admin/scopes", tags=["admin-scopes"])
+
+logger = logging.getLogger(__name__)
+
+ERR_SCOPE_GRANT_FAILED = "ERR_SCOPE_GRANT_FAILED"
+ERR_SCOPE_REVOKE_FAILED = "ERR_SCOPE_REVOKE_FAILED"
 
 
 class ScopeMutationRequest(BaseModel):
@@ -372,8 +379,9 @@ async def grant_scope(
             db.refresh(target)
         except HTTPException:
             raise
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail="Grant failed") from exc
+        except Exception:
+            logger.exception("Grant scope failed")
+            raise route_internal_error(ERR_SCOPE_GRANT_FAILED, "Grant failed")
 
     return ScopeMutationResponse(
         user_id=target.id,
@@ -413,8 +421,9 @@ async def revoke_scope(
             db.refresh(target)
         except HTTPException:
             raise
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail="Revoke failed") from exc
+        except Exception:
+            logger.exception("Revoke scope failed")
+            raise route_internal_error(ERR_SCOPE_REVOKE_FAILED, "Revoke failed")
 
     still = (
         db.query(AdminScopeGrant.id)

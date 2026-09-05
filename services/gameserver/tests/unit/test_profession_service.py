@@ -37,9 +37,10 @@ class _QueryStub:
 
 
 class _DBStub:
-    def __init__(self, professions=None, queue=None):
+    def __init__(self, professions=None, queue=None, player=None):
         self.professions = professions or []
         self.queue = queue or []
+        self.player = player
         self.added = []
 
     def query(self, model):
@@ -48,6 +49,8 @@ class _DBStub:
             return _QueryStub(self.professions)
         if name == "ProfessionTrainingQueue":
             return _QueryStub(self.queue)
+        if name == "Player":
+            return _PlayerQueryStub(self.player)
         return _QueryStub([])
 
     def add(self, obj):
@@ -57,6 +60,20 @@ class _DBStub:
 
     def flush(self):
         return None
+
+
+class _PlayerQueryStub:
+    def __init__(self, player):
+        self._player = player
+
+    def filter(self, *args, **kwargs):
+        return self
+
+    def with_for_update(self):
+        return self
+
+    def first(self):
+        return self._player
 
 
 def _structures_with(*buildings):
@@ -73,14 +90,34 @@ def _op_building(kind: str, level: int):
     }
 
 
-def _planet(owner_id, *, citadel_level=3, research_level=3, colonists=500, structures=None):
+def _planet(owner_id, *, citadel_level=3, research_level=3, colonists=500, structures=None, equipment=10_000, organics=10_000):
     return SimpleNamespace(
         id=uuid4(),
         owner_id=owner_id,
         citadel_level=citadel_level,
         research_level=research_level,
         colonists=colonists,
+        equipment=equipment,
+        organics=organics,
         structures=structures if structures is not None else _structures_with(),
+    )
+
+
+def _player(owner_id, *, credits=1_000_000):
+    return SimpleNamespace(id=owner_id, credits=credits)
+
+
+def _db_with_player(owner_id, *, credits=1_000_000, professions=None, queue=None):
+    return _DBStub(
+        professions=professions,
+        queue=queue,
+        player=_player(owner_id, credits=credits),
+    )
+
+
+def _svc_with_player(owner_id, *, credits=1_000_000):
+    return ProfessionService(_DBStub(player=_player(owner_id, credits=credits))), _player(
+        owner_id, credits=credits
     )
 
 
@@ -141,7 +178,7 @@ def test_research_scientists_rejected_when_research_lab_below_l3():
 def test_research_scientists_allowed_at_research_lab_l3(monkeypatch):
     owner = uuid4()
     planet = _planet(owner, research_level=MIN_RESEARCH_LAB_FOR_RESEARCH_SCIENTISTS)
-    db = _DBStub()
+    db = _db_with_player(owner)
     svc = ProfessionService(db)
     fixed_now = datetime(2026, 8, 28, tzinfo=timezone.utc)
     fixed_deadline = fixed_now + timedelta(days=40)
@@ -181,10 +218,11 @@ def test_get_state_includes_training_eligibility():
     assert state["training_eligibility"][ProfessionType.MINING_ENGINEERS.value] is True
 
 
-def test_queue_training_no_charge(monkeypatch):
+def test_queue_training_charges_provisional_costs(monkeypatch):
     owner = uuid4()
-    planet = _planet(owner, colonists=200)
-    db = _DBStub()
+    planet = _planet(owner, colonists=200, equipment=5000)
+    player = _player(owner, credits=1_000_000)
+    db = _DBStub(player=player)
     svc = ProfessionService(db)
     fixed_now = datetime(2026, 8, 28, tzinfo=timezone.utc)
     fixed_deadline = fixed_now + timedelta(days=20)
@@ -199,14 +237,39 @@ def test_queue_training_no_charge(monkeypatch):
         now=fixed_now,
     )
     assert result["success"] is True
-    assert result["cost_blocked"] is True
-    assert result["cost_charged"] is False
+    assert result["cost_blocked"] is False
+    assert result["cost_charged"] is True
+    assert result["cost"] == {"credits": 12_500, "equipment": 250}
+    assert player.credits == 1_000_000 - 12_500
+    assert planet.equipment == 5000 - 250
     assert result["training_days"] == 20
     assert len(db.added) == 1
     row = db.added[0]
     assert row.trainee_count == 25
     assert row.status == ProfessionTrainingStatus.QUEUED.value
     assert planet.colonists == 200
+
+
+def test_queue_training_rejects_insufficient_credits(monkeypatch):
+    owner = uuid4()
+    planet = _planet(owner, colonists=200)
+    player = _player(owner, credits=100)
+    db = _DBStub(player=player)
+    svc = ProfessionService(db)
+    monkeypatch.setattr(ps, "scaled_deadline", lambda hours, start=None: datetime.now(timezone.utc))
+    with pytest.raises(ValueError, match="insufficient_credits"):
+        svc.queue_training(planet, owner, ProfessionType.MINING_ENGINEERS.value, 25)
+
+
+def test_queue_training_rejects_insufficient_equipment(monkeypatch):
+    owner = uuid4()
+    planet = _planet(owner, colonists=200, equipment=10)
+    player = _player(owner, credits=1_000_000)
+    db = _DBStub(player=player)
+    svc = ProfessionService(db)
+    monkeypatch.setattr(ps, "scaled_deadline", lambda hours, start=None: datetime.now(timezone.utc))
+    with pytest.raises(ValueError, match="insufficient_equipment"):
+        svc.queue_training(planet, owner, ProfessionType.MINING_ENGINEERS.value, 25)
 
 
 def test_advance_queue_converts_colonists():
@@ -235,14 +298,15 @@ def test_advance_queue_converts_colonists():
     assert queue_row.status == ProfessionTrainingStatus.COMPLETED.value
 
 
-def test_get_state_includes_cost_blocked():
+def test_get_state_includes_training_costs_unblocked():
     owner = uuid4()
     planet = _planet(owner)
-    db = _DBStub()
+    db = _DBStub(player=_player(owner))
     svc = ProfessionService(db)
     state = svc.get_state(planet, owner)
-    assert state["cost_blocked"] is True
-    assert "DECISION-NEEDED" in state["cost_block_reason"]
+    assert state["cost_blocked"] is False
+    assert state["cost_basis"] == "provisional_per_100"
+    assert len(state["training_costs_per_100"]) == 12
     assert len(state["professions"]) == 12
 
 
@@ -412,7 +476,7 @@ def test_space_engineers_gate_passes_at_orbital_shipyard_l2(monkeypatch):
             _op_building("ORBITAL_SHIPYARD", MIN_ORBITAL_SHIPYARD_FOR_SPACE_ENGINEERS)
         ),
     )
-    db = _DBStub()
+    db = _db_with_player(owner)
     svc = ProfessionService(db)
     fixed_now = datetime(2026, 8, 28, tzinfo=timezone.utc)
     fixed_deadline = fixed_now + timedelta(days=30)
@@ -446,7 +510,7 @@ def test_combat_pilots_gate_passes_at_military_academy_l2(monkeypatch):
             _op_building("MILITARY_ACADEMY", MIN_MILITARY_ACADEMY_FOR_COMBAT_PILOTS)
         ),
     )
-    db = _DBStub()
+    db = _db_with_player(owner)
     svc = ProfessionService(db)
     fixed_now = datetime(2026, 8, 28, tzinfo=timezone.utc)
     fixed_deadline = fixed_now + timedelta(days=25)
@@ -484,7 +548,7 @@ def test_terraform_engineers_gate_passes_at_terraforming_lab_l3(monkeypatch):
             )
         ),
     )
-    db = _DBStub()
+    db = _db_with_player(owner)
     svc = ProfessionService(db)
     fixed_now = datetime(2026, 8, 28, tzinfo=timezone.utc)
     fixed_deadline = fixed_now + timedelta(days=35)
@@ -494,3 +558,108 @@ def test_terraform_engineers_gate_passes_at_terraforming_lab_l3(monkeypatch):
     )
     assert result["success"] is True
     assert svc.training_eligibility(planet)[ProfessionType.TERRAFORM_ENGINEERS.value] is True
+
+
+def test_assign_active_non_owner_rejected():
+    owner = uuid4()
+    stranger = uuid4()
+    planet = _planet(owner)
+    prof_row = SimpleNamespace(
+        planet_id=planet.id,
+        profession=ProfessionType.TERRAFORM_ENGINEERS.value,
+        count=1000,
+        active_count=None,
+    )
+    svc = ProfessionService(_DBStub(professions=[prof_row]))
+    with pytest.raises(ValueError, match="not_owner"):
+        svc.assign_active(planet, stranger, ProfessionType.TERRAFORM_ENGINEERS.value, 500)
+
+
+def test_assign_active_unknown_profession():
+    owner = uuid4()
+    planet = _planet(owner)
+    svc = ProfessionService(_DBStub())
+    with pytest.raises(ValueError, match="unknown_profession:"):
+        svc.assign_active(planet, owner, "NOT_A_REAL_PROFESSION", 1)
+
+
+def test_assign_active_exceeds_trained():
+    owner = uuid4()
+    planet = _planet(owner)
+    prof_row = SimpleNamespace(
+        planet_id=planet.id,
+        profession=ProfessionType.TERRAFORM_ENGINEERS.value,
+        count=200,
+        active_count=None,
+    )
+    svc = ProfessionService(_DBStub(professions=[prof_row]))
+    with pytest.raises(ValueError, match="active_count_exceeds_trained"):
+        svc.assign_active(planet, owner, ProfessionType.TERRAFORM_ENGINEERS.value, 500)
+
+
+def test_assign_active_success_and_idempotent():
+    owner = uuid4()
+    planet = _planet(owner)
+    prof_row = SimpleNamespace(
+        planet_id=planet.id,
+        profession=ProfessionType.TERRAFORM_ENGINEERS.value,
+        count=2000,
+        active_count=None,
+    )
+    db = _DBStub(professions=[prof_row])
+    svc = ProfessionService(db)
+    result = svc.assign_active(
+        planet, owner, ProfessionType.TERRAFORM_ENGINEERS.value, 500
+    )
+    assert result["success"] is True
+    assert result["changed"] is True
+    assert result["active_count"] == 500
+    assert prof_row.active_count == 500
+
+    again = svc.assign_active(
+        planet, owner, ProfessionType.TERRAFORM_ENGINEERS.value, 500
+    )
+    assert again["changed"] is False
+    assert again["message"] == "Active assignment unchanged (idempotent)."
+
+
+def test_active_profession_counts_null_means_all_trained():
+    planet_id = uuid4()
+    prof_row = SimpleNamespace(
+        planet_id=planet_id,
+        profession=ProfessionType.TERRAFORM_ENGINEERS.value,
+        count=1500,
+        active_count=None,
+    )
+    db = _DBStub(professions=[prof_row])
+    counts = ps.active_profession_counts(db, planet_id)
+    assert counts[ProfessionType.TERRAFORM_ENGINEERS] == 1500
+
+
+def test_active_profession_counts_explicit_zero():
+    planet_id = uuid4()
+    prof_row = SimpleNamespace(
+        planet_id=planet_id,
+        profession=ProfessionType.TERRAFORM_ENGINEERS.value,
+        count=1500,
+        active_count=0,
+    )
+    db = _DBStub(professions=[prof_row])
+    counts = ps.active_profession_counts(db, planet_id)
+    assert counts[ProfessionType.TERRAFORM_ENGINEERS] == 0
+
+
+def test_get_state_includes_active_professions():
+    owner = uuid4()
+    planet = _planet(owner)
+    prof_row = SimpleNamespace(
+        planet_id=planet.id,
+        profession=ProfessionType.MINING_ENGINEERS.value,
+        count=100,
+        active_count=40,
+    )
+    db = _DBStub(professions=[prof_row], player=_player(owner))
+    svc = ProfessionService(db)
+    state = svc.get_state(planet, owner)
+    assert state["active_professions"][ProfessionType.MINING_ENGINEERS.value] == 40
+    assert state["professions"][ProfessionType.MINING_ENGINEERS.value] == 100

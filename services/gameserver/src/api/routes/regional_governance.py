@@ -26,6 +26,7 @@ from src.models.ship import Ship
 from src.models.region_invite import RegionInvite
 from src.services.regional_governance_service import RegionalGovernanceService
 from src.services.policy_proposal_rules import validate_proposed_changes
+from src.utils.error_handling import route_internal_error
 from src.services import trading_service
 from src.services import construction_service
 from src.services.construction_service import ConstructionError
@@ -34,7 +35,7 @@ from src.services.region_invite_service import (
     DEFAULT_MAX_USES,
     MAX_MAX_USES,
 )
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 router = APIRouter(prefix="/regions")
@@ -132,6 +133,10 @@ class GovernanceConfigUpdate(BaseModel):
     governance_quorum_pct: Optional[float] = Field(None, ge=0.25, le=0.60)
 
 
+# ADR-0093 item 20 / LEG-2576 — closed honorific vocabulary (not authority).
+ALLOWED_LOCAL_RANKS = frozenset({"administrator", "moderator"})
+
+
 class MemberDialsUpdate(BaseModel):
     """Owner request to adjust one member's regional-governance dials
     (SYSTEMS/regional-governance.md:71-76 -- owner-adjustable voting power,
@@ -144,10 +149,26 @@ class MemberDialsUpdate(BaseModel):
     it lets an owner disenfranchise a member outright, since
     RegionalMembership.can_vote already gates on voting_power > 0.
 
-    ``local_rank`` is free text bounded by the column's String(50) limit;
-    canon defines no vocabulary for its contents (NO-CANON format)."""
+    ``local_rank`` is a closed honorific vocabulary (ADR-0093 item 20 /
+    FEATURES/gameplay/regional-governance.md): ``administrator``,
+    ``moderator``, or null (clear). Not an authority grant — that is
+    RegionalPermission (LEG-2576 enforcement half, Decision-gated)."""
     voting_power: Optional[float] = Field(None, ge=0.0, le=5.0)
     local_rank: Optional[str] = Field(None, max_length=50)
+
+    @field_validator("local_rank")
+    @classmethod
+    def local_rank_closed_vocabulary(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if normalized == "":
+            return None
+        if normalized not in ALLOWED_LOCAL_RANKS:
+            raise ValueError(
+                "local_rank must be one of: administrator, moderator, or null"
+            )
+        return normalized
 
 
 class PolicyCreate(BaseModel):
@@ -986,7 +1007,9 @@ async def update_member_dials(
     404 if the caller owns no region (verify_region_owner) or if
     ``player_id`` does not resolve to a RegionalMembership in the caller's
     region; 400 if neither field is supplied. Schema-level 422 covers the
-    [0.0, 5.0] voting_power band and the 50-char local_rank cap."""
+    [0.0, 5.0] voting_power band and closed local_rank vocabulary
+    (administrator / moderator / null). Existing non-vocab DB values remain
+    readable until a Max-gated backfill migration; writes reject invent ranks."""
     region = await verify_region_owner(db, current_user, region_id)
 
     result = await db.execute(
@@ -999,11 +1022,13 @@ async def update_member_dials(
     if membership is None:
         raise HTTPException(status_code=404, detail="Member not found in this region")
 
+    # exclude_unset so an explicit JSON null can clear local_rank (canon None).
+    patch = body.model_dump(exclude_unset=True)
     values: Dict[str, Any] = {}
-    if body.voting_power is not None:
-        values["voting_power"] = body.voting_power
-    if body.local_rank is not None:
-        values["local_rank"] = body.local_rank
+    if "voting_power" in patch:
+        values["voting_power"] = patch["voting_power"]
+    if "local_rank" in patch:
+        values["local_rank"] = patch["local_rank"]
     if not values:
         raise HTTPException(status_code=400, detail="No fields to update")
 
@@ -1360,7 +1385,7 @@ async def create_policy_proposal_for_member(
         policy_data=policy_data.model_dump(),
     )
     if new_policy is None:
-        raise HTTPException(status_code=500, detail="ERR_POLICY_CREATE_FAILED")
+        raise route_internal_error("ERR_POLICY_CREATE_FAILED", "Failed to create policy proposal")
 
     return {
         "message": "Policy proposal created successfully",

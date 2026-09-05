@@ -230,6 +230,8 @@ E5_WRAPPED_ROUTES: frozenset[str] = frozenset(
         "PATCH /admin/players/{player_id}",
         "POST /admin/players/create-from-user",
         "POST /admin/players/create-bulk",
+        "POST /admin/players/{player_id}/galactic-citizen/grant",
+        "POST /admin/players/{player_id}/galactic-citizen/revoke",
         # SHIPS_MANAGE (sync; drones deferred)
         "POST /admin/ships",
         "PUT /admin/ships/{ship_id}",
@@ -265,5 +267,8 @@ E5_WRAPPED_ROUTES: frozenset[str] = frozenset(
         "POST /admin/warp-tunnel/create-enhanced",
         "POST /admin/factions/",
         "PUT /admin/factions/{faction_id}",
+        # SUBSCRIPTIONS_MODIFY — manual GC comp/clawback (LEG-3611)
+        "POST /admin/players/{player_id}/galactic-citizen/grant",
+        "POST /admin/players/{player_id}/galactic-citizen/revoke",
     }
 )

@@ -20,6 +20,9 @@ from src.services.ranking_service import RankingService, RANK_DEFINITIONS
 from src.services.bounty_service import BountyService
 from src.services.personal_reputation_service import PersonalReputationService
 from src.services.websocket_service import connection_manager
+from src.utils.error_handling import route_internal_error
+
+ERR_RANKING_LEADERBOARD_FETCH_FAILED = "ERR_RANKING_LEADERBOARD_FETCH_FAILED"
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +103,9 @@ class PublicLeaderboardEntry(BaseModel):
     rank_tier: Optional[str] = None
     pinned_medal_id: Optional[str] = None
     medal_count: Optional[int] = None
+    # ADR-0004 law standing — same keys as LeaderboardEntry / RankInfoResponse
+    is_suspect: bool = False
+    is_wanted: bool = False
 
 
 class PublicLeaderboardResponse(BaseModel):
@@ -181,6 +187,9 @@ class RankProgressResponse(BaseModel):
     is_max_rank: bool
     effective_max_turns: int
     aria_multiplier: float
+    # ADR-0004 law standing — same keys as RankInfoResponse / get_rank_info
+    is_suspect: bool = False
+    is_wanted: bool = False
     stats: dict
     requirements: List[RankRequirement]
 
@@ -263,6 +272,8 @@ async def get_public_leaderboard(
                 score=p.rank_points or 0,
                 rank_level=rank_info["rank_level"],
                 rank_tier=rank_info["rank_tier"],
+                is_suspect=bool(getattr(p, "is_suspect", False)),
+                is_wanted=bool(getattr(p, "is_wanted", False)),
             ))
 
         # Find requesting player's position
@@ -334,6 +345,8 @@ async def get_public_leaderboard(
                 nickname=p.username,
                 military_rank=p.military_rank,
                 score=row.wins,
+                is_suspect=bool(getattr(p, "is_suspect", False)),
+                is_wanted=bool(getattr(p, "is_wanted", False)),
             ))
             pos += 1
 
@@ -383,6 +396,8 @@ async def get_public_leaderboard(
                 nickname=p.username,
                 military_rank=p.military_rank,
                 score=int(row.total_volume or 0),
+                is_suspect=bool(getattr(p, "is_suspect", False)),
+                is_wanted=bool(getattr(p, "is_wanted", False)),
             ))
             pos += 1
 
@@ -409,6 +424,8 @@ async def get_public_leaderboard(
                 nickname=p.username,
                 military_rank=p.military_rank,
                 score=p.aria_total_interactions or 0,
+                is_suspect=bool(getattr(p, "is_suspect", False)),
+                is_wanted=bool(getattr(p, "is_wanted", False)),
             ))
 
         # Find requesting player's position
@@ -548,6 +565,8 @@ async def get_rank_progress(
         is_max_rank=rank_info["is_max_rank"],
         effective_max_turns=rank_info["effective_max_turns"],
         aria_multiplier=rank_info["aria_multiplier"],
+        is_suspect=bool(rank_info.get("is_suspect", False)),
+        is_wanted=bool(rank_info.get("is_wanted", False)),
         stats=stats,
         requirements=requirements,
     )
@@ -564,16 +583,23 @@ async def get_rankings_leaderboard(
     db: Session = Depends(get_db),
 ):
     """Get the top players ranked by military rank points. Admin only."""
-    ranking_service = RankingService(db)
-    entries = ranking_service.get_leaderboard(limit=limit)
+    try:
+        ranking_service = RankingService(db)
+        entries = ranking_service.get_leaderboard(limit=limit)
 
-    # Count total active players for context
-    total_players = db.query(Player).filter(Player.is_active == True).count()
+        # Count total active players for context
+        total_players = db.query(Player).filter(Player.is_active == True).count()
 
-    return LeaderboardResponse(
-        entries=[LeaderboardEntry(**e) for e in entries],
-        total_players=total_players,
-    )
+        return LeaderboardResponse(
+            entries=[LeaderboardEntry(**e) for e in entries],
+            total_players=total_players,
+        )
+    except Exception:
+        logger.exception("Failed to fetch rankings leaderboard")
+        raise route_internal_error(
+            ERR_RANKING_LEADERBOARD_FETCH_FAILED,
+            "Failed to fetch rankings leaderboard",
+        )
 
 
 # ------------------------------------------------------------------

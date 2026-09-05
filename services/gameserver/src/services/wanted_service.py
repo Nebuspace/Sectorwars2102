@@ -26,13 +26,18 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from src.models.player import Player
+from src.services.law_name_color import apply_law_name_color
 
 logger = logging.getLogger(__name__)
 
 # Ratified 2026-08-06 (DECISIONS.md wanted-black-market-bust-duration).
 WANTED_DURATION = timedelta(hours=24)
+
+# LEG-3378 — dedup ledger for emergent SS +10 on surviving a full bust timer.
+SURVIVE_WANTED_CYCLE_SS_SETTINGS_KEY = "survive_wanted_cycle_ss_awarded"
 
 
 def _now(now: Optional[datetime]) -> datetime:
@@ -43,9 +48,19 @@ def is_live_wanted(player: Player, *, now: Optional[datetime] = None) -> bool:
     """True iff ``player`` is EFFECTIVELY wanted right now via the timer
     trigger -- checks ``wanted_until`` against the clock, not just the
     ``is_wanted`` boolean (which can be stale until the lazy auto-clear
-    sweep runs). Mirrors ``suspect_service.is_live_suspect``."""
+    sweep runs). Mirrors ``suspect_service.is_live_suspect``.
+
+    Law flag / timer attrs use ``getattr`` defaults so DB-free combat unit
+    suites that pass ``types.SimpleNamespace`` defenders (missing
+    ``is_wanted`` / ``wanted_until``) keep working after ``attack_player``
+    started calling this on every path (LEG-4137 closer bounce).
+    """
     now = _now(now)
-    return bool(player.is_wanted) and player.wanted_until is not None and player.wanted_until > now
+    return (
+        bool(getattr(player, "is_wanted", False))
+        and getattr(player, "wanted_until", None) is not None
+        and player.wanted_until > now
+    )
 
 
 def apply_wanted_event(db: Session, player: Player, *, now: Optional[datetime] = None) -> bool:
@@ -63,6 +78,7 @@ def apply_wanted_event(db: Session, player: Player, *, now: Optional[datetime] =
         player.is_wanted = True
         player.wanted_declared_at = now
     player.wanted_until = now + WANTED_DURATION
+    apply_law_name_color(player)
     return first_acquisition
 
 
@@ -118,20 +134,73 @@ def recompute_is_wanted(db: Session, player: Player, *, now: Optional[datetime] 
     )
     should_be_wanted = bust_active or stolen_active or rep_active
 
+    flipped = False
     if should_be_wanted and not player.is_wanted:
         player.is_wanted = True
         player.wanted_declared_at = now
-        return True
-
-    if not should_be_wanted and player.is_wanted:
+        flipped = True
+    elif not should_be_wanted and player.is_wanted:
         player.is_wanted = False
         player.wanted_declared_at = None
         # wanted_until is left alone here on purpose: a live bust timer is
         # one of the OR terms above, so should_be_wanted is already False
         # only once wanted_until has elapsed (or was never set).
-        return True
+        flipped = True
 
-    return False
+    # Always re-apply: reputation adjust while already-Wanted must keep red
+    # (LEG-4135), and clear paths must restore Suspect amber or tier color.
+    apply_law_name_color(player)
+    return flipped
+
+
+def _maybe_award_survive_wanted_cycle_ss(db: Session, player: Player) -> None:
+    """Emergent SS +10 when a bust-timer Wanted cycle clears after a full
+    ``WANTED_DURATION`` window (LEG-3378).
+
+    Evaluated BEFORE ``clear_expired_wanted`` wipes ``wanted_declared_at`` /
+    ``wanted_until``. Only the timer-based sweep path calls this — an early
+    ``recompute_is_wanted`` clear (reputation recovery, stolen-ship impound,
+    report retraction) drops ``is_wanted`` before expiry so the player never
+    reaches this sweep. Dedup via ``player.settings[
+    SURVIVE_WANTED_CYCLE_SS_SETTINGS_KEY]`` — a list of ISO
+    ``wanted_declared_at`` anchors already rewarded. Rep failure is non-fatal.
+    """
+    declared = player.wanted_declared_at
+    until = player.wanted_until
+    if declared is None or until is None:
+        return
+    if until - declared < WANTED_DURATION:
+        return
+
+    cycle_key = declared.isoformat()
+    settings = dict(player.settings) if isinstance(player.settings, dict) else {}
+    prior_awarded = settings.get(SURVIVE_WANTED_CYCLE_SS_SETTINGS_KEY)
+    awarded = list(prior_awarded) if isinstance(prior_awarded, list) else []
+    if cycle_key in awarded:
+        return
+
+    try:
+        from src.services.emergent_reputation_service import apply_emergent_action
+
+        result = apply_emergent_action(
+            db,
+            player,
+            "SURVIVE_WANTED_CYCLE_SS",
+            {
+                "reason": "survive_wanted_cycle",
+                "wanted_declared_at": cycle_key,
+            },
+        )
+        if result.get("success"):
+            awarded.append(cycle_key)
+            settings[SURVIVE_WANTED_CYCLE_SS_SETTINGS_KEY] = awarded
+            player.settings = settings
+            flag_modified(player, "settings")
+    except Exception:
+        logger.warning(
+            "survive wanted cycle SS emergent rep failed (non-fatal)",
+            exc_info=True,
+        )
 
 
 def clear_expired_wanted(db: Session, *, now: Optional[datetime] = None) -> int:
@@ -154,9 +223,11 @@ def clear_expired_wanted(db: Session, *, now: Optional[datetime] = None) -> int:
         .all()
     )
     for player in expired:
+        _maybe_award_survive_wanted_cycle_ss(db, player)
         player.is_wanted = False
         player.wanted_until = None
         player.wanted_declared_at = None
+        apply_law_name_color(player)
 
     if expired:
         db.flush()

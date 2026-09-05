@@ -34,6 +34,11 @@ commodity does. This route adds no path to enable it.
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from src.utils.error_handling import route_internal_error
+
+ERR_BLACK_MARKET_BUY_FAILED = "ERR_BLACK_MARKET_BUY_FAILED"
+ERR_BLACK_MARKET_SELL_FAILED = "ERR_BLACK_MARKET_SELL_FAILED"
+
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 
@@ -212,7 +217,10 @@ async def buy_contraband(
     except Exception as e:
         db.rollback()
         logger.error("Black-market buy failed: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail="Black-market trade failed")
+        raise route_internal_error(
+            ERR_BLACK_MARKET_BUY_FAILED,
+            "Black-market trade failed",
+        )
 
     if not result or (isinstance(result, dict) and result.get("success") is False):
         # Gate / affordability / validation failure — the service flushed no
@@ -279,7 +287,10 @@ async def sell_contraband(
     except Exception as e:
         db.rollback()
         logger.error("Black-market sell failed: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail="Black-market trade failed")
+        raise route_internal_error(
+            ERR_BLACK_MARKET_SELL_FAILED,
+            "Black-market trade failed",
+        )
 
     if not result or (isinstance(result, dict) and result.get("success") is False):
         db.rollback()

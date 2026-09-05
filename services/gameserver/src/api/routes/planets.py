@@ -6,28 +6,39 @@ defenses, sieges, and landing/departing operations.
 """
 
 import logging
-from datetime import datetime, timedelta, UTC
-from typing import List, Optional, Dict, Any
+from datetime import UTC, datetime, timedelta
+from typing import Any, Dict, List, Optional
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
-from sqlalchemy import func, text, select, update, or_
-from sqlalchemy.exc import OperationalError
-from sqlalchemy.orm.attributes import flag_modified
-from pydantic import BaseModel, Field
 
-from src.core.database import get_db
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, Field
+from sqlalchemy import func, or_, select, text, update
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
+
 from src.auth.dependencies import get_current_player
-from src.models.player import Player
+from src.core.database import get_db
 from src.models.planet import Planet, PlanetStatus
+from src.models.player import Player
 from src.models.ship import Ship, effective_cargo_capacity
 from src.services.planetary_service import (
     PlanetaryService,
+    clamp_tax_rate,
+    defense_unit_price,
     max_colonists_for,
     max_population_for,
-    defense_unit_price,
-    clamp_tax_rate,
 )
+from src.utils.error_handling import route_internal_error
+
+ERR_PLANETS_SHIELD_UPGRADE_FAILED = "ERR_PLANETS_SHIELD_UPGRADE_FAILED"
+ERR_PLANETS_DEFENSES_FETCH_FAILED = "ERR_PLANETS_DEFENSES_FETCH_FAILED"
+ERR_PLANETS_DEFENSES_UPDATE_FAILED = "ERR_PLANETS_DEFENSES_UPDATE_FAILED"
+ERR_PLANETS_DETAILS_FETCH_FAILED = "ERR_PLANETS_DETAILS_FETCH_FAILED"
+ERR_PLANETS_ALLOCATE_FAILED = "ERR_PLANETS_ALLOCATE_FAILED"
+ERR_PLANETS_BUILDING_UPGRADE_FAILED = "ERR_PLANETS_BUILDING_UPGRADE_FAILED"
+ERR_PLANETS_GENESIS_DEPLOY_FAILED = "ERR_PLANETS_GENESIS_DEPLOY_FAILED"
+ERR_PLANETS_SIEGE_STATUS_FETCH_FAILED = "ERR_PLANETS_SIEGE_STATUS_FETCH_FAILED"
 
 router = APIRouter(prefix="/planets", tags=["planets"])
 
@@ -470,8 +481,8 @@ async def claim_planet(
     # pre-ADR-0091 planet has contest_state IS NULL — treated here as the
     # OPEN branch (any eligible player may settle) since it predates the
     # contest state machine and was never deployer-gated or reserved.
-    from src.models.planet import PlanetContestState
     from src.models.expedition import Expedition, ExpeditionStatus
+    from src.models.planet import PlanetContestState
     from src.services.multi_account_service import eligible_for_contest
 
     # (M24 CANON / Amendment A) real-player anti-sybil eligibility gate.
@@ -770,11 +781,11 @@ async def claim_planet(
     # Fully best-effort / non-fatal — an influence hiccup must never block a
     # colony founding (flush-only; the helper rides this route's single commit).
     try:
+        from src.models.sector import Sector as _Sector
         from src.services.faction_service import (
             adjust_sector_influence,
             dominant_reputation_faction_id,
         )
-        from src.models.sector import Sector as _Sector
 
         influence_faction_id = dominant_reputation_faction_id(db, player.id)
         if influence_faction_id is not None:
@@ -1925,6 +1936,12 @@ async def upgrade_shield_generator(
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        logger.exception("Failed to upgrade shield generator")
+        raise route_internal_error(
+            ERR_PLANETS_SHIELD_UPGRADE_FAILED,
+            "Failed to upgrade shield generator",
+        )
 
 
 @router.get("/{planet_id}/defenses")
@@ -1946,6 +1963,12 @@ async def get_planet_defenses(
         return result
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except Exception:
+        logger.exception("Failed to fetch planet defenses")
+        raise route_internal_error(
+            ERR_PLANETS_DEFENSES_FETCH_FAILED,
+            "Failed to fetch planet defenses",
+        )
 
 
 @router.get("/{planet_id}/defenses/pricing")
@@ -2028,14 +2051,20 @@ async def get_planet_details(
         planet_id = UUID(planetId)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid planet ID format")
-    
+
     service = PlanetaryService(db)
-    
+
     try:
         planet_data = service.get_planet_details(planet_id, player.id)
         return planet_data
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except Exception:
+        logger.exception("Failed to fetch planet details")
+        raise route_internal_error(
+            ERR_PLANETS_DETAILS_FETCH_FAILED,
+            "Failed to fetch planet details",
+        )
 
 
 @router.put("/{planetId}/allocate")
@@ -2050,9 +2079,9 @@ async def allocate_colonists(
         planet_id = UUID(planetId)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid planet ID format")
-    
+
     service = PlanetaryService(db)
-    
+
     try:
         result = service.allocate_colonists(
             planet_id=planet_id,
@@ -2064,6 +2093,12 @@ async def allocate_colonists(
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        logger.exception("Failed to allocate colonists")
+        raise route_internal_error(
+            ERR_PLANETS_ALLOCATE_FAILED,
+            "Failed to allocate colonists",
+        )
 
 
 @router.post("/{planetId}/buildings/upgrade")
@@ -2078,9 +2113,9 @@ async def upgrade_building(
         planet_id = UUID(planetId)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid planet ID format")
-    
+
     service = PlanetaryService(db)
-    
+
     try:
         result = service.upgrade_building(
             planet_id=planet_id,
@@ -2091,6 +2126,12 @@ async def upgrade_building(
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        logger.exception("Failed to upgrade building")
+        raise route_internal_error(
+            ERR_PLANETS_BUILDING_UPGRADE_FAILED,
+            "Failed to upgrade building",
+        )
 
 
 @router.put("/{planetId}/defenses")
@@ -2105,9 +2146,9 @@ async def update_defenses(
         planet_id = UUID(planetId)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid planet ID format")
-    
+
     service = PlanetaryService(db)
-    
+
     try:
         result = service.update_defenses(
             planet_id=planet_id,
@@ -2119,6 +2160,12 @@ async def update_defenses(
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        logger.exception("Failed to update defenses")
+        raise route_internal_error(
+            ERR_PLANETS_DEFENSES_UPDATE_FAILED,
+            "Failed to update defenses",
+        )
 
 
 @router.post("/genesis/deploy")
@@ -2176,6 +2223,12 @@ async def deploy_genesis_device(
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        logger.exception("Failed to deploy genesis device")
+        raise route_internal_error(
+            ERR_PLANETS_GENESIS_DEPLOY_FAILED,
+            "Failed to deploy genesis device",
+        )
 
 
 @router.put("/{planetId}/specialize")
@@ -2190,9 +2243,9 @@ async def set_specialization(
         planet_id = UUID(planetId)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid planet ID format")
-    
+
     service = PlanetaryService(db)
-    
+
     try:
         result = service.set_specialization(
             planet_id=planet_id,
@@ -2215,7 +2268,7 @@ async def get_siege_status(
         planet_id = UUID(planetId)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid planet ID format")
-    
+
     service = PlanetaryService(db)
 
     try:
@@ -2223,6 +2276,12 @@ async def get_siege_status(
         return result
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except Exception:
+        logger.exception("Failed to fetch siege status")
+        raise route_internal_error(
+            ERR_PLANETS_SIEGE_STATUS_FETCH_FAILED,
+            "Failed to fetch siege status",
+        )
 
 
 # Stockpile → ship cargo (taxable for teammates) + Citadel Endpoints
@@ -2625,6 +2684,11 @@ class ProfessionTrainRequest(BaseModel):
     trainee_count: int = Field(..., ge=1)
 
 
+class ProfessionAssignRequest(BaseModel):
+    profession: str = Field(..., min_length=1)
+    active_count: int = Field(..., ge=0)
+
+
 @router.get("/{planet_id}/professions")
 async def get_planet_professions(
     planet_id: str,
@@ -2662,7 +2726,7 @@ async def train_planet_profession(
     player: Player = Depends(get_current_player),
     db: Session = Depends(get_db),
 ):
-    """Queue profession training without charging TBD costs (DECISION-NEEDED)."""
+    """Queue profession training; charges provisional per-100 costs on queue."""
     from src.services.profession_service import ProfessionService
 
     try:
@@ -2689,7 +2753,52 @@ async def train_planet_profession(
             "citadel_level_too_low": status.HTTP_400_BAD_REQUEST,
             "research_lab_level_too_low": status.HTTP_400_BAD_REQUEST,
             "insufficient_generic_colonists": status.HTTP_400_BAD_REQUEST,
+            "insufficient_credits": status.HTTP_400_BAD_REQUEST,
+            "insufficient_equipment": status.HTTP_400_BAD_REQUEST,
+            "insufficient_organics": status.HTTP_400_BAD_REQUEST,
             "invalid_trainee_count": status.HTTP_400_BAD_REQUEST,
+            "specialization_cap_exceeded": status.HTTP_400_BAD_REQUEST,
+        }
+        if code.startswith("unknown_profession:"):
+            raise HTTPException(status_code=400, detail=code)
+        raise HTTPException(status_code=status_map.get(code, 400), detail=code)
+    db.commit()
+    return result
+
+
+@router.post("/{planet_id}/professions/assign")
+async def assign_planet_profession(
+    planet_id: str,
+    body: ProfessionAssignRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Set active specialist headcount for a profession (owner-only)."""
+    from src.services.profession_service import ProfessionService
+
+    try:
+        pid = UUID(planet_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid planet ID format")
+
+    planet = db.query(Planet).filter(Planet.id == pid).with_for_update().first()
+    if planet is None:
+        raise HTTPException(status_code=404, detail="Planet not found")
+
+    svc = ProfessionService(db)
+    try:
+        result = svc.assign_active(
+            planet,
+            player.id,
+            body.profession,
+            body.active_count,
+        )
+    except ValueError as exc:
+        code = str(exc)
+        status_map = {
+            "not_owner": status.HTTP_403_FORBIDDEN,
+            "invalid_active_count": status.HTTP_400_BAD_REQUEST,
+            "active_count_exceeds_trained": status.HTTP_400_BAD_REQUEST,
         }
         if code.startswith("unknown_profession:"):
             raise HTTPException(status_code=400, detail=code)

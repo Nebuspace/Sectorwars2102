@@ -12,6 +12,10 @@ from typing import Any, Dict
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from src.utils.error_handling import route_internal_error
+
+ERR_GC_LAPSE_RELOCATE_FAILED = "ERR_GC_LAPSE_RELOCATE_FAILED"
+
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -73,4 +77,8 @@ async def gc_emergency_relocation(
         raise _gc_lapse_http_error(e) from e
     except Exception:
         db.rollback()
-        raise
+        logger.exception("Failed to perform emergency relocation")
+        raise route_internal_error(
+            ERR_GC_LAPSE_RELOCATE_FAILED,
+            "Failed to perform emergency relocation",
+        )

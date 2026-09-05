@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Header
 from sqlalchemy.orm import Session
 from sqlalchemy import text, func, desc, or_
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime, timezone
 import logging
+import uuid
 
 from src.core.database import get_db
 from src.auth.admin_scopes import (
@@ -12,9 +13,19 @@ from src.auth.admin_scopes import (
     PLAYERS_ADJUST_CREDITS,
     PLAYERS_SUSPEND,
     PLAYERS_VIEW,
+    REGIONS_TERMINATE,
+    REGIONS_TRANSFER_OWNERSHIP,
 )
 from src.auth.dependencies import require_all_scopes, require_scope
 from src.services.admin_action_attempt import admin_action_attempt
+from src.services.region_lifecycle_service import (
+    AdminRegionTerminationError,
+    AdminRegionTransferOwnershipError,
+    admin_execute_region_ownership_transfer,
+    admin_execute_region_termination,
+    admin_region_terminate_preview,
+)
+from src.utils.error_handling import route_internal_error
 from src.models.user import User
 from src.models.player import Player
 from src.models.ship import Ship
@@ -26,6 +37,8 @@ from src.models.sector import Sector
 from src.models.warp_tunnel import WarpTunnel
 from src.models.station import Station
 from src.models.planet import Planet
+from src.models.pirate_holding import PirateHolding
+from src.models.outlaw_base import OutlawBase
 from src.models.team import Team
 from src.models.game_event import GameEvent, EventEffect, EventParticipation, EventType, EventStatus
 
@@ -82,25 +95,29 @@ async def get_all_users(
     db: Session = Depends(get_db)
 ):
     """Get all users for admin panel (excludes soft-deleted accounts)"""
-    users = db.query(User).filter(User.deleted == False).all()
+    try:
+        users = db.query(User).filter(User.deleted == False).all()
 
-    # Map to response model
-    user_list = [
-        {
-            "id": str(user.id),
-            "username": user.username,
-            "email": user.email,
-            "deleted": user.deleted,
-            "is_active": user.is_active,
-            "is_admin": user.is_admin,
-            "created_at": user.created_at.isoformat(),
-            "last_login": user.last_login.isoformat() if user.last_login else None,
-            "verified": True  # Users are verified by default in this system
-        }
-        for user in users
-    ]
-    
-    return {"users": user_list}
+        # Map to response model
+        user_list = [
+            {
+                "id": str(user.id),
+                "username": user.username,
+                "email": user.email,
+                "deleted": user.deleted,
+                "is_active": user.is_active,
+                "is_admin": user.is_admin,
+                "created_at": user.created_at.isoformat(),
+                "last_login": user.last_login.isoformat() if user.last_login else None,
+                "verified": True  # Users are verified by default in this system
+            }
+            for user in users
+        ]
+
+        return {"users": user_list}
+    except Exception:
+        logger.exception("Failed to fetch users")
+        raise route_internal_error("ERR_ADMIN_USERS_LIST_FAILED", "Failed to fetch users")
 
 @router.get("/players", response_model=dict)
 async def get_all_players(
@@ -267,22 +284,151 @@ async def get_all_regions(
     db: Session = Depends(get_db)
 ):
     """Get all regions for admin panel"""
-    regions = db.query(Region).all()
+    try:
+        regions = db.query(Region).all()
 
-    region_list = [{
-        "id": str(region.id),
-        "name": region.name,
-        "display_name": region.display_name,
-        "region_type": region.region_type,
-        "total_sectors": region.total_sectors,
-        "status": region.status,
-        "subscription_tier": region.subscription_tier,
-        "starting_credits": region.starting_credits,
-        "governance_type": region.governance_type,
-        "tax_rate": float(region.tax_rate)
-    } for region in regions]
+        region_list = [{
+            "id": str(region.id),
+            "name": region.name,
+            "display_name": region.display_name,
+            "region_type": region.region_type,
+            "total_sectors": region.total_sectors,
+            "status": region.status,
+            "subscription_tier": region.subscription_tier,
+            "starting_credits": region.starting_credits,
+            "governance_type": region.governance_type,
+            "tax_rate": float(region.tax_rate)
+        } for region in regions]
 
-    return {"regions": region_list}
+        return {"regions": region_list}
+    except Exception:
+        logger.exception("Failed to fetch regions")
+        raise route_internal_error("ERR_ADMIN_REGIONS_LIST_FAILED", "Failed to fetch regions")
+
+
+class RegionTerminateRequest(BaseModel):
+    reason: str = Field(..., min_length=1)
+
+
+class RegionTransferOwnershipRequest(BaseModel):
+    new_owner_id: uuid.UUID = Field(..., alias="newOwnerId")
+    reason: str = Field(..., min_length=1)
+
+    model_config = {"populate_by_name": True}
+
+
+def _map_admin_region_termination_error(exc: AdminRegionTerminationError) -> HTTPException:
+    if exc.code == "not_found":
+        return HTTPException(status_code=404, detail=exc.detail)
+    if exc.code == "already_terminated":
+        return HTTPException(status_code=409, detail=exc.detail)
+    return HTTPException(status_code=422, detail=exc.detail)
+
+
+def _map_admin_region_transfer_ownership_error(
+    exc: AdminRegionTransferOwnershipError,
+) -> HTTPException:
+    if exc.code == "not_found" or exc.code == "new_owner_not_found":
+        return HTTPException(status_code=404, detail=exc.detail)
+    if exc.code == "already_terminated":
+        return HTTPException(status_code=409, detail=exc.detail)
+    return HTTPException(status_code=422, detail=exc.detail)
+
+
+@router.get("/regions/{region_id}/terminate-preview", response_model=dict)
+async def get_region_terminate_preview(
+    region_id: uuid.UUID,
+    current_admin: User = Depends(require_scope(REGIONS_TERMINATE)),
+    db: Session = Depends(get_db),
+):
+    """Preview dependent-entity counts before admin region termination."""
+    try:
+        return admin_region_terminate_preview(db, region_id)
+    except AdminRegionTerminationError as exc:
+        raise _map_admin_region_termination_error(exc) from exc
+
+
+@router.post("/regions/{region_id}/terminate", response_model=dict)
+async def post_region_terminate(
+    region_id: uuid.UUID,
+    body: RegionTerminateRequest,
+    x_confirm_region_name: Optional[str] = Header(
+        default=None,
+        alias="X-Confirm-Region-Name",
+        description="Must match the region's exact name to authorise termination.",
+    ),
+    current_admin: User = Depends(require_scope(REGIONS_TERMINATE)),
+    db: Session = Depends(get_db),
+):
+    """Hard-terminate a player-owned region and run the ADR-0050 cleanup cascade."""
+    region = db.query(Region).filter(Region.id == region_id).first()
+    if region is None:
+        raise HTTPException(status_code=404, detail="Region not found")
+    if x_confirm_region_name is None or x_confirm_region_name != region.name:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "X-Confirm-Region-Name header missing or does not match region "
+                "name; termination refused."
+            ),
+        )
+
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=REGIONS_TERMINATE,
+        action="region_terminate",
+        target_type="region",
+        target_id=str(region_id),
+        payload={"reason": body.reason.strip(), "regionName": region.name},
+    ) as attempt:
+        try:
+            result = admin_execute_region_termination(db, region_id)
+        except AdminRegionTerminationError as exc:
+            raise _map_admin_region_termination_error(exc) from exc
+        outbox = result.pop("_outbox")
+        attempt.succeed(payload={**result, "reason": body.reason.strip()})
+
+    outbox.flush()
+    return result
+
+
+@router.post("/regions/{region_id}/transfer-ownership", response_model=dict)
+async def post_region_transfer_ownership(
+    region_id: uuid.UUID,
+    body: RegionTransferOwnershipRequest,
+    current_admin: User = Depends(require_scope(REGIONS_TRANSFER_OWNERSHIP)),
+    db: Session = Depends(get_db),
+):
+    """Unilaterally transfer region ownership to another user (LEG-DEC-500)."""
+    with admin_action_attempt(
+        db,
+        actor=current_admin,
+        scope_used=REGIONS_TRANSFER_OWNERSHIP,
+        action="region_transfer_ownership",
+        target_type="region",
+        target_id=str(region_id),
+        payload={
+            "reason": body.reason.strip(),
+            "newOwnerId": str(body.new_owner_id),
+        },
+    ) as attempt:
+        try:
+            result = admin_execute_region_ownership_transfer(
+                db,
+                region_id,
+                body.new_owner_id,
+            )
+        except AdminRegionTransferOwnershipError as exc:
+            raise _map_admin_region_transfer_ownership_error(exc) from exc
+        attempt.succeed(
+            payload={
+                **result,
+                "reason": body.reason.strip(),
+            },
+        )
+
+    return result
 
 
 @router.get("/regions/{region_id}/zones", response_model=dict)
@@ -601,7 +747,9 @@ async def update_player(
             raise
         except Exception as e:
             logger.error(f"Error updating player {player_id}: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to update player: {str(e)}") from e
+            raise route_internal_error(
+                "ERR_ADMIN_PLAYER_UPDATE_FAILED", "Failed to update player"
+            ) from e
 
 @router.get("/colonies", response_model=dict)
 async def get_all_colonies(
@@ -1183,7 +1331,9 @@ async def get_all_stations(
         return {"stations": stations_list, "total": total, "limit": limit, "offset": offset}
     except Exception as e:
         logger.error(f"Error fetching stations: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch stations: {str(e)}")
+        raise route_internal_error(
+            "ERR_ADMIN_STATIONS_LIST_FAILED", "Failed to fetch stations"
+        )
 
 @router.get("/sectors", response_model=dict)
 async def get_all_sectors(
@@ -1191,6 +1341,7 @@ async def get_all_sectors(
     filter_cluster: Optional[str] = None,
     filter_has_port: Optional[bool] = None,
     filter_has_planet: Optional[bool] = None,
+    filter_has_pirate_holding: Optional[bool] = None,
     filter_discovered: Optional[bool] = None,
     search: Optional[str] = None,
     page: int = 1,
@@ -1238,6 +1389,15 @@ async def get_all_sectors(
         else:
             query = query.filter(~Sector.sector_id.in_(planet_sectors))
 
+    # LEG-4198: same subquery honesty as port/planet for pirate holdings.
+    if filter_has_pirate_holding is not None:
+        holding_subq = db.query(PirateHolding.sector_id).distinct().subquery()
+        holding_sectors = db.query(holding_subq.c.sector_id)
+        if filter_has_pirate_holding:
+            query = query.filter(Sector.sector_id.in_(holding_sectors))
+        else:
+            query = query.filter(~Sector.sector_id.in_(holding_sectors))
+
     total = query.count()
 
     # offset wins if explicitly supplied; otherwise derive from 1-based page.
@@ -1264,6 +1424,14 @@ async def get_all_sectors(
 
         # Check for planet in this sector
         has_planet = db.query(Planet).filter(Planet.sector_id == sector.sector_id).first() is not None
+
+        # LEG-4182: pirate holding presence (global sectors.sector_id).
+        has_pirate_holding = (
+            db.query(PirateHolding)
+            .filter(PirateHolding.sector_id == sector.sector_id)
+            .first()
+            is not None
+        )
 
         # Check for warp tunnels from this sector (using UUID sector.id, not integer sector_id)
         has_warp_tunnel = db.query(WarpTunnel).filter(
@@ -1293,6 +1461,7 @@ async def get_all_sectors(
             "is_navigable": True,  # Default to True, override if nav_hazards exist
             "has_port": has_port,
             "has_planet": has_planet,
+            "has_pirate_holding": has_pirate_holding,
             "has_warp_tunnel": has_warp_tunnel,
             # Real richness derived from the resources JSONB: rich when this
             # sector has scanned asteroid yields, otherwise null (no canonical
@@ -1408,8 +1577,9 @@ async def create_warp_tunnel(
         except HTTPException:
             raise
         except Exception as e:
+            logger.error(f"Error creating warp tunnel: {e}")
             raise HTTPException(
-                status_code=500, detail=f"Failed to create warp tunnel: {str(e)}"
+                status_code=500, detail="Failed to create warp tunnel"
             ) from e
 
 @router.delete("/galaxy/clear", response_model=dict)
@@ -1453,7 +1623,7 @@ async def clear_all_galaxy_data(
         except Exception as e:
             logger.error(f"Failed to clear galaxy data: {str(e)}")
             raise HTTPException(
-                status_code=500, detail=f"Failed to clear galaxy data: {str(e)}"
+                status_code=500, detail="Failed to clear galaxy data"
             ) from e
 
 @router.post("/galaxy/fix-statistics", response_model=dict)
@@ -1517,7 +1687,7 @@ async def fix_galaxy_statistics(
             logger.error(f"Failed to fix galaxy statistics: {str(e)}")
             raise HTTPException(
                 status_code=500,
-                detail=f"Failed to fix galaxy statistics: {str(e)}",
+                detail="Failed to fix galaxy statistics",
             ) from e
 
 # NOTE: DELETE /galaxy/{galaxy_id} intentionally removed from this router.
@@ -1669,6 +1839,130 @@ async def get_sector_ships(
     
     return {"ships": ship_list}
 
+
+_ADMIN_PIRATE_HOLDING_FIELDS = (
+    "id",
+    "tier",
+    "sector_id",
+    "region_id",
+    "owner_player_id",
+    "owner_team_id",
+    "outlaw_base_id",
+    "captured_at",
+    "combat_lock_held_by",
+    "current_strength",
+)
+
+
+def _admin_pirate_holding_payload(holding: PirateHolding) -> dict:
+    """Operator inspect payload — committed columns only (LEG-4176 / LEG-4197)."""
+    return {
+        "id": str(holding.id),
+        "tier": holding.tier.value if holding.tier is not None else None,
+        "sector_id": holding.sector_id,
+        "region_id": str(holding.region_id) if holding.region_id is not None else None,
+        "owner_player_id": (
+            str(holding.owner_player_id) if holding.owner_player_id is not None else None
+        ),
+        "owner_team_id": (
+            str(holding.owner_team_id) if holding.owner_team_id is not None else None
+        ),
+        "outlaw_base_id": (
+            str(holding.outlaw_base_id) if holding.outlaw_base_id is not None else None
+        ),
+        "captured_at": holding.captured_at.isoformat() if holding.captured_at else None,
+        "combat_lock_held_by": (
+            str(holding.combat_lock_held_by)
+            if holding.combat_lock_held_by is not None
+            else None
+        ),
+        "current_strength": holding.current_strength,
+    }
+
+
+@router.get("/sectors/{sector_id}/pirate-holdings", response_model=dict)
+async def get_sector_pirate_holdings(
+    sector_id: int,
+    _: User = Depends(require_scope(PLAYERS_VIEW)),
+    db: Session = Depends(get_db),
+):
+    """List pirate holdings anchored on a sector (global sectors.sector_id)."""
+    rows = (
+        db.query(PirateHolding)
+        .filter(PirateHolding.sector_id == sector_id)
+        .all()
+    )
+    return {"holdings": [_admin_pirate_holding_payload(h) for h in rows]}
+
+
+@router.get("/pirate-holdings", response_model=dict)
+async def get_pirate_holdings_by_owner(
+    owner_player_id: uuid.UUID,
+    _: User = Depends(require_scope(PLAYERS_VIEW)),
+    db: Session = Depends(get_db),
+):
+    """List pirate holdings owned by a player (LEG-4211). Empty list, never 404."""
+    rows = (
+        db.query(PirateHolding)
+        .filter(PirateHolding.owner_player_id == owner_player_id)
+        .all()
+    )
+    return {"holdings": [_admin_pirate_holding_payload(h) for h in rows]}
+
+
+_ADMIN_OUTLAW_BASE_FIELDS = (
+    "id",
+    "name",
+    "sector_id",
+    "home_region_id",
+    "faction_code",
+    "archetype",
+    "capacity",
+    "current_occupants_count",
+    "is_player_discoverable",
+    "raid_cooldown_until",
+    "last_raided_at",
+    "relocation_pending",
+)
+
+
+def _admin_outlaw_base_payload(base: OutlawBase) -> dict:
+    """Operator inspect payload — committed OutlawBase columns only (LEG-4210)."""
+    return {
+        "id": str(base.id),
+        "name": base.name,
+        "sector_id": base.sector_id,
+        "home_region_id": (
+            str(base.home_region_id) if base.home_region_id is not None else None
+        ),
+        "faction_code": base.faction_code,
+        "archetype": base.archetype.value if base.archetype is not None else None,
+        "capacity": base.capacity,
+        "current_occupants_count": base.current_occupants_count,
+        "is_player_discoverable": base.is_player_discoverable,
+        "raid_cooldown_until": (
+            base.raid_cooldown_until.isoformat() if base.raid_cooldown_until else None
+        ),
+        "last_raided_at": (
+            base.last_raided_at.isoformat() if base.last_raided_at else None
+        ),
+        "relocation_pending": base.relocation_pending,
+    }
+
+
+@router.get("/outlaw-bases/{base_id}", response_model=dict)
+async def get_admin_outlaw_base(
+    base_id: uuid.UUID,
+    _: User = Depends(require_scope(PLAYERS_VIEW)),
+    db: Session = Depends(get_db),
+):
+    """Read-only operator inspect for a single OutlawBase (LEG-4210)."""
+    base = db.query(OutlawBase).filter(OutlawBase.id == base_id).first()
+    if base is None:
+        raise HTTPException(status_code=404, detail="OutlawBase not found")
+    return _admin_outlaw_base_payload(base)
+
+
 @router.get("/alliances", response_model=dict)
 async def get_all_alliances(
     current_admin: User = Depends(require_scope(PLAYERS_VIEW)),
@@ -1760,7 +2054,7 @@ async def update_port(
         except Exception as e:
             logger.error(f"Error updating port: {e}")
             raise HTTPException(
-                status_code=500, detail=f"Failed to update port: {str(e)}"
+                status_code=500, detail="Failed to update port"
             ) from e
 
 
@@ -2047,7 +2341,7 @@ async def create_game_event(
         except Exception as e:
             logger.error(f"Error creating game event: {e}")
             raise HTTPException(
-                status_code=500, detail=f"Failed to create game event: {str(e)}"
+                status_code=500, detail="Failed to create game event"
             ) from e
 
 
@@ -2188,7 +2482,9 @@ async def get_game_event_detail(
         raise
     except Exception as e:
         logger.error(f"Error fetching game event {event_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch game event: {str(e)}")
+        raise route_internal_error(
+            "ERR_ADMIN_GAME_EVENT_GET_FAILED", "Failed to fetch game event"
+        )
 
 
 @router.patch("/game-events/{event_id}", response_model=dict)
@@ -2312,7 +2608,7 @@ async def update_game_event(
         except Exception as e:
             logger.error(f"Error updating game event {event_id}: {e}")
             raise HTTPException(
-                status_code=500, detail=f"Failed to update game event: {str(e)}"
+                status_code=500, detail="Failed to update game event"
             ) from e
 
 
@@ -2371,7 +2667,7 @@ async def activate_game_event(
         except Exception as e:
             logger.error(f"Error activating game event {event_id}: {e}")
             raise HTTPException(
-                status_code=500, detail=f"Failed to activate game event: {str(e)}"
+                status_code=500, detail="Failed to activate game event"
             ) from e
 
 
@@ -2436,7 +2732,7 @@ async def deactivate_game_event(
             logger.error(f"Error deactivating game event {event_id}: {e}")
             raise HTTPException(
                 status_code=500,
-                detail=f"Failed to deactivate game event: {str(e)}",
+                detail="Failed to deactivate game event",
             ) from e
 
 
@@ -2487,7 +2783,7 @@ async def delete_game_event(
         except Exception as e:
             logger.error(f"Error deleting game event {event_id}: {e}")
             raise HTTPException(
-                status_code=500, detail=f"Failed to delete game event: {str(e)}"
+                status_code=500, detail="Failed to delete game event"
             ) from e
 
 

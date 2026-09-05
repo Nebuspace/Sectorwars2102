@@ -6,6 +6,7 @@ Canon paths (FEATURES/gameplay/messaging.md § Moderation actions):
 Distinct from ``POST /admin/messages/{id}/moderate`` (delete/flag/unflag).
 """
 
+import logging
 from typing import Optional
 from uuid import UUID
 
@@ -18,6 +19,8 @@ from src.auth.dependencies import require_scope
 from src.core.database import get_db
 from src.models.user import User
 from src.services.message_service import MessageService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/admin/moderation/messages",
@@ -37,18 +40,26 @@ async def _dispatch(
     admin: User,
     db: Session,
 ):
-    result = await MessageService.moderation_canon_action(
-        db=db,
-        message_id=message_id,
-        action=action,
-        moderator_id=admin.id,
-        reason=reason,
-    )
-    if not result.get("success"):
-        reason_code = result.get("reason") or "moderation_failed"
-        status = 404 if reason_code == "message_not_found" else 400
-        raise HTTPException(status_code=status, detail=reason_code)
-    return result
+    try:
+        result = await MessageService.moderation_canon_action(
+            db=db,
+            message_id=message_id,
+            action=action,
+            moderator_id=admin.id,
+            reason=reason,
+        )
+        if not result.get("success"):
+            reason_code = result.get("reason") or "moderation_failed"
+            status = 404 if reason_code == "message_not_found" else 400
+            raise HTTPException(status_code=status, detail=reason_code)
+        return result
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to process moderation action")
+        raise HTTPException(
+            status_code=500, detail="Failed to process moderation action"
+        )
 
 
 @router.post("/{message_id}/accept")

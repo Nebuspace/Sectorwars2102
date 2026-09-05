@@ -87,6 +87,9 @@ def _run_contract_generation_sync(cancel_event: "threading.Event | None" = None)
     from src.services.contract_generator import (
         compute_contract_generation_batch,
         gather_contract_generation_inputs,
+        generate_acquisition_bounty_contracts,
+        generate_escort_contracts,
+        generate_refugee_transport_contracts,
         write_contract_generation_batch,
     )
 
@@ -140,6 +143,15 @@ def _run_contract_generation_sync(cancel_event: "threading.Event | None" = None)
         ):
             return 0
         generated = write_contract_generation_batch(write_db, batch, now=now)
+        # LEG-4142: three new NPC contract type generators run in the same
+        # write transaction (same advisory lock + due-check, same commit).
+        try:
+            generated += generate_refugee_transport_contracts(write_db, now=now)
+            generated += generate_acquisition_bounty_contracts(write_db, now=now)
+            generated += generate_escort_contracts(write_db, now=now)
+        except Exception:
+            logger.exception("NPC contract generation (LEG-4142 types) failed")
+            # Non-fatal: let the existing batch commit succeed; log and continue.
         write_db.commit()
         return generated
     except Exception:

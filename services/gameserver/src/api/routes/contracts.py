@@ -39,10 +39,12 @@ from sqlalchemy.orm import Session
 
 from src.auth.dependencies import get_current_player
 from src.core.database import get_db
-from src.models.contract import Contract, ContractInsuranceCoverageTier, ContractStatus, ContractType
+from src.models.contract import Contract, ContractInsuranceCoverageTier, ContractIssuerType, ContractStatus, ContractType
 from src.models.player import Player
+from src.models.player_direct_relationship import PlayerDirectRelationship
+from src.models.reputation import Reputation
 from src.services import contract_service
-from src.services.contract_service import ContractConflictError, ContractError, ContractNotFoundError
+from src.services.contract_service import ContractConflictError, ContractError, ContractForbiddenError, ContractNotFoundError
 
 router = APIRouter(prefix="/contracts", tags=["contracts"])
 
@@ -183,6 +185,8 @@ def _raise_for(exc: ContractError) -> None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
     if isinstance(exc, ContractConflictError):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    if isinstance(exc, ContractForbiddenError):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
@@ -216,6 +220,46 @@ async def get_contract_board(
         .order_by(Contract.posted_at.desc())
         .all()
     )
+    # LEG-4143: reputation-gated hiding for NPC faction contracts.
+    # [OPEN] threshold: canon (contracts.md §Contract boards) does not specify
+    # an exact reputation tier for board visibility; hostile (current_value < 0)
+    # is an implementer-provisional default pending a DECISIONS.md ruling.
+    player_rep_rows = (
+        db.query(Reputation)
+        .filter(Reputation.player_id == current_player.id)
+        .all()
+    )
+    player_rep: dict = {str(r.faction_id): r.current_value for r in player_rep_rows}
+
+    # LEG-4143: issuer-blocklist hiding for player-posted contracts.
+    # Uses PlayerDirectRelationship.is_blocked — same column as accept-time
+    # _is_player_blocklisted in contract_service.py:207-237.
+    blocked_issuers_rows = (
+        db.query(PlayerDirectRelationship.target_id)
+        .filter(
+            PlayerDirectRelationship.player_id == current_player.id,
+            PlayerDirectRelationship.is_blocked == True,  # noqa: E712
+        )
+        .all()
+    )
+    blocked_issuer_ids = {str(row.target_id) for row in blocked_issuers_rows}
+
+    def _is_board_visible(contract: Contract) -> bool:
+        # NPC faction contracts: hide if player is hostile to that faction [OPEN]
+        if (
+            contract.issuer_type == ContractIssuerType.NPC
+            and contract.faction_id is not None
+        ):
+            rep_val = player_rep.get(str(contract.faction_id), 0)
+            if rep_val < 0:
+                return False
+        # Player-posted contracts: hide if issuer is on the player's blocklist
+        if contract.issuer_type == ContractIssuerType.PLAYER:
+            if str(contract.issuer_id) in blocked_issuer_ids:
+                return False
+        return True
+
+    contracts = [c for c in contracts if _is_board_visible(c)]
     return [_serialize_contract(c, current_player.id) for c in contracts]
 
 

@@ -530,6 +530,28 @@ def scan(
     ship.quantum_scan_cooldown_until = _now() + timedelta(hours=SCAN_COOLDOWN_HOURS)
     db.commit()
 
+    # LEG-4166: +1 Nova Scientific rep per Quantum Jump scan, cap 5/day.
+    # Best-effort after charge/cooldown; must not change the scan result.
+    try:
+        from datetime import date
+        _today = date.today().isoformat()
+        _cap_key = f"quantum_scan_nova_rep_{_today}"
+        _settings = dict(player.settings or {})
+        _count = int(_settings.get(_cap_key, 0) or 0)
+        _NOVA_SCAN_DAILY_CAP = 5
+        if _count < _NOVA_SCAN_DAILY_CAP:
+            apply_emergent_action(db, player, "QUANTUM_SCAN_NOVA")
+            _settings[_cap_key] = _count + 1
+            player.settings = _settings
+            flag_modified(player, "settings")
+            db.commit()
+    except Exception:
+        logger.warning(
+            "QUANTUM_SCAN_NOVA rep hook failed for player %s; scan still returned",
+            player.id,
+            exc_info=True,
+        )
+
     # Expiry is 10 REAL minutes (canon: real-minutes; deliberately unscaled)
     expires_at = _now() + timedelta(minutes=SCAN_RESULT_TTL_MINUTES)
 
@@ -637,6 +659,12 @@ def jump(
         )
     if ship.status == ShipStatus.HARMONIZING:
         raise QuantumError("This Warp Jumper is anchored to a beacon and harmonizing — it cannot jump")
+    from src.services.interdictor_abilities_service import (
+        interdictor_field_blocks_movement,
+        movement_block_message,
+    )
+    if interdictor_field_blocks_movement(ship):
+        raise QuantumError(movement_block_message(), error_code="ERR_INTERDICTOR_FIELD")
     if _cooldown_active(ship.quantum_jump_cooldown_until):
         raise QuantumError(
             f"Quantum drive is in cooldown until "
@@ -876,6 +904,22 @@ def jump(
                 check_and_award_exploration_medals(
                     db, player, {"void_jumps": settings["void_jumps"]},
                 )
+                # LEG-4167: +10 Fed rep on first-discovery of Fed-zone sector.
+                # Canon: factions-and-teams.md Federation table line 91.
+                # Best-effort, flush-only (rides outer commit).
+                try:
+                    from src.models.zone import ZoneType
+                    if (
+                        destination_sector is not None
+                        and getattr(destination_sector, "zone", None) is not None
+                        and destination_sector.zone.zone_type == ZoneType.FEDERATION
+                    ):
+                        apply_emergent_action(db, player, "DISCOVER_SECTOR_FED")
+                except Exception:
+                    logger.warning(
+                        "DISCOVER_SECTOR_FED rep hook failed; QJ still completes",
+                        exc_info=True,
+                    )
         except Exception as e:
             logger.error("Void-walker discovery/medal hook failed during QJ: %s", e)
 

@@ -1899,7 +1899,13 @@ def _check_faction_rep_layers(db: Session, player: Player, reqs: Dict[str, Any])
             )
 
 
-def check_traversal_access(db: Session, player: Player, tunnel: WarpTunnel) -> None:
+def check_traversal_access(
+    db: Session,
+    player: Player,
+    tunnel: WarpTunnel,
+    *,
+    actor_ship: Optional["Ship"] = None,
+) -> None:
     """Enforce the gate's access mode — plus any optional layered gates
     (WO-GWQ-GATE-TOLL: faction-rep min/max) — for a player attempting
     traversal.
@@ -1915,6 +1921,11 @@ def check_traversal_access(db: Session, player: Player, tunnel: WarpTunnel) -> N
     The owner is identified by WarpTunnel.created_by_player_id (the gate's
     owner FK on the traversable row, kept in sync with WarpGate.player_id on
     transfer)."""
+    from src.services.interdictor_abilities_service import ship_has_ability
+
+    if actor_ship is not None and ship_has_ability(actor_ship, "concord_authorization"):
+        return
+
     # Only player-built gates are access-controlled. A natural/generator tunnel
     # has no created_by_player_id and is always open.
     if tunnel is None or tunnel.created_by_player_id is None \
@@ -2075,7 +2086,12 @@ def _has_24h_team_tenure(db: Session, traverser_id, owner: Optional[Player], now
 
 
 def collect_toll(
-    db: Session, traverser: Player, tunnel: WarpTunnel, now: Optional[datetime] = None,
+    db: Session,
+    traverser: Player,
+    tunnel: WarpTunnel,
+    now: Optional[datetime] = None,
+    *,
+    actor_ship: Optional["Ship"] = None,
 ) -> Dict[str, Any]:
     """warp-gates.md "Toll system" + ADR-0049 — atomic per-traversal toll on
     a player-built gate. `now` is optional (defaults to datetime.now(UTC)),
@@ -2146,7 +2162,10 @@ def collect_toll(
     exempt_reason: Optional[str] = None
     charged = 0
 
-    if is_owner:
+    from src.services.interdictor_abilities_service import ship_has_ability
+    if actor_ship is not None and ship_has_ability(actor_ship, "concord_authorization"):
+        exempt_reason = "concord_authorization"
+    elif is_owner:
         exempt_reason = "owner"
     elif fee == 0:
         exempt_reason = "free"
@@ -2220,6 +2239,42 @@ def collect_toll(
         data["toll_stats"] = stats
         tunnel.artificial_data = data
         flag_modified(tunnel, "artificial_data")
+
+    # LEG-3376 — MG emergent rep for using someone else's public toll gate with
+    # cargo (factions-and-teams.md MG table: "+1 / 5,000 cr cargo value").
+    # Reuses TRADE_VOLUME_MG + apply_trade_volume_rep: the MG faction's
+    # emergent_trade_volume carry-over bucket is shared with Guild station
+    # trades (same faction, same per-5,000-cr block rate).
+    if (
+        charged > 0
+        and not is_owner
+        and bool(getattr(tunnel, "is_public", False))
+        and actor_ship is not None
+    ):
+        try:
+            from src.services.emergent_reputation_service import apply_trade_volume_rep
+            from src.services.station_security_service import _cargo_credit_value
+
+            cargo_value = _cargo_credit_value(actor_ship)
+            if cargo_value > 0:
+                apply_trade_volume_rep(
+                    db,
+                    traverser,
+                    "TRADE_VOLUME_MG",
+                    cargo_value,
+                    {
+                        "tunnel_id": str(tunnel.id),
+                        "reason": "public_toll_gate_traversal",
+                    },
+                )
+        except Exception:
+            logger.warning(
+                "emergent MG toll-gate traversal rep failed for tunnel %s / "
+                "player %s",
+                tunnel.id,
+                getattr(traverser, "id", None),
+                exc_info=True,
+            )
 
     db.flush()
     return {

@@ -265,6 +265,38 @@ class SyndicateFenceService:
         except Exception:
             pass
         player.credits = int(player.credits or 0) + payout
+
+        # LEG-3388 / LEG-3389 — emergent SS rep on successful fence.
+        # Fence requires flagged_origin (stolen/early-grace salvage), so every
+        # success is a STOLEN_FLAGGED_SALE_SS transaction (+10 once) and also
+        # accrues FENCE_SYNDICATE_VOLUME_SS (+5 / 5,000 cr gross market_value).
+        # Defensive: never fail the fence txn on a rep hiccup.
+        try:
+            from src.services.emergent_reputation_service import (
+                apply_emergent_action,
+                apply_trade_volume_rep,
+            )
+
+            sector_ctx = {"sector_id": getattr(player, "current_sector_id", None)}
+            apply_emergent_action(
+                self.db,
+                player,
+                "STOLEN_FLAGGED_SALE_SS",
+                sector_ctx,
+            )
+            apply_trade_volume_rep(
+                self.db,
+                player,
+                "FENCE_SYNDICATE_VOLUME_SS",
+                market_value,
+                sector_ctx,
+            )
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "emergent SS fence rep failed (non-fatal)",
+                exc_info=True,
+            )
+
         return {
             "success": True,
             "reason": "ok",

@@ -2,8 +2,7 @@
 Colonist profession kernel (LEG-2253 / FEATURES/planets/professions.md).
 
 Training durations and numeric bonus multipliers are canon-backed. Training
-*purchase/charge* remains DECISION-NEEDED — queueing never deducts credits or
-stockpile commodities until those TBD cells are ruled.
+costs use ADR-0093 item 35 provisional per-100 magnitudes (LEG-DEC-804).
 """
 
 from __future__ import annotations
@@ -17,10 +16,13 @@ from sqlalchemy.orm import Session
 from src.core.game_time import scaled_deadline
 from src.models.colonist_profession import (
     ColonistProfession,
+    PROFESSION_TRAINING_COST_PER_100,
     PROFESSION_TRAINING_DAYS,
     ProfessionType,
+    TrainingCostPer100,
 )
 from src.models.planet import Planet, player_planets
+from src.models.player import Player
 from src.models.station import Station
 from src.models.profession_training_queue import (
     ProfessionTrainingQueue,
@@ -35,6 +37,49 @@ MIN_ORBITAL_SHIPYARD_FOR_SPACE_ENGINEERS = 2  # professions.md Space Engineers
 MIN_MILITARY_ACADEMY_FOR_COMBAT_PILOTS = 2  # professions.md Combat Pilots
 MIN_TERRAFORMING_LAB_FOR_TERRAFORM_ENGINEERS = 3  # professions.md Terraform Engineers
 
+# Specialization cap by citadel phase (professions.md §Caps and limits, L134-142).
+SPECIALIZATION_CAP_BY_CITADEL_LEVEL: dict[int, float] = {
+    0: 0.0,
+    1: 0.0,  # Outpost — no specialists
+    2: 0.10,  # Settlement — hold-only; local training blocked by MIN_CITADEL_FOR_TRAINING
+    3: 0.25,  # Colony
+    4: 0.50,  # Major Colony
+    5: 0.75,  # Planetary Capital
+}
+
+
+def specialization_cap_fraction(citadel_level: int) -> float:
+    level = int(citadel_level or 0)
+    if level >= 5:
+        return SPECIALIZATION_CAP_BY_CITADEL_LEVEL[5]
+    return SPECIALIZATION_CAP_BY_CITADEL_LEVEL.get(level, 0.0)
+
+
+def total_specialized_headcount(db: Session, planet_id: UUID) -> int:
+    return sum(profession_counts(db, planet_id).values())
+
+
+def queued_specialist_trainees(db: Session, planet_id: UUID) -> int:
+    rows = (
+        db.query(ProfessionTrainingQueue)
+        .filter(
+            ProfessionTrainingQueue.planet_id == planet_id,
+            ProfessionTrainingQueue.status == ProfessionTrainingStatus.QUEUED.value,
+        )
+        .all()
+    )
+    return sum(int(row.trainee_count or 0) for row in rows)
+
+
+def max_specialized_for_planet(planet: Planet, db: Session) -> int:
+    """Max trained specialists allowed at the planet's current citadel phase."""
+    specialized = total_specialized_headcount(db, planet.id)
+    total_pop = int(planet.colonists or 0) + specialized
+    if total_pop <= 0:
+        return 0
+    return int(total_pop * specialization_cap_fraction(planet.citadel_level or 0))
+
+
 # Numeric bonus multipliers from professions.md (non-TBD cells only).
 PRODUCTION_BONUS: dict[ProfessionType, dict[str, float]] = {
     ProfessionType.MINING_ENGINEERS: {"fuel": 1.30},
@@ -43,13 +88,17 @@ PRODUCTION_BONUS: dict[ProfessionType, dict[str, float]] = {
     ProfessionType.MEDICAL_PROFESSIONALS: {"colonists": 1.20},
 }
 
-RESEARCH_SCIENTIST_MULTIPLIER = 1.40
+RESEARCH_SCIENTIST_MULTIPLIER = 1.40  # [OPEN] provisional — LEG-4147; professions.md §Research Scientists
 STRUCTURAL_ENGINEER_COST_MULTIPLIER = 0.80  # −20% building upgrade costs
 COMBAT_PILOT_DRONE_MULTIPLIER = 1.50
 DEFENSE_COORDINATOR_MULTIPLIER = 1.30
 TERRAFORM_ENGINEER_RATE_PER_1K = 0.5  # habitability / month per 1k engineers
 TERRAFORM_ENGINEER_MONTHLY_CAP = 5.0  # at 10k engineers
 SPACE_ENGINEER_REPAIR_MULTIPLIER = 1.25  # professions.md L32
+# tradedock-shipyard.md §Space Engineer profession integration — up to three
+# engineers per active construction project (per-project assignment API is a
+# follow-on; this cap applies to the interim pool-wide count wire).
+MAX_CONSTRUCTION_ENGINEERS_PER_PROJECT = 3
 TRADE_SPECIALIST_CREDIT_MULTIPLIER = 1.25  # professions.md L57
 MINING_ENGINEER_ORE_MULTIPLIER = 1.30  # professions.md L34; mining.md step 5 (ore)
 
@@ -74,6 +123,30 @@ def profession_counts(db: Session, planet_id: UUID) -> Dict[ProfessionType, int]
         except ValueError:
             continue
         out[prof] = int(row.count or 0)
+    return out
+
+
+def _effective_active_count(row: ColonistProfession) -> int:
+    """NULL active_count = legacy implicit (all trained specialists active)."""
+    trained = int(row.count or 0)
+    if row.active_count is None:
+        return trained
+    return int(row.active_count)
+
+
+def active_profession_counts(db: Session, planet_id: UUID) -> Dict[ProfessionType, int]:
+    rows = (
+        db.query(ColonistProfession)
+        .filter(ColonistProfession.planet_id == planet_id)
+        .all()
+    )
+    out: Dict[ProfessionType, int] = {}
+    for row in rows:
+        try:
+            prof = ProfessionType(row.profession)
+        except ValueError:
+            continue
+        out[prof] = _effective_active_count(row)
     return out
 
 
@@ -130,6 +203,30 @@ def space_engineer_repair_multiplier(db: Session, planet_id: UUID) -> float:
     if counts.get(ProfessionType.SPACE_ENGINEERS, 0) > 0:
         return SPACE_ENGINEER_REPAIR_MULTIPLIER
     return 1.0
+
+
+def construction_engineer_count(db: Session, player_id: UUID) -> int:
+    """Legacy pool-wide Space Engineer count (LEG-302 interim wire).
+
+    Superseded for construction-event RNG by
+    :func:`construction_service.assigned_construction_engineer_count`, which
+    reads per-project assignments (LEG-3599). Retained for callers that still
+    need the pool-wide interim sum.
+    """
+    planet_ids = (
+        db.query(player_planets.c.planet_id)
+        .filter(player_planets.c.player_id == player_id)
+        .all()
+    )
+    total = 0
+    for (planet_id,) in planet_ids:
+        total += profession_counts(db, planet_id).get(ProfessionType.SPACE_ENGINEERS, 0)
+    return min(total, MAX_CONSTRUCTION_ENGINEERS_PER_PROJECT)
+
+
+def space_engineers_on_planet(db: Session, planet_id: UUID) -> int:
+    """Count of Space Engineers stationed on a planet."""
+    return profession_counts(db, planet_id).get(ProfessionType.SPACE_ENGINEERS, 0)
 
 
 def trade_specialist_credit_multiplier(db: Session, planet_id: UUID) -> float:
@@ -239,6 +336,18 @@ def terraform_engineer_bonus_for_tick(engineer_count: int, tick_period_hours: fl
     return monthly * (tick_period_hours / hours_per_month)
 
 
+def training_cost_for(prof: ProfessionType, trainee_count: int) -> TrainingCostPer100:
+    """Scale provisional per-100 recipe to ``trainee_count`` colonists."""
+    return PROFESSION_TRAINING_COST_PER_100[prof].scale(trainee_count)
+
+
+def training_costs_per_100_payload() -> Dict[str, Dict[str, int]]:
+    return {
+        prof.value: PROFESSION_TRAINING_COST_PER_100[prof].as_dict()
+        for prof in ProfessionType
+    }
+
+
 class ProfessionService:
     def __init__(self, db: Session):
         self.db = db
@@ -256,6 +365,13 @@ class ProfessionService:
         from src.services.structures import max_kind_level
 
         return max_kind_level(getattr(planet, "structures", None) or {}, kind)
+
+    def _assert_specialization_cap(self, planet: Planet, trainee_count: int) -> None:
+        specialized = total_specialized_headcount(self.db, planet.id)
+        queued = queued_specialist_trainees(self.db, planet.id)
+        cap = max_specialized_for_planet(planet, self.db)
+        if specialized + queued + trainee_count > cap:
+            raise ValueError("specialization_cap_exceeded")
 
     def _assert_profession_training_gate(self, planet: Planet, prof: ProfessionType) -> None:
         self._assert_training_gate(planet)
@@ -304,6 +420,36 @@ class ProfessionService:
                 out[prof.value] = citadel_ok
         return out
 
+    def _load_player_for_update(self, player_id: UUID) -> Player:
+        player = (
+            self.db.query(Player)
+            .filter(Player.id == player_id)
+            .with_for_update()
+            .first()
+        )
+        if player is None:
+            raise ValueError("player_not_found")
+        return player
+
+    def _apply_training_charge(
+        self,
+        planet: Planet,
+        player: Player,
+        cost: TrainingCostPer100,
+    ) -> None:
+        credits = int(player.credits or 0)
+        if credits < cost.credits:
+            raise ValueError("insufficient_credits")
+        equipment = int(planet.equipment or 0)
+        if equipment < cost.equipment:
+            raise ValueError("insufficient_equipment")
+        organics = int(planet.organics or 0)
+        if organics < cost.organics:
+            raise ValueError("insufficient_organics")
+        player.credits = credits - cost.credits
+        planet.equipment = equipment - cost.equipment
+        planet.organics = organics - cost.organics
+
     def advance_queue(self, planet: Planet, *, now: Optional[datetime] = None) -> bool:
         """Lazy-complete due training rows. Returns True if planet state changed."""
         now = now or datetime.now(UTC)
@@ -351,6 +497,7 @@ class ProfessionService:
         self._assert_owner(planet, player_id)
         self.advance_queue(planet)
         counts = profession_counts(self.db, planet.id)
+        active_counts = active_profession_counts(self.db, planet.id)
         queue_rows = (
             self.db.query(ProfessionTrainingQueue)
             .filter(
@@ -360,13 +507,25 @@ class ProfessionService:
             .order_by(ProfessionTrainingQueue.queued_at)
             .all()
         )
+        specialized = total_specialized_headcount(self.db, planet.id)
+        queued = queued_specialist_trainees(self.db, planet.id)
         return {
             "planet_id": str(planet.id),
             "generic_colonists": planet.colonists or 0,
-            "cost_blocked": True,
-            "cost_block_reason": "DECISION-NEEDED: profession training costs/caps not yet ruled",
+            "specialization_cap_max": max_specialized_for_planet(planet, self.db),
+            "specialized_total": specialized + queued,
+            "specialization_cap_fraction": specialization_cap_fraction(
+                planet.citadel_level or 0
+            ),
+            "cost_blocked": False,
+            "cost_basis": "provisional_per_100",
+            "cost_basis_ref": "ADR-0093 item 35 / LEG-DEC-804",
+            "training_costs_per_100": training_costs_per_100_payload(),
             "professions": {
                 prof.value: counts.get(prof, 0) for prof in ProfessionType
+            },
+            "active_professions": {
+                prof.value: active_counts.get(prof, 0) for prof in ProfessionType
             },
             "training_queue": [
                 {
@@ -405,6 +564,10 @@ class ProfessionService:
         self.advance_queue(planet, now=now)
         if (planet.colonists or 0) < trainee_count:
             raise ValueError("insufficient_generic_colonists")
+        self._assert_specialization_cap(planet, trainee_count)
+        player = self._load_player_for_update(player_id)
+        cost = training_cost_for(prof, trainee_count)
+        self._apply_training_charge(planet, player, cost)
         now = now or datetime.now(UTC)
         days = PROFESSION_TRAINING_DAYS[prof]
         completes_at = scaled_deadline(days * 24.0, start=now)
@@ -421,15 +584,73 @@ class ProfessionService:
         self.db.flush()
         return {
             "success": True,
-            "cost_blocked": True,
-            "cost_charged": False,
+            "cost_blocked": False,
+            "cost_charged": True,
+            "cost": cost.as_dict(),
+            "credits_remaining": player.credits,
+            "planet_stockpile": {
+                "equipment": planet.equipment or 0,
+                "organics": planet.organics or 0,
+            },
             "queue_id": str(row.id),
             "profession": prof.value,
             "trainee_count": trainee_count,
             "training_days": days,
             "completes_at": completes_at.isoformat(),
-            "message": (
-                "Training queued without charge — profession cost magnitudes remain "
-                "DECISION-NEEDED (LEG-DEC-484 / D#501)."
-            ),
+            "message": "Training queued; provisional per-100 costs charged on queue.",
+        }
+
+    def assign_active(
+        self,
+        planet: Planet,
+        player_id: UUID,
+        profession: str,
+        active_count: int,
+    ) -> Dict[str, Any]:
+        if active_count < 0:
+            raise ValueError("invalid_active_count")
+        self._assert_owner(planet, player_id)
+        prof = _parse_profession(profession)
+        self.advance_queue(planet)
+        agg = (
+            self.db.query(ColonistProfession)
+            .filter(
+                ColonistProfession.planet_id == planet.id,
+                ColonistProfession.profession == prof.value,
+            )
+            .first()
+        )
+        trained = int(agg.count or 0) if agg is not None else 0
+        if active_count > trained:
+            raise ValueError("active_count_exceeds_trained")
+        previous = agg.active_count if agg is not None else None
+        if agg is None:
+            if active_count == 0:
+                return {
+                    "success": True,
+                    "changed": False,
+                    "profession": prof.value,
+                    "active_count": 0,
+                    "trained_count": 0,
+                    "message": "No trained specialists; active assignment unchanged.",
+                }
+            raise ValueError("active_count_exceeds_trained")
+        if previous == active_count:
+            return {
+                "success": True,
+                "changed": False,
+                "profession": prof.value,
+                "active_count": active_count,
+                "trained_count": trained,
+                "message": "Active assignment unchanged (idempotent).",
+            }
+        agg.active_count = active_count
+        self.db.flush()
+        return {
+            "success": True,
+            "changed": True,
+            "profession": prof.value,
+            "active_count": active_count,
+            "trained_count": trained,
+            "message": "Active profession assignment updated.",
         }

@@ -118,6 +118,32 @@ class TradeCascadeRequest(BaseModel):
     )
 
 
+class ExplorationSuggestionOut(BaseModel):
+    kind: str
+    sector_id: str
+    sector_number: Optional[int] = None
+    sector_name: Optional[str] = None
+    visit_count: Optional[int] = None
+    trade_opportunity_score: Optional[float] = None
+    safety_rating: Optional[float] = None
+    summary: str
+
+
+class ExplorationSuggestionsOut(BaseModel):
+    suggestions: List[ExplorationSuggestionOut]
+    empty_message: Optional[str] = None
+
+
+class CombatAdviceOut(BaseModel):
+    has_history: bool
+    opponent_ship_type: str
+    summary: str
+    weapon_suggestion: Optional[str] = None
+    encounters: int = 0
+    wins: int = 0
+    losses: int = 0
+
+
 class AssistantConfigRequest(BaseModel):
     """Request model for AI assistant configuration"""
     assistant_name: Optional[str] = Field(
@@ -896,6 +922,82 @@ async def plan_trade_cascade(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="ARIA trade cascade temporarily unavailable",
+        )
+
+
+@router.get(
+    "/exploration-suggestions",
+    response_model=ExplorationSuggestionsOut,
+    summary="ARIA exploration-map suggestions",
+    description=(
+        "Returns repeat-visit, frontier expansion, and risky-sector suggestions "
+        "derived from the authenticated player's ARIAExplorationMap "
+        "(aria-companion.md § Exploration suggestions)."
+    ),
+)
+async def get_exploration_suggestions(
+    current_player: Player = Depends(get_current_player),
+    db: AsyncSession = Depends(get_async_session),
+):
+    try:
+        from src.services.aria_personal_intelligence_service import (
+            get_aria_intelligence_service,
+        )
+
+        aria_service = get_aria_intelligence_service()
+        result = await aria_service.get_exploration_suggestions(
+            str(current_player.id), db,
+        )
+        await db.commit()
+        return result
+    except Exception as e:
+        logger.error(f"Error fetching ARIA exploration suggestions: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="ARIA exploration suggestions temporarily unavailable",
+        )
+
+
+@router.get(
+    "/combat-advice",
+    response_model=CombatAdviceOut,
+    summary="ARIA combat advice for a ship matchup",
+    description=(
+        "Aggregates the player's own combat memories against an opponent ship "
+        "type and returns a matchup hint (aria-companion.md § Combat advice)."
+    ),
+)
+async def get_combat_advice(
+    opponent_ship_type: str = Query(
+        ..., min_length=1, description="Opponent ship type enum key",
+    ),
+    current_player: Player = Depends(get_current_player),
+    db: AsyncSession = Depends(get_async_session),
+):
+    try:
+        from src.services.aria_personal_intelligence_service import (
+            get_aria_intelligence_service,
+        )
+
+        player_ship_type: Optional[str] = None
+        ship = getattr(current_player, "current_ship", None)
+        if ship is not None and getattr(ship, "type", None) is not None:
+            player_ship_type = ship.type.value
+
+        aria_service = get_aria_intelligence_service()
+        result = await aria_service.get_combat_advice(
+            str(current_player.id),
+            opponent_ship_type,
+            player_ship_type,
+            db,
+        )
+        await db.commit()
+        return result
+    except Exception as e:
+        logger.error(f"Error fetching ARIA combat advice: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="ARIA combat advice temporarily unavailable",
         )
 
 
