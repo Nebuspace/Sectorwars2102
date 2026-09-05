@@ -50,6 +50,15 @@ interface RegionalMember {
 // Canon citizen-tier voting_power target (SYSTEMS/regional-governance.md:71-76).
 const CITIZEN_DEFAULT_VOTING_POWER = 1.5;
 
+/** Membership-layer franchise — mirrors RegionalMembership.can_vote (region.py). */
+export function membershipCanVote(
+  membershipType: string,
+  votingPower: number,
+): boolean {
+  const type = membershipType.toLowerCase();
+  return (type === 'citizen' || type === 'resident') && votingPower > 0;
+}
+
 function regionAdminError(err: unknown, fallback: string): string {
   return formatAdminApiError(err, {
     fallback,
@@ -1115,8 +1124,15 @@ const RegionalGovernorDashboard: React.FC = () => {
             <div className="form-group">
               <small>
                 Voting power ranges 0.0–5.0 (citizen tier target {CITIZEN_DEFAULT_VOTING_POWER.toFixed(1)});
-                setting a member to 0.0 revokes their voting rights. Local rank is a free-text title (max 50 characters).
+                dialing power to 0.0 clears membership franchise for citizens and residents.
+                Visitor type never votes on this membership layer, regardless of voting power.
+                Local rank is a free-text title (max 50 characters).
               </small>
+              <p className="rgd-franchise-honesty">
+                ADR-0056 account-age, personal_rep, and multi-account blocks_vote gates are enforced on
+                the gameserver cast path and are not returned by GET /api/v1/regions/my-region/members —
+                this Franchise column is membership-layer only (type + voting_power).
+              </p>
             </div>
 
             <div className="members-list">
@@ -1129,11 +1145,17 @@ const RegionalGovernorDashboard: React.FC = () => {
                       <th>Reputation</th>
                       <th>Local Rank</th>
                       <th>Voting Power</th>
+                      <th>Franchise</th>
                       <th>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {members.map(member => (
+                    {members.map(member => {
+                      const canVote = membershipCanVote(
+                        member.membership_type,
+                        member.voting_power,
+                      );
+                      return (
                       <tr key={member.player_id}>
                         <td>{member.username}</td>
                         <td>{member.membership_type}</td>
@@ -1159,6 +1181,13 @@ const RegionalGovernorDashboard: React.FC = () => {
                           />
                         </td>
                         <td>
+                          <span
+                            className={`rgd-franchise-badge ${canVote ? 'eligible' : 'ineligible'}`}
+                          >
+                            {canVote ? 'Can vote' : 'No franchise'}
+                          </span>
+                        </td>
+                        <td>
                           <div style={{ display: 'flex', gap: '8px' }}>
                             <button
                               onClick={() => handleMemberFieldChange(member.player_id, 'voting_power', CITIZEN_DEFAULT_VOTING_POWER)}
@@ -1178,7 +1207,8 @@ const RegionalGovernorDashboard: React.FC = () => {
                           </div>
                         </td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               ) : (
