@@ -105,12 +105,24 @@ describe('MultiAccountReview scope errors (LEG-968)', () => {
   });
 });
 
-const sampleCluster = {
+const sampleCluster: {
+  id: string;
+  signal_summary: Record<string, unknown>;
+  severity: 'hard' | 'soft';
+  all_paid_subscribers: boolean;
+  admin_decision: 'pending' | 'confirmed' | 'overridden' | 'escalated';
+  admin_decision_reason: string | null;
+  admin_decision_at: string | null;
+  admin_decision_by: string | null;
+  created_at: string;
+  updated_at: string;
+  member_count: number;
+} = {
   id: 'cluster-1',
   signal_summary: { shared_ip: true },
-  severity: 'soft' as const,
+  severity: 'soft',
   all_paid_subscribers: false,
-  admin_decision: 'pending' as const,
+  admin_decision: 'pending',
   admin_decision_reason: null,
   admin_decision_at: null,
   admin_decision_by: null,
